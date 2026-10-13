@@ -25,6 +25,8 @@ from shared.automation_plugin_configuration_contract import (
     PLUGIN_RUNTIME_MODELS as _PLUGIN_RUNTIME_MODELS,
     configuration_contract_witness as _configuration_contract_witness,
     lock_upgrade_configuration_contract,
+    require_configuration_contract,
+    validate_optional_console_upgrade_configuration,
 )
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
@@ -1909,7 +1911,7 @@ class AutomationPluginRepository(
                     raise ConcurrentUpdateError(
                         "prepared configuration request does not match the project target"
                     )
-                prepared_upgrade_target = prepared_metadata.get("first_party_upgrade_target")
+                prepared_upgrade_target = prepared_metadata.get("first_party_upgrade_target") or prepared_metadata.get("optional_console_upgrade_target")
                 if prepared_upgrade_target is not None and prepared_upgrade_target != {
                     "from_version": safe_from,
                     "to_version": safe_to,
@@ -2272,6 +2274,7 @@ class AutomationPluginRepository(
         expected_project_configuration_version: int,
         allow_blocked_unknown_write_archive: bool = False,
         first_party_upgrade_target: Mapping[str, Any] | None = None,
+        optional_console_upgrade: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """CAS project settings, schedules and authorization in one Unit of Work.
 
@@ -2300,6 +2303,19 @@ class AutomationPluginRepository(
                 "to_version": _required_text(first_party_upgrade_target["to_version"], "to_version"),
                 "package_sha256": _sha256(first_party_upgrade_target["package_sha256"], "package_sha256"),
             }
+        upgrade_metadata_key = "first_party_upgrade_target"
+        previous_witness = None
+        if optional_console_upgrade is not None:
+            if upgrade_target is not None or normalized_role != "super_admin":
+                raise ValueError("optional Console upgrade requires exclusive super_admin authority")
+            if set(optional_console_upgrade) != {"target", "previous_contract_witness"}:
+                raise ValueError("optional Console upgrade proof is invalid")
+            upgrade_target = dict(optional_console_upgrade["target"])
+            if set(upgrade_target) != {"from_version", "to_version", "package_sha256"}:
+                raise ValueError("optional Console upgrade target is invalid")
+            _sha256(upgrade_target["package_sha256"], "package_sha256")
+            previous_witness = _configuration_contract_witness(optional_console_upgrade["previous_contract_witness"])
+            upgrade_metadata_key = "optional_console_upgrade_target"
         if type(allow_blocked_unknown_write_archive) is not bool:
             raise ValueError("unknown-write archive authority must be boolean")
         if (
@@ -2419,7 +2435,9 @@ class AutomationPluginRepository(
         if allow_blocked_unknown_write_archive:
             request_payload["blocked_unknown_write_archive"] = True
         if upgrade_target is not None:
-            request_payload["first_party_upgrade_target"] = upgrade_target
+            request_payload[upgrade_metadata_key] = upgrade_target
+        if previous_witness is not None:
+            request_payload["previous_contract_witness"] = previous_witness
         request_payload_sha256 = _json_hash(request_payload)
 
         with self.cursor() as cursor:
@@ -2442,30 +2460,11 @@ class AutomationPluginRepository(
             if project is None:
                 raise OrchestrationPersistenceError("automation project is not installed")
             _stageable_project_state(project.get("state"))
+            if previous_witness is not None:
+                require_configuration_contract(project, previous_witness)
             if upgrade_target is not None:
                 project = lock_upgrade_configuration_contract(cursor, project, upgrade_target)
-            persisted_runtime_model = str(project.get("runtime_model") or "ACTION_V1")
-            if persisted_runtime_model != runtime_model:
-                raise OrchestrationPersistenceError(
-                    "persisted plugin runtime model does not match contract witness"
-                )
-            if (
-                _sha256(
-                    project.get("allowed_entrypoints_sha256"),
-                    "allowed_entrypoints_sha256",
-                )
-                != plugin_json_digest(witness["allowed_entrypoints"])
-                or _sha256(
-                    project.get("invocation_contracts_sha256"),
-                    "invocation_contracts_sha256",
-                )
-                != plugin_json_digest(witness["invocation_contracts"])
-                or _sha256(project.get("scheduling_sha256"), "scheduling_sha256")
-                != plugin_json_digest(witness["scheduling"])
-            ):
-                raise OrchestrationPersistenceError(
-                    "persisted plugin contract does not match configuration witness"
-                )
+            require_configuration_contract(project, witness)
             allowed_entrypoints = witness["allowed_entrypoints"]
             scheduling = witness["scheduling"]
             if not set(entrypoints) <= set(allowed_entrypoints):
@@ -2568,6 +2567,8 @@ class AutomationPluginRepository(
                     )
                 return persisted
 
+            if previous_witness is not None:
+                validate_optional_console_upgrade_configuration(previous_witness, witness, current_config, request_payload)
             if current_version != expected_version:
                 raise ConcurrentUpdateError("automation project config version changed")
             next_version = current_version + 1
@@ -2937,7 +2938,7 @@ class AutomationPluginRepository(
                 "scheduled_task_count": len(target_tasks),
             }
             if upgrade_target is not None:
-                event_metadata["first_party_upgrade_target"] = upgrade_target
+                event_metadata[upgrade_metadata_key] = upgrade_target
             cursor.execute(
                 """
                 INSERT INTO automation_project_events (

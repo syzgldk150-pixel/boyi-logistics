@@ -56,9 +56,14 @@ from agent.automation_plugins.ports import (
 from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginCatalogRepositoryAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
+    _version_from_row,
 )
 from agent.automation_plugins.storage import VERIFIED_ARCHIVE_RELATIVE
 from agent.tool_registry import validate_schema_instance
+from shared.automation_plugin_configuration_contract import (
+    optional_console_input_additions,
+    validate_optional_console_upgrade_configuration,
+)
 from shared.automation_project_manifest import (
     FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES,
 )
@@ -269,6 +274,37 @@ def _transient_entry(
         tool_contract=manifest.tool_contract,
         action_id=f"automation.{automation_id}.run",
     )
+
+
+def _compile_upgrade_invocations(
+    automation_id: str, contract: Any, config: Mapping[str, Any],
+    accounts: Mapping[str, Any], resources: Mapping[str, Any], sources: Sequence[str],
+    *, runtime_model: PluginRuntimeModel,
+) -> dict[str, dict[str, Any]]:
+    transient = _transient_entry(automation_id, contract)
+    result = {}
+    for source in sources:
+        compiled = compile_instance_arguments(
+            transient, config=dict(config), account_bindings=accounts,
+            resource_bindings=resources, entrypoint=source, resolve_dynamic=False,
+        )
+        result[source] = {
+            "arguments": copy.deepcopy(dict(compiled.arguments)),
+            "dynamic_resolvers": copy.deepcopy(dict(compiled.unresolved_dynamic_resolvers)),
+        }
+        if runtime_model is PluginRuntimeModel.SERVICE_V2:
+            invocation = contract.invocation_contracts[source]
+            governance = invocation.get("governance")
+            if not isinstance(governance, Mapping):
+                raise PluginConflictError("service-v2 invocation governance is unavailable")
+            result[source]["governance"] = copy.deepcopy(dict(governance))
+            result[source]["target"] = {
+                "service": str(invocation.get("service") or ""),
+                "operation": str(invocation.get("operation") or ""),
+                "contribution_id": source,
+                "contribution_kind": str(invocation.get("contribution_kind") or ""),
+            }
+    return result
 
 
 def _legacy_project_config(
@@ -940,50 +976,28 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                 raise PluginConflictError(
                     "Worker binding differs from the upgrade contract"
                 )
-            transient = _transient_entry(automation_id, contract)
-            compiled_after: dict[str, dict[str, Any]] = {}
-            for source in sources:
-                compiled = compile_instance_arguments(
-                    transient,
-                    config=dict(config_json),
-                    account_bindings=accounts,
-                    resource_bindings=resources,
-                    entrypoint=source,
-                    resolve_dynamic=False,
+            compiled_after = _compile_upgrade_invocations(
+                automation_id, contract, config_json, accounts, resources, sources,
+                runtime_model=version.runtime_model,
+            )
+            if canonical_json_bytes(normalized_schedule) != canonical_json_bytes(schedule):
+                raise PluginConflictError("saved schedule needs reconfiguration")
+            if (version.runtime_model is PluginRuntimeModel.SERVICE_V2
+                    and prepared_configuration_request_id is None
+                    and (compiled_after != compiled_before
+                         or project.get("plugin_version") == version.version)):
+                prepared = self._prepare_optional_console_upgrade(
+                    uow, automation_id, version, contract, project, config,
+                    compiled_after=compiled_after, actor_id=actor_id, actor_role=actor_role,
+                    request_id=request_id, expected_current_version=expected_current_version,
+                    expected_record_version=expected_record_version,
                 )
-                compiled_after[source] = {
-                    "arguments": copy.deepcopy(dict(compiled.arguments)),
-                    "dynamic_resolvers": copy.deepcopy(
-                        dict(compiled.unresolved_dynamic_resolvers)
-                    ),
-                }
-                if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-                    invocation_contract = contract.invocation_contracts[source]
-                    governance = invocation_contract.get("governance")
-                    if not isinstance(governance, Mapping):
-                        raise PluginConflictError(
-                            "service-v2 invocation governance is unavailable"
-                        )
-                    compiled_after[source]["governance"] = copy.deepcopy(
-                        dict(governance)
-                    )
-                    compiled_after[source]["target"] = {
-                        "service": str(invocation_contract.get("service") or ""),
-                        "operation": str(invocation_contract.get("operation") or ""),
-                        "contribution_id": source,
-                        "contribution_kind": str(
-                            invocation_contract.get("contribution_kind") or ""
-                        ),
-                    }
-            if (
-                canonical_json_bytes(normalized_schedule)
-                != canonical_json_bytes(schedule)
-                or canonical_json_bytes(compiled_after)
-                != canonical_json_bytes(compiled_before)
-            ):
-                raise PluginConflictError(
-                    "saved schedule or invocation templates need reconfiguration"
-                )
+                if prepared is not None:
+                    prepared_configuration_request_id, expected_record_version = prepared
+                    config = uow.automation_plugins.get_project_config(automation_id, for_update=True)
+                    compiled_before = config["compiled_invocations_json"]
+            if canonical_json_bytes(compiled_after) != canonical_json_bytes(compiled_before):
+                raise PluginConflictError("saved invocation templates need reconfiguration")
         except PluginConflictError as exc:
             raise PluginConflictError(
                 "plugin upgrade is incompatible with the saved project configuration",
@@ -1107,6 +1121,73 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     },
                 ),
             )
+
+    def _prepare_optional_console_upgrade(
+        self, uow: Any, automation_id: str, version: PluginVersionRecord,
+        contract: Any, project: Mapping[str, Any], config: Mapping[str, Any], *,
+        compiled_after: Mapping[str, Any], actor_id: str, actor_role: str,
+        request_id: str, expected_current_version: str, expected_record_version: int,
+    ) -> tuple[str, int] | None:
+        """Prepare only additive optional Console inputs in the upgrade UoW."""
+        previous_row = uow.automation_plugins.get_version(version.plugin_id, expected_current_version)
+        if previous_row is None:
+            raise PluginConflictError("installed upgrade source is unavailable")
+        previous_version = _version_from_row(previous_row)
+        if previous_version.runtime_model is not PluginRuntimeModel.SERVICE_V2:
+            raise PluginConflictError("optional Console upgrade requires service-v2 contracts")
+        previous_manifest, previous_contract = _version_contract(previous_version)
+        if previous_manifest.manifest_sha256 != previous_version.manifest_sha256:
+            raise PluginConflictError("installed upgrade source manifest changed")
+        previous_witness = _configuration_contract_witness(previous_contract, runtime_model=version.runtime_model)
+        target_witness = _configuration_contract_witness(contract, runtime_model=version.runtime_model)
+        # A completed ordinary upgrade has no migration to replay.
+        try:
+            additions = optional_console_input_additions(previous_witness, target_witness)
+        except ValueError:
+            if compiled_after == config["compiled_invocations_json"]:
+                return None
+            raise
+        sources = config["enabled_entrypoints_json"]
+        if not set(sources).intersection(additions):
+            return None
+        old_compiled = _compile_upgrade_invocations(
+            automation_id, previous_contract, config["config_json"],
+            config["account_bindings_json"], config["resource_bindings_json"], sources,
+            runtime_model=previous_version.runtime_model,
+        )
+        request = {
+            "config": config["config_json"], "account_bindings": config["account_bindings_json"],
+            "resource_bindings": config["resource_bindings_json"], "enabled_entrypoints": sources,
+            "schedule": config["desired_schedule_json"], "compiled_invocations": compiled_after,
+            "device_id": config.get("device_id"),
+        }
+        validate_optional_console_upgrade_configuration(
+            previous_witness, target_witness, {**config, "compiled_invocations_json": old_compiled}, request,
+        )
+        prepare_request = str(uuid.uuid5(uuid.UUID(request_id), "optional-console-upgrade-configuration"))
+        # The normal stage idempotency check still verifies the original UUID,
+        # actor, package and CAS payload after a lost response.
+        if project.get("plugin_version") == version.version:
+            return prepare_request, expected_record_version + 1
+        if (project.get("plugin_version") != expected_current_version
+                or project.get("record_version") != expected_record_version):
+            raise PluginConflictError("automation project changed before upgrade configuration")
+        if canonical_json_bytes(config["compiled_invocations_json"]) != canonical_json_bytes(old_compiled):
+            raise PluginConflictError("saved invocation template differs from its installed contract")
+        device_id = config.get("device_id")
+        uow.automation_plugins.save_project_config(
+            automation_id, **{key: value for key, value in request.items() if key != "device_id"},
+            contract_witness=target_witness,
+            device_binding={"device_id": str(device_id)} if device_id not in (None, "") else None,
+            actor_id=actor_id, actor_role=actor_role, request_id=prepare_request,
+            expected_project_configuration_version=int(config["config_version"]),
+            optional_console_upgrade={
+                "target": {"from_version": expected_current_version, "to_version": version.version,
+                           "package_sha256": version.package_sha256},
+                "previous_contract_witness": previous_witness,
+            },
+        )
+        return prepare_request, expected_record_version + 1
 
     def _prepare_first_party_upgrade_configuration(
         self,

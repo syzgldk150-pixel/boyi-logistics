@@ -61,6 +61,8 @@ Manifest 必须明确 `schema_version=2`、`runtime_model=service_v2`、版本�
 
 V2 由超级管理员上传无签名 ZIP，按内容摘要确认传输及已安装字节；不使用 V1 的 Ed25519 包格式。相同版本不能覆盖不同内容。升级前检查权限、接口和配置兼容性；当前代切换完成后新调用才使用新包，旧调用排空。回退使用该实例已安装过的精确版本，不从同名目录猜测旧包。
 
+现有 Console 入口只新增真正可选的运行时输入时，升级器先以旧合同核验保存的调用模板，再按目标合同迁移新增的 Host resolver。原参数、既有 resolver、服务目标、治理、账号和资源绑定、定时及启用入口必须保持一致；新增必填输入或改写既有字段仍拒绝。模板、配置与策略见证和版本切换在同一事务提交，失败全部回滚，重复请求沿用原请求标识。
+
 Manifest Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。通用本地开发命令见 [Service V2 开发工具](../agent/docs/service_v2_developer_tooling.md)；现有业务优先使用 `agent/scripts/plugin_maintenance.py` 选择对应插件进行测试和打包。
 
 设置页运行于独立 sandbox iframe，没有主页面同源权限或任意网络权限；通过会话绑定桥读取和保存自身配置。账号和表格只使用宿主返回的不透明引用。设置保存与定时保存分别校验版本并相互保留。“每天指定时间”的时间点属于主系统定时器，只改时间点时以目录提供的定时摘要 `schedule_sha256`（保存参数 `expected_schedule_sha256`）和配置版本 CAS 改写当前已提交代次的定时行并只同步该插件的定时任务，不新建代次；定时方式与开关仍是代次内容。
