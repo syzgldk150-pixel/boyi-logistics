@@ -72,6 +72,9 @@ YUNDA_PROBLEM_CLIENT_QUERY_URL = f"{YUNDA_BASE_ORIGIN}/#/ifarme/ifarme/4768/%E9%
 YUNDA_PROBLEM_IFRAME_SELECTOR = 'iframe[src*="kyproblem.yunda56.com/ky_problem/public/index.php/query/index.html"]'
 YUNDA_REPORT_CLIENT_URL = f"{YUNDA_BASE_ORIGIN}/#/ifarme/ifarme/16003/网点派件量预测主单表"
 YUNDA_REPORT_IFRAME_SELECTOR = 'iframe[src*="rpts-kyrpts.yunda56.com:8081/kyrpts/page/kywdop/mrt_brch_frgt/mrt_s_brch_frgt_amt_tot"]'
+YUNDA_MESSAGE_CLIENT_URL = f"{YUNDA_BASE_ORIGIN}/#/ifarme/ifarme/21144/待办事项"
+YUNDA_MESSAGE_IFRAME_SELECTOR = 'iframe[src*="ky-export.yunda56.com/ydky_rabbit_web/ui/view/common/kyimport_message.html"]'
+YUNDA_CSSP_USER_URL = "https://cssp.yunda56.com/cssp/sys/user/getUser"
 PHONE_INPUT = "#phone"
 USERNAME_INPUT = "#username"
 PASSWORD_INPUT = "#password"

@@ -8,7 +8,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any
-from urllib.parse import quote
 
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.session_broker import get_session_broker
@@ -17,13 +16,6 @@ from agent.tms_runtime.session_broker import get_session_broker
 POLL_INTERVAL_SEC = 60
 CACHE_TTL_SEC = 55
 
-YUNDA_CLIENT_ORIGIN = "https://ky-client.yunda56.com"
-YUNDA_CLIENT_HOME_URL = f"{YUNDA_CLIENT_ORIGIN}/#/"
-YUNDA_USER_INFO_URL = f"{YUNDA_CLIENT_ORIGIN}/client/user/info"
-YUNDA_MESSAGE_ORIGIN = "https://ky-message.yunda56.com"
-YUNDA_MESSAGE_TYPES_URL = f"{YUNDA_MESSAGE_ORIGIN}/message/api/getTypes"
-YUNDA_HEAD_MESSAGE_REFERER = f"{YUNDA_MESSAGE_ORIGIN}/message/view/head_message"
-RONGHUI_HOME_URL = "https://tms.ronghuiwl.com/module/index?mv=index"
 DAILY_SIGN_SHEET_RESOURCE_KEY = "phase7.daily_sign_sheet"
 
 _SNAPSHOT_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
@@ -129,16 +121,6 @@ def _to_int(value: Any, default: int = 0) -> int:
         return max(int(text), 0)
     except ValueError:
         return default
-
-
-def _safe_slug(value: Any) -> str:
-    text = _clean_text(value)
-    if not text:
-        return "unknown"
-    keep = []
-    for char in text.lower():
-        keep.append(char if char.isalnum() else "_")
-    return re.sub(r"_+", "_", "".join(keep)).strip("_") or "unknown"
 
 
 def _parse_target_date(value: str | None) -> str:
@@ -382,20 +364,6 @@ def _daily_sign_refresh_schedule(target_date: str, now_ts: float | None = None) 
     }
 
 
-def _is_exception_category(title: str) -> bool:
-    return any(marker in title for marker in ("问题", "差错", "投诉", "仲裁", "异常", "申诉"))
-
-
-def _category_tone(title: str, count: int) -> str:
-    if count <= 0:
-        return "muted"
-    if any(marker in title for marker in ("投诉", "仲裁", "异常", "差错")):
-        return "danger"
-    if "问题" in title or "回复" in title:
-        return "warning"
-    return "info"
-
-
 def _system_payload(
     *,
     system: str,
@@ -407,284 +375,58 @@ def _system_payload(
     message: str = "",
 ) -> dict[str, Any]:
     categories = categories or []
-    total_count = sum(_to_int(item.get("count")) for item in categories)
-    exception_count = sum(
-        _to_int(item.get("count"))
-        for item in categories
-        if item.get("is_exception") or _is_exception_category(str(item.get("title") or ""))
-    )
     return {
         "system": system,
         "label": label,
         "status": status,
         "status_label": status_label,
         "message": message,
-        "total_count": total_count,
-        "exception_count": exception_count,
+        "total_count": None,
+        "exception_count": None,
         "updated_at": updated_at,
         "categories": categories,
     }
 
 
-def _extract_rows(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if not isinstance(payload, dict):
-        return []
-    for key in ("data", "rows", "list", "details", "result"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-        if isinstance(value, dict):
-            nested = _extract_rows(value)
-            if nested:
-                return nested
-    return []
+def _source_snapshot(system: str, *, updated_at: str) -> dict[str, Any]:
+    from agent.tms_runtime import monitoring_ronghui, monitoring_yunda
 
-
-def _first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    for key in keys:
-        if key in row and row.get(key) not in (None, ""):
-            return row.get(key)
-    return ""
-
-
-def _yunda_category_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    title = _clean_text(
-        _first_value(
-            row,
-            (
-                "noticeTypeName",
-                "typeName",
-                "noticeName",
-                "name",
-                "title",
-                "label",
-            ),
-        )
-    ) or "未命名消息"
-    type_code = _clean_text(_first_value(row, ("typeCode", "code", "noticeTypeCode")))
-    resource_id = _clean_text(
-        _first_value(
-            row,
-            (
-                "newClientResourceId",
-                "redirectUrl",
-                "resourceId",
-                "resource_id",
-                "menuId",
-            ),
-        )
-    )
-    count = _to_int(_first_value(row, ("sumValue", "count", "num", "total", "value")))
-    target_title = _clean_text(_first_value(row, ("noticeSystemName", "targetTitle", "systemName"))) or title
-    category_key = type_code or _safe_slug(title)
+    adapter = monitoring_yunda if system == "yunda" else monitoring_ronghui
+    label = "韵达" if system == "yunda" else "融辉 TMS"
+    try:
+        session = get_session_broker("yunda" if system == "yunda" else "default").build_requests_session(validate=False)
+        try:
+            categories = adapter.collect_categories(session)
+        finally:
+            session.close()
+    except Exception as exc:
+        return {
+            **_system_payload(system=system, label=label, updated_at=updated_at,
+                              status="auth_required" if isinstance(exc, TMSAuthStateError) else "error",
+                              status_label="登录失效" if isinstance(exc, TMSAuthStateError) else "读取失败",
+                              message="请检查该平台账号登录态和消息权限后刷新。"),
+            "total_count": None, "exception_count": None,
+        }
+    failures = [item for item in categories if item.get("count") is None]
+    included = [item for item in categories if item.get("include_in_total")]
+    total = sum(item["count"] for item in included) if included and all(item.get("count") is not None for item in included) else None
+    exceptions = [item for item in included if item.get("is_exception")]
+    exception_count = sum(item["count"] for item in exceptions) if included and all(item.get("count") is not None for item in exceptions) else None
     return {
-        "system": "yunda",
-        "category_id": f"yunda:{category_key}",
-        "title": title,
-        "count": count,
-        "status": "pending" if count > 0 else "empty",
-        "status_label": "未处理" if count > 0 else "无数据",
-        "tone": _category_tone(title, count),
-        "is_exception": _is_exception_category(title),
-        "type_code": type_code,
-        "resource_id": resource_id,
-        "target_title": target_title,
-        "detail_supported": bool(resource_id),
+        "system": system, "label": label, "status": "partial" if failures else "ok",
+        "status_label": "部分来源不可用" if failures else "已连接",
+        "message": "各分类口径不同，数量分别展示，不重复合计。" if system == "yunda" else "",
+        "total_count": total, "exception_count": exception_count,
+        "updated_at": updated_at, "categories": categories,
     }
-
-
-def parse_yunda_types_payload(payload: dict[str, Any], *, updated_at: str | None = None) -> dict[str, Any]:
-    updated_at = updated_at or _now_label()
-    rows = _extract_rows(payload)
-    categories = [_yunda_category_from_row(row) for row in rows]
-    row_total = sum(_to_int(item.get("count")) for item in categories)
-    declared_total = _to_int(
-        _first_value(
-            payload if isinstance(payload, dict) else {},
-            ("pendingTotal", "totalPending", "total_count", "total", "num", "sumValue"),
-        ),
-        default=row_total,
-    )
-    total_count = max(declared_total, row_total)
-    exception_count = sum(_to_int(item.get("count")) for item in categories if item.get("is_exception"))
-    return {
-        "system": "yunda",
-        "label": "韵达",
-        "status": "ok",
-        "status_label": "已连接",
-        "message": "",
-        "total_count": total_count,
-        "exception_count": exception_count,
-        "updated_at": updated_at,
-        "categories": categories,
-    }
-
-
-def _extract_yunda_user_id(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    candidates: list[dict[str, Any]] = []
-    for key in ("details", "data", "user", "result"):
-        value = payload.get(key)
-        if isinstance(value, dict):
-            candidates.append(value)
-    candidates.append(payload)
-    for item in candidates:
-        for key in (
-            "identity",
-            "username",
-            "userName",
-            "user_id",
-            "userId",
-            "uid",
-            "id",
-            "account",
-        ):
-            value = _clean_text(item.get(key))
-            if value:
-                return value
-    return ""
-
-
-def _response_requires_login(response: Any, body_text: str = "") -> bool:
-    location = _clean_text(getattr(response, "headers", {}).get("Location") if getattr(response, "headers", None) else "")
-    if "login" in location.lower():
-        return True
-    lowered = body_text.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "auth_required",
-            "session error",
-            '"code":1001',
-            "system/login",
-            "/login",
-            "validatecode",
-            "<title>登录",
-            "用户登录",
-        )
-    )
 
 
 def _collect_yunda_snapshot(*, force: bool, updated_at: str) -> dict[str, Any]:
-    try:
-        # The user-info/message calls below are the real target checks. Do not
-        # precede them with a generic Session validation request.
-        session = get_session_broker("yunda").build_requests_session(validate=False)
-        user_response = session.get(
-            YUNDA_USER_INFO_URL,
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Referer": YUNDA_CLIENT_HOME_URL,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            allow_redirects=False,
-            timeout=15,
-        )
-        user_body = getattr(user_response, "text", "") or ""
-        if getattr(user_response, "status_code", 0) in {301, 302, 303, 307, 308} or _response_requires_login(user_response, user_body):
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达登录态已失效，请重新登录。")
-        user_payload = user_response.json()
-        user_id = _extract_yunda_user_id(user_payload)
-        if not user_id:
-            raise RuntimeError("韵达用户信息中未找到消息用户标识。")
-
-        message_response = session.post(
-            YUNDA_MESSAGE_TYPES_URL,
-            data={"userId": user_id, "sourceFlag": "up"},
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Origin": YUNDA_MESSAGE_ORIGIN,
-                "Referer": YUNDA_HEAD_MESSAGE_REFERER,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            allow_redirects=False,
-            timeout=15,
-        )
-        message_body = getattr(message_response, "text", "") or ""
-        if getattr(message_response, "status_code", 0) in {301, 302, 303, 307, 308} or _response_requires_login(message_response, message_body):
-            raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息接口登录态已失效，请重新登录。")
-        if getattr(message_response, "status_code", 0) != 200:
-            raise RuntimeError(f"韵达消息接口返回 HTTP {getattr(message_response, 'status_code', '')}")
-        payload = message_response.json()
-        return parse_yunda_types_payload(payload, updated_at=updated_at)
-    except TMSAuthStateError as exc:
-        return _system_payload(
-            system="yunda",
-            label="韵达",
-            status="auth_required",
-            status_label="登录失效",
-            updated_at=updated_at,
-            message=str(exc),
-        )
-    except Exception as exc:
-        return _system_payload(
-            system="yunda",
-            label="韵达",
-            status="error",
-            status_label="接口异常",
-            updated_at=updated_at,
-            message=str(exc),
-        )
+    return _source_snapshot("yunda", updated_at=updated_at)
 
 
 def _collect_ronghui_snapshot(*, force: bool, updated_at: str) -> dict[str, Any]:
-    try:
-        status = get_session_broker("default").describe_status(validate=True, force=force)
-        if not status.get("authenticated"):
-            return _system_payload(
-                system="ronghui",
-                label="融辉 TMS",
-                status="auth_required",
-                status_label="登录失效",
-                updated_at=updated_at,
-                message=_clean_text(status.get("last_error_summary")) or "融辉 TMS 当前未登录或登录态已过期。",
-            )
-        return _system_payload(
-            system="ronghui",
-            label="融辉 TMS",
-            status="no_source",
-            status_label="待配置",
-            updated_at=updated_at,
-            categories=[
-                {
-                    "system": "ronghui",
-                    "category_id": "ronghui:home",
-                    "title": "融辉消息中心",
-                    "count": 0,
-                    "status": "empty",
-                    "status_label": "未发现消息源",
-                    "tone": "muted",
-                    "is_exception": False,
-                    "type_code": "",
-                    "resource_id": "",
-                    "target_title": "融辉 TMS",
-                    "detail_supported": True,
-                }
-            ],
-            message="未定位到融辉 TMS 的消息分类接口，先保留原系统入口。",
-        )
-    except TMSAuthStateError as exc:
-        return _system_payload(
-            system="ronghui",
-            label="融辉 TMS",
-            status="auth_required",
-            status_label="登录失效",
-            updated_at=updated_at,
-            message=str(exc),
-        )
-    except Exception as exc:
-        return _system_payload(
-            system="ronghui",
-            label="融辉 TMS",
-            status="error",
-            status_label="接口异常",
-            updated_at=updated_at,
-            message=str(exc),
-        )
+    return _source_snapshot("ronghui", updated_at=updated_at)
 
 
 def _normalize_systems(systems: list[str] | tuple[str, ...] | str | None) -> list[str]:
@@ -702,16 +444,15 @@ def _normalize_systems(systems: list[str] | tuple[str, ...] | str | None) -> lis
     return normalized or ["yunda", "ronghui"]
 
 
-def _build_totals(systems: list[dict[str, Any]]) -> dict[str, int]:
+def _build_totals(systems: list[dict[str, Any]]) -> dict[str, Any]:
     by_system = {item.get("system"): item for item in systems}
-    yunda_pending = _to_int(by_system.get("yunda", {}).get("total_count"))
-    ronghui_pending = _to_int(by_system.get("ronghui", {}).get("total_count"))
-    exception_pending = sum(_to_int(item.get("exception_count")) for item in systems)
+    counts = [item.get("total_count") for item in systems]
+    exceptions = [item.get("exception_count") for item in systems]
     return {
-        "total_pending": yunda_pending + ronghui_pending,
-        "yunda_pending": yunda_pending,
-        "ronghui_pending": ronghui_pending,
-        "exception_pending": exception_pending,
+        "total_pending": sum(counts) if counts and all(isinstance(value, int) for value in counts) else None,
+        "yunda_pending": by_system.get("yunda", {}).get("total_count"),
+        "ronghui_pending": by_system.get("ronghui", {}).get("total_count"),
+        "exception_pending": sum(exceptions) if exceptions and all(isinstance(value, int) for value in exceptions) else None,
     }
 
 
@@ -729,20 +470,7 @@ def _collect_system_snapshot(system: str, *, force: bool, updated_at: str) -> di
             updated_at=updated_at,
             message="不支持的监控系统。",
         )
-    if not force or system not in {"yunda", "ronghui"}:
-        return payload
-    try:
-        matrix = get_session_broker("yunda" if system == "yunda" else "default").validate_health_matrix()
-    except Exception as exc:
-        matrix = {
-            "profile": system,
-            "status": "unavailable",
-            "capabilities": {},
-            "error": str(exc),
-        }
-    # Health diagnostics are informational. They must never replace the
-    # target snapshot status or become a business execution gate.
-    return {**payload, "capability_health": matrix}
+    return payload
 
 
 def _collect_systems_parallel(normalized: list[str], *, force: bool, updated_at: str) -> list[dict[str, Any]]:
@@ -759,14 +487,14 @@ def _collect_systems_parallel(normalized: list[str], *, force: bool, updated_at:
             system = futures[future]
             try:
                 rows_by_system[system] = future.result()
-            except Exception as exc:
+            except Exception:
                 rows_by_system[system] = _system_payload(
                     system=system,
                     label={"yunda": "韵达", "ronghui": "融辉 TMS"}.get(system, system),
                     status="error",
                     status_label="接口异常",
                     updated_at=updated_at,
-                    message=str(exc),
+                    message="消息来源读取失败，请稍后刷新。",
                 )
     return [rows_by_system[system] for system in normalized]
 
@@ -923,44 +651,89 @@ def build_daily_sign_monitoring_snapshot(
             lock.release()
 
 
+_ITEM_CACHE: dict[tuple[str, str, str, int], tuple[float, dict[str, Any]]] = {}
+_ITEM_LOCKS: dict[tuple[str, str, str, int], tuple[threading.Lock, int]] = {}
+
+
+def build_monitoring_items(*, system: str, category_id: str, page: int = 1, force: bool = False) -> dict[str, Any]:
+    """Read a fixed account's bounded page; never execute original-page actions."""
+    from agent.tms_runtime import monitoring_ronghui, monitoring_yunda
+
+    if system not in {"ronghui", "yunda"} or not category_id.startswith(system + ":") or not 1 <= page <= 10000:
+        return {"ok": False, "error_code": "INVALID_MONITORING_QUERY", "message": "消息来源或页码无效。", "items": [], "total": None}
+    profile = "yunda" if system == "yunda" else "default"
+    adapter = monitoring_yunda if system == "yunda" else monitoring_ronghui
+    allowed = monitoring_yunda.ITEM_CATEGORY_IDS if system == "yunda" else monitoring_ronghui.SOURCES
+    if category_id not in allowed:
+        return {"ok": False, "error_code": "INVALID_MONITORING_CATEGORY", "message": "该分类仅支持打开原系统。", "items": [], "total": None}
+    key = (system, profile, category_id, page)
+    with _CACHE_LOCK:
+        now = time.time()
+        expired = [item_key for item_key, (saved, _) in _ITEM_CACHE.items() if now - saved > CACHE_TTL_SEC]
+        for item_key in expired:
+            _ITEM_CACHE.pop(item_key, None)
+        cached = _ITEM_CACHE.get(key)
+        if not force and cached:
+            return _with_cache_meta(cached[1], cached=True, stale=False, refreshing=False, cache_age_sec=now-cached[0])
+        lock, users = _ITEM_LOCKS.get(key, (threading.Lock(), 0))
+        _ITEM_LOCKS[key] = (lock, users + 1)
+    try:
+        with lock:
+            # Waiters share the just-completed read, including forced refreshes.
+            with _CACHE_LOCK:
+                cached = _ITEM_CACHE.get(key)
+                if cached and cached[0] >= now:
+                    return _with_cache_meta(cached[1], cached=True, stale=False, refreshing=False)
+            try:
+                session = get_session_broker(profile).build_requests_session(validate=False)
+                try:
+                    result = adapter.collect_items(session, category_id, page, 20)
+                finally:
+                    session.close()
+                if result.get("status") not in {"ok", "partial"}:
+                    with _CACHE_LOCK:
+                        _ITEM_CACHE.pop(key, None)
+                    return {**result, "ok": False, "system": system, "category_id": category_id,
+                            "error_code": "AUTH_REQUIRED" if result.get("status") == "auth_required" else "MONITORING_SOURCE_FAILED"}
+                payload = {**result, "ok": True, "system": system, "category_id": category_id, "updated_at": _now_label()}
+            except Exception as exc:
+                with _CACHE_LOCK:
+                    _ITEM_CACHE.pop(key, None)
+                known = isinstance(exc, (monitoring_yunda.SourceError, monitoring_ronghui.RonghuiMonitoringError, TMSAuthStateError))
+                auth = isinstance(exc, TMSAuthStateError)
+                return {
+                    "ok": False, "system": system, "category_id": category_id,
+                    "status": "auth_required" if auth else "error", "status_label": "登录失效" if auth else "读取失败",
+                    "error_code": "AUTH_REQUIRED" if auth else "MONITORING_SOURCE_FAILED",
+                    "message": str(exc) if known else "消息来源读取失败，请稍后刷新或打开原系统核对。",
+                    "items": [], "total": None, "page": page, "page_size": 20, "has_more": False,
+                }
+            with _CACHE_LOCK:
+                # Bound retained pages without persisting business message bodies.
+                if len(_ITEM_CACHE) >= 64:
+                    _ITEM_CACHE.pop(next(iter(_ITEM_CACHE)))
+                _ITEM_CACHE[key] = (time.time(), payload)
+            return _with_cache_meta(payload, cached=False, stale=False, refreshing=False)
+    finally:
+        with _CACHE_LOCK:
+            _, users = _ITEM_LOCKS[key]
+            if users == 1:
+                _ITEM_LOCKS.pop(key)
+            else:
+                _ITEM_LOCKS[key] = (lock, users - 1)
+
+
 def build_monitoring_detail_link(payload: dict[str, Any] | None) -> dict[str, Any]:
     payload = payload or {}
     system = _clean_text(payload.get("system")).lower()
     category_id = _clean_text(payload.get("category_id"))
-    title = _clean_text(payload.get("title")) or "消息详情"
-    if system == "yunda":
-        resource_id = _clean_text(payload.get("resource_id"))
-        type_code = _clean_text(payload.get("type_code"))
-        target_title = _clean_text(payload.get("target_title")) or title
-        if resource_id:
-            suffix = "?q=1" if type_code in {"001", "222"} or "问题件" in title else ""
-            encoded_title = quote(target_title, safe="")
-            url = f"{YUNDA_CLIENT_ORIGIN}/#/ifarme/ifarme/{quote(resource_id, safe='')}/{encoded_title}{suffix}"
-        else:
-            url = f"{YUNDA_CLIENT_ORIGIN}/#/systemlink/systemhome"
-        return {
-            "ok": True,
-            "system": "yunda",
-            "category_id": category_id,
-            "title": title,
-            "mode": "iframe",
-            "embed_url": url,
-            "open_url": url,
-            "frame_allowed": "unknown",
-        }
-    if system == "ronghui":
-        return {
-            "ok": True,
-            "system": "ronghui",
-            "category_id": category_id or "ronghui:home",
-            "title": title or "融辉 TMS",
-            "mode": "iframe",
-            "embed_url": RONGHUI_HOME_URL,
-            "open_url": RONGHUI_HOME_URL,
-            "frame_allowed": "unknown",
-        }
-    return {
-        "ok": False,
-        "error_code": "INVALID_MONITORING_SYSTEM",
-        "message": "不支持的监控系统。",
-    }
+    if system not in {"ronghui", "yunda"} or not category_id.startswith(system + ":"):
+        return {"ok": False, "error_code": "INVALID_MONITORING_SYSTEM", "message": "不支持的监控分类。"}
+    snapshot = build_monitoring_snapshot(systems=[system])
+    matches = [category for source in snapshot.get("systems", []) for category in source.get("categories", [])
+               if category.get("category_id") == category_id]
+    if len(matches) != 1 or not matches[0].get("open_url"):
+        return {"ok": False, "error_code": "MONITORING_CATEGORY_UNAVAILABLE", "message": "该消息分类暂不可用，请刷新后重试。"}
+    category = matches[0]
+    return {"ok": True, "system": system, "category_id": category_id, "title": category["title"],
+            "mode": "external", "open_url": category["open_url"], "embed_url": "", "frame_allowed": False}

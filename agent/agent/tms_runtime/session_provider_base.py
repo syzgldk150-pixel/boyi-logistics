@@ -539,20 +539,26 @@ class ProviderSessionAdapterBase:
         """Prime exact client SSO entries and report each subsystem separately.
 
         This does not validate or admit a business query. Accounts without a
-        report/problem entitlement keep their established INMS session; those
+        query entitlement keep their established INMS session; those
         subsystems remain explicitly unavailable and their actual reads fail.
         """
         initialized: dict[str, Any] = {}
+        # Optional initialization must not extend the 120-second staged login.
+        # Four independent ten-second budgets are below the former two 25s waits.
+        deadline = time.monotonic() + 40
         for capability, route, frame_selector, ready_selector in (
             ("yunda_report", YUNDA_REPORT_CLIENT_URL, YUNDA_REPORT_IFRAME_SELECTOR, "#exampleTable"),
             ("yunda_problem", YUNDA_PROBLEM_CLIENT_QUERY_URL, YUNDA_PROBLEM_IFRAME_SELECTOR, "#send_search_btn1"),
+            ("yunda_message", YUNDA_MESSAGE_CLIENT_URL, YUNDA_MESSAGE_IFRAME_SELECTOR, "input#notice_readStatus"),
         ):
             try:
-                page.goto(route, wait_until="domcontentloaded", timeout=15_000)
+                capability_deadline = min(deadline, time.monotonic() + 10)
+                page.goto(route, wait_until="domcontentloaded",
+                          timeout=self._yunda_initialization_timeout(capability_deadline))
                 if self._is_yunda_sms_page(page) or self._is_yunda_login_page(page):
                     raise TMSAuthStateError("AUTH_REQUIRED", "韵达查询子系统尚未完成登录。")
                 page.frame_locator(frame_selector).locator(ready_selector).wait_for(
-                    state="attached", timeout=10_000)
+                    state="attached", timeout=self._yunda_initialization_timeout(capability_deadline))
             except TMSAuthStateError:
                 initialized[capability] = {"status": "unavailable", "code": "AUTH_REQUIRED"}
                 logger.warning("yunda_query_session_initialization capability=%s status=unavailable code=AUTH_REQUIRED", capability)
@@ -561,7 +567,53 @@ class ProviderSessionAdapterBase:
                 logger.warning("yunda_query_session_initialization capability=%s status=unavailable", capability)
             else:
                 initialized[capability] = {"status": "initialized", "code": ""}
+        try:
+            self._initialize_yunda_work_order_session_in_browser_locked(
+                page, deadline=min(deadline, time.monotonic() + 10))
+        except TMSAuthStateError:
+            initialized["yunda_work_order"] = {"status": "unavailable", "code": "AUTH_REQUIRED"}
+            logger.warning("yunda_query_session_initialization capability=yunda_work_order status=unavailable code=AUTH_REQUIRED")
+        except Exception:
+            initialized["yunda_work_order"] = {"status": "unavailable", "code": "QUERY_PAGE_NOT_READY"}
+            logger.warning("yunda_query_session_initialization capability=yunda_work_order status=unavailable")
+        else:
+            initialized["yunda_work_order"] = {"status": "initialized", "code": ""}
         return initialized
+
+    @staticmethod
+    def _yunda_initialization_timeout(deadline: float) -> int:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            raise TimeoutError("韵达查询子系统初始化已超时。")
+        return remaining_ms
+
+    def _initialize_yunda_work_order_session_in_browser_locked(self, page: Any, *, deadline: float) -> None:
+        """Enter CSSP through the real client app and verify its own identity."""
+        self._yunda_initialization_timeout(deadline)
+        client_page = page.context.new_page()
+        work_order_page = None
+        try:
+            client_page.goto(YUNDA_CLIENT_SYSTEM_HOME_URL, wait_until="domcontentloaded",
+                             timeout=self._yunda_initialization_timeout(deadline))
+            if self._is_yunda_sms_page(client_page) or self._is_yunda_login_page(client_page):
+                raise TMSAuthStateError("AUTH_REQUIRED", "韵达工单子系统尚未完成登录。")
+            with client_page.expect_popup(timeout=self._yunda_initialization_timeout(deadline)) as popup:
+                client_page.get_by_text("快运工单系统", exact=True).click(
+                    timeout=self._yunda_initialization_timeout(deadline))
+            work_order_page = popup.value
+            work_order_page.locator("#app").wait_for(
+                state="attached", timeout=self._yunda_initialization_timeout(deadline))
+            response = work_order_page.request.get(
+                YUNDA_CSSP_USER_URL, timeout=self._yunda_initialization_timeout(deadline))
+            payload = response.json() if response.status == 200 else None
+            user = payload.get("User") if isinstance(payload, dict) else None
+            if not (isinstance(payload, dict) and payload.get("code") == 0
+                    and isinstance(user, dict) and str(user.get("userId") or "").strip()):
+                raise TMSAuthStateError("AUTH_REQUIRED", "韵达工单子系统未返回已登录身份。")
+        finally:
+            if work_order_page is not None:
+                work_order_page.close()
+            client_page.close()
 
     def _prepare_yunda_login_page(self, page: Any, config: LoginConfig) -> None:
         page.goto(config.login_url, wait_until="domcontentloaded", timeout=60_000)

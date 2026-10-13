@@ -169,8 +169,8 @@ class MonitoringConsoleTests(unittest.TestCase):
                 "ok": True,
                 "system": "yunda",
                 "category_id": "yunda:001",
-                "mode": "iframe",
-                "embed_url": "https://ky-client.yunda56.com/#/ifarme/ifarme/4768/%E9%97%AE%E9%A2%98%E4%BB%B6",
+                "mode": "external",
+                "embed_url": "",
                 "open_url": "https://ky-client.yunda56.com/#/ifarme/ifarme/4768/%E9%97%AE%E9%A2%98%E4%BB%B6",
             }
         )
@@ -181,7 +181,8 @@ class MonitoringConsoleTests(unittest.TestCase):
         )
 
         self.assertEqual(HTTPStatus.OK, app.sent_status)
-        self.assertEqual("iframe", app.sent_payload["mode"])
+        self.assertEqual("external", app.sent_payload["mode"])
+        self.assertEqual("", app.sent_payload["embed_url"])
         self.assertEqual("POST", app._agent_calls[0]["method"])
         self.assertEqual("/internal/v1/admin/monitoring/detail-link", app._agent_calls[0]["endpoint"])
         self.assertEqual("yunda:001", app._agent_calls[0]["payload"]["category_id"])
@@ -236,32 +237,73 @@ class MonitoringConsoleTests(unittest.TestCase):
 
     def test_portal_template_has_monitoring_realtime_hooks(self):
         template = (CONSOLE_DIR / "templates" / "portal.html").read_text(encoding="utf-8")
+        script = (CONSOLE_DIR / "static" / "monitoring.js").read_text(encoding="utf-8")
 
         self.assertIn("data-monitoring-dashboard", template)
-        self.assertIn("new EventSource('/monitoring/stream')", template)
-        self.assertIn("/monitoring/detail-link", template)
+        self.assertIn('/static/monitoring.js?v=', template)
+        self.assertIn("new EventSource('/monitoring/stream')", script)
+        self.assertIn("/monitoring/items?", script)
         self.assertIn("data-monitoring-daily-sign", template)
-        self.assertIn("/monitoring/daily-sign", template)
+        self.assertIn("/monitoring/daily-sign", script)
         self.assertIn("今日应签未签", template)
         self.assertIn("飞书应签明细", template)
-        self.assertIn("scheduleDailySignRefresh", template)
-        self.assertIn("payload?.poll_interval_sec", template)
+        self.assertIn("scheduleDailySignRefresh", script)
+        self.assertIn("payload?.poll_interval_sec", script)
         self.assertNotIn("R13 实时未签明细", template)
-        self.assertIn("AbortController", template)
-        self.assertIn("detailLinkCache", template)
-        self.assertIn("data-monitoring-current-src", template)
-        self.assertIn("addEventListener('click', (event)", template)
-        self.assertIn("prefer_cached=1", template)
+        self.assertIn("AbortController", script)
+        self.assertIn("addEventListener('click', (event)", script)
+        self.assertIn("prefer_cached=1", script)
         self.assertIn("data-monitoring-agent-status", template)
-        self.assertIn("renderSummaryUnavailable", template)
+        self.assertIn("renderSummaryUnavailable", script)
         self.assertIn("智能服务不可用", template)
         stylesheet = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
         self.assertIn(".notice[hidden] { display: none !important; }", stylesheet)
-        self.assertIn("monitoringRequestTimeoutMs = 8000", template)
-        self.assertIn("fetchMonitoringJson", template)
-        self.assertIn("signal: controller.signal", template)
+        self.assertIn("monitoringRequestTimeoutMs = 8000", script)
+        self.assertIn("monitoringItemsTimeoutMs = 75000", script)
+        self.assertIn("controller, true, monitoringItemsTimeoutMs", script)
+        self.assertIn("fetchMonitoringJson", script)
+        self.assertIn("signal: controller.signal", script)
         self.assertNotIn(">--<", template)
-        self.assertNotIn("catch(() => undefined)", template)
+        self.assertNotIn("catch(() => undefined)", script)
+
+    def test_portal_shows_safe_message_text_and_explicit_source_state(self):
+        template = (CONSOLE_DIR / "templates" / "portal.html").read_text(encoding="utf-8")
+        script = (CONSOLE_DIR / "static" / "monitoring.js").read_text(encoding="utf-8")
+
+        self.assertIn("data-monitoring-items-status", template)
+        self.assertIn("data-monitoring-pagination", template)
+        self.assertIn("monitor-item-content", template)
+        self.assertIn("展开查看完整正文", script)
+        self.assertIn("item.content", script)
+        self.assertIn("item.source_label", script)
+        self.assertIn("item.status_label", script)
+        self.assertIn("item.occurred_at", script)
+        self.assertIn("el.textContent = String(text)", script)
+        self.assertNotIn("innerHTML", script)
+        self.assertNotIn("<iframe", template)
+        self.assertNotIn("/monitoring/detail-link", script)
+        self.assertIn("url.protocol === 'https:'", script)
+        self.assertIn("noopener noreferrer", script)
+        self.assertIn("typeof value === 'number'", script)
+        self.assertIn(" : '—'", script)
+        self.assertIn("缓存已过期", script)
+        self.assertIn("以下为上次取得的内容，尚未更新", script)
+
+    def test_portal_pauses_background_refresh_and_preserves_selected_category(self):
+        script = (CONSOLE_DIR / "static" / "monitoring.js").read_text(encoding="utf-8")
+
+        self.assertIn("visibilitychange", script)
+        self.assertIn("Boolean(pageRoot?.hidden)", script)
+        self.assertIn("onPageCleanup", script)
+        self.assertIn("source?.close()", script)
+        self.assertIn("window.clearTimeout(dailySignTimer)", script)
+        self.assertIn("window.clearInterval(summaryTimer)", script)
+        self.assertIn("item.items_supported && item.count > 0", script)
+        self.assertIn("itemsRequest?.key === key && !force", script)
+        self.assertIn("seq !== itemsRequestSeq", script)
+        self.assertIn("params.set('force', '1')", script)
+        self.assertNotIn("resource_id:", script)
+        self.assertNotIn("target_title:", script)
 
     def test_portal_template_does_not_render_live_status_pill(self):
         template = (CONSOLE_DIR / "templates" / "portal.html").read_text(encoding="utf-8")

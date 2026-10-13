@@ -15,6 +15,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/monitoring/daily-sign":
         app._handle_monitoring_daily_sign(handler, query)
         return True
+    if path == "/monitoring/items":
+        app._handle_monitoring_items(handler, query)
+        return True
     if path == "/monitoring/stream":
         app._handle_monitoring_stream(handler, query)
         return True

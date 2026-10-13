@@ -30,16 +30,48 @@ class MonitoringFinanceServiceMixin:
             "poll_interval_sec": 60,
             "message": error if isinstance(error, str) else json.dumps(error, ensure_ascii=False),
             "totals": {
-                "total_pending": 0,
-                "yunda_pending": 0,
-                "ronghui_pending": 0,
-                "exception_pending": 0,
+                "total_pending": None,
+                "yunda_pending": None,
+                "ronghui_pending": None,
+                "exception_pending": None,
             },
             "systems": [],
         }
 
     def _handle_monitoring_summary(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
         self._send_json(handler, HTTPStatus.OK, self._monitoring_snapshot_from_agent(query))
+
+    def _handle_monitoring_items(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
+        system = str(query.get("system", [""])[0] or "").strip()
+        category_id = str(query.get("category_id", [""])[0] or "").strip()
+        try:
+            page = int(query.get("page", ["1"])[0])
+        except (TypeError, ValueError):
+            page = 0
+        if system not in {"ronghui", "yunda"} or not 1 <= page <= 10_000:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {
+                "ok": False, "error_code": "INVALID_MONITORING_QUERY",
+                "message": "消息来源或页码无效。", "total": None, "items": [],
+            })
+            return
+        force_value = str(query.get("force", ["0"])[0] or "0").strip().lower()
+        params = {
+            "system": system, "category_id": category_id, "page": str(page),
+            "force": "1" if force_value in {"1", "true", "yes", "on"} else "0",
+        }
+        result = self._agent_request(
+            "GET", "/internal/v1/admin/monitoring/items?" + urlencode(params), timeout=75,
+        )
+        if result.get("ok") and isinstance(result.get("data"), dict):
+            self._send_json(handler, HTTPStatus.OK, result["data"])
+            return
+        error = result.get("error")
+        status = result.get("status")
+        self._send_json(handler, status if status in {400, 401, 403, 422} else HTTPStatus.BAD_GATEWAY, {
+            "ok": False, "error_code": result.get("error_code") or "AGENT_UNAVAILABLE",
+            "message": error if isinstance(error, str) else json.dumps(error, ensure_ascii=False),
+            "total": None, "items": [], "page": page, "page_size": 20,
+        })
 
     def _monitoring_daily_sign_from_agent(self, query: dict[str, list[str]] | None = None) -> dict[str, Any]:
         query = query or {}
@@ -104,10 +136,6 @@ class MonitoringFinanceServiceMixin:
         payload = {
             "system": first("system"),
             "category_id": first("category_id"),
-            "title": first("title"),
-            "resource_id": first("resource_id"),
-            "type_code": first("type_code"),
-            "target_title": first("target_title"),
         }
         result = self._agent_request("POST", "/internal/v1/admin/monitoring/detail-link", payload=payload, timeout=20)
         if result.get("ok") and isinstance(result.get("data"), dict):

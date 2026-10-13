@@ -1300,26 +1300,31 @@ class SessionBrokerTests(unittest.TestCase):
         broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
         page = Mock()
         with (patch.object(broker, "_is_yunda_sms_page", return_value=False),
-              patch.object(broker, "_is_yunda_login_page", return_value=False)):
+              patch.object(broker, "_is_yunda_login_page", return_value=False),
+              patch.object(broker, "_initialize_yunda_work_order_session_in_browser_locked")):
             result = broker._initialize_yunda_query_sessions_in_browser_locked(page)
         self.assertEqual([call.args[0] for call in page.goto.call_args_list],
-            [session_broker_module.YUNDA_REPORT_CLIENT_URL, session_broker_module.YUNDA_PROBLEM_CLIENT_QUERY_URL])
+            [session_broker_module.YUNDA_REPORT_CLIENT_URL, session_broker_module.YUNDA_PROBLEM_CLIENT_QUERY_URL,
+             session_broker_module.YUNDA_MESSAGE_CLIENT_URL])
         self.assertEqual([call.args[0] for call in page.frame_locator.call_args_list],
-            [session_broker_module.YUNDA_REPORT_IFRAME_SELECTOR, session_broker_module.YUNDA_PROBLEM_IFRAME_SELECTOR])
+            [session_broker_module.YUNDA_REPORT_IFRAME_SELECTOR, session_broker_module.YUNDA_PROBLEM_IFRAME_SELECTOR,
+             session_broker_module.YUNDA_MESSAGE_IFRAME_SELECTOR])
         self.assertEqual([call.args[0] for call in page.frame_locator.return_value.locator.call_args_list],
-            ["#exampleTable", "#send_search_btn1"])
+            ["#exampleTable", "#send_search_btn1", "input#notice_readStatus"])
         self.assertTrue(all(item["status"] == "initialized" for item in result.values()))
         page.evaluate.assert_not_called()
 
     def test_yunda_missing_report_grid_stays_unavailable_without_blocking_problem_session(self):
         broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)
         page = Mock()
-        page.frame_locator.return_value.locator.return_value.wait_for.side_effect = [TimeoutError(), None]
+        page.frame_locator.return_value.locator.return_value.wait_for.side_effect = [TimeoutError(), None, None]
         with (patch.object(broker, "_is_yunda_sms_page", return_value=False),
-              patch.object(broker, "_is_yunda_login_page", return_value=False)):
+              patch.object(broker, "_is_yunda_login_page", return_value=False),
+              patch.object(broker, "_initialize_yunda_work_order_session_in_browser_locked")):
             result = broker._initialize_yunda_query_sessions_in_browser_locked(page)
         self.assertEqual(result["yunda_report"], {"status":"unavailable", "code":"QUERY_PAGE_NOT_READY"})
         self.assertEqual(result["yunda_problem"]["status"], "initialized")
+        self.assertEqual(result["yunda_message"]["status"], "initialized")
 
     def test_yunda_query_subsystem_login_page_is_never_marked_initialized(self):
         broker = SessionBroker(profile_name="yunda", login_mode="yunda_password", require_phone=False)

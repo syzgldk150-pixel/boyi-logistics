@@ -6,9 +6,9 @@ import copy
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
@@ -22,6 +22,7 @@ from agent.tms_runtime.account_manager import get_account_manager
 from agent.tms_runtime.monitoring import (
     build_daily_sign_monitoring_snapshot,
     build_monitoring_detail_link,
+    build_monitoring_items,
     build_monitoring_snapshot,
 )
 from shared.manual_entry_contracts import (
@@ -175,10 +176,6 @@ class AccountAutoLoginRequest(BaseModel):
 class MonitoringDetailLinkRequest(BaseModel):
     system: str = ""
     category_id: str = ""
-    title: str = ""
-    resource_id: str = ""
-    type_code: str = ""
-    target_title: str = ""
 
 
 def _success_response(payload: dict[str, Any]) -> dict[str, Any]:
@@ -638,6 +635,16 @@ def monitoring_snapshot(systems: str = "yunda,ronghui", force: bool = False, pre
 @router.get("/admin/monitoring/daily-sign")
 def monitoring_daily_sign(force: bool = False, target_date: str = "", prefer_cached: bool = False):
     return build_daily_sign_monitoring_snapshot(force=force, target_date=target_date, prefer_cached=prefer_cached)
+
+
+@router.get("/admin/monitoring/items")
+def monitoring_items(
+    system: Literal["ronghui", "yunda"],
+    category_id: str = "",
+    page: int = Query(default=1, ge=1, le=10_000),
+    force: bool = False,
+):
+    return build_monitoring_items(system=system, category_id=category_id, page=page, force=force)
 
 
 @router.post("/admin/monitoring/detail-link")

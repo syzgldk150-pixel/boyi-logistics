@@ -14,7 +14,7 @@
 <style>
   .monitor-shell {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(420px, 38%);
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
     gap: 20px;
     align-items: start;
   }
@@ -30,7 +30,6 @@
     background: #fff;
     border: 1px solid var(--line);
     border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(15, 23, 42, .04);
   }
   .monitor-metric {
     padding: 18px;
@@ -55,12 +54,11 @@
   }
   .monitor-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
   .monitor-panel {
     padding: 18px;
-    min-height: 280px;
   }
   .monitor-panel-header {
     display: flex;
@@ -122,13 +120,12 @@
     padding: 12px;
     cursor: pointer;
     text-align: left;
-    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+    transition: border-color .15s ease, background .15s ease;
   }
   .monitor-category:hover,
   .monitor-category.is-active {
-    border-color: #2563eb;
-    box-shadow: 0 8px 20px rgba(37, 99, 235, .12);
-    transform: translateY(-1px);
+    border-color: var(--text-strong);
+    background: var(--surface);
   }
   .monitor-category-icon {
     width: 34px;
@@ -152,6 +149,7 @@
     color: #64748b;
   }
   .monitor-category-title {
+    display: block;
     color: var(--text-strong);
     font-weight: 900;
     overflow: hidden;
@@ -159,6 +157,7 @@
     white-space: nowrap;
   }
   .monitor-category-meta {
+    display: block;
     color: var(--muted);
     font-size: .78rem;
     font-weight: 700;
@@ -177,7 +176,8 @@
     place-items: center;
     font-weight: 900;
   }
-  .monitor-category[data-count="0"] .monitor-category-count {
+  .monitor-category[data-count="0"] .monitor-category-count,
+  .monitor-category[data-count="unknown"] .monitor-category-count {
     background: #e5e7eb;
     color: #64748b;
   }
@@ -189,9 +189,7 @@
     font-weight: 700;
   }
   .monitor-detail {
-    position: sticky;
-    top: 16px;
-    min-height: 640px;
+    min-height: 360px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -235,40 +233,38 @@
     border-color: #2563eb;
     color: #2563eb;
   }
-  .monitor-frame-wrap {
-    flex: 1;
-    min-height: 520px;
-    background: #f8fafc;
-    position: relative;
-  }
-  .monitor-frame {
-    width: 100%;
-    height: 100%;
-    min-height: 560px;
-    border: 0;
-    background: #fff;
-  }
-  .monitor-placeholder {
-    height: 100%;
-    min-height: 560px;
-    display: grid;
-    place-items: center;
-    text-align: center;
-    padding: 24px;
-    color: var(--muted);
-    font-weight: 700;
-  }
-  .monitor-placeholder i {
-    width: 42px;
-    height: 42px;
-    color: #94a3b8;
-    margin-bottom: 12px;
-  }
+  .monitor-source-note { margin: 0 0 12px; font-size: .8125rem; line-height: 1.5; color: #475569; overflow-wrap: anywhere; }
+  .monitor-other-categories { margin-top: 4px; border-top: 1px solid var(--line); }
+  .monitor-other-categories > summary { min-height: 44px; padding: 12px 0; color: var(--text-strong); font-size: .8125rem; line-height: 20px; cursor: pointer; }
+  .monitor-other-categories > summary:focus-visible { outline: 2px solid var(--focus, #3b82f6); outline-offset: 3px; }
+  .monitor-source-note[data-status="error"],
+  .monitor-source-note[data-status="auth_required"] { color: #991b1b; }
+  .monitor-items-status { margin: 0; padding: 12px 16px; color: #475569; font-size: .8125rem; line-height: 1.5; overflow-wrap: anywhere; }
+  .monitor-items-status[data-status="error"] { color: #991b1b; background: #fef2f2; }
+  .monitor-items-status[data-stale="true"] { color: #92400e; background: #fffbeb; }
+  .monitor-items { margin: 0; padding: 0; list-style: none; }
+  .monitor-item { padding: 16px; border-top: 1px solid var(--line); }
+  .monitor-item-summary { cursor: pointer; min-height: 44px; }
+  .monitor-item-title { color: var(--text-strong); font-size: .9375rem; font-weight: 600; overflow-wrap: anywhere; }
+  .monitor-item-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: #475569; font-size: .8125rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .monitor-item-preview, .monitor-item-content { margin: 10px 0 0; max-width: 75ch; font-size: .875rem; line-height: 1.65; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .monitor-item-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .monitor-item details[open] .monitor-item-preview { display: none; }
+  .monitor-item-hint { display: block; margin-top: 8px; font-size: .75rem; color: #475569; }
+  .monitor-item details[open] .monitor-item-hint { display: none; }
+  .monitor-item-link { display: inline-flex; align-items: center; min-height: 44px; margin-top: 4px; font-size: .8125rem; color: var(--text-strong); text-decoration: underline; text-underline-offset: 3px; }
+  .monitor-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .monitor-pagination span { margin-right: auto; color: #475569; font-size: .8125rem; }
+  .monitor-action-btn { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; color: var(--text-strong); font: inherit; font-size: .8125rem; white-space: nowrap; cursor: pointer; }
+  .monitor-action-btn:hover:enabled { background: var(--surface); border-color: #94a3b8; }
+  .monitor-action-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .monitor-category:focus-visible, .monitor-action-btn:focus-visible, .monitor-item-summary:focus-visible, .monitor-item-link:focus-visible { outline: 2px solid var(--focus, #3b82f6); outline-offset: 3px; }
+  .monitor-dashboard [hidden] { display: none !important; }
   .monitor-refresh {
     border-radius: 999px;
     gap: 8px;
   }
-  @media (max-width: 1280px) {
+  @media (max-width: 1024px) {
     .monitor-shell {
       grid-template-columns: 1fr;
     }
@@ -316,22 +312,11 @@
       white-space: nowrap;
       border: 0;
     }
-    .monitor-dashboard.is-mobile-detail {
-      position: fixed;
-      z-index: 140;
-      inset: 0;
-      display: block;
-      padding: max(8px, env(safe-area-inset-top)) 0 env(safe-area-inset-bottom);
-      background: #fff;
-    }
-    .monitor-dashboard.is-mobile-detail .monitor-metrics,
-    .monitor-dashboard.is-mobile-detail .monitor-grid { display: none; }
-    .monitor-dashboard.is-mobile-detail .monitor-shell { display: block; }
-    .monitor-dashboard.is-mobile-detail .monitor-detail { position: static; min-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border: 0; border-radius: 0; }
-    .monitor-dashboard.is-mobile-detail .monitor-frame-wrap,
-    .monitor-dashboard.is-mobile-detail .monitor-frame,
-    .monitor-dashboard.is-mobile-detail .monitor-placeholder { min-height: 0; height: 100%; }
+    .monitor-detail-header { align-items: flex-start; flex-direction: column; }
+    .monitor-detail-actions { flex-wrap: wrap; }
+    .monitor-panel, .monitor-item { padding: 12px; }
   }
+  @media (prefers-reduced-motion: reduce) { .monitor-category { transition: none; } }
 </style>
 
 <div class="monitor-dashboard" data-monitoring-dashboard>
@@ -345,17 +330,17 @@
     <div class="monitor-metric">
       <span>未处理总数</span>
       <strong data-monitoring-total>加载中</strong>
-      <small>来自消息分类汇总</small>
+      <small>仅显示已确认且可去重的总量</small>
     </div>
     <div class="monitor-metric">
       <span>韵达待办</span>
       <strong data-monitoring-yunda>加载中</strong>
-      <small>问题件、回复、待办事项</small>
+      <small>平台消息与收到工单</small>
     </div>
     <div class="monitor-metric">
-      <span>融辉</span>
+      <span>融辉待办</span>
       <strong data-monitoring-ronghui>加载中</strong>
-      <small>消息源定位中</small>
+      <small>平台消息与收到工单</small>
     </div>
     <div class="monitor-metric">
       <span>异常/投诉类</span>
@@ -370,493 +355,31 @@
   </div>
 
   <div class="monitor-shell">
-    <section class="monitor-grid" data-monitoring-systems></section>
+    <section class="monitor-grid" aria-label="消息来源与分类" data-monitoring-systems></section>
 
-    <aside class="monitor-detail" data-monitoring-detail>
+    <section class="monitor-detail" aria-labelledby="monitor-items-title" data-monitoring-detail>
       <div class="monitor-detail-header">
         <div class="monitor-detail-title">
-          <strong data-monitoring-detail-title>选择一个消息分类</strong>
-          <span data-monitoring-detail-subtitle>原系统页面会在这里打开</span>
+          <strong id="monitor-items-title" data-monitoring-detail-title>消息与收到工单</strong>
+          <span data-monitoring-detail-subtitle>正在读取消息分类</span>
         </div>
         <div class="monitor-detail-actions">
-          <button class="monitor-icon-btn" type="button" data-monitoring-fullscreen disabled title="全屏查看" aria-label="全屏查看">
-            <i data-feather="maximize-2"></i>
-          </button>
-          <button class="monitor-icon-btn" type="button" data-monitoring-open disabled title="新标签打开">
-            <i data-feather="external-link"></i>
-          </button>
-          <button class="monitor-icon-btn" type="button" data-monitoring-reload disabled title="重新加载">
-            <i data-feather="rotate-cw"></i>
-          </button>
+          <button class="monitor-action-btn" type="button" data-monitoring-open disabled>打开原系统</button>
+          <button class="monitor-action-btn" type="button" data-monitoring-reload disabled>刷新消息</button>
         </div>
       </div>
-      <div class="monitor-frame-wrap">
-        <div class="monitor-placeholder" data-monitoring-placeholder>
-          <div>
-            <i data-feather="bell"></i>
-            <div>点击左侧分类查看明细并在原系统处理。</div>
-          </div>
-        </div>
-        <iframe class="monitor-frame" data-monitoring-frame data-monitoring-current-src="" title="消息明细" hidden></iframe>
-      </div>
-    </aside>
+      <p class="monitor-items-status" role="status" aria-live="polite" data-monitoring-items-status>正在同步，消息正文将在这里显示。</p>
+      <ul class="monitor-items" data-monitoring-items></ul>
+      <nav class="monitor-pagination" aria-label="消息分页" data-monitoring-pagination hidden>
+        <span data-monitoring-page-label></span>
+        <button class="monitor-action-btn" type="button" data-monitoring-prev disabled>上一页</button>
+        <button class="monitor-action-btn" type="button" data-monitoring-next disabled>下一页</button>
+      </nav>
+    </section>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script>
-(() => {
-  const root = document.querySelector('[data-monitoring-dashboard]');
-  if (!root) return;
-
-  const els = {
-    total: root.querySelector('[data-monitoring-total]'),
-    yunda: root.querySelector('[data-monitoring-yunda]'),
-    ronghui: root.querySelector('[data-monitoring-ronghui]'),
-    exception: root.querySelector('[data-monitoring-exception]'),
-    updated: root.querySelector('[data-monitoring-updated]'),
-    dailySign: root.querySelector('[data-monitoring-daily-sign-count]'),
-    dailySignMeta: root.querySelector('[data-monitoring-daily-sign-meta]'),
-    systems: root.querySelector('[data-monitoring-systems]'),
-    detailTitle: root.querySelector('[data-monitoring-detail-title]'),
-    detailSubtitle: root.querySelector('[data-monitoring-detail-subtitle]'),
-    placeholder: root.querySelector('[data-monitoring-placeholder]'),
-    frame: root.querySelector('[data-monitoring-frame]'),
-    fullscreen: root.querySelector('[data-monitoring-fullscreen]'),
-    open: root.querySelector('[data-monitoring-open]'),
-    reload: root.querySelector('[data-monitoring-reload]'),
-    refresh: document.querySelector('[data-monitoring-refresh]'),
-    agentStatus: root.querySelector('[data-monitoring-agent-status]')
-  };
-  let activeLink = null;
-  let activeCategoryId = '';
-  let source = null;
-  let latestSnapshotKey = '';
-  let latestDailySignKey = '';
-  let pendingSnapshot = null;
-  let snapshotFrame = 0;
-  let dailySignTimer = 0;
-  let detailRequest = null;
-  let detailRequestSeq = 0;
-  let refreshCooldown = false;
-  let hasSuccessfulSnapshot = false;
-  const monitoringRequestTimeoutMs = 8000;
-  const detailLinkCache = new Map();
-  const systemNodes = new Map();
-
-  function fmt(value) {
-    const number = Number(value || 0);
-    return Number.isFinite(number) ? number.toLocaleString('zh-CN') : '0';
-  }
-
-  function setText(el, text) {
-    if (el && el.textContent !== text) el.textContent = text;
-  }
-
-  function setRefreshing(isRefreshing) {
-    if (!els.refresh) return;
-    els.refresh.disabled = isRefreshing;
-    els.refresh.classList.toggle('is-loading', isRefreshing);
-    els.refresh.setAttribute('aria-busy', isRefreshing ? 'true' : 'false');
-  }
-
-  function timeOnly(value) {
-    const text = String(value || '').trim();
-    const match = text.match(/\d{2}:\d{2}:\d{2}/);
-    return match ? match[0] : text;
-  }
-
-  function renderDailySign(payload) {
-    if (!els.dailySign || !els.dailySignMeta) return;
-    const key = JSON.stringify({
-      ok: payload?.ok,
-      status: payload?.status,
-      updated_at: payload?.updated_at,
-      counts: payload?.counts,
-      message: payload?.message,
-      refreshing: payload?.refreshing
-    });
-    if (key === latestDailySignKey) return;
-    latestDailySignKey = key;
-    const counts = payload?.counts || {};
-    if (payload?.ok === false) {
-      setText(els.dailySign, '不可用');
-      setText(els.dailySignMeta, '智能服务不可用，应签明细暂时无法获取');
-      return;
-    }
-    setText(els.dailySign, fmt(counts.unsigned_today));
-    const sourceLabel = payload?.message || '飞书应签明细';
-    const updated = payload?.updated_at ? ` · 最后刷新 ${timeOnly(payload.updated_at)}` : '';
-    const refreshing = payload?.refreshing ? ' · 后台刷新中' : '';
-    setText(els.dailySignMeta, `${sourceLabel}${updated}${refreshing}`);
-  }
-
-  function renderSnapshot(snapshot) {
-    const key = JSON.stringify({
-      ok: snapshot?.ok,
-      updated_at: snapshot?.updated_at,
-      totals: snapshot?.totals,
-      systems: snapshot?.systems,
-      refreshing: snapshot?.refreshing
-    });
-    if (key === latestSnapshotKey) return;
-    latestSnapshotKey = key;
-    pendingSnapshot = snapshot;
-    if (snapshotFrame) return;
-    snapshotFrame = window.requestAnimationFrame(() => {
-      snapshotFrame = 0;
-      applySnapshot(pendingSnapshot || {});
-      pendingSnapshot = null;
-    });
-  }
-
-  function applySnapshot(snapshot) {
-    if (snapshot?.ok === false) {
-      renderSummaryUnavailable();
-      return;
-    }
-    hasSuccessfulSnapshot = true;
-    if (els.agentStatus) els.agentStatus.hidden = true;
-    const totals = snapshot.totals || {};
-    setText(els.total, fmt(totals.total_pending));
-    setText(els.yunda, fmt(totals.yunda_pending));
-    setText(els.ronghui, fmt(totals.ronghui_pending));
-    setText(els.exception, fmt(totals.exception_pending));
-    const updated = snapshot.updated_at ? `最后同步 ${snapshot.updated_at}` : '等待同步';
-    setText(els.updated, snapshot.refreshing ? `${updated} · 后台刷新中` : updated);
-
-    const systems = Array.isArray(snapshot.systems) ? snapshot.systems : [];
-    if (!systems.length) {
-      renderEmptySystems();
-      return;
-    }
-    const seen = new Set();
-    systems.forEach((system) => {
-      const systemId = String(system.system || '');
-      if (!systemId) return;
-      seen.add(systemId);
-      const panel = getSystemPanel(systemId);
-      updateSystemPanel(panel, system);
-    });
-    systemNodes.forEach((panel, systemId) => {
-      if (!seen.has(systemId)) {
-        panel.remove();
-        systemNodes.delete(systemId);
-      }
-    });
-    refreshIconsSoon();
-  }
-
-  function renderEmptySystems(message = '暂时没有监控数据。') {
-    systemNodes.forEach((panel) => panel.remove());
-    systemNodes.clear();
-    let empty = els.systems.querySelector('[data-monitoring-empty]');
-    if (!empty) {
-      empty = document.createElement('div');
-      empty.className = 'monitor-empty';
-      empty.dataset.monitoringEmpty = 'true';
-      els.systems.appendChild(empty);
-    }
-    setText(empty, message);
-  }
-
-  function renderSummaryUnavailable() {
-    setText(els.total, '不可用');
-    setText(els.yunda, '不可用');
-    setText(els.ronghui, '不可用');
-    setText(els.exception, '不可用');
-    setText(els.updated, '智能服务不可用');
-    renderEmptySystems('智能服务不可用，监控数据暂时无法获取。');
-    if (els.agentStatus) els.agentStatus.hidden = false;
-    refreshIconsSoon();
-  }
-
-  function getSystemPanel(systemId) {
-    const empty = els.systems.querySelector('[data-monitoring-empty]');
-    if (empty) empty.remove();
-    let panel = systemNodes.get(systemId);
-    if (panel) return panel;
-    panel = document.createElement('article');
-    panel.className = 'monitor-panel';
-    panel.dataset.monitoringSystem = systemId;
-    panel.innerHTML = `
-      <div class="monitor-panel-header">
-        <div class="monitor-panel-title">
-          <i data-monitoring-system-icon></i>
-          <h2 data-monitoring-system-label></h2>
-        </div>
-        <span class="monitor-status" data-monitoring-system-status></span>
-      </div>
-      <div class="monitor-category-list" data-monitoring-category-list></div>
-    `;
-    systemNodes.set(systemId, panel);
-    els.systems.appendChild(panel);
-    return panel;
-  }
-
-  function updateSystemPanel(panel, system) {
-    const icon = panel.querySelector('[data-monitoring-system-icon]');
-    const label = panel.querySelector('[data-monitoring-system-label]');
-    const status = panel.querySelector('[data-monitoring-system-status]');
-    const list = panel.querySelector('[data-monitoring-category-list]');
-    const iconName = system.system === 'yunda' ? 'bell' : 'server';
-    if (icon.getAttribute('data-feather') !== iconName) icon.setAttribute('data-feather', iconName);
-    setText(label, system.label || system.system || '');
-    setText(status, system.status_label || '');
-    status.dataset.status = system.status || '';
-
-    const categories = Array.isArray(system.categories) ? system.categories : [];
-    if (!categories.length) {
-      list.className = 'monitor-empty';
-      list.dataset.monitoringCategoryList = 'true';
-      setText(list, system.message || '暂无消息分类。');
-      return;
-    }
-    list.className = 'monitor-category-list';
-    list.textContent = '';
-    categories.forEach((item) => list.appendChild(createCategoryButton(item)));
-  }
-
-  function createCategoryButton(item) {
-    const count = Number(item.count || 0);
-    const button = document.createElement('button');
-    button.className = 'monitor-category';
-    button.type = 'button';
-    button.dataset.monitoringCategory = 'true';
-    button.dataset.system = item.system || '';
-    button.dataset.categoryId = item.category_id || '';
-    button.dataset.title = item.title || '';
-    button.dataset.resourceId = item.resource_id || '';
-    button.dataset.typeCode = item.type_code || '';
-    button.dataset.targetTitle = item.target_title || '';
-    button.dataset.tone = item.tone || 'info';
-    button.dataset.count = String(count);
-    if (button.dataset.categoryId === activeCategoryId) button.classList.add('is-active');
-
-    const iconWrap = document.createElement('span');
-    iconWrap.className = 'monitor-category-icon';
-    const icon = document.createElement('i');
-    icon.setAttribute('data-feather', item.is_exception ? 'alert-triangle' : 'inbox');
-    iconWrap.appendChild(icon);
-
-    const textWrap = document.createElement('span');
-    const title = document.createElement('span');
-    title.className = 'monitor-category-title';
-    title.textContent = item.title || '';
-    const meta = document.createElement('span');
-    meta.className = 'monitor-category-meta';
-    meta.textContent = `${item.status_label || ''}${item.target_title ? ' · ' + item.target_title : ''}`;
-    textWrap.appendChild(title);
-    textWrap.appendChild(meta);
-
-    const countEl = document.createElement('span');
-    countEl.className = 'monitor-category-count';
-    countEl.textContent = fmt(count);
-    button.appendChild(iconWrap);
-    button.appendChild(textWrap);
-    button.appendChild(countEl);
-    return button;
-  }
-
-  function refreshIconsSoon() {
-    if (!window.feather) return;
-    window.requestAnimationFrame(() => window.feather.replace());
-  }
-
-  function paramsFromButton(button) {
-    const params = new URLSearchParams({
-      system: button.dataset.system || '',
-      category_id: button.dataset.categoryId || '',
-      title: button.dataset.title || '',
-      resource_id: button.dataset.resourceId || '',
-      type_code: button.dataset.typeCode || '',
-      target_title: button.dataset.targetTitle || ''
-    });
-    return params;
-  }
-
-  async function openCategory(button) {
-    root.querySelectorAll('[data-monitoring-category]').forEach((item) => item.classList.remove('is-active'));
-    button.classList.add('is-active');
-    activeCategoryId = button.dataset.categoryId || '';
-    const params = paramsFromButton(button);
-    const cacheKey = params.toString();
-    setText(els.detailTitle, button.dataset.title || '消息详情');
-    setText(els.detailSubtitle, '正在打开原系统页面');
-    if (detailLinkCache.has(cacheKey)) {
-      activeLink = detailLinkCache.get(cacheKey);
-      showDetail(activeLink);
-      return;
-    }
-    if (detailRequest) detailRequest.abort();
-    detailRequest = new AbortController();
-    const requestSeq = ++detailRequestSeq;
-    try {
-      const response = await fetch(`/monitoring/detail-link?${cacheKey}`, {
-        credentials: 'same-origin',
-        signal: detailRequest.signal
-      });
-      const payload = await response.json();
-      if (requestSeq !== detailRequestSeq) return;
-      if (!response.ok || payload.ok === false) throw new Error(payload.message || '详情链接获取失败');
-      detailLinkCache.set(cacheKey, payload);
-      activeLink = payload;
-      showDetail(payload);
-    } catch (error) {
-      if (error?.name === 'AbortError') return;
-      if (requestSeq !== detailRequestSeq) return;
-      activeLink = null;
-      setText(els.detailSubtitle, error.message || '详情链接获取失败');
-      els.placeholder.hidden = false;
-      els.frame.hidden = true;
-      els.open.disabled = true;
-      els.reload.disabled = true;
-      els.fullscreen.disabled = true;
-    }
-  }
-
-  function showDetail(link) {
-    const url = link.embed_url || link.open_url || '';
-    setText(els.detailTitle, link.title || '消息详情');
-    setText(els.detailSubtitle, '如嵌入受限，请使用新标签打开');
-    els.open.disabled = !link.open_url;
-    els.reload.disabled = !url;
-    els.fullscreen.disabled = !url;
-    if (!url) {
-      els.placeholder.hidden = false;
-      els.frame.hidden = true;
-      return;
-    }
-    els.placeholder.hidden = true;
-    els.frame.hidden = false;
-    if (els.frame.dataset.monitoringCurrentSrc !== url) {
-      els.frame.dataset.monitoringCurrentSrc = url;
-      els.frame.src = url;
-    }
-    if (window.matchMedia('(max-width: 767px)').matches) root.classList.add('is-mobile-detail');
-  }
-
-  function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;'
-    }[ch]));
-  }
-
-  function preferCachedQueryValue(preferCached) {
-    return preferCached ? 'prefer_cached=1' : 'prefer_cached=0';
-  }
-
-  async function fetchMonitoringJson(url) {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), monitoringRequestTimeoutMs);
-    try {
-      const response = await fetch(url, {
-        credentials: 'same-origin',
-        signal: controller.signal
-      });
-      const payload = await response.json();
-      if (!response.ok || payload?.ok === false) throw new Error('智能服务不可用');
-      return payload;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }
-
-  async function fetchSummary(force = false, preferCached = false) {
-    const payload = await fetchMonitoringJson(`/monitoring/summary?systems=yunda,ronghui&force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`);
-    renderSnapshot(payload);
-  }
-
-  function dailySignPollDelayMs(payload = {}) {
-    const seconds = Number(payload?.poll_interval_sec || 60);
-    const safeSeconds = Number.isFinite(seconds) ? seconds : 60;
-    return Math.max(30, Math.min(safeSeconds, 24 * 60 * 60)) * 1000;
-  }
-
-  function scheduleDailySignRefresh(payload = {}) {
-    if (dailySignTimer) window.clearTimeout(dailySignTimer);
-    dailySignTimer = window.setTimeout(() => {
-      fetchDailySign(false, true, true).catch(() => {
-        renderDailySign({ ok: false, message: '飞书应签明细获取失败' });
-        scheduleDailySignRefresh();
-      });
-    }, dailySignPollDelayMs(payload));
-  }
-
-  async function fetchDailySign(force = false, preferCached = false, scheduleNext = false) {
-    const payload = await fetchMonitoringJson(`/monitoring/daily-sign?force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`);
-    renderDailySign(payload);
-    if (scheduleNext) scheduleDailySignRefresh(payload);
-    return payload;
-  }
-
-  els.open?.addEventListener('click', () => {
-    if (activeLink?.open_url) window.open(activeLink.open_url, '_blank', 'noopener');
-  });
-  els.reload?.addEventListener('click', () => {
-    if (!activeLink?.embed_url) return;
-    els.frame.dataset.monitoringCurrentSrc = '';
-    els.frame.src = activeLink.embed_url;
-    els.frame.dataset.monitoringCurrentSrc = activeLink.embed_url;
-  });
-  els.fullscreen?.addEventListener('click', () => {
-    const enabled = root.classList.toggle('is-mobile-detail');
-    els.fullscreen.setAttribute('aria-label', enabled ? '退出全屏查看' : '全屏查看');
-    els.fullscreen.setAttribute('title', enabled ? '退出全屏查看' : '全屏查看');
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && root.classList.contains('is-mobile-detail')) root.classList.remove('is-mobile-detail');
-  });
-  els.refresh?.addEventListener('click', () => {
-    if (refreshCooldown) return;
-    refreshCooldown = true;
-    setRefreshing(true);
-    Promise.allSettled([
-      fetchSummary(true, true),
-      fetchDailySign(true, true).catch(() => renderDailySign({ ok: false, message: '飞书应签明细获取失败' }))
-    ]).finally(() => {
-      window.setTimeout(() => {
-        fetchSummary(false, false).catch(() => renderSummaryUnavailable());
-        fetchDailySign(false, false, true).catch(() => renderDailySign({ ok: false, message: '飞书应签明细获取失败' }));
-        refreshCooldown = false;
-        setRefreshing(false);
-      }, 1200);
-    });
-  });
-
-  els.systems?.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-monitoring-category]');
-    if (!button || !els.systems.contains(button)) return;
-    openCategory(button);
-  });
-
-  fetchSummary(true, true).catch(() => renderSummaryUnavailable());
-  fetchDailySign(true, true, true).catch(() => {
-    renderDailySign({ ok: false, message: '飞书应签明细获取失败' });
-    scheduleDailySignRefresh();
-  });
-
-  if (window.EventSource) {
-    source = new EventSource('/monitoring/stream');
-    source.addEventListener('snapshot', (event) => {
-      try {
-        renderSnapshot(JSON.parse(event.data || '{}'));
-      } catch (_) {
-        return;
-      }
-    });
-    source.onerror = () => {
-      if (!hasSuccessfulSnapshot) renderSummaryUnavailable();
-    };
-  } else {
-    fetchSummary(false).catch(() => renderSummaryUnavailable());
-    window.setInterval(() => fetchSummary(false).catch(() => renderSummaryUnavailable()), 60000);
-  }
-})();
-</script>
+<script src="/static/monitoring.js?v=20261014"></script>
 {% endblock %}

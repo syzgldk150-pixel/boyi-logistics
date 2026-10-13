@@ -1,6 +1,6 @@
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,67 +14,27 @@ class MonitoringParsingTests(unittest.TestCase):
         monitoring._SNAPSHOT_CACHE.clear()
         monitoring._DAILY_SIGN_CACHE.clear()
 
-    def test_yunda_type_payload_preserves_counts_and_safe_links(self):
-        payload = {
-            "errorCode": 0,
-            "num": 9,
-            "data": [
-                {
-                    "noticeTypeName": "问题件消息",
-                    "typeCode": "001",
-                    "sumValue": 2,
-                    "newClientResourceId": "4768",
-                    "noticeSystemName": "问题件查询",
-                },
-                {
-                    "noticeTypeName": "导出任务",
-                    "typeCode": "019",
-                    "sumValue": 0,
-                    "newClientResourceId": "21214",
-                    "noticeSystemName": "导出服务",
-                },
-                {
-                    "noticeTypeName": "问题件被回复消息",
-                    "typeCode": "222",
-                    "sumValue": 5,
-                    "newClientResourceId": "4768",
-                    "noticeSystemName": "问题件查询",
-                },
-            ],
-        }
-
-        system = monitoring.parse_yunda_types_payload(payload, updated_at="2026-05-28 13:30:00")
-
-        self.assertEqual("yunda", system["system"])
-        self.assertEqual(9, system["total_count"])
-        self.assertEqual(7, system["exception_count"])
-        self.assertEqual("ok", system["status"])
-        self.assertEqual(["问题件消息", "导出任务", "问题件被回复消息"], [item["title"] for item in system["categories"]])
-        problem = system["categories"][0]
-        self.assertEqual("yunda:001", problem["category_id"])
-        self.assertEqual(2, problem["count"])
-        self.assertEqual("4768", problem["resource_id"])
-        self.assertNotIn("encodeUser", str(system))
-        self.assertNotIn("sso_uid", str(system))
-
-    def test_yunda_detail_link_uses_client_route_without_sensitive_params(self):
-        link = monitoring.build_monitoring_detail_link(
-            {
-                "system": "yunda",
-                "category_id": "yunda:001",
-                "title": "问题件消息",
-                "resource_id": "4768",
-                "type_code": "001",
-                "target_title": "问题件查询",
-            }
-        )
+    def test_yunda_detail_link_uses_only_server_category_metadata(self):
+        safe_url = "https://ky-client.yunda56.com/#/ifarme/ifarme/4768/problem"
+        snapshot = {"systems": [{"system": "yunda", "categories": [{
+            "category_id": "yunda:001", "title": "问题件消息", "open_url": safe_url,
+        }]}]}
+        with patch("agent.tms_runtime.monitoring.build_monitoring_snapshot", return_value=snapshot) as collect:
+            link = monitoring.build_monitoring_detail_link({
+                "system": "yunda", "category_id": "yunda:001", "title": "未受信标题",
+                "resource_id": "99999", "type_code": "999", "target_title": "未受信目标",
+                "url": "https://example.invalid/", "open_url": "https://example.invalid/",
+            })
 
         self.assertTrue(link["ok"])
-        self.assertEqual("iframe", link["mode"])
-        self.assertIn("ky-client.yunda56.com", link["embed_url"])
-        self.assertIn("/4768/", link["embed_url"])
-        self.assertNotIn("encodeUser", link["embed_url"])
-        self.assertNotIn("sso_uid", link["embed_url"])
+        self.assertEqual("external", link["mode"])
+        self.assertEqual("问题件消息", link["title"])
+        self.assertEqual(safe_url, link["open_url"])
+        self.assertEqual("", link["embed_url"])
+        self.assertFalse(link["frame_allowed"])
+        self.assertNotIn("example.invalid", str(link))
+        self.assertNotIn("99999", str(link))
+        collect.assert_called_once_with(systems=["yunda"])
 
     def test_daily_sign_snapshot_counts_target_date_rows_from_feishu_sheet(self):
         sheet_values = [
@@ -287,7 +247,7 @@ class MonitoringParsingTests(unittest.TestCase):
         self.assertEqual(3, result["totals"]["total_pending"])
         self.assertLess(elapsed, 0.35)
 
-    def test_forced_monitoring_attaches_non_blocking_capability_health(self):
+    def test_forced_monitoring_does_not_validate_capability_health_matrix(self):
         target_payload = {
             "system": "yunda",
             "status": "ok",
@@ -295,12 +255,7 @@ class MonitoringParsingTests(unittest.TestCase):
             "exception_count": 0,
             "categories": [],
         }
-        matrix = {
-            "profile": "yunda",
-            "status": "degraded",
-            "capabilities": {"yunda_problem": {"status": "CAPABILITY_UNAVAILABLE"}},
-        }
-        broker = type("Broker", (), {"validate_health_matrix": lambda self: matrix})()
+        broker = Mock()
 
         with (
             patch("agent.tms_runtime.monitoring._collect_yunda_snapshot", return_value=target_payload),
@@ -313,43 +268,34 @@ class MonitoringParsingTests(unittest.TestCase):
             )
 
         self.assertEqual("ok", result["status"])
-        self.assertEqual(matrix, result["capability_health"])
+        self.assertNotIn("capability_health", result)
+        broker.validate_health_matrix.assert_not_called()
 
     def test_yunda_snapshot_uses_target_calls_without_session_prevalidation(self):
-        class Response:
-            status_code = 200
-            headers = {}
-            text = ""
-
-            def __init__(self, payload):
-                self._payload = payload
-
-            def json(self):
-                return self._payload
-
-        class Session:
-            def get(self, *_args, **_kwargs):
-                return Response({"data": {"identity": "test-user"}})
-
-            def post(self, *_args, **_kwargs):
-                return Response({"errorCode": 0, "num": 0, "data": []})
-
-        calls = []
-
-        class Broker:
-            @staticmethod
-            def build_requests_session(*, validate):
-                calls.append(validate)
-                return Session()
-
-        with patch("agent.tms_runtime.monitoring.get_session_broker", return_value=Broker()):
+        session = Mock()
+        broker = Mock()
+        broker.build_requests_session.return_value = session
+        categories = [{
+            "category_id": "yunda:notifications", "count": 2, "include_in_total": False,
+            "status": "pending", "status_label": "待处理", "items_supported": True,
+        }]
+        with (
+            patch("agent.tms_runtime.monitoring.get_session_broker", return_value=broker) as get_broker,
+            patch("agent.tms_runtime.monitoring_yunda.collect_categories", return_value=categories) as collect,
+        ):
             result = monitoring._collect_yunda_snapshot(
                 force=True,
                 updated_at="2026-05-28 13:30:00",
             )
 
         self.assertEqual("ok", result["status"])
-        self.assertEqual([False], calls)
+        self.assertEqual(categories, result["categories"])
+        self.assertIsNone(result["total_count"])
+        get_broker.assert_called_once_with("yunda")
+        broker.build_requests_session.assert_called_once_with(validate=False)
+        broker.validate_health_matrix.assert_not_called()
+        collect.assert_called_once_with(session)
+        session.close.assert_called_once_with()
 
     def test_daily_sign_prefer_cached_returns_cached_payload_without_requerying(self):
         with (
@@ -461,20 +407,27 @@ class MonitoringRouteTests(unittest.TestCase):
         mocked.assert_called_once_with(force=True, target_date="2026-05-31", prefer_cached=True)
 
     def test_detail_link_route_returns_safe_link(self):
-        response = self.client.post(
-            "/admin/monitoring/detail-link",
-            json={
-                "system": "ronghui",
-                "category_id": "ronghui:home",
-                "title": "融辉TMS",
-            },
-        )
+        safe_url = "https://tms.ronghuiwl.com/module/index?mv=index"
+        snapshot = {"systems": [{"system": "ronghui", "categories": [{
+            "category_id": "ronghui:announcements", "title": "未读公告与消息", "open_url": safe_url,
+        }]}]}
+        with patch("agent.tms_runtime.monitoring.build_monitoring_snapshot", return_value=snapshot) as collect:
+            response = self.client.post(
+                "/admin/monitoring/detail-link",
+                json={
+                    "system": "ronghui", "category_id": "ronghui:announcements",
+                    "title": "未受信标题", "resource_id": "99999", "url": "https://example.invalid/",
+                },
+            )
 
         self.assertEqual(200, response.status_code)
         payload = response.json()
         self.assertTrue(payload["ok"])
         self.assertEqual("ronghui", payload["system"])
-        self.assertIn("tms.ronghuiwl.com", payload["open_url"])
+        self.assertEqual("external", payload["mode"])
+        self.assertEqual(safe_url, payload["open_url"])
+        self.assertEqual("未读公告与消息", payload["title"])
+        collect.assert_called_once_with(systems=["ronghui"])
 
 
 if __name__ == "__main__":

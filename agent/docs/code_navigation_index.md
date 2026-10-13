@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-10-13
+updated: 2026-10-14
 ---
 
 # 物流 Agent 代码定位索引
@@ -28,6 +28,7 @@ updated: 2026-10-13
 
 | 入口 | 当前实现 | 结果与迁移边界 |
 |---|---|---|
+| 首页消息正文与收到工单 | `agent/tms_runtime/monitoring.py`、`agent/tms_runtime/monitoring_ronghui.py`、`agent/tms_runtime/monitoring_yunda.py`、`../console/services/monitoring_finance.py`、`../console/static/monitoring.js` | 沿用超级管理员及固定 `default/yunda` 会话，分类和正文独立读取，每页 20 条；未知数量为 `null`，不同口径不重复合计，不标已读、不处理工单。韵达消息/CSSP 在后台重新登录时初始化；原页协议及验收见 [消息监控说明](../../docs/monitoring_messages.md)。 |
 | Console 录入、查询、回单及客服人工操作 | `../console/services/business_calls.py`、`business_composition.py`、`agent/tms_runtime/direct_business.py` | `/internal/v1/business/{operation}` 返回业务结果；外部写保留身份、请求 UUID 与独立核验 |
 | 手动、定时、固定飞书与已注册插件能力 | `agent/orchestration/direct_project_invocation.py`、`agent/automation_plugins/direct_invocation.py`、`../shared/plugin_invocation_repository.py` | `/internal/v1/automation-projects/{automation_id}/invoke` 直接启动 Invocation；失败/取消终结，不积压 |
 | 寄件数据库查询及平台补查 | `../console/services/waybills_receipts.py`、`../console/routes/waybills.py`、`agent/send_waybills_business.py`、`plugin_core_adapters/waybill_query_scope.py`、`../shared/waybill_source_coverage.py` | Console GET 只读库；主动查询渲染列表后，经同源管理员 POST `/waybills/source-refresh` 补查，同一来源与日期范围单飞且成功结果复用 2 分钟。Agent 两平台各自复用连接并行补查，以显式事务批量发布；范围证明和局部补查见 [寄件查询](../../docs/direct_waybill_query.md)，局部结果不冒充整日完整 |
