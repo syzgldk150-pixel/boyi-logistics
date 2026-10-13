@@ -22,6 +22,7 @@
 <script src="/static/js/waybill_label_html.js?v=20261011-large-type"></script>
 <script src="/static/js/waybill_label_lodop.js?v=20261011-75x100"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
+<script src="/static/js/waybill_print_preview.js?v=20261013"></script>
 <script src="/static/js/yunda_entry_mode.js?v=20261011-best-storage"></script>
 {% endif %}
 <style>
@@ -1850,42 +1851,15 @@
       if (!button || button.disabled) return;
       selectQuoteProvider(button.dataset.quoteProvider || "");
     });
-    const findCLODOPPrinterIndex = (lodop, printerName) => {
-      const wanted = String(printerName || "").trim();
-      if (!wanted || wanted === "系统默认打印机") return null;
-      const count = Number(lodop.GET_PRINTER_COUNT?.() || 0);
-      for (let index = 0; index < count; index += 1) {
-        if (String(lodop.GET_PRINTER_NAME(index) || "") === wanted) return index;
-      }
-      return null;
-    };
     const WAYBILL_LABEL_WIDTH = "75mm";
     const WAYBILL_LABEL_HEIGHT = "100mm";
     const buildManualPreviewHtml = async () => {
       if (!window.WaybillLabelHtml?.buildHtml) throw new Error("Waybill HTML renderer not loaded");
       return window.WaybillLabelHtml.buildHtml(readManualWaybillPreview(), readSavedPrinterSettings());
     };
-    const openLodopPreview = (lodop) => {
-      if (typeof lodop.SET_PREVIEW_WINDOW === "function") {
-        lodop.SET_PREVIEW_WINDOW(1, 0, 0, 760, 680, "打印预览.打印");
-      }
-      lodop.PREVIEW();
-    };
-    const applyWaybillLodopTemplate = async (lodop, wb, settings = {}) => {
-      if (!window.WaybillLabelLodop?.applyTemplate) throw new Error("Waybill Lodop renderer not loaded");
-      await window.WaybillLabelLodop.applyTemplate(lodop, wb, settings);
-    };
     const previewWaybillSnapshot = async (waybill) => {
-      const settings = readSavedPrinterSettings();
-      const copies = Math.max(1, Math.min(Number(settings.print_copies || 1) || 1, 5));
-      const lodop = await getCLODOP();
-      if (!lodop) throw new Error("C-Lodop service not found");
-      const printerIndex = findCLODOPPrinterIndex(lodop, settings.printer_name);
-      lodop.PRINT_INIT("博益物流运单预览");
-      if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
-      lodop.SET_PRINT_COPIES(copies);
-      await applyWaybillLodopTemplate(lodop, waybill, settings);
-      openLodopPreview(lodop);
+      if (!window.BoyiWaybillPrint?.preview) throw new Error("Waybill Lodop renderer not loaded");
+      await window.BoyiWaybillPrint.preview(waybill, readSavedPrinterSettings());
     };
     const previewManualWaybill = async () => {
       if (!validateManualRequiredFields("打印预览前请先填写")) return;
@@ -1924,13 +1898,13 @@
       try {
         const lodop = await getCLODOP();
         if (!lodop) throw new Error("C-Lodop service not found");
-        const printerIndex = findCLODOPPrinterIndex(lodop, settings.printer_name);
+        const printerIndex = window.BoyiWaybillPrint.findPrinterIndex(lodop, settings.printer_name);
         lodop.PRINT_INIT("博益物流主单校准页");
         if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
         lodop.SET_PRINT_COPIES(1);
         if (!window.WaybillLabelLodop?.applyCalibration) throw new Error("Waybill Lodop renderer not loaded");
         window.WaybillLabelLodop.applyCalibration(lodop, settings);
-        openLodopPreview(lodop);
+        window.BoyiWaybillPrint.openPreview(lodop);
       } catch (error) {
         console.error("C-Lodop calibration failed", error);
         setManualFeedback(formatManualPrintError(error), "error");

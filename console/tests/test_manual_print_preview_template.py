@@ -30,12 +30,12 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
 
     def test_clodop_loader_uses_shared_websocket_loader(self):
         document_template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
-        print_template = (CONSOLE_DIR / "templates" / "waybill_print.html").read_text(encoding="utf-8")
+        query_template = (CONSOLE_DIR / "templates" / "waybills.html").read_text(encoding="utf-8")
         loader = (CONSOLE_DIR / "static" / "js" / "clodop_loader.js").read_text(encoding="utf-8")
 
-        for template in (document_template, print_template):
+        for template in (document_template, query_template):
             self.assertIn('/static/js/clodop_loader.js?v=20260812', template)
-            self.assertIn("window.BoyiCLodop.getInstance()", template)
+            self.assertIn("/static/js/waybill_print_preview.js?v=20261013", template)
             self.assertNotIn("CLodopfuncs.js?priority=", template)
 
         self.assertIn("ws://localhost:8000/CLodopfuncs.js", loader)
@@ -47,7 +47,7 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
 
     def test_print_preview_reports_distinct_failure_stage(self):
         document_template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
-        print_template = (CONSOLE_DIR / "templates" / "waybill_print.html").read_text(encoding="utf-8")
+        query_template = (CONSOLE_DIR / "templates" / "waybills.html").read_text(encoding="utf-8")
 
         self.assertIn("formatManualPrintError", document_template)
         self.assertIn("面单底版加载失败", document_template)
@@ -55,11 +55,8 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
         self.assertIn("window.BoyiCLodop?.getLoadErrors()", document_template)
         self.assertIn("formatManualPrintError(error)", document_template)
 
-        self.assertIn("formatPrintError", print_template)
-        self.assertIn("面单底版加载失败", print_template)
-        self.assertIn("面单打印模板未加载", print_template)
-        self.assertIn("window.BoyiCLodop?.getLoadErrors()", print_template)
-        self.assertIn("formatPrintError(error)", print_template)
+        self.assertIn("运单读取失败", query_template)
+        self.assertIn("检查本机 C-Lodop 服务", query_template)
 
     def test_clodop_loader_injects_websocket_payload_and_can_retry(self):
         loader = (CONSOLE_DIR / "static" / "js" / "clodop_loader.js").read_text(encoding="utf-8")

@@ -1108,7 +1108,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual(2, len(repository.snapshots))
         self.assertEqual(["save_request", "save_response"], [item["snapshot_kind"] for item in repository.snapshots])
         self.assertEqual("YD001", result["data"]["local_waybill"]["waybill_no"])
-        self.assertTrue(result["data"]["print_url"].endswith("/waybills/101/print?source=yunda&preview=1"))
+        self.assertNotIn("print_url", result["data"])
 
     def test_persist_yunda_draft_save_writes_snapshot_only(self):
         repository = _Repository()
@@ -1135,6 +1135,22 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual([], repository.upserts)
         self.assertEqual(1, len(repository.snapshots))
         self.assertEqual("draft_save", repository.snapshots[0]["snapshot_kind"])
+
+    def test_persist_yunda_print_does_not_add_or_replace_preview_url(self):
+        for remote_preview in (None, "https://provider.example/preview/synthetic"):
+            with self.subTest(remote_preview=remote_preview):
+                repository = _Repository()
+                repository.waybills_by_no["YD00041"] = {"id": 41, "waybill_no": "YD00041"}
+                app = self._app(repository)
+                data = {"waybill_no": "YD00041"}
+                if remote_preview is not None:
+                    data["preview_url"] = remote_preview
+                result = app._persist_yunda_runtime_result(
+                    action="print/preview", request_body={}, payload={"ok": True, "data": data},
+                )
+                self.assertEqual(data, result["data"])
+                self.assertEqual("print", repository.snapshots[0]["snapshot_kind"])
+                self.assertEqual(41, repository.snapshots[0]["waybill_id"])
 
     def test_handle_yunda_entry_reads_client_meta_and_returns_json(self):
         app = self._app()
@@ -1229,7 +1245,7 @@ class YundaEntryBackendTests(unittest.TestCase):
         self.assertEqual("/ky_inms/public/index.php/business/waybill/entry/indexNew.html", app.last_call["payload"]["params"]["path"])
         self.assertEqual("page=tab&p=nil", app.last_call["payload"]["params"]["query"])
 
-    def test_handle_yunda_live_proxy_adds_local_print_url_to_successful_save_response(self):
+    def test_handle_yunda_live_proxy_preserves_save_without_local_print_page_urls(self):
         repository = _Repository()
         app = self._app(repository)
         remote_body = {"info": "1", "LogisticsId": "YD777", "message": "saved"}
@@ -1275,8 +1291,8 @@ class YundaEntryBackendTests(unittest.TestCase):
         response_body = json.loads(handler.wfile.getvalue().decode("utf-8"))
         self.assertEqual("1", response_body["info"])
         self.assertEqual("YD777", response_body["LogisticsId"])
-        self.assertEqual("/waybills/101/print?source=yunda&preview=1", response_body["shipnow_print_url"])
-        self.assertEqual("/waybills/101/print?source=yunda&autoprint=1", response_body["shipnow_autoprint_url"])
+        self.assertNotIn("shipnow_print_url", response_body)
+        self.assertNotIn("shipnow_autoprint_url", response_body)
         self.assertEqual(101, response_body["shipnow_local_waybill_id"])
         self.assertEqual(1, len(repository.upserts))
         self.assertEqual("YD777", repository.upserts[0]["payload"]["waybill_no"])

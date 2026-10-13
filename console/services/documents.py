@@ -4,6 +4,7 @@ import gzip
 from email.utils import formatdate
 
 from console.app_support import *  # noqa: F403
+from console.services.waybill_printing import build_waybill_print_data
 from shared.waybill_entry_extensions import (
     WAYBILL_ENTRY_ACTIONS_SLOT,
     WAYBILL_ENTRY_DRAFT_FIELDS,
@@ -81,20 +82,9 @@ class DocumentServiceMixin:
                     if waybill_id <= 0:
                         raise ValueError("Invalid saved waybill id")
                     saved_waybill = self.repository.get_waybill(waybill_id, source="manual")
-                    if not saved_waybill or not str(saved_waybill.get("waybill_no") or "").strip():
+                    if not saved_waybill:
                         raise ValueError("Saved waybill not found")
-                    print_fields = (
-                        "waybill_no", "open_date", "destination_site", "receiver_name",
-                        "receiver_phone", "receiver_address", "sender_name", "sender_phone",
-                        "sender_address", "goods_name_lines", "package_type_lines", "quantity_lines",
-                        "weight_volume", "delivery_method", "freight_fee", "transfer_fee",
-                        "payment_method", "insurance_amount", "cod_amount", "remark",
-                    )
-                    saved_manual_waybill = {
-                        name: str(saved_waybill[name]) if saved_waybill.get(name) is not None else ""
-                        for name in print_fields
-                    }
-                    saved_manual_waybill["receipt_required"] = saved_waybill.get("receipt_required") == 1
+                    saved_manual_waybill = build_waybill_print_data(saved_waybill)
                 except Exception:
                     saved_manual_print_error = (
                         "未能读取已保存运单，已停止打印。请到寄件运单查询核对并重新打开打印预览，勿重复保存。"

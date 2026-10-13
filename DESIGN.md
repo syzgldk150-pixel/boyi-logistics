@@ -46,7 +46,7 @@ spacing:
 
 以下内容不改造内部视觉：
 
-- `console/templates/waybill_print.html` 及热敏打印底版，打印尺寸和坐标保持独立规范。
+- `console/static/js/waybill_label_html.js` 及热敏打印底版，打印尺寸和坐标保持独立规范。
 - 韵达、融辉等第三方原页 iframe 的内部 DOM 与样式。Console 只统一它们的外层标题、边界、工具栏、加载、错误和聚焦工作区。
 
 ## 2. 设计方向

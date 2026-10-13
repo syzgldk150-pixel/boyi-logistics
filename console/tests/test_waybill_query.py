@@ -210,7 +210,7 @@ class WaybillQueryTemplateTests(unittest.TestCase):
                     "status_tone": "info",
                     "opening_cost": "20.00",
                     "pickup_payment_amount": "0.00",
-                    "print_url": "/waybills/1/print",
+                    "print_data_url": "/waybills/1/print-data?source=manual",
                     "tracking_url": "/tracking?tracking_number=00000001",
                 }
             ],
@@ -272,7 +272,7 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         self.assertIn("更多筛选", html)
         self.assertIn("列设置", html)
         self.assertIn("作废运单", html)
-        self.assertIn("/waybills/1/print", html)
+        self.assertIn('data-print-data-url="/waybills/1/print-data?source=manual"', html)
         self.assertIn("/tracking?tracking_number=00000001", html)
         self.assertNotIn("waybill-filter-tools", html)
         self.assertNotIn("15天", html)
@@ -335,7 +335,7 @@ class WaybillQueryTemplateTests(unittest.TestCase):
                     "scan_status_short": "发件",
                     "opening_cost": "20.00",
                     "pickup_payment_amount": "0.00",
-                    "print_url": "/waybills/1/print",
+                    "print_data_url": "/waybills/1/print-data?source=manual",
                     "tracking_url": "/tracking?tracking_number=00000001",
                 }
             ],

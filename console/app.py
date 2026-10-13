@@ -293,13 +293,6 @@ class LocalDocFlowApp(
         if path == "/line-haul-contacts":
             self._render_line_haul_contacts(handler, query)
             return
-        if path.startswith("/waybills/") and path.endswith("/print"):
-            waybill_id = self._parse_document_id(path)
-            if waybill_id is None:
-                self._send_text(handler, HTTPStatus.NOT_FOUND, "Waybill not found.")
-                return
-            self._render_waybill_print(handler, waybill_id, query)
-            return
         if path in {"/automations", "/workspaces/automations"}:
             self._render_automations(handler, query)
             return

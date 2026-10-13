@@ -152,7 +152,7 @@
     if (pathname.startsWith("/documents") || pathname.startsWith("/ocr")) {
       return "/ocr";
     }
-    if (pathname.startsWith("/waybills") && !pathname.endsWith("/print")) {
+    if (pathname.startsWith("/waybills")) {
       return "/waybills";
     }
     if (pathname.startsWith("/tracking")) {

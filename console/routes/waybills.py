@@ -19,12 +19,12 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/line-haul-contacts":
         app._render_line_haul_contacts(handler, query)
         return True
-    if path.startswith("/waybills/") and path.endswith("/print"):
+    if path.startswith("/waybills/") and path.endswith("/print-data"):
         waybill_id = app._parse_document_id(path)
         if waybill_id is None:
-            app._send_text(handler, HTTPStatus.NOT_FOUND, "Waybill not found.")
+            app._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在。"})
         else:
-            app._render_waybill_print(handler, waybill_id, query)
+            app._handle_waybill_print_data(handler, waybill_id, query)
         return True
     return False
 

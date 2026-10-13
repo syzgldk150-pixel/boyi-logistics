@@ -1867,9 +1867,9 @@ class DocumentRepository:
         pickup_payment, _ = self._waybill_pickup_payment(data)
         data["opening_cost"] = _format_money(opening_cost)
         data["pickup_payment_amount"] = _format_money(pickup_payment)
-        data["print_url"] = f"/waybills/{data.get('id')}/print"
+        data["print_data_url"] = f"/waybills/{data.get('id')}/print-data"
         if data.get("source") in WAYBILL_SOURCE_LABELS:
-            data["print_url"] += f"?source={data['source']}"
+            data["print_data_url"] += f"?source={data['source']}"
         data["tracking_url"] = f"/tracking?tracking_number={data.get('waybill_no', '')}"
         return data
 

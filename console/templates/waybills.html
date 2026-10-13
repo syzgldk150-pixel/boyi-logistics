@@ -5,6 +5,13 @@
 {% block breadcrumb %}寄件运单查询{% endblock %}
 {% block subtitle %}运单管理 / 寄件运单查询{% endblock %}
 
+{% block head %}
+<script src="/static/js/waybill_label_html.js?v=20261011-large-type"></script>
+<script src="/static/js/waybill_label_lodop.js?v=20261011-75x100"></script>
+<script src="/static/js/clodop_loader.js?v=20260812"></script>
+<script src="/static/js/waybill_print_preview.js?v=20261013"></script>
+{% endblock %}
+
 {% block page_actions %}
   <a class="primary-btn" href="/ocr"><i data-feather="plus"></i> 新增运单</a>
 {% endblock %}
@@ -524,6 +531,7 @@
     overflow: auto;
   }
   .waybill-detail-empty { padding: 88px 22px 32px; color: var(--muted); font-size: .88rem; font-weight: 650; text-align: center; }
+  .waybill-print-status { margin: 0; padding: 12px 22px; color: var(--text); font-size: .875rem; }
   .waybill-detail-content { display: grid; gap: 0; }
   .waybill-detail-head {
     display: grid;
@@ -756,7 +764,7 @@
     </section>
 
     <div class="waybill-detail-actions">
-      <a class="ghost-btn" href="{{ row.print_url }}" target="_blank" rel="noreferrer"><i data-feather="printer"></i> 打印</a>
+      <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}"><i data-feather="printer"></i> 打印</button>
       <a class="ghost-btn" href="{{ row.tracking_url }}"><i data-feather="map-pin"></i> 轨迹跟踪</a>
       <form action="/waybills/{{ row.id }}/status" method="post" data-waybill-cancel-form>
         <input type="hidden" name="source" value="{{ row.source }}">
@@ -767,6 +775,7 @@
         </button>
       </form>
     </div>
+    <p class="waybill-print-status" data-waybill-print-status role="status" hidden></p>
   </div>
 {% endmacro %}
 
@@ -1342,6 +1351,43 @@
     });
     detail?.addEventListener("click", (event) => {
       if (event.target === detail) closeWaybillDetail(scope);
+    });
+    detail?.addEventListener("click", async (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-waybill-print]") : null;
+      if (!button || button.disabled) return;
+      const status = button.closest("[data-waybill-detail-content]")?.querySelector("[data-waybill-print-status]");
+      const setStatus = (message) => {
+        if (!status) return;
+        status.hidden = false;
+        status.textContent = message;
+      };
+      button.disabled = true;
+      setStatus("正在读取运单并打开打印预览…");
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(button.dataset.printDataUrl, { signal: controller.signal });
+        const result = await response.json();
+        if (!response.ok || result.ok !== true || !result.waybill) {
+          throw new Error(result.message || "运单读取失败，请重试。");
+        }
+        window.clearTimeout(timeout);
+        if (!window.BoyiWaybillPrint?.preview) throw new Error("打印组件未加载，请刷新页面重试。");
+        await window.BoyiWaybillPrint.preview(result.waybill);
+        setStatus("已打开 C-Lodop 打印预览。");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "打印预览未打开";
+        if (error?.name === "AbortError") {
+          setStatus("读取运单超时，请点击打印重试。");
+        } else if (detail.includes("C-Lodop")) {
+          setStatus("打印预览未打开，请检查本机 C-Lodop 服务后点击打印重试。");
+        } else {
+          setStatus(`打印预览未打开：${detail}`);
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        button.disabled = false;
+      }
     });
     scope.querySelectorAll("[data-waybill-select]").forEach((button) => {
       button.addEventListener("click", (event) => {

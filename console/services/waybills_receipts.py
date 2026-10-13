@@ -2,6 +2,7 @@
 
 from console.app_support import *  # noqa: F403
 from console.services.business_calls import call_business
+from console.services.waybill_printing import build_waybill_print_data
 
 
 class WaybillsReceiptsServiceMixin:
@@ -1316,28 +1317,30 @@ class WaybillsReceiptsServiceMixin:
             index = group_end
         return display_rows
 
-    def _render_waybill_print(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
-        source = str(query.get("source", [""])[0])
-        if source in {"manual", "ocr", "yunda", "ronghui"}:
+    def _handle_waybill_print_data(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
+        source = str(query.get("source", [""])[0]).strip()
+        if source not in {"manual", "ocr", "yunda", "ronghui"}:
+            message = "请指定运单来源。" if not source else "运单来源无效。"
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": message})
+            return
+        try:
             waybill = self.repository.get_waybill(waybill_id, source=source)
-        else:
-            self._send_text(handler, HTTPStatus.BAD_REQUEST, "Invalid waybill source.")
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False, "message": "运单读取失败，请稍后重试。",
+            })
             return
         if not waybill:
-            self._send_text(handler, HTTPStatus.NOT_FOUND, "Waybill not found.")
+            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在。"})
             return
-        autoprint = str(query.get("autoprint", [""])[0]).lower() in {"1", "true", "yes"}
-        print_preview = str(query.get("preview", [""])[0]).lower() in {"1", "true", "yes"}
-        template = self.template_env.get_template("waybill_print.html")
-        body = template.render(
-            app_title=self.settings.app_title,
-            waybill=waybill,
-            autoprint=autoprint,
-            print_preview=print_preview,
-            message=query.get("message", [""])[0],
-            message_kind=query.get("kind", ["info"])[0],
-        )
-        self._send_html(handler, body)
+        try:
+            print_data = build_waybill_print_data(waybill)
+        except ValueError:
+            self._send_json(handler, HTTPStatus.CONFLICT, {
+                "ok": False, "message": "运单号缺失，无法打开打印预览。",
+            })
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "waybill": print_data})
 
     @staticmethod
     def _first_tracking_text(row: dict[str, Any], *keys: str) -> str:

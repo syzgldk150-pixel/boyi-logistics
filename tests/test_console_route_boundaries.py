@@ -60,6 +60,12 @@ class _App:
     def _send_text(self, _handler, status, message):
         self.calls.append(("send_text", (status, message)))
 
+    def _send_json(self, _handler, status, payload):
+        self.calls.append(("send_json", (status, payload)))
+
+    def _handle_waybill_print_data(self, _handler, waybill_id, query):
+        self.calls.append(("waybill_print_data", (waybill_id, query)))
+
     def _handle_automation_account_post(self, _handler, _path):
         return False
 
@@ -198,15 +204,31 @@ class ConsoleRouteBoundaryTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual([("tracking_query", None)], self.app.calls)
 
-    def test_unknown_waybill_print_is_owned_by_waybill_boundary(self):
+    def test_unknown_waybill_print_data_is_owned_by_waybill_boundary(self):
         handled = self.dispatcher.handle_get(
-            self.app, self.handler, "/waybills/not-a-number/print", "/waybills/not-a-number/print", {}
+            self.app, self.handler, "/waybills/not-a-number/print-data", "/waybills/not-a-number/print-data", {}
         )
         self.assertTrue(handled)
         self.assertEqual(
-            [("parse", "/waybills/not-a-number/print"), ("send_text", (HTTPStatus.NOT_FOUND, "Waybill not found."))],
+            [("parse", "/waybills/not-a-number/print-data"),
+             ("send_json", (HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在。"}))],
             self.app.calls,
         )
+
+    def test_print_data_route_passes_id_and_source(self):
+        self.app._parse_document_id = lambda _path: 41
+        query = {"source": ["manual"]}
+        handled = self.dispatcher.handle_get(
+            self.app, self.handler, "/waybills/41/print-data", "/waybills/41/print-data", query,
+        )
+        self.assertTrue(handled)
+        self.assertEqual([("waybill_print_data", (41, query))], self.app.calls)
+
+    def test_removed_waybill_print_page_is_not_routed(self):
+        self.assertFalse(self.dispatcher.handle_get(
+            self.app, self.handler, "/waybills/41/print", "/waybills/41/print", {"source": ["manual"]},
+        ))
+        self.assertEqual([], self.app.calls)
 
 
 if __name__ == "__main__":

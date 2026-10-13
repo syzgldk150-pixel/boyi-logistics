@@ -197,12 +197,6 @@ def browser_page(app, browser):
                 route.fulfill(content_type="text/html", body=(
                     f"<script>location.replace({json.dumps(target)})</script>"
                 ))
-            elif parsed.path == "/waybills/41/print":
-                route.fulfill(content_type="text/html", body=app.template_env.get_template(
-                    "waybill_print.html"
-                ).render(waybill=SAVED_ROW, autoprint=False, print_preview=False))
-            elif parsed.path == "/ocr":
-                route.fulfill(content_type="text/html", body='<main data-test-shell>录单工作台</main>')
             elif parsed.path in {
                 "/static/js/clodop_loader.js", "/static/js/waybill_label_lodop.js",
                 "/static/js/waybill_label_html.js",
@@ -267,7 +261,7 @@ def test_save_opens_native_preview_once_and_refresh_keeps_new_draft(app, browser
     assert page.evaluate("window.__copies") == [2]
     assert page.evaluate("JSON.parse(localStorage.getItem('shipnow.manual.printerSettings')).printer_name") == "Synthetic Label Printer"
     assert "internal_test_marker" not in payload
-    assert ("GET", "/waybills/41/print") not in browser_page.requests
+    assert all(not path.endswith("/print") for _method, path in browser_page.requests)
 
     frame.goto(frame.url)
     assert frame.locator("[data-saved-manual-preview]").count() == 0
@@ -317,26 +311,4 @@ def test_failed_saved_read_stops_print_and_retains_entry(app, browser_page, fail
         app.repository.get_waybill.assert_not_called()
     else:
         app.repository.get_waybill.assert_called_once_with(41, source="manual")
-    assert not browser_page.errors
-
-
-@pytest.mark.parametrize("embedded", (True, False))
-def test_old_print_page_return_uses_the_correct_navigation_level(browser_page, embedded):
-    page = browser_page.page
-    if embedded:
-        target = open_frame(page, "/waybills/41/print?source=manual")
-        expected_path = FRAME_PATH
-    else:
-        page.goto(ORIGIN + "/waybills/41/print?source=manual")
-        target = page
-        expected_path = "/ocr"
-    target.get_by_role("link", name="返回录单").click()
-    target.wait_for_url(ORIGIN + expected_path)
-    if embedded:
-        assert len(page.frames) == 2
-        assert target.locator("[data-boyi-frame-root]").count() == 1
-        assert target.locator("[data-entry-tabs-root]").count() == 0
-    else:
-        assert page.locator("[data-test-shell]").count() == 1
-    assert page.evaluate("window.__printEvents") == []
     assert not browser_page.errors

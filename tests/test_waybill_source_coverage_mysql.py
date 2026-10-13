@@ -151,7 +151,7 @@ def test_boyi_and_provider_same_id_have_independent_print_and_status(manual_repo
     assert result["summary"]["total"] == 2
     assert {row["source"] for row in result["rows"]} == {"manual", "yunda"}
     manual = repo.get_waybill_by_no(number)
-    assert manual["print_url"] == f"/waybills/{boyi_id}/print?source=manual"
+    assert manual["print_data_url"] == f"/waybills/{boyi_id}/print-data?source=manual"
     assert repo.get_waybill(boyi_id, source="manual")["waybill_no"] == number
     assert repo.get_waybill(provider_id, source="yunda")["waybill_no"] == "provider"
     assert repo.update_waybill_status(boyi_id, "cancelled", source="manual")

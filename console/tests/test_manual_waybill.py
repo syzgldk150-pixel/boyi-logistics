@@ -13,6 +13,7 @@ if str(CONSOLE_DIR) not in sys.path:
     sys.path.insert(0, str(CONSOLE_DIR))
 
 from app import ActionResult, DocumentService, LocalDocFlowApp, ui_label  # noqa: E402
+from console.services.waybill_printing import build_waybill_print_data
 from console.database import MANUAL_PAYMENT_METHODS, format_manual_waybill_no  # noqa: E402
 from console.navigation import (  # noqa: E402
     CONSOLE_NAVIGATION,
@@ -403,19 +404,16 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertIn("manualWaybillPreviewNo", html)
         self.assertNotIn("未保存预览", html)
         self.assertIn("buildManualPreviewHtml", html)
-        self.assertIn("applyWaybillLodopTemplate", html)
+        self.assertIn("BoyiWaybillPrint.preview", html)
+        self.assertIn("/static/js/waybill_print_preview.js", html)
         self.assertIn("/static/js/waybill_label_html.js", html)
         self.assertIn("/static/js/waybill_label_lodop.js", html)
         self.assertNotIn("/static/js/waybill_label_svg.js", html)
         self.assertIn("WaybillLabelHtml.buildHtml", html)
         self.assertNotIn("WaybillLabelSvg.buildDataUri", html)
-        self.assertIn("WaybillLabelLodop.applyTemplate", html)
-        self.assertIn("applyWaybillLodopTemplate(lodop", html)
         self.assertNotIn("ADD_PRINT_IMAGE", html)
         self.assertNotIn("ADD_PRINT_TEXT", html)
         self.assertNotIn("ADD_PRINT_HTM", html)
-        self.assertIn("SET_PREVIEW_WINDOW", html)
-        self.assertIn("SET_PREVIEW_WINDOW(1, 0, 0, 760, 680", html)
         self.assertIn("未连接到 C-Lodop 打印服务", html)
         self.assertIn('const WAYBILL_LABEL_WIDTH = "75mm"', html)
         self.assertIn('const WAYBILL_LABEL_HEIGHT = "100mm"', html)
@@ -825,62 +823,6 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         ):
             self.assertNotIn(token, html)
 
-    def test_print_template_autoprint_has_no_app_shell(self):
-        template = self.env.get_template("waybill_print.html")
-        html = template.render(
-            app_title="Test Console",
-            autoprint=True,
-            print_preview=False,
-            message="",
-            message_kind="info",
-            waybill={
-                "waybill_no": "BY00001",
-                "open_date": "2026/05/12",
-                "destination_site": "杭州余杭",
-                "receiver_name": "王小明",
-                "receiver_phone": "13812345678",
-                "receiver_address": "浙江省杭州市余杭区文一西路969号",
-                "sender_name": "李建国",
-                "sender_phone": "13987654321",
-                "goods_name_lines": "电子产品",
-                "package_type_lines": "纸箱",
-                "quantity_lines": "1件",
-                "weight_volume": "2.50kg",
-                "freight_fee": "20.00",
-                "transfer_fee": "5.00",
-                "payment_method": "寄付",
-                "remark": "易碎物品，请轻拿轻放",
-                "insurance_amount": "",
-                "cod_amount": "",
-            },
-        )
-
-        self.assertIn("BY00001", html)
-        self.assertIn("/static/js/clodop_loader.js?v=20260812", html)
-        self.assertIn("打印预览", html)
-        self.assertIn("previewWaybill()", html)
-        self.assertIn("printWaybill()", html)
-        self.assertIn("/static/js/waybill_label_html.js", html)
-        self.assertIn("/static/js/waybill_label_lodop.js", html)
-        self.assertNotIn("/static/js/waybill_label_svg.js", html)
-        self.assertIn("WaybillLabelHtml?.renderPreview", html)
-        self.assertNotIn("WaybillLabelSvg.buildDataUri", html)
-        self.assertIn("WaybillLabelLodop.applyTemplate", html)
-        self.assertIn("data-waybill-label-preview", html)
-        self.assertIn("applyWaybillLodopTemplate(lodop", html)
-        self.assertNotIn("ADD_PRINT_IMAGE", html)
-        self.assertNotIn("ADD_PRINT_TEXT", html)
-        self.assertNotIn("ADD_PRINT_HTM", html)
-        self.assertIn("SET_PREVIEW_WINDOW", html)
-        self.assertIn("SET_PREVIEW_WINDOW(1, 0, 0, 760, 680", html)
-        self.assertIn("WAYBILL_PRINT_DATA", html)
-        self.assertIn("PREVIEW()", html)
-        self.assertNotIn("renderWaybillLabelDataUrl", html)
-        self.assertNotIn("buildLodopWaybillLabelHtml", html)
-        self.assertNotIn("window.print()", html)
-        self.assertNotIn("150mm", html)
-        self.assertNotIn("fallback", html.lower())
-        self.assertNotIn("app-shell", html)
 
     def test_html_renderer_owns_shared_master_layout(self):
         js = (CONSOLE_DIR / "static/js/waybill_label_html.js").read_text(encoding="utf-8")
@@ -972,10 +914,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
 
     def test_entry_and_print_drop_pickup_and_delivery_fees(self):
         manual = (CONSOLE_DIR / "templates/document.html").read_text(encoding="utf-8")
-        saved = self.env.get_template("waybill_print.html").render(
-            waybill={"pickup_fee": "12.30", "delivery_fee": "7.80", "transfer_fee": "45.60"},
-            autoprint=False, print_preview=False,
-        )
+        saved = build_waybill_print_data({"waybill_no": "BY-TEST-001", "pickup_fee": "12.30", "delivery_fee": "7.80", "transfer_fee": "45.60"})
         # The Boyi label, entry form and OCR template share one field set.
         for name in ("pickup_fee", "delivery_fee"):
             self.assertNotIn(name, manual)
@@ -986,47 +925,12 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn("接货费", manual)
         self.assertNotIn("送货费", manual)
         self.assertIn('transfer_fee: manualFieldValue("transfer_fee")', manual)
-        self.assertIn('transfer_fee: "45.60"', saved)
+        self.assertEqual("45.60", saved["transfer_fee"])
 
-    def test_print_template_preview_mode_auto_opens_preview(self):
-        template = self.env.get_template("waybill_print.html")
-        html = template.render(
-            app_title="Test Console",
-            autoprint=False,
-            print_preview=True,
-            message="",
-            message_kind="info",
-            waybill={
-                "waybill_no": "BY00001",
-                "open_date": "2026/05/12",
-                "destination_site": "杭州余杭",
-                "receiver_name": "王小明",
-                "receiver_phone": "13812345678",
-                "receiver_address": "浙江省杭州市余杭区文一西路969号",
-                "sender_name": "李建国",
-                "sender_phone": "13987654321",
-                "goods_name_lines": "电子产品",
-                "package_type_lines": "纸箱",
-                "quantity_lines": "1件",
-                "weight_volume": "2.50kg",
-                "freight_fee": "20.00",
-                "transfer_fee": "5.00",
-                "payment_method": "寄付",
-                "remark": "",
-                "insurance_amount": "",
-                "cod_amount": "",
-            },
-        )
-
-        self.assertIn("window.setTimeout(() => previewWaybill(), 220);", html)
-        self.assertNotIn("window.setTimeout(() => printWaybill(), 220);", html)
 
     def test_saved_print_passes_sender_address(self):
-        html = self.env.get_template("waybill_print.html").render(
-            waybill={"sender_address": "Sender address fixture"},
-            autoprint=False, print_preview=False,
-        )
-        self.assertIn('sender_address: "Sender address fixture"', html)
+        saved = build_waybill_print_data({"waybill_no": "BY-TEST-001", "sender_address": "Sender address fixture"})
+        self.assertEqual("Sender address fixture", saved["sender_address"])
 
     def test_notice_default_uses_full_neutral_border(self):
         css = (CONSOLE_DIR / "static" / "style.css").read_text(encoding="utf-8")
@@ -1041,10 +945,7 @@ if __name__ == "__main__":
 
 class SavedReceiptPrintTests(unittest.TestCase):
     def test_saved_print_uses_persisted_receipt_choice(self):
-        env = Environment(loader=FileSystemLoader(str(CONSOLE_DIR / "templates")))
-        for value, expected in ((0, "false"), (1, "true"), (None, "false")):
+        for value, expected in ((0, False), (1, True), (None, False)):
             with self.subTest(value=value):
-                html = env.get_template("waybill_print.html").render(
-                    waybill={"receipt_required": value}, autoprint=False, print_preview=False,
-                )
-                self.assertIn(f"receipt_required: {expected}", html)
+                saved = build_waybill_print_data({"waybill_no": "BY-TEST-001", "receipt_required": value})
+                self.assertIs(saved["receipt_required"], expected)

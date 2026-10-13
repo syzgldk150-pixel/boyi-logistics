@@ -432,8 +432,6 @@ class TmsProxyServiceMixin:
             return {}
         return {
             "shipnow_local_waybill_id": waybill_id,
-            "shipnow_print_url": f"/waybills/{waybill_id}/print?source=yunda&preview=1",
-            "shipnow_autoprint_url": f"/waybills/{waybill_id}/print?source=yunda&autoprint=1",
         }
 
     def _patch_proxy_json_body(self, proxy_payload: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -1078,7 +1076,6 @@ class TmsProxyServiceMixin:
             if waybill:
                 runtime_data["local_waybill"] = waybill
                 runtime_data["local_waybill_id"] = waybill_id
-                runtime_data["print_url"] = f"/waybills/{waybill_id}/print?source=yunda&preview=1"
         elif action in {"drafts/save", "templates/save"}:
             self.repository.create_waybill_provider_snapshot(
                 provider="yunda",
@@ -1100,8 +1097,6 @@ class TmsProxyServiceMixin:
                 payload=snapshot_response,
                 waybill_id=waybill_id,
             )
-            if waybill_id:
-                runtime_data["preview_url"] = f"/waybills/{waybill_id}/print?source=yunda&preview=1"
         return response
 
     def _handle_yunda_entry(self, handler: BaseHTTPRequestHandler, path: str) -> None:

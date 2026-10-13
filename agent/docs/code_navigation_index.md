@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, control_plane_v1.md, automation_plugin_platform.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-10-12
+updated: 2026-10-13
 ---
 
 # 物流 Agent 代码定位索引
@@ -61,7 +61,7 @@ updated: 2026-10-12
 | 韵达/融辉活动原页禁用边界 | `console/app.py` `console/routes/ocr.py` `console/routes/receipts.py` `console/services/tms_proxy.py` `agent/tms_runtime/routes.py` | `/ocr/yunda/*`、`/ocr/ronghui/live/*`、`/receipts/yunda/live/*`、`/receipts/ronghui/live/*` 的 GET/POST/PUT/PATCH/DELETE 在 Console 本地固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`，不调用 Agent；三个 Agent target 在执行能力判断前同样返回 410。待独立来源隔离完成后才可重新评估。 |
 | 韵达/融辉内嵌原页与原页助手（登录适配、进入录单、布局、地址事件） | `../console/templates/document.html` `../console/static/js/yunda_entry_mode.js` `../console/static/browser_extensions/ronghui/` `../console/services/browser_extension_package.py` `../console/tests/test_ronghui_cookie_refresh.py` `../console/tests/test_original_page_lifecycle.py` `../console/tests/test_yunda_login_flow.py` `../console/tests/test_yunda_entry.py` | `/ocr?mode=yunda`、`/ocr?mode=ronghui` 在内部页签直接嵌入真实原站，不经 Console/Agent 代理。原页助手（当前 0.4.12）在首次加载和重载前完成浏览器本机 Cookie 适配；融辉内嵌 frame 中原站自身的 Cookie 写入改用 `SameSite=None; Secure`，登录后经原站菜单进入“运单录入”并收起导航，补齐收件地址回车/失焦事件值；韵达扫码走独立登录窗口。安装包由 `GET /ocr/browser-extension.zip` 按固定清单打包；规则见 `../console/CLAUDE.md`“运单录入与打印”，验证边界见扩展 README。 |
 | 百世原页内嵌与默认录入表单 | `../console/templates/document.html` `../console/static/browser_extensions/ronghui/` `../console/services/browser_extension_package.py` `../console/tests/test_best_entry_embed.py` | 原页助手（当前 0.4.12）在浏览器本机完成会话适配后打开内部页签，入口固定为新版 `networkProductOrder` 录单页，首次切到原站“运单录入”，内嵌时默认收起顶部导航，百世主包等待原站存储句柄后执行；扫码辅助页只恢复发起页签，不代理或填写保存数据。真实原页与隔离扩展验证边界见扩展 README。 |
-| 博益本地录单、只读比价与本机打印 | `console/templates/document.html` `console/templates/waybill_print.html` `console/static/js/clodop_loader.js` `console/app.py` | `/ocr` 与 `/ocr/boyi/frame` 保留本地手工录单 CRUD；`/ocr?mode=ocr` 保留 OCR 队列。价格仍来自真实只读接口，韵达/融辉原页预填固定禁用；独立打印继续共用 `clodop_loader.js`。 |
+| 博益本地录单、只读比价与本机打印 | `../console/templates/document.html` `../console/templates/waybills.html` `../console/static/js/waybill_print_preview.js` `../console/services/waybill_printing.py` `../console/routes/waybills.py` | `/ocr` 与 `/ocr/boyi/frame` 保留本地手工录单 CRUD；`/ocr?mode=ocr` 保留 OCR 队列。价格仍来自真实只读接口，韵达/融辉原页预填固定禁用；旧独立打印页已删除，保存后打印和查询补打共用原生 C-Lodop 预览；查询补打通过 `/waybills/{id}/print-data?source=...` 按来源和 ID 读取最新运单。 |
 | 统一回单管理、回单照片与控制平面审核 | `../console/templates/receipts.html` `../console/services/waybills_receipts.py` `../console/services/agent_api.py` `agent/tms_runtime/scripts/receipts_sync.py` `agent/tms_runtime/scripts/receipts_audit.py` `tools/receipts_sync_tool.py` `tools/receipts_audit_tool.py` `tools/receipt_feishu_detail_query_tool.py` | 后台入口 `/receipts`；同步与审核提交持久化计划，审核要求 `super_admin`、精确 plan hash 和读后核验。GET 不自动查询飞书；缺失韵达明细时由管理员显式 POST 提交精确单号只读能力，固定资源/字段并要求完整分页、唯一命中和 Evidence，不复用 disabled 的宽泛 `feishu_operation`。页面不加载活动原页 iframe；两个回单活动原页前缀所有方法返回 410。 |
 | OCR 工作区、上传、识别、复核、模板配置 | `console/templates/document.html` `console/app.py` `console/ocr_providers.py` `console/task_queue.py` `console/template_store.py` | 页面在模板，OCR 能力在 `ocr_providers.py`，异步队列在 `task_queue.py` |
 | 车辆调度页面、地图、路线可视化 | `console/templates/dispatch.html` `console/app.py` `console/static/style.css` | 调度页基本都在模板与公共样式 |
