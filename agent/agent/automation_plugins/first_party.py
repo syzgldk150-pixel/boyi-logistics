@@ -1398,7 +1398,13 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
 
     if manifest.plugin_id not in expected_first_party_plugin_ids():
         raise PluginPackageError("unknown first-party action package")
-    action_path = legacy_action_source(manifest.plugin_id)
+    # Only offline V1 packages use immutable historical action bytes; current
+    # V2 business changes cannot alter these retired package locks.
+    frozen_action = manifest.plugin_id in {
+        "sync_scan_codes", "self_pickup_problem_upload", "split_pending_problem_upload", "sync_arrival_stats",
+    }
+    action_path = ((LEGACY_ROOT / manifest.plugin_id / "frozen/action.py")
+                   if frozen_action else legacy_action_source(manifest.plugin_id))
     required = (FIRST_PARTY_RUNTIME_PATH, FIRST_PARTY_RESULT_PATH, action_path)
     if any(not path.is_file() for path in required):
         missing = [path.name for path in required if not path.is_file()]
@@ -1434,10 +1440,6 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
         ):
             frozen = LEGACY_ROOT / manifest.plugin_id / "frozen" / Path(relative).name
             files['payload/' + relative] = frozen.read_bytes()
-    if manifest.plugin_id == "sync_scan_codes":
-        # Reproduce the retired V1 action bytes without coupling its immutable
-        # lock to later V2 scan changes. Never used by V2 packaging.
-        files["payload/action.py"] = (LEGACY_ROOT / manifest.plugin_id / "frozen" / "action.py").read_bytes()
     return files
 
 

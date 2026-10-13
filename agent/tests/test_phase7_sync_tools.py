@@ -2080,6 +2080,10 @@ class Phase7SyncToolTests(unittest.TestCase):
                 "pcs": 1,
                 "dispatchMode": "送货",
                 "dispAddress": "地址",
+                "problemType": "",
+                "problemRegisterDate": "",
+                "problemCause": "",
+                "problemRegisterSite": "",
             }
         ]
         with (
@@ -2090,7 +2094,8 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                return_value={"days": 1, "fetch_all": True, "page": 1},
+                return_value={"days": 30, "fetch_all": True, "page": 1,
+                              "include_history": True, "end": "2026-08-13 23:59:59"},
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
@@ -2151,6 +2156,9 @@ class Phase7SyncToolTests(unittest.TestCase):
                 side_effect=lambda rows, _params: {
                     "ok": True,
                     "rows": len(rows),
+                    "written": len(rows),
+                    "unchanged": False,
+                    "format_readback": {"verified": True},
                     "readback": _daily_projection_readback_proof(
                         rows,
                         digest_char="s",
@@ -2192,22 +2200,12 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(64, len(marker["marker_sha256"]))
         verify_persistence.assert_called_once()
         verify_completed.assert_called_once()
-        exact_mock.assert_called_once_with(
-            ANY,
-            {"R1": r13_rows[0]},
-            ANY,
-            persist=False,
-        )
-        historical_mock.assert_called_once_with(
-            ANY,
-            {"R1": r13_rows[0]},
-            ANY,
-            observed_at=observed_at,
-            persist=False,
-        )
+        exact_mock.assert_not_called()
+        historical_mock.assert_not_called()
+        self.assertEqual("not_requested", result["data"]["diagnostics"]["secondary_sources"]["status"])
         self.assertFalse(finish_mock.call_args.args[1]["degraded"])
 
-    def test_daily_sign_sync_rejects_incomplete_exact_history_without_projection(self):
+    def test_daily_sign_sync_rejects_incomplete_arrival_source_without_projection(self):
         from datetime import datetime
 
         observed_at = datetime(2026, 8, 13, 9, 0, 0)
@@ -2220,8 +2218,8 @@ class Phase7SyncToolTests(unittest.TestCase):
             "sign_verifications": {},
             "source_refs": ["arrival_stat:arrival-run:arrival-hash"],
             "arrival_source_proof": {
-                "complete": True,
-                "active_stat_runs": 1,
+                "complete": False,
+                "active_stat_runs": 0,
                 "latest_forecast_runs": 0,
                 "run_ids": ["arrival-run"],
             },
@@ -2234,7 +2232,8 @@ class Phase7SyncToolTests(unittest.TestCase):
             patch("service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.load_daily_sign_state", return_value=state),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                return_value={"days": 1, "fetch_all": True, "page": 1},
+                return_value={"days": 30, "fetch_all": True, "page": 1,
+                              "include_history": True, "end": "2026-08-13 23:59:59"},
             ),
             patch(
                 "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
@@ -2289,14 +2288,14 @@ class Phase7SyncToolTests(unittest.TestCase):
 
         self.assertEqual("FAILED", result["status"])
         self.assertEqual("INCOMPLETE_SOURCE_EVIDENCE", result["error"]["code"])
-        self.assertTrue(result["error"]["retryable"])
+        self.assertFalse(result["error"]["retryable"])
         failed_run_mock.assert_called_once()
         verify_completed.assert_called_once()
         persist_mock.assert_not_called()
         bitable_mock.assert_not_called()
         sheet_mock.assert_not_called()
 
-    def test_daily_sign_sync_omits_historical_due_row_without_valid_r13_plan(self):
+    def test_daily_sign_sync_omits_historical_row_outside_current_r13_source(self):
         from datetime import datetime
 
         observed_at = datetime(2026, 8, 13, 9, 0, 0)
@@ -2353,7 +2352,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                     ),
                     patch(
                         "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline._resolve_r13_request",
-                        return_value={"days": 1, "fetch_all": True, "page": 1},
+                        return_value={"days": 30, "fetch_all": True, "page": 1,
+                              "include_history": True, "end": "2026-08-13 23:59:59"},
                     ),
                     patch(
                         "service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_sync_tool.call_http_service",
@@ -2417,6 +2417,9 @@ class Phase7SyncToolTests(unittest.TestCase):
                         side_effect=lambda rows, _params: {
                             "ok": True,
                             "rows": len(rows),
+                            "written": len(rows),
+                            "unchanged": False,
+                            "format_readback": {"verified": True},
                             "readback": _daily_projection_readback_proof(
                                 rows, digest_char="s"
                             ),
@@ -2433,12 +2436,9 @@ class Phase7SyncToolTests(unittest.TestCase):
 
                 self.assertEqual("SUCCESS", result["status"])
                 self.assertIsNone(result["error"])
-                self.assertEqual(
-                    1,
-                    result["data"]["diagnostics"][
-                        "excluded_missing_r13_plan_rows"
-                    ],
-                )
+                self.assertEqual(0, result["data"]["diagnostics"]["r13_rows"])
+                self.assertEqual(0, result["data"]["diagnostics"]["candidate_rows"])
+                self.assertEqual([], persist_mock.call_args.kwargs["ledger_rows"])
                 verify_completed.assert_called_once()
                 persist_mock.assert_called_once()
                 self.assertEqual([], persist_mock.call_args.kwargs["publication_rows"])

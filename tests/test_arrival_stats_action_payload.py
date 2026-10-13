@@ -13,6 +13,7 @@ from tests.first_party_action_payload_support import load_first_party_action
 def test_empty_source_clears_snapshots_without_creating_archive() -> None:
     action_module = load_first_party_action("sync_arrival_stats")
     calls: list[str] = []
+    cleared_sheet_slots: set[str] = set()
     evidence_index = 0
 
     def broker(operation, *, action, role, arguments):
@@ -49,7 +50,17 @@ def test_empty_source_clears_snapshots_without_creating_archive() -> None:
         if action == "feishu.sheet.add":
             raise AssertionError("empty snapshots must not create an archive sheet")
         if action == "feishu.sheet.replace":
-            assert arguments["records"] == []
+            slot = arguments["resource_slot"]
+            cleared_sheet_slots.add(slot)
+            if slot == "arrival_stats_split_pending":
+                assert set(arguments) == {"resource_slot", "rows", "target_date"}
+                # The plugin owns this sheet's columns. Empty data keeps its
+                # header row and clears every previously published data row.
+                assert len(arguments["rows"]) == 1
+                assert arguments["rows"][0][0] == "运单编号"
+                assert arguments["rows"][0][-1] == "累计到货件数"
+            else:
+                assert arguments["records"] == []
             assert arguments["target_date"] == "2026-08-24"
         elif action in {
             "scan.snapshot.replace",
@@ -73,6 +84,9 @@ def test_empty_source_clears_snapshots_without_creating_archive() -> None:
     assert result["meta"]["record_count"] == 0
     assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
     assert "feishu.sheet.add" not in calls
+    assert cleared_sheet_slots == {
+        "arrival_stats_primary", "arrival_stats_secondary", "arrival_stats_pending", "arrival_stats_split_pending",
+    }
     assert calls.index("scan.snapshot.read") < calls.index("scan.snapshot.replace")
 
 

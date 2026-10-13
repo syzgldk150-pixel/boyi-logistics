@@ -401,105 +401,64 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual({}, self.project_entrypoints.calls[-1]["envelope"]["body"])
         self.assertTrue(replies)
 
-    def test_feishu_price_auth_pending_waits_for_sms_code(self):
-        calls: dict[str, Any] = {}
-        replies: list[str] = []
-        admin_calls: list[tuple[str, dict[str, Any] | None]] = []
-        pending_calls: list[tuple[str, dict[str, Any], int]] = []
+    def _assert_quote_auth_failure_stays_in_plugin(self, error_code):
+        calls, replies, admin_calls, pending_calls = [], [], [], []
+        message = "报价账号登录态不可用，请在账号管理恢复后重新查询。"
 
-        class _FakeAgent:
-            async def execute_tool(self, tool_name, params, **kwargs):
-                calls["execute_tool"] = (tool_name, params)
-                return {
-                    "success": False,
-                    "error": "短信验证码已发送，等待人工提交验证码。",
+        class FakeAgent:
+            async def execute_tool(self, *_args, **_kwargs):
+                raise AssertionError("quote must not call the retired get_price tool")
+
+            async def handle_message(self, *_args, **_kwargs):
+                raise AssertionError("explicit quote must not reach the LLM")
+
+        async def dispatch(**kwargs):
+            calls.append(kwargs)
+            return {
+                "success": False, "status": "FAILED", "invocation_id": "quote-auth-test",
+                "error_code": error_code, "error_summary": message,
+                "error": {"code": error_code, "message": message},
+                "result": {
+                    "status": "FAILED",
                     "data": {
-                        "ok": False,
-                        "error_code": "AUTH_PENDING_CODE",
-                        "error": "短信验证码已发送，等待人工提交验证码。",
+                        provider: {"status": "failed", "quotes": [], "error": message}
+                        for provider in ("ronghui", "yunda", "best")
                     },
-                }
+                },
+            }
 
-            async def handle_message(self, *args, **kwargs):
-                raise AssertionError("报价 should not be routed to LLM handle_message")
-
-        async def _fake_reply_text(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
+        async def reply(_chat_id, text, **_kwargs):
             replies.append(text)
 
-        async def _fake_post_admin(path, body=None):
+        async def post_admin(path, body=None):
             admin_calls.append((path, body))
-            return {"ok": True, "status": "pending_code"}
-
-        def _fake_set_pending(chat_id, action, ttl_sec=600):
-            pending_calls.append((chat_id, action, ttl_sec))
+            raise AssertionError("plugin auth failure must not start a legacy login")
 
         with (
-            patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-            patch("feishu.message_handler.get_pending", return_value=None),
-            patch("feishu.message_handler.set_pending", side_effect=_fake_set_pending),
-            patch("feishu.message_handler._post_admin", side_effect=_fake_post_admin),
-            patch("feishu.message_handler._get_admin", return_value={"ok": True, "status": "expired", "authenticated": False}),
-            patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
+            patch("feishu.bot.get_agent_core", return_value=FakeAgent()),
+            patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", SimpleNamespace(dispatch=dispatch)),
+            patch.object(message_handler, "get_pending", return_value=None),
+            patch.object(message_handler, "set_pending", side_effect=lambda *args, **kwargs: pending_calls.append((args, kwargs))),
+            patch.object(message_handler, "_post_admin", side_effect=post_admin),
+            patch.object(message_handler, "_reply_text", side_effect=reply),
         ):
-            asyncio.run(message_handler._process_and_reply("四川省泸州市泸县241乡道东南侧，800，5", "user-1", "chat-1"))
+            asyncio.run(message_handler._process_and_reply("示例市测试路1号，800，5", "user-1", "chat-1"))
 
-        self.assertEqual("get_price", calls["execute_tool"][0])
-        self.assertEqual("price_default", calls["execute_tool"][1]["account_id"])
-        self.assertEqual([("/admin/accounts/price_default/login", None)], admin_calls)
-        self.assertEqual(1, len(pending_calls))
-        self.assertEqual("chat-1", pending_calls[0][0])
-        self.assertEqual("waiting_code_for_resume", pending_calls[0][1]["type"])
-        self.assertEqual("account:price_default", pending_calls[0][1]["auth_session"])
-        self.assertEqual("get_price", pending_calls[0][1]["resume_tool"])
-        self.assertIn("验证码已发送", replies[-1])
-        self.assertNotIn("报价失败", replies[-1])
-
-    def test_feishu_price_auth_required_respects_account_login_confirmation(self):
-        calls: dict[str, Any] = {}
-        replies: list[str] = []
-        admin_calls: list[tuple[str, dict[str, Any] | None]] = []
-        pending_calls: list[tuple[str, dict[str, Any], int]] = []
-
-        class _FakeAgent:
-            async def execute_tool(self, tool_name, params, **kwargs):
-                calls["execute_tool"] = (tool_name, params)
-                return {
-                    "success": False,
-                    "error": "当前未登录或登录态已过期。",
-                    "data": {"ok": False, "error_code": "AUTH_REQUIRED", "error": "当前未登录或登录态已过期。"},
-                }
-
-            async def handle_message(self, *args, **kwargs):
-                raise AssertionError("报价登录恢复 should not be routed to LLM handle_message")
-
-        async def _fake_reply_text(_chat_id, text, receive_id_type="chat_id", *, reply_type="text"):
-            replies.append(text)
-
-        async def _fake_post_admin(path, body=None):
-            admin_calls.append((path, body))
-            return {"ok": True, "status": "pending_code"}
-
-        def _fake_set_pending(chat_id, action, ttl_sec=600):
-            pending_calls.append((chat_id, action, ttl_sec))
-
-        with (
-            patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-            patch("feishu.message_handler.get_pending", return_value=None),
-            patch("feishu.message_handler.set_pending", side_effect=_fake_set_pending),
-            patch("feishu.message_handler._post_admin", side_effect=_fake_post_admin),
-            patch("feishu.message_handler._get_admin", return_value={"ok": True, "status": "expired", "authenticated": False}),
-            patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
-        ):
-            asyncio.run(message_handler._process_and_reply("四川省泸州市泸县241乡道东南侧，800，5", "user-1", "chat-1"))
-
-        self.assertEqual("get_price", calls["execute_tool"][0])
-        self.assertEqual("price_default", calls["execute_tool"][1]["account_id"])
+        self.assertEqual(1, len(calls))
+        self.assertEqual("三平台报价", calls[0]["command_text"])
+        self.assertEqual("legacy-flow-event", calls[0]["event_id"])
+        self.assertEqual("user-1", calls[0]["sender_id"])
+        self.assertEqual({"address": "示例市测试路1号", "weight": 800.0, "volume": 5.0}, calls[0]["runtime_inputs"])
         self.assertEqual([], admin_calls)
-        self.assertEqual(1, len(pending_calls))
-        self.assertEqual("confirm_login_for_resume", pending_calls[0][1]["type"])
-        self.assertEqual("account:price_default", pending_calls[0][1]["auth_session"])
-        self.assertEqual("get_price", pending_calls[0][1]["resume_tool"])
-        self.assertIn("是否现在发送", replies[-1])
+        self.assertEqual([], pending_calls)
+        self.assertEqual(3, len(replies))
+        self.assertTrue(all(message in text for text in replies))
+
+    def test_feishu_quote_auth_pending_does_not_start_legacy_sms_resume(self):
+        self._assert_quote_auth_failure_stays_in_plugin("AUTH_PENDING_CODE")
+
+    def test_feishu_quote_auth_required_does_not_guess_a_legacy_account(self):
+        self._assert_quote_auth_failure_stays_in_plugin("AUTH_REQUIRED")
 
     def test_feishu_project_blocked_login_does_not_start_legacy_sms_flow(self):
         calls: dict[str, Any] = {}

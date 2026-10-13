@@ -430,6 +430,7 @@ class _ServiceState:
 class _ServiceRepository:
     def __init__(self, state: _ServiceState) -> None:
         self.state = state
+        self.generation_rows: dict[tuple[str, int], dict] = {}
 
     def unit_of_work(self) -> _UnitOfWork:
         return _UnitOfWork(self.state)

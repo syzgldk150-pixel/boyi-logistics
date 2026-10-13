@@ -215,7 +215,7 @@ class MobileNavigationTests(unittest.TestCase):
     def test_migration_is_registered_and_idempotent_without_runtime_ddl(self):
         migration = PROJECT_ROOT / "agent" / "migrations" / "008_admin_ui_preferences.sql"
         source = migration.read_text(encoding="utf-8")
-        from agent.scripts.run_migrations import discover_migrations, split_sql_statements
+        from scripts.run_migrations import discover_migrations, split_sql_statements
 
         self.assertTrue(migration.is_file())
         self.assertIn("information_schema.COLUMNS", source)

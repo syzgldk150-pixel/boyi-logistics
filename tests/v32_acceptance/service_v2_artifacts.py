@@ -41,6 +41,11 @@ def build_artifact(plugin_id, output_root, *, label="baseline", version=None, ed
         target = copy_root / "shared" / filename
         target.parent.mkdir(exist_ok=True)
         shutil.copyfile(ROOT / "shared" / filename, target)
+    if plugin_id == 'sync_arrival_stats_v2':
+        relative = 'service_v2_plugins/split_pending_problem_upload_v2/payload/split_rules.py'
+        target = copy_root / 'agent' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / 'agent' / relative, target)
     if plugin_id == 'split_pending_problem_upload_v2':
         for relative in ('service_v2_plugins/sync_daily_should_sign_v2/payload/business/daily_sign_rules.py',
                          'tools/daily_sign_values.py'):

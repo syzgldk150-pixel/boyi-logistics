@@ -156,6 +156,9 @@ def test_complete_empty_r13_result_commits_and_publishes_zero_rows() -> None:
         return_value={
             "ok": True,
             "rows": 0,
+            "written": 0,
+            "unchanged": False,
+            "format_readback": {"verified": True, "skipped": True, "reason": "no_data_rows"},
             "readback": {
                 "verified": True,
                 "record_count": 0,
@@ -185,7 +188,10 @@ def test_complete_empty_r13_result_commits_and_publishes_zero_rows() -> None:
     }
     pipeline_replacements = {
         "_resolve_r13_request": Mock(
-            return_value={"days": 1, "fetch_all": True, "page": 1}
+            return_value={
+                "days": 1, "fetch_all": True, "page": 1,
+                "include_history": True, "end": "2026-08-13 09:00:00",
+            }
         ),
         "_source_query_window": Mock(return_value=(observed_at, observed_at)),
         "_collect_problem_events": Mock(
