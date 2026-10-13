@@ -1164,11 +1164,15 @@ from shared.automation_plugin_v2_repository import (
 from shared.automation_plugin_enable_repository import (
     AutomationPluginEnableRepositoryMixin,
 )  # noqa: E402
+from shared.automation_project_schedule_repository import (
+    AutomationProjectScheduleRepositoryMixin,
+)  # noqa: E402
 
 
 class AutomationPluginRepository(
     AutomationPluginV2RepositoryMixin,
     AutomationPluginEnableRepositoryMixin,
+    AutomationProjectScheduleRepositoryMixin,
     AutomationPluginGenerationRepositoryMixin,
     AutomationPluginWorkerRepositoryMixin,
     RepositoryBase,

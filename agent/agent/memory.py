@@ -282,8 +282,11 @@ class Memory:
         """列出定时任务定义"""
         return self._scheduled_task_repository().list_tasks()
 
-    def list_enabled_scheduled_tasks(self) -> list[dict]:
-        return self._scheduled_task_repository().list_tasks(enabled_only=True)
+    def list_enabled_scheduled_tasks(self, *, automation_id: str | None = None) -> list[dict]:
+        return self._scheduled_task_repository().list_tasks(
+            enabled_only=True,
+            automation_id=automation_id,
+        )
 
     def upsert_scheduled_task(self, task: dict) -> None:
         """新增或更新定时任务"""

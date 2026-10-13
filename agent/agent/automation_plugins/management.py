@@ -10,6 +10,7 @@ import json
 import logging
 import mimetypes
 import re
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -2160,6 +2161,7 @@ class AutomationPluginManagementService:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
         self._require_no_open_migration_pair(automation_id)
+        started = time.monotonic()
         record = self._configuration.save(
             automation_id,
             config=config,
@@ -2180,13 +2182,28 @@ class AutomationPluginManagementService:
         # visible non-runnable target rather than rolling back or using an old
         # account/device.
         reconcile_failed = False
+        saved = time.monotonic()
         try:
             self._targets.reconcile_project(automation_id)
         except Exception:  # noqa: BLE001 - desired config already committed fail-closed
             reconcile_failed = True
+        reconciled = time.monotonic()
         projection = self._configuration_projection(record)
         if not reconcile_failed:
-            self._retry_v2_consumers_after_provider_change(automation_id)
+            # A settings save keeps the package and its provided services.
+            self._retry_v2_consumers_after_provider_change(
+                automation_id,
+                skip_without_consumers=True,
+            )
+        logger.info(
+            "Plugin configuration save timings automation_id=%s save_ms=%d "
+            "reconcile_ms=%d dependency_ms=%d reconcile_failed=%s",
+            automation_id,
+            (saved - started) * 1000,
+            (reconciled - saved) * 1000,
+            (time.monotonic() - reconciled) * 1000,
+            reconcile_failed,
+        )
         entry = self._catalog.require(automation_id)
         projection.update(
             {
@@ -2357,10 +2374,27 @@ class AutomationPluginManagementService:
         request_id: str,
         expected_project_configuration_version: int,
         actor: Actor,
+        expected_schedule: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Update only the Console-owned schedule and scheduler entrypoint."""
+        """Update only the Console-owned schedule and scheduler entrypoint.
+
+        Daily times are the host timer's: changing only them rewrites the
+        committed generation's task rows in one transaction.  Kind or on/off
+        changes still switch the scheduler entrypoint through a generation.
+        """
 
         entry = self._catalog.require(automation_id)
+        if expected_schedule is not None:
+            times_only = self._save_schedule_times_only(
+                entry,
+                schedule=schedule,
+                expected_schedule=expected_schedule,
+                request_id=request_id,
+                expected_project_configuration_version=expected_project_configuration_version,
+                actor=actor,
+            )
+            if times_only is not None:
+                return times_only
         scheduler_entrypoints = {
             key
             for key, contract in entry.invocation_contracts.items()
@@ -2387,6 +2421,76 @@ class AutomationPluginManagementService:
             expected_project_configuration_version=expected_project_configuration_version,
             actor=actor,
         )
+
+    def _save_schedule_times_only(
+        self,
+        entry: PluginCatalogEntry,
+        *,
+        schedule: Mapping[str, Any],
+        expected_schedule: Mapping[str, Any],
+        request_id: str,
+        expected_project_configuration_version: int,
+        actor: Actor,
+    ) -> dict[str, Any] | None:
+        """Return the saved projection, or None when the full path is needed."""
+
+        role = self._require_console_actor(actor, super_admin=True)
+        self._require_mutation_allowed()
+        current = entry.project_schedule
+        if (
+            entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value
+            or current.get("kind") != "daily_times"
+            or schedule.get("kind") != "daily_times"
+            or current.get("enabled") is not schedule.get("enabled")
+        ):
+            return None
+        self._require_no_open_migration_pair(entry.automation_id)
+        try:
+            result = self._configuration.save_schedule_times(
+                entry,
+                schedule=schedule,
+                expected_schedule=expected_schedule,
+                actor_id=actor.actor_id,
+                actor_role=role,
+                request_id=request_id,
+                expected_project_configuration_version=expected_project_configuration_version,
+            )
+        except ConcurrentUpdateError as exc:
+            raise PluginConflictError(
+                "定时计划或插件设置已被其他操作修改，请刷新页面后重新保存。",
+                code="PLUGIN_SCHEDULE_CHANGED",
+            ) from exc
+        except IdempotencyConflict as exc:
+            raise PluginConflictError(
+                "同一保存请求不能更换定时内容，请刷新页面后重新保存。",
+                code="PLUGIN_SCHEDULE_REQUEST_REUSED",
+            ) from exc
+        outcome = result.get("outcome")
+        if outcome == "INELIGIBLE":
+            return None
+        if outcome not in {"SAVED", "REPLAYED", "UNCHANGED"}:
+            raise PluginConflictError(
+                "schedule time save returned invalid evidence",
+                code="PLUGIN_SCHEDULE_SAVE_INVALID",
+            )
+        return {
+            "automation_id": entry.automation_id,
+            "configured": True,
+            "project_configuration_version": int(result["project_configuration_version"]),
+            "schedule": dict(result["schedule"]),
+            "enabled_entrypoints": list(entry.current_enabled_entrypoints),
+            "runtime_model": entry.runtime_model,
+            "entrypoint_kinds": {
+                key: contract["contribution_kind"]
+                for key, contract in entry.invocation_contracts.items()
+                if contract.get("contribution_kind")
+            },
+            "target_generation": entry.target_generation,
+            "committed_generation": entry.committed_generation,
+            "reconcile_state": entry.reconcile_state.value,
+            **self._transition_projection(entry),
+            "schedule_times_only": True,
+        }
 
     def settings_asset(
         self,
@@ -2616,6 +2720,7 @@ class AutomationPluginManagementService:
         *,
         strict: bool = False,
         provider_services: Sequence[str] | None = None,
+        skip_without_consumers: bool = False,
     ) -> None:
         """Reconcile this provider and its actual transitive consumers only."""
 
@@ -2638,6 +2743,13 @@ class AutomationPluginManagementService:
                 )
             return
         def retry_consumers():
+            if skip_without_consumers:
+                return reconcile_tree(
+                    automation_id,
+                    provider_services=provider_services,
+                    enabled=entry.enabled,
+                    skip_without_consumers=True,
+                )
             return reconcile_tree(automation_id, provider_services=provider_services, enabled=entry.enabled)
         if strict:
             retry_consumers()

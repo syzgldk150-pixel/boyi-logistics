@@ -93,7 +93,12 @@ class ScheduledTaskRepository:
         self._connection_factory = connection_factory
         self._cursor_factory = cursor_factory
 
-    def list_tasks(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+    def list_tasks(
+        self,
+        *,
+        enabled_only: bool = False,
+        automation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         sql = """
             SELECT id, automation_id, automation_generation, name, tool_name, tool_params,
                    cron_expression, enabled,
@@ -101,12 +106,22 @@ class ScheduledTaskRepository:
                    configuration_version, updated_at, created_at
             FROM scheduled_tasks
         """
+        conditions: list[str] = []
+        args: list[Any] = []
         if enabled_only:
-            sql += " WHERE enabled=TRUE"
+            conditions.append("enabled=TRUE")
+        if automation_id is not None:
+            conditions.append("automation_id=%s")
+            args.append(automation_id)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY name ASC, id ASC"
         with _connection(self._connection_factory) as connection:
             with _cursor(connection, self._cursor_factory) as cursor:
-                cursor.execute(sql)
+                if args:
+                    cursor.execute(sql, tuple(args))
+                else:
+                    cursor.execute(sql)
                 rows = list(cursor.fetchall() or [])
         for row in rows:
             row["tool_params"] = _decode_json(row.get("tool_params"), {})

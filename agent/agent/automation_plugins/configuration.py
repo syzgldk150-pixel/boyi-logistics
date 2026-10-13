@@ -7,7 +7,7 @@ import re
 import uuid
 from typing import Any, Mapping, Sequence
 
-from agent.automation_plugins.catalog import PluginCatalog
+from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
 from agent.automation_plugins.code_owned_fields import (
     first_party_code_owned_config_fields,
     normalize_first_party_code_owned_config,
@@ -147,6 +147,50 @@ class AutomationProjectConfigurationService:
                 code="PLUGIN_MIGRATION_CONFIGURATION_UNAVAILABLE",
             )
         return record
+
+    def save_schedule_times(
+        self,
+        entry: PluginCatalogEntry,
+        *,
+        schedule: Mapping[str, Any],
+        expected_schedule: Mapping[str, Any],
+        actor_id: str,
+        actor_role: str,
+        request_id: str,
+        expected_project_configuration_version: int,
+    ) -> Mapping[str, Any]:
+        """Save only host-owned daily times on the committed generation.
+
+        The repository declines (``INELIGIBLE``) without writing whenever the
+        change is more than the time list or the generation is not stable;
+        the caller then takes the full configuration path.
+        """
+
+        saver = getattr(self._repository, "save_project_schedule_times", None)
+        if not callable(saver):
+            return {"outcome": "INELIGIBLE", "reason": "REPOSITORY_UNAVAILABLE"}
+        if not str(actor_id or "").strip() or not str(actor_role or "").strip():
+            raise PluginConflictError("authenticated actor is required")
+        try:
+            uuid.UUID(str(request_id))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise PluginConflictError("request_id must be UUID") from exc
+        if (
+            isinstance(expected_project_configuration_version, bool)
+            or not isinstance(expected_project_configuration_version, int)
+            or expected_project_configuration_version < 1
+        ):
+            raise PluginConflictError("expected_config_version must be a positive integer")
+        return saver(
+            entry.automation_id,
+            schedule=normalize_project_schedule(schedule, entry.scheduling),
+            expected_schedule=normalize_project_schedule(expected_schedule, entry.scheduling),
+            scheduling=copy.deepcopy(dict(entry.scheduling)),
+            actor_id=str(actor_id).strip(),
+            actor_role=str(actor_role).strip(),
+            request_id=str(request_id),
+            expected_project_configuration_version=expected_project_configuration_version,
+        )
 
     def save(
         self,

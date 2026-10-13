@@ -24,6 +24,7 @@ from shared.automation_unknown_write_recovery import (
     recover_unknown_automation_write as _recover_unknown_automation_write,
 )
 from shared import automation_run_lookup, orchestration_schema
+from shared.connection_reuse import acquire_transaction_connection, release_transaction_connection
 from shared.orchestration_evidence_lookup import EvidenceLookupMixin
 from shared.scheduled_task_approval_repository import ScheduledTaskApprovalPolicyRepository
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
@@ -2793,13 +2794,14 @@ class OrchestrationUnitOfWork:
         self._connection_factory = connection_factory
         self._cursor_factory = cursor_factory
         self.connection: Any | None = None
+        self._connection_owner: Any | None = None  # shared.connection_reuse scope, if any
         self._completed = False
         self._entered = False
 
     def __enter__(self) -> "OrchestrationUnitOfWork":
         if self._entered:
             raise RuntimeError("unit of work cannot be entered twice")
-        connection = self._connection_factory()
+        connection, self._connection_owner = acquire_transaction_connection(self._connection_factory)
         if connection is None:
             raise RuntimeError("connection_factory returned no connection")
         try:
@@ -2812,9 +2814,7 @@ class OrchestrationUnitOfWork:
             if callable(begin):
                 begin()
         except Exception:
-            close = getattr(connection, "close", None)
-            if callable(close):
-                close()
+            release_transaction_connection(connection, self._connection_owner, reusable=False)
             raise
         self.connection = connection
         self._entered = True
@@ -2981,10 +2981,9 @@ class OrchestrationUnitOfWork:
                 connection.rollback()
                 self._completed = True
         finally:
-            if connection is not None:
-                close = getattr(connection, "close", None)
-                if callable(close):
-                    close()
+            if connection is not None:  # reused only after a clean, finished transaction
+                reusable = exc_type is None and self._completed
+                release_transaction_connection(connection, self._connection_owner, reusable=reusable)
             self.connection = None
         return False
 

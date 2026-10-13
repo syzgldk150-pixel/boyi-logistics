@@ -752,7 +752,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("pollApprovedBatch", template_source)
         self.assertNotIn("batchTerminalStatuses", template_source)
         self.assertNotIn("已批准，等待执行", template_source)
-        self.assertIn("20260909-direct-invocation", template_source)
+        self.assertIn("20261013-schedule-times", template_source)
 
     def test_assets_are_cache_busted_with_project_governance_styles(self):
         static_dir = Path(__file__).resolve().parents[1] / "static"
@@ -765,7 +765,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertIn(".auto-pending-approvals[hidden]", style)
         self.assertIn('.selection-preview-item input[type="checkbox"]', style)
         self.assertIn("appearance: auto", style)
-        self.assertIn("style.css?v=cal-console-20260929-date-popover", base)
+        self.assertIn("style.css?v=20261012-schedule-visibility", base)
         self.assertNotIn(".automation-plugin-install-panel", style)
         self.assertNotIn(
             ".automation-plugin-install-form { display: grid; grid-template-columns:",

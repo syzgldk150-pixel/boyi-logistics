@@ -9,6 +9,7 @@ facade below the single-file hygiene limit.
 from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
+from shared.automation_schedule_material import schedule_generation_shape
 
 Any = _repository.Any
 ConcurrentUpdateError = _repository.ConcurrentUpdateError
@@ -19,12 +20,21 @@ _canonical_uuid = _repository._canonical_uuid
 _decode_row = _repository._decode_row
 _json_hash = _repository._json_hash
 _json_param = _repository._json_param
+_json_value = _repository._json_value
 _normalized_state_change_context = _repository._normalized_state_change_context
 _positive_int = _repository._positive_int
 _required_text = _repository._required_text
 _row_dict = _repository._row_dict
 _sha256 = _repository._sha256
 uuid = _repository.uuid
+
+
+def _generation_schedule_shape(generation: Mapping[str, Any]) -> Any:
+    snapshot = _json_value(generation.get("snapshot_json"), None)
+    metadata = snapshot.get("execution_metadata") if isinstance(snapshot, Mapping) else None
+    if not isinstance(metadata, Mapping) or not isinstance(metadata.get("schedule"), Mapping):
+        return None
+    return schedule_generation_shape(metadata["schedule"])
 
 
 class AutomationPluginEnableRepositoryMixin:
@@ -230,8 +240,11 @@ class AutomationPluginEnableRepositoryMixin:
                 == config.get("resource_bindings_sha256")
                 and generation.get("device_binding_sha256")
                 == config.get("device_binding_sha256")
-                and generation.get("schedule_sha256")
-                == config.get("desired_schedule_sha256")
+                # Daily times are the host timer's; kind and on/off match.
+                and _generation_schedule_shape(generation)
+                == schedule_generation_shape(
+                    _json_value(config.get("desired_schedule_json"), None)
+                )
                 and generation.get("compiled_invocations_sha256")
                 == config.get("compiled_invocations_sha256")
                 and generation.get("enabled_entrypoints_sha256")

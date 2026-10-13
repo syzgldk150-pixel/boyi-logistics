@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from email import policy
@@ -30,9 +32,12 @@ from agent.automation_plugins.management import (
     MigrationPreparationPersistedError,
 )
 from agent.orchestration.models import Actor
+from shared.connection_reuse import reuse_transaction_connections
 from shared.contracts import api_failure, api_success
 from shared.orchestration_repository_support import OrchestrationPersistenceError
 from shared.redaction import redact_text
+
+logger = logging.getLogger("agent")
 
 
 _MAX_HTTP_ARCHIVE_BYTES = 32 * 1024 * 1024
@@ -142,6 +147,8 @@ class PluginScheduleUpdateRequest(BaseModel):
     schedule: PluginScheduleRequest
     request_id: str = Field(min_length=1, max_length=64)
     expected_project_configuration_version: int = Field(ge=0)
+    # The schedule the operator edited; enables the times-only CAS.
+    expected_schedule: PluginScheduleRequest | None = None
 
 
 class ArrivalStatsRecoveryReadbackRequest(BaseModel):
@@ -252,6 +259,20 @@ def _plugin_error_response(exc: Exception) -> JSONResponse:
         status_code=status_code,
         content=api_failure(str(code), redact_text(exc)[:500], data=data),
     )
+
+
+def _with_reused_connections(call: Callable[[], Any]) -> Callable[[], Any]:
+    """Run one save's sequential transactions over one database connection.
+
+    A settings or schedule save performs dozens of short Units of Work; on
+    the cross-region RDS each fresh TLS connection costs about 0.27 s.
+    """
+
+    def run() -> Any:
+        with reuse_transaction_connections():
+            return call()
+
+    return run
 
 
 async def _service_response(call: Callable[[], Any]) -> dict[str, Any] | JSONResponse:
@@ -583,6 +604,7 @@ def create_automation_plugin_management_router(
     include_worker_routes: bool = True,
     scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None = None,
     policy_service_provider: Callable[[], Any] | None = None,
+    scheduler_project_sync_provider: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> APIRouter:
     """Build the plugin API without importing the Agent composition root."""
 
@@ -1036,7 +1058,7 @@ def create_automation_plugin_management_router(
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
         service = service_provider()
-        response = await _service_response(
+        response = await _service_response(_with_reused_connections(
             lambda: service.save_configuration(
                 automation_id,
                 config=payload.config,
@@ -1051,7 +1073,7 @@ def create_automation_plugin_management_router(
                 ),
                 actor=actor,
             )
-        )
+        ))
         if isinstance(response, JSONResponse):
             return response
         data = response.get("data")
@@ -1176,7 +1198,7 @@ def create_automation_plugin_management_router(
         request: Request,
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
-        return await _service_response(
+        return await _service_response(_with_reused_connections(
             lambda: service_provider().save_plugin_settings(
                 automation_id,
                 config=payload.config,
@@ -1188,7 +1210,7 @@ def create_automation_plugin_management_router(
                 ),
                 actor=actor,
             )
-        )
+        ))
 
     @router.put(
         "/internal/v1/automation/instances/{automation_id}/schedule",
@@ -1201,7 +1223,7 @@ def create_automation_plugin_management_router(
     ) -> dict[str, Any] | JSONResponse:
         actor = actor_provider(request)
         service = service_provider()
-        response = await _service_response(
+        response = await _service_response(_with_reused_connections(
             lambda: service_provider().save_console_schedule(
                 automation_id,
                 schedule=payload.schedule.model_dump(),
@@ -1210,8 +1232,13 @@ def create_automation_plugin_management_router(
                     payload.expected_project_configuration_version
                 ),
                 actor=actor,
+                expected_schedule=(
+                    payload.expected_schedule.model_dump()
+                    if payload.expected_schedule is not None
+                    else None
+                ),
             )
-        )
+        ))
         if isinstance(response, JSONResponse):
             return response
         data = response.get("data")
@@ -1228,15 +1255,24 @@ def create_automation_plugin_management_router(
             automation_id=automation_id,
         )
         refresh_completed = False
+        refresh_started = time.monotonic()
         if data.get("generation_ready") is not True:
             runtime_state = "BLOCKED_GENERATION"
         else:
             try:
-                refreshed = (
-                    await run_in_threadpool(scheduler_refresh_provider)
-                    if scheduler_refresh_provider is not None
-                    else {"initialized": False}
-                )
+                if (
+                    data.get("schedule_times_only") is True
+                    and scheduler_project_sync_provider is not None
+                ):
+                    # Times-only saves keep the committed generation; only
+                    # this project's jobs change.
+                    refreshed = await run_in_threadpool(
+                        scheduler_project_sync_provider, automation_id
+                    )
+                elif scheduler_refresh_provider is not None:
+                    refreshed = await run_in_threadpool(scheduler_refresh_provider)
+                else:
+                    refreshed = {"initialized": False}
                 refresh_completed = _scheduler_refresh_succeeded(refreshed)
             except Exception:  # noqa: BLE001 - schedule is durable
                 refresh_completed = False
@@ -1248,6 +1284,13 @@ def create_automation_plugin_management_router(
                 runtime_state = "ENTRYPOINT_DISABLED"
             else:
                 runtime_state = "ACTIVE"
+        logger.info(
+            "Plugin schedule save automation_id=%s times_only=%s state=%s refresh_ms=%d",
+            automation_id,
+            data.get("schedule_times_only") is True,
+            runtime_state,
+            (time.monotonic() - refresh_started) * 1000,
+        )
         data.update(
             {
                 "schedule_runtime_state": runtime_state,

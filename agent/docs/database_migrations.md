@@ -4,12 +4,14 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-10-11
+updated: 2026-10-13
 ---
 
 # 数据库迁移
 
 `056_drop_boyi_handling_fees.sql` 删除博益运单实体表 `waybill_db.boyi_waybills` 的 `pickup_fee`、`delivery_fee`：博益主单、录单页、OCR 模板与录单扩展草稿已不含接货费、送货费；融辉/韵达平台表保留这两列。发布前须重新核对博益表的行数与费用列使用情况，并保留当次备份。迁移先将原行 ID 与两项费用原样保存在 `waybill_db._migration_056_boyi_handling_fees`，再删除实体列；备份表保留到业务验收完成。它是首个 055 之后的普通迁移，用 `{{waybill_db}}` 引用实体库，`run_migrations.py` 按运行库绑定名称并在执行后重建 `agent_db` 视图投影；须与不再读写这两列的 Console 代码协调发布；迁移后不得回退到仍读写这两列的旧版本。
+
+`058_automation_project_schedule_changes.sql` 在运行库 `agent_db` 新增 `automation_project_schedule_changes`：每次只改“每天指定时间”时间点的保存记录一条幂等事实（请求 ID 唯一、操作人、前后定时与摘要、所绑定的代次和配置版本），不设外键，卸载实例后仍保留审计。只新增表，不改动既有表或历史迁移；回退旧版本代码时该表闲置无害。
 
 `054_boyi_waybill_sender_address.sql` 为博益手工单新增选填 `sender_address`，历史记录保持 NULL；录入、详情与打印共用已保存值。
 

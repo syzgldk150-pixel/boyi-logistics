@@ -112,6 +112,37 @@ class MySQLAutomationPluginManagementRepository:
             )
         return persisted
 
+    def save_project_schedule_times(
+        self,
+        automation_id: str,
+        *,
+        schedule: Mapping[str, object],
+        expected_schedule: Mapping[str, object],
+        scheduling: Mapping[str, object],
+        actor_id: str,
+        actor_role: str,
+        request_id: str,
+        expected_project_configuration_version: int,
+    ) -> dict[str, Any]:
+        """One Unit of Work; an ``INELIGIBLE`` answer commits nothing."""
+
+        with self._orchestration.unit_of_work() as uow:
+            result = uow.automation_plugins.save_project_schedule_times(
+                automation_id,
+                schedule=schedule,
+                expected_schedule=expected_schedule,
+                scheduling=scheduling,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                request_id=request_id,
+                expected_project_configuration_version=(
+                    expected_project_configuration_version
+                ),
+            )
+            if result.get("outcome") == "SAVED":
+                uow.commit()
+        return dict(result)
+
     def get_worker_device(self, device_id: str) -> dict[str, Any] | None:
         with self._orchestration.unit_of_work() as uow:
             row = uow.automation_plugins.get_worker_device(device_id)

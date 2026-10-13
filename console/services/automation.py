@@ -820,6 +820,18 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
                 plugin_schedule_supported = False
             task["plugin_schedule_kind"] = plugin_schedule_kind
             task["plugin_schedule_supported"] = plugin_schedule_supported
+            # The Agent-saved schedule the operator edits; sent back as the
+            # compare-and-swap base for a daily-times-only save.
+            task["plugin_expected_schedule"] = (
+                {
+                    "kind": signed_schedule_kind,
+                    "times": sorted(str(item) for item in signed_schedule.get("times") or []),
+                    "enabled": bool(signed_schedule.get("enabled")),
+                }
+                if task["plugin_schedule_source"] == "agent"
+                and signed_schedule_kind in {"daily_times", "startup"}
+                else None
+            )
             task["plugin_schedule_max_daily_times"] = int(
                 (plugin.get("scheduling") or {}).get("max_daily_times") or 0
             )

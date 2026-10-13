@@ -19,6 +19,7 @@ from threading import RLock
 from typing import Any, Callable, Mapping, Sequence
 
 from shared.async_work import drain_thread
+from shared.automation_schedule_material import schedule_generation_shape
 
 from agent.automation_plugins.broker import (
     LocalBrokerCapabilityIssuer,
@@ -266,6 +267,7 @@ class ProductionRuntimeEffectDriver:
         self._scheduler_project_emergency_withdrawer: (
             Callable[[str], Mapping[str, Any]] | None
         ) = None
+        self._scheduler_project_syncer: Callable[[str], Mapping[str, Any]] | None = None
         self._emergency_blocked_projects: dict[str, int] = {}
         # Retry state is authoritative.  In particular an empty expected set
         # means "clear the active contribution generation", not "derive the
@@ -316,6 +318,34 @@ class ProductionRuntimeEffectDriver:
             raise TypeError("scheduler projection refresher must be callable")
         with self._projection_lock:
             self._scheduler_projection_refresher = refresher
+
+    def bind_scheduler_project_syncer(
+        self,
+        syncer: Callable[[str], Mapping[str, Any]],
+    ) -> None:
+        """Bind the per-project job sync used after a times-only save."""
+
+        if not callable(syncer):
+            raise TypeError("scheduler project syncer must be callable")
+        with self._projection_lock:
+            self._scheduler_project_syncer = syncer
+
+    def refresh_project_schedule(self, automation_id: str) -> Mapping[str, Any]:
+        """Re-register only one project's timer rows under the projection lock.
+
+        A pending projection switch anywhere still takes the full refresh,
+        which retries that switch before verifying live jobs.
+        """
+
+        with self._projection_lock:
+            syncer = self._scheduler_project_syncer
+            pending = any(
+                operation != "blocked"
+                for operation, _ in self._pending_projection_transitions.values()
+            )
+            if syncer is not None and not pending:
+                return dict(syncer(automation_id))
+        return self.refresh_contribution_projection()
 
     def bind_scheduler_project_emergency_withdrawer(
         self,
@@ -1476,7 +1506,6 @@ class MySQLRuntimeTargetService:
             "account_bindings_sha256",
             "resource_bindings_sha256",
             "device_binding_sha256",
-            "schedule_sha256",
             "core_registry_sha256",
             "tool_contract_sha256",
             "invocation_contracts_sha256",
@@ -1486,6 +1515,8 @@ class MySQLRuntimeTargetService:
         )
         if not all(getattr(current, field) == getattr(desired, field) for field in fields):
             return False
+        # Daily times are the host timer's; kind and on/off stay material.
+        # Each snapshot's own schedule digest is verified where it is loaded.
         current_metadata = current.execution_metadata
         desired_metadata = desired.execution_metadata
         if not isinstance(current_metadata, Mapping) or not isinstance(
@@ -1509,6 +1540,8 @@ class MySQLRuntimeTargetService:
         desired_without_descriptor = copy.deepcopy(dict(desired_metadata))
         current_without_descriptor.pop("runtime_descriptor", None)
         desired_without_descriptor.pop("runtime_descriptor", None)
+        for metadata in (current_without_descriptor, desired_without_descriptor):
+            metadata["schedule"] = schedule_generation_shape(metadata.get("schedule"))
         if canonical_json_bytes(current_without_descriptor) != canonical_json_bytes(desired_without_descriptor):
             return False
         return runtime_descriptor_matches_signed_installation(
@@ -1667,6 +1700,7 @@ class MySQLRuntimeTargetService:
         provider_services: Sequence[str],
         enabled: bool,
         consumer_automation_ids: Sequence[str] | None = None,
+        skip_without_consumers: bool = False,
     ) -> object:
         consumers = tuple(
             consumer_automation_ids
@@ -1676,6 +1710,11 @@ class MySQLRuntimeTargetService:
                 provider_services,
             )
         )
+        if skip_without_consumers and not consumers:
+            # The caller already reconciled this provider; with nobody to
+            # re-prepare, closing and reopening its own gate is redundant and
+            # briefly removes its live jobs.
+            return None
         if enabled:
             return self.restore_provider_dependency_tree(
                 provider_automation_id,

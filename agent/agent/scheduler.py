@@ -1502,6 +1502,110 @@ def _reload_scheduler_locked(
     }
 
 
+def sync_project_jobs(
+    agent_core,
+    automation_id: str,
+    *,
+    automation_project_invoker: Any | None = None,
+) -> dict[str, Any]:
+    """Align one project's daily jobs with its persisted timer rows.
+
+    Used after a times-only schedule save, where the committed generation and
+    configuration version are unchanged: kept times keep their live job (no
+    re-registration that could skip an occurrence firing right now), removed
+    times lose theirs and new times are registered.  Other projects, fixed
+    jobs and startup one-shots are untouched.  Any invalid row fails before a
+    change; a registration failure restores this project's previous jobs.
+    """
+
+    if (
+        type(automation_id) is not str
+        or not automation_id
+        or automation_id != automation_id.strip()
+    ):
+        raise ValueError("automation_id must be a non-empty normalized string")
+    global _automation_project_invoker
+    with _scheduler_reload_lock:
+        if automation_project_invoker is not None:
+            _automation_project_invoker = automation_project_invoker
+        if _scheduler is None:
+            return {"initialized": False, "jobs": 0, "job_ids": []}
+        if _automation_project_job_is_tombstoned(automation_id):
+            return {
+                "initialized": True,
+                "jobs": 0,
+                "job_ids": [],
+                "invalid_tasks": [
+                    {
+                        "task_id": automation_id,
+                        "error_code": "PROJECT_SCHEDULER_WITHDRAWN",
+                        "error_summary": "automation project scheduler is withdrawn",
+                    }
+                ],
+            }
+        plan: dict[str, dict[str, Any]] = {}
+        for task in agent_core.memory.list_enabled_scheduled_tasks(
+            automation_id=automation_id
+        ):
+            try:
+                if not isinstance(task, dict) or _task_automation_owner(task) != automation_id:
+                    raise ValueError("scheduled task does not belong to the project")
+                if str(task.get("cron_expression") or "").strip() == "@startup":
+                    continue
+                _validate_cron_task(task)
+            except Exception as exc:
+                issue = _scheduled_task_issue(task if isinstance(task, Mapping) else {}, exc)
+                _log_invalid_scheduled_tasks([issue])
+                raise ScheduledTaskReloadError([issue]) from exc
+            plan[str(task["id"])] = task
+        owned_cron_jobs = {
+            str(job.id): job
+            for job in _scheduler.get_jobs()
+            if _scheduler_job_owner_marker(job) == ("automation", automation_id)
+            and isinstance(job.trigger, CronTrigger)
+        }
+        stale = [
+            _snapshot_scheduler_job(job)
+            for job_id, job in sorted(owned_cron_jobs.items())
+            if job_id not in plan
+        ]
+        added: list[str] = []
+        try:
+            for job in stale:
+                _scheduler.remove_job(job["id"])
+            for task_id, task in sorted(plan.items()):
+                if task_id in owned_cron_jobs:
+                    continue
+                _register_scheduled_task(
+                    task,
+                    is_startup=False,
+                    agent_core=agent_core,
+                    automation_project_invoker=_automation_project_invoker,
+                )
+                added.append(task_id)
+        except Exception:
+            for task_id in added:
+                if _scheduler.get_job(task_id) is not None:
+                    _scheduler.remove_job(task_id)
+            for job in stale:
+                if _scheduler.get_job(job["id"]) is None:
+                    _restore_scheduler_job(job)
+            raise
+        job_ids = sorted(
+            str(job.id)
+            for job in _scheduler.get_jobs()
+            if _scheduler_job_owner_marker(job) == ("automation", automation_id)
+        )
+    return {
+        "initialized": True,
+        "jobs": len(job_ids),
+        "job_ids": job_ids,
+        "added_job_ids": added,
+        "removed_job_ids": [job["id"] for job in stale],
+        "invalid_tasks": [],
+    }
+
+
 def _snapshot_scheduler_job(job: Any) -> dict[str, Any]:
     """Capture every APScheduler property required for an exact rollback."""
 
@@ -1531,21 +1635,29 @@ def _restore_scheduler_jobs(jobs: list[dict[str, Any]]) -> None:
     for job in list(_scheduler.get_jobs()):
         _scheduler.remove_job(job.id)
     for job in jobs:
-        restore_options = {
-            "args": job["args"],
-            "kwargs": job["kwargs"],
-            "id": job["id"],
-            "name": job["name"],
-            "executor": job["executor"],
-            "misfire_grace_time": job["misfire_grace_time"],
-            "coalesce": job["coalesce"],
-            "max_instances": job["max_instances"],
-            "replace_existing": True,
-        }
-        if not job["pending"]:
-            restore_options["next_run_time"] = job["next_run_time"]
-        _scheduler.add_job(
-            job["func"],
-            job["trigger"],
-            **restore_options,
-        )
+        _restore_scheduler_job(job)
+
+
+def _restore_scheduler_job(job: Mapping[str, Any]) -> None:
+    """Re-add one snapshotted job with its original options and next run."""
+
+    if _scheduler is None:
+        raise RuntimeError("scheduler is not initialized")
+    restore_options = {
+        "args": job["args"],
+        "kwargs": job["kwargs"],
+        "id": job["id"],
+        "name": job["name"],
+        "executor": job["executor"],
+        "misfire_grace_time": job["misfire_grace_time"],
+        "coalesce": job["coalesce"],
+        "max_instances": job["max_instances"],
+        "replace_existing": True,
+    }
+    if not job["pending"]:
+        restore_options["next_run_time"] = job["next_run_time"]
+    _scheduler.add_job(
+        job["func"],
+        job["trigger"],
+        **restore_options,
+    )

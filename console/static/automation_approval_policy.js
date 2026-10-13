@@ -312,6 +312,26 @@
     };
   }
 
+  function expectedScheduleField(instance) {
+    // Only the Agent-saved schedule is a valid compare-and-swap base. A card
+    // still showing legacy rows sends none and takes the full save path.
+    try {
+      const saved = JSON.parse(instance.dataset.projectSchedule || "null");
+      if (
+        saved
+        && typeof saved === "object"
+        && typeof saved.kind === "string"
+        && Array.isArray(saved.times)
+        && typeof saved.enabled === "boolean"
+      ) {
+        return { expected_schedule: { kind: saved.kind, times: saved.times, enabled: saved.enabled } };
+      }
+    } catch (_error) {
+      // A malformed attribute is never sent; the full save path still applies.
+    }
+    return {};
+  }
+
   function addScheduleTimeFocus(form) {
     const addSchedule = form.querySelector("[data-add-schedule-time]");
     if (addSchedule instanceof HTMLElement) addSchedule.focus();
@@ -370,6 +390,7 @@
             schedule: settings,
             request_id: requestId,
             expected_project_configuration_version: configurationVersion,
+            ...expectedScheduleField(instance),
           }),
         },
       );
@@ -413,6 +434,8 @@
         return;
       }
       instance.dataset.projectConfigurationVersion = String(newVersion);
+      // The saved schedule is the base of the next times-only save.
+      instance.dataset.projectSchedule = JSON.stringify(settings);
       delete button.dataset.requestId;
       setPluginConfigurationFeedback(
         instance,

@@ -1558,6 +1558,45 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual(10, captured["payload"]["data"]["project_configuration_version"])
         self.assertEqual("定时计划已保存并生效。", captured["payload"]["message"])
 
+    def test_schedule_save_forwards_the_edited_schedule_as_times_only_cas_base(self):
+        app, captured = self._app()
+        calls = []
+        app._agent_request = lambda *args, **kwargs: (
+            calls.append((args, kwargs)) or {
+                "ok": True,
+                "data": {
+                    "project_configuration_version": 10,
+                    "schedule_runtime_state": "ACTIVE",
+                    "schedule_runtime_enabled": True,
+                    "scheduler_refresh_completed": True,
+                },
+            }
+        )
+        payload = self._schedule_payload()
+        payload["expected_schedule"] = {"kind": "daily_times", "times": ["12:00", "08:00"], "enabled": True}
+        app._handle_automation_plugin_schedule_save(self._handler(payload), "finance_action_east")
+
+        self.assertEqual(HTTPStatus.OK, captured["status"])
+        self.assertEqual(
+            {"kind": "daily_times", "times": ["08:00", "12:00"], "enabled": True},
+            calls[0][1]["payload"]["expected_schedule"],
+        )
+
+    def test_schedule_save_rejects_a_malformed_cas_base_or_unknown_field(self):
+        for extra in (
+            {"expected_schedule": {"kind": "daily_times", "times": ["25:00"], "enabled": True}},
+            {"expected_schedule": {"kind": "daily_times", "times": ["08:00"]}},
+            {"expected_generation": 3},
+        ):
+            with self.subTest(extra=extra):
+                app, captured = self._app()
+                calls = []
+                app._agent_request = lambda *args, **kwargs: calls.append(args) or {"ok": True, "data": {}}
+                payload = {**self._schedule_payload(), **extra}
+                app._handle_automation_plugin_schedule_save(self._handler(payload), "finance_action_east")
+                self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
+                self.assertEqual([], calls)
+
     def test_schedule_transport_failure_is_uncertain_without_automatic_retry(self):
         for code in ("agent_request_failed", "agent_unreachable"):
             with self.subTest(code=code):
@@ -2614,6 +2653,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             "plugin_schedule_supported": True,
             "plugin_schedule_max_daily_times": 5,
             "plugin_schedule_source": "agent",
+            "plugin_expected_schedule": {"kind": "daily_times", "times": ["08:00"], "enabled": True},
             "approval_policy": build_automation_project_policy_view(
                 plugin["automation_id"],
                 {
@@ -2658,6 +2698,10 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertEqual(2, card.count("data-project-policy-mode"))
         self.assertIn("data-plugin-configuration-save", card)
         self.assertIn("data-plugin-schedule-kind", card)
+        self.assertIn(
+            "data-project-schedule='{\"enabled\": true, \"kind\": \"daily_times\", \"times\": [\"08:00\"]}'",
+            html,
+        )
         self.assertNotIn("data-plugin-schedule-effect", card)
         self.assertNotIn("data-plugin-account-role", card)
         self.assertNotIn("data-plugin-resource-role", card)

@@ -1057,6 +1057,32 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             },
         )
 
+    @staticmethod
+    def _browser_plugin_schedule(raw_schedule: Any) -> dict[str, Any]:
+        """Return the closed schedule DTO, or {} when it is malformed."""
+
+        if not isinstance(raw_schedule, dict) or set(raw_schedule) != {"kind", "times", "enabled"}:
+            return {}
+        kind = str(raw_schedule.get("kind") or "").strip().lower()
+        times_raw = raw_schedule.get("times")
+        enabled = raw_schedule.get("enabled")
+        if not isinstance(times_raw, list) or not isinstance(enabled, bool):
+            return {}
+        times = [str(item or "").strip() for item in times_raw]
+        if (
+            kind in {"none", "daily_times", "startup"}
+            and len(times) <= AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES
+            and len(times) == len(set(times))
+            and all(re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", item) for item in times)
+            and (
+                (kind == "none" and not times and not enabled)
+                or (kind == "startup" and not times)
+                or (kind == "daily_times" and bool(times))
+            )
+        ):
+            return {"kind": kind, "times": sorted(times), "enabled": enabled}
+        return {}
+
     def _handle_automation_plugin_schedule_save(
         self,
         handler: BaseHTTPRequestHandler,
@@ -1087,11 +1113,12 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         values = self._read_control_plane_json(handler)
         if values is None:
             return
-        if set(values) != {
+        required_fields = {
             "schedule",
             "request_id",
             "expected_project_configuration_version",
-        }:
+        }
+        if not required_fields <= set(values) <= {*required_fields, "expected_schedule"}:
             self._control_plane_error(
                 handler,
                 HTTPStatus.BAD_REQUEST,
@@ -1101,35 +1128,21 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             return
         request_id = self._normalize_browser_request_uuid(values.get("request_id"))
         expected_version = values.get("expected_project_configuration_version")
-        raw_schedule = values.get("schedule")
-        schedule: dict[str, Any] = {}
-        if isinstance(raw_schedule, dict) and set(raw_schedule) == {"kind", "times", "enabled"}:
-            kind = str(raw_schedule.get("kind") or "").strip().lower()
-            times_raw = raw_schedule.get("times")
-            enabled = raw_schedule.get("enabled")
-            if isinstance(times_raw, list) and isinstance(enabled, bool):
-                times = [str(item or "").strip() for item in times_raw]
-                if (
-                    kind in {"none", "daily_times", "startup"}
-                    and len(times) <= AUTOMATION_PLUGIN_SCHEDULE_MAX_DAILY_TIMES
-                    and len(times) == len(set(times))
-                    and all(
-                        re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", item)
-                        for item in times
-                    )
-                    and (
-                        (kind == "none" and not times and not enabled)
-                        or (kind == "startup" and not times)
-                        or (kind == "daily_times" and bool(times))
-                    )
-                ):
-                    schedule = {"kind": kind, "times": sorted(times), "enabled": enabled}
+        schedule = self._browser_plugin_schedule(values.get("schedule"))
+        # The schedule shown when the operator started editing; it lets the
+        # Agent save daily times alone with an exact compare-and-swap.
+        expected_schedule = (
+            self._browser_plugin_schedule(values.get("expected_schedule"))
+            if "expected_schedule" in values
+            else None
+        )
         if (
             not request_id
             or isinstance(expected_version, bool)
             or not isinstance(expected_version, int)
             or expected_version < 1
             or not schedule
+            or expected_schedule == {}
         ):
             self._control_plane_error(
                 handler,
@@ -1145,6 +1158,11 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 "schedule": schedule,
                 "request_id": request_id,
                 "expected_project_configuration_version": expected_version,
+                **(
+                    {"expected_schedule": expected_schedule}
+                    if expected_schedule is not None
+                    else {}
+                ),
             },
             timeout=90,
             console_principal=trusted_context["_console_principal"],

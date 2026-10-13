@@ -238,6 +238,7 @@ from agent.scheduler import (
     scheduler_release_hold_requested,
     scheduler_runtime_status,
     seed_phase7_schedule_tasks,
+    sync_project_jobs,
 )
 from agent.tms_runtime import router as tms_router
 from agent.api_contracts import validation_failure
@@ -1254,6 +1255,13 @@ async def lifespan(app: FastAPI):
     plugin_runtime.service_effect_driver.bind_scheduler_project_emergency_withdrawer(
         emergency_withdraw_automation_project_jobs,
     )
+    plugin_runtime.service_effect_driver.bind_scheduler_project_syncer(
+        lambda automation_id: sync_project_jobs(
+            runtime,
+            automation_id,
+            automation_project_invoker=project_policy_service,
+        )
+    )
     await asyncio.to_thread(plugin_runtime.reconcile)
     await asyncio.to_thread(plugin_runtime.health)
     default_full_auto = {"changed": 0}
@@ -1570,6 +1578,9 @@ app.include_router(
         include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
         scheduler_refresh_provider=lambda: _automation_plugins().service_effect_driver.refresh_contribution_projection(),
         policy_service_provider=_automation_project_policies,
+        scheduler_project_sync_provider=lambda automation_id: (
+            _automation_plugins().service_effect_driver.refresh_project_schedule(automation_id)
+        ),
     )
 )
 app.include_router(

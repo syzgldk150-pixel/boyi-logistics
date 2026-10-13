@@ -236,18 +236,27 @@ async function settle() {
     }),
     response(403, { ok: false, message: "只有超级管理员可以保存自动化项目设置。" }),
   ];
-  global.fetch = async () => {
+  const bodies = [];
+  global.fetch = async (_url, options) => {
     fetchCalls += 1;
+    bodies.push(JSON.parse(options.body));
     return outcomes.shift();
   };
 
   const saved = buildProject("daily-sign");
+  saved.instance.setAttribute(
+    "data-project-schedule",
+    JSON.stringify({ kind: "daily_times", times: ["08:00"], enabled: true }),
+  );
   document.dispatchEvent({ type: "click", target: saved.button });
   document.dispatchEvent({ type: "click", target: saved.button });
   await settle();
   assert.equal(fetchCalls, 1, "busy save button must not submit twice");
   assert.equal(saved.savedEvents(), 1);
   assert.equal(saved.instance.dataset.projectConfigurationVersion, "2");
+  assert.deepEqual(bodies[0].expected_schedule, { kind: "daily_times", times: ["08:00"], enabled: true });
+  assert.deepEqual(JSON.parse(saved.instance.dataset.projectSchedule), bodies[0].schedule,
+    "the saved schedule becomes the next compare-and-swap base");
   assert.equal(saved.summary.hidden, false);
   assert.equal(saved.summary.dataset.kind, "success");
   assert.equal(saved.local.hidden, true);
@@ -263,6 +272,7 @@ async function settle() {
   document.dispatchEvent({ type: "click", target: refreshFailed.button });
   await settle();
   assert.equal(fetchCalls, 2, "new page save must use its live request runtime after the old tab closes");
+  assert.equal("expected_schedule" in bodies[1], false, "a card without a saved schedule sends no CAS base");
   assert.equal(refreshFailed.savedEvents(), 0);
   assert.equal(refreshFailed.local.hidden, false);
   assert.equal(refreshFailed.local.dataset.kind, "warning");

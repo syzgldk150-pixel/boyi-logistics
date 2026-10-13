@@ -68,6 +68,7 @@ REQUIRED_TABLES = frozenset(
         "automation_write_attempt_receipts",
         "automation_plugin_package_events",
         "automation_project_events",
+        "automation_project_schedule_changes",
         "automation_worker_devices",
         "automation_worker_jobs",
         "automation_worker_cleanup_directives",

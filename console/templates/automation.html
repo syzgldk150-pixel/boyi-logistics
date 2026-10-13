@@ -318,6 +318,7 @@
           data-automation-id="{{ task.task_id }}"
           data-record-version="{{ plugin.record_version }}"
           data-project-configuration-version="{{ plugin.project_configuration_version }}"
+          {% if task.plugin_expected_schedule %}data-project-schedule='{{ task.plugin_expected_schedule | tojson }}'{% endif %}
           data-current-version="{{ plugin.version }}"
           aria-label="{{ task.name_value }} 插件实例"
         >
@@ -3083,5 +3084,5 @@
   window.ConsoleUI.refreshIcons(pageRoot);
 })();
 </script>
-<script src="/static/automation_approval_policy.js?v=20260909-direct-invocation" defer></script>
+<script src="/static/automation_approval_policy.js?v=20261013-schedule-times" defer></script>
 {% endblock %}
