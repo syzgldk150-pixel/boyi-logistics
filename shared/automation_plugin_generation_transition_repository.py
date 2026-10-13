@@ -161,8 +161,9 @@ def _apply_scheduled_task_projection(
     generation: int,
     project: Mapping[str, Any],
     snapshot: Mapping[str, Any],
+    desired_schedule: Mapping[str, Any],
 ) -> None:
-    """Replace the physical scheduler projection from one committed snapshot."""
+    """Bind the generation to the host timer's schedule locked at commit."""
 
     cursor.execute(
         """
@@ -192,9 +193,7 @@ def _apply_scheduled_task_projection(
         raise OrchestrationPersistenceError(
             "committed project schedule contains duplicate cron rows"
         )
-    desired_schedule = _normalized_project_schedule(
-        execution_metadata.get("schedule")
-    )
+    desired_schedule = _normalized_project_schedule(desired_schedule)
     enabled_entrypoints = snapshot.get("enabled_entrypoints")
     if not isinstance(enabled_entrypoints, list) or any(
         not isinstance(item, str) for item in enabled_entrypoints

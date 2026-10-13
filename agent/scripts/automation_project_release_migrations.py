@@ -10,6 +10,97 @@ import hashlib
 import json
 
 
+def read_project_schedule_rows(cursor):
+    """Include disabled V2 tasks and projects missing their physical tasks."""
+    cursor.execute("""
+        SELECT task.id AS task_id, project.automation_id,
+               task.automation_generation, task.tool_name, task.cron_expression, task.enabled,
+               task.configuration_version, config.config_version,
+               config.desired_schedule_json, config.desired_schedule_sha256,
+               project.committed_generation, project.target_generation,
+               project.enabled AS project_enabled, project.state AS project_state,
+               project.reconcile_state, policy.mode AS policy_mode,
+               policy.project_generation AS policy_project_generation,
+               generation.state AS generation_state, generation.error_code AS generation_error_code,
+               target_generation.state AS target_generation_state,
+               target_generation.base_committed_generation AS target_base_generation,
+               (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
+                FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id=BINARY project.automation_id) AS max_generation,
+               (SELECT COUNT(*) FROM automation_project_generations AS history
+                WHERE BINARY history.automation_id=BINARY project.automation_id
+                  AND history.generation<>project.committed_generation
+                  AND history.generation<>project.target_generation AND history.state<>'DISPOSED'
+                  AND NOT (history.generation<project.committed_generation
+                    AND history.state='BLOCKED' AND history.error_code='WRITE_OUTCOME_UNKNOWN'
+                    AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
+                      WHERE BINARY archive_lease.automation_id=BINARY history.automation_id
+                        AND archive_lease.generation=history.generation
+                        AND archive_lease.outcome='WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id=BINARY project.automation_id
+                  AND lease.generation=project.committed_generation
+                  AND lease.outcome IN ('RUNNING', 'VERIFYING')) AS active_current_lease_count,
+               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
+                WHERE BINARY lease.automation_id=BINARY project.automation_id
+                  AND lease.generation=project.committed_generation
+                  AND lease.outcome='WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
+               generation.snapshot_json
+        FROM automation_projects AS project
+        LEFT JOIN scheduled_tasks AS task ON BINARY project.automation_id=BINARY task.automation_id
+        LEFT JOIN automation_project_configs AS config ON BINARY config.automation_id=BINARY project.automation_id
+        INNER JOIN automation_project_policies AS policy ON BINARY policy.automation_id=BINARY project.automation_id
+        INNER JOIN automation_project_generations AS generation
+          ON BINARY generation.automation_id=BINARY project.automation_id
+         AND generation.generation=project.committed_generation
+        LEFT JOIN automation_project_generations AS target_generation
+          ON BINARY target_generation.automation_id=BINARY project.automation_id
+         AND target_generation.generation=project.target_generation
+        WHERE generation.runtime_model='SERVICE_V2'
+           OR (task.enabled=TRUE AND task.tool_name LIKE 'automation.%.run')
+        ORDER BY BINARY task.id
+        """)
+    return list(cursor.fetchall())
+
+
+def validate_service_v2_schedule_projections(rows, contract, *, normalize_schedule,
+                                             staged_runtime, error_class):
+    """Check current host times against the complete committed V2 task set."""
+    grouped = {}
+    for row, snapshot in rows:
+        grouped.setdefault(row["automation_id"], []).append((row, snapshot))
+    for project_rows in grouped.values():
+        project, snapshot = project_rows[0]
+        # An interrupted configuration change intentionally retains the prior
+        # committed projection while current configuration describes its target.
+        if staged_runtime(project):
+            continue
+        metadata = snapshot.get("execution_metadata") or {}
+        desired = project.get("desired_schedule_json")
+        if isinstance(desired, (str, bytes)):
+            try:
+                desired = json.loads(desired)
+            except (ValueError, TypeError) as exc:
+                raise error_class("PROJECT_SCHEDULE_CONFIG_INVALID") from exc
+        expressions, _enabled = normalize_schedule(desired)
+        normalize_schedule(metadata.get("schedule"))
+        digest = hashlib.sha256(json.dumps(desired, ensure_ascii=False, sort_keys=True,
+                                          separators=(",", ":")).encode("utf-8")).hexdigest()
+        if (project.get("desired_schedule_sha256") != digest
+                or contract["schedule_generation_shape"](desired)
+                != contract["schedule_generation_shape"](metadata.get("schedule"))
+                or project.get("config_version") != metadata.get("project_config_version")):
+            raise error_class("PROJECT_SCHEDULE_CONFIG_INVALID")
+        tasks = [row for row, _snapshot in project_rows if row.get("task_id") is not None]
+        if tuple(sorted(expressions)) != tuple(sorted(str(row.get("cron_expression") or "") for row in tasks)):
+            raise error_class("PROJECT_SCHEDULE_ROWS_MISMATCH")
+        for row in tasks:
+            if (row.get("automation_generation") != project.get("committed_generation")
+                    or row.get("configuration_version") != project.get("config_version")
+                    or row.get("tool_name") != f"automation.{project['automation_id']}.run"):
+                raise error_class("AUTOMATION_PROJECT_TASK_RUNTIME_MISMATCH")
+
+
 def validate_service_v2_scheduler_contract(snapshot, contract, *, cron_expression, error_class):
     """Use the runtime's unique scheduler binding for V2 release windows."""
     enabled_entrypoints = snapshot.get("enabled_entrypoints")

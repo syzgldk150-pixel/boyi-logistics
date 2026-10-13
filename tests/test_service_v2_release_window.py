@@ -1,5 +1,6 @@
 """Service V2 release windows use the scheduler's named contribution."""
 import importlib.util
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,8 @@ class ServiceV2ReleaseWindowTests(unittest.TestCase):
             "runtime_model": "SERVICE_V2", "plugin_api": "2.0.0",
             "enabled_entrypoints": ["daily_clockin", "manual_run"],
             "execution_metadata": {
+                "project_config_version": 1,
+                "schedule": {"kind": "daily_times", "times": ["18:30"], "enabled": True},
                 "contributions": {"scheduler": [{
                     "id": "daily_clockin", "default_enabled": True,
                     "schedule": {"timezone": "Asia/Shanghai"},
@@ -40,6 +43,11 @@ class ServiceV2ReleaseWindowTests(unittest.TestCase):
             "committed_generation": 3, "project_enabled": 1,
             "project_state": "ENABLED", "policy_mode": "PROJECT_FULL_AUTO",
             "generation_state": "COMMITTED", "snapshot_json": snapshot,
+            "config_version": 1, "configuration_version": 1,
+            "desired_schedule_json": snapshot["execution_metadata"]["schedule"],
+            "desired_schedule_sha256": hashlib.sha256(json.dumps(
+                snapshot["execution_metadata"]["schedule"], sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest(),
         }
         for hour, expected in ((12, 0), (18, 1)):
             with self.subTest(hour=hour):

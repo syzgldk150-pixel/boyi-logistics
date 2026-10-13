@@ -9,6 +9,8 @@ execution outcomes, not reversible effects; an unknown write blocks disposal.
 
 from __future__ import annotations
 
+import logging
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Collection, Mapping, Sequence
@@ -34,6 +36,8 @@ from agent.automation_plugins.ports import (
     RuntimeGenerationRepositoryPort,
 )
 from shared.redaction import redact_text
+
+logger = logging.getLogger("agent")
 
 
 def _add_exception_note(error: Exception, note: str) -> None:
@@ -287,7 +291,14 @@ class AutomationRuntimeReconciler:
                 "committed runtime effects are unavailable after route switch",
                 code="RUNTIME_COMMIT_INCONSISTENT",
             )
-        activate(snapshot=snapshot, effects=committed.effects)
+        started = time.monotonic()
+        try:
+            activate(snapshot=snapshot, effects=committed.effects)
+        finally:
+            logger.info(
+                "Plugin generation phase automation_id=%s phase=activate elapsed_ms=%d",
+                snapshot.automation_id, int((time.monotonic() - started) * 1000),
+            )
 
     @staticmethod
     def _activation_token(
@@ -585,11 +596,17 @@ class AutomationRuntimeReconciler:
             RuntimeGenerationState.WAITING_COEFFECTS,
         }:
             raise PluginConflictError("runtime target is not preparable")
+        started = time.monotonic()
         try:
             return self._prepare_target(target)
         except PluginConflictError as exc:
             self._fail_terminal_prepare(target, exc)
             raise
+        finally:
+            logger.info(
+                "Plugin generation phase automation_id=%s phase=prepare elapsed_ms=%d",
+                snapshot.automation_id, int((time.monotonic() - started) * 1000),
+            )
 
     def _prepare_target(self, target: RuntimeGenerationRecord) -> tuple[str, ...]:
         snapshot = target.snapshot
@@ -702,6 +719,7 @@ class AutomationRuntimeReconciler:
                 "non-reversible work was persisted as a runtime effect",
                 code="RUNTIME_EFFECT_NOT_REVERSIBLE",
             )
+        started = time.monotonic()
         try:
             deactivate_generation = getattr(
                 self._driver,
@@ -736,6 +754,11 @@ class AutomationRuntimeReconciler:
                 error_summary=redact_text(exc)[:500],
             )
             raise
+        finally:
+            logger.info(
+                "Plugin generation phase automation_id=%s phase=dispose elapsed_ms=%d",
+                snapshot.automation_id, int((time.monotonic() - started) * 1000),
+            )
 
     def _is_archival_unknown_generation(
         self,

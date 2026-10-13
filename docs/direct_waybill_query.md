@@ -15,6 +15,20 @@
 - `console/database.py`：同一响应的列表、总数和汇总在同一 MySQL 一致性快照中读取。
 - `agent/plugin_core_adapters/arrival_report.py`：同时读取新 Invocation 的结果/代次回执和历史 Run 的只读证据。当前统计已写、写结果未知等事实不会被简化的到货清单覆盖；不改统计算法。
 
+## Console 查询与后台补查
+
+`GET /waybills` 只读取当前数据库快照，页面不等待原平台响应。用户主动点击“查询”后，浏览器先显示列表，再用同源 `POST /waybills/source-refresh` 提交来源与日期区间。请求需要真实 MySQL 管理员会话和查询权限，Console 用现有签名身份调用 Agent；应急 Basic Auth 不可发起补查。缺少日期、范围超过 31 天或来源为博益开单/OCR 时不调用原平台。
+
+同一 Console 进程内，相同 `(source, date_from, date_to)` 的并发请求共享一次补查；完整成功结果复用 120 秒，失败或不完整结果不缓存。浏览器完成后重取当前列表并显示更新时间或不完整原因。翻页、排序和改变每页条数仅查询数据库，离开页面中止浏览器等待，不取消服务端已经开始的补查。
+
+融辉与韵达最多使用两个线程并行补查，各平台复用一条数据库连接，并一次读取日期区间的覆盖记录。按日期查询不再先读取无用缓存；发布使用显式事务、批量锁定候选与批量插入，内容未变化的行不更新。遗留实体的唯一身份判定、取消状态保留和失败回滚保持不变。韵达逐单详情仍按顺序读取，避免扩大原平台请求并发；因此首屏提速不代表补查本身没有等待。
+
+## 博益运单修改
+
+查询详情可修改未作废的博益开单（`source=manual`），OCR 和平台同步单只读。`GET /waybills/{id}/edit-data?source=manual` 返回当前字段与原值指纹；`POST /waybills/{id}/manual-update` 提交稳定请求 UUID、指纹与 `field_*` 字段，使用与新建相同的规范化和当前生效的扩展校验。修改不能改变运单号。
+
+仓储在同一事务中锁定精确博益记录，核对原值指纹、保存字段差异并写 `boyi_waybill_edit_logs`。旧版本、已作废或来源错误明确拒绝，重复请求幂等返回原结果。`GET /waybills/{id}/edit-history?source=manual` 在用户展开记录时读取修改人、时间和前后值；保存后刷新列表和详情，打印继续读取最新数据。迁移 057 的实体库及权限要求见 [分库说明](database_domains.md)。
+
 ## 日期及身份规则
 
 当天已有部分数据不代表当天完整。23:55 的采集不标记为日终完成，翌日补取当天尾段后才产生完整历史日覆盖；当前日查询仍刷新来源。中断、缺页、总数变化不发布覆盖。单号更新会使相应日覆盖失效，后续完整查询重新核实。
@@ -47,7 +61,7 @@ isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests
 
 `p4-arrival-ownership-mysql.log` 保存新 Invocation/lease/receipt 关联和原统计/到货清单真实签名包业务链的隔离结果；`p4-console-query.log` 保存 Console 查询回归。它们是本轮切片证据，不能替代完整 A/B/C 与维护演练。
 
-最终 P4 组合重新运行结果为 211 passed、5 subtests passed，见 `p4-final.xml`。客服业务发布补接后，当前业务 refs→原插件详情复核→事务发布、来源仓储和到货所有权组合为 51 passed，见 `p4-customer.xml` / `p4-customer.log`；覆盖已回复关闭、未证实/登录错误保留、人工备注保留和无旧执行实体新增。完整 C07 签名包 Direct 入口验收由总报告单独记录。
+历史 P4 组合重新运行结果为 211 passed、5 subtests passed，见 `p4-final.xml`。客服业务发布补接后，当前业务 refs→原插件详情复核→事务发布、来源仓储和到货所有权组合为 51 passed，见 `p4-customer.xml` / `p4-customer.log`；覆盖已回复关闭、未证实/登录错误保留、人工备注保留和无旧执行实体新增。完整 C07 签名包 Direct 入口验收由总报告单独记录。
 
 ## 更新与回退
 

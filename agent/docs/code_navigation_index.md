@@ -30,7 +30,7 @@ updated: 2026-10-13
 |---|---|---|
 | Console 录入、查询、回单及客服人工操作 | `../console/services/business_calls.py`、`business_composition.py`、`agent/tms_runtime/direct_business.py` | `/internal/v1/business/{operation}` 返回业务结果；外部写保留身份、请求 UUID 与独立核验 |
 | 手动、定时、固定飞书与已注册插件能力 | `agent/orchestration/direct_project_invocation.py`、`agent/automation_plugins/direct_invocation.py`、`../shared/plugin_invocation_repository.py` | `/internal/v1/automation-projects/{automation_id}/invoke` 直接启动 Invocation；失败/取消终结，不积压 |
-| 寄件数据库查询及平台补查 | `agent/send_waybills_business.py`、`plugin_core_adapters/waybill_query_scope.py`、`../shared/waybill_source_coverage.py` | 范围证明和局部补查见 [寄件查询](../../docs/direct_waybill_query.md)；局部结果不冒充整日完整 |
+| 寄件数据库查询及平台补查 | `../console/services/waybills_receipts.py`、`../console/routes/waybills.py`、`agent/send_waybills_business.py`、`plugin_core_adapters/waybill_query_scope.py`、`../shared/waybill_source_coverage.py` | Console GET 只读库；主动查询渲染列表后，经同源管理员 POST `/waybills/source-refresh` 补查，同一来源与日期范围单飞且成功结果复用 2 分钟。Agent 两平台各自复用连接并行补查，以显式事务批量发布；范围证明和局部补查见 [寄件查询](../../docs/direct_waybill_query.md)，局部结果不冒充整日完整 |
 | 财务采集及显式分析 | `agent/tms_runtime/finance_business.py`、`harness_composition.py`、`service_v2_plugins/sync_finance_bills_v2/` | 采集属于财务插件；分析须单独明确调用，采集完成不自动触发 |
 | 历史控制平面 | `main.py`、`migrations/046_retire_legacy_execution_queue.sql` | 旧命令与事项操作返回 410，历史读取保留；Runner 仅 reserved，详见 [退役与回退](../../docs/legacy_execution_retirement.md) |
 
@@ -116,7 +116,7 @@ updated: 2026-10-13
 ### 数据库分域
 
 - 实体库与平台分表说明：`../../docs/database_domains.md`；唯一表名路由 `../../shared/logistics_tables.py`。
-- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。`migrations/056_drop_boyi_handling_fees.sql` 先备份再删除博益接货费、送货费，并由迁移器刷新视图。
+- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。`migrations/056_drop_boyi_handling_fees.sql` 先备份再删除博益接货费、送货费，并由迁移器刷新视图。`migrations/057_boyi_waybill_edit_logs.sql` 在运单实体库新增修改记录并投影同名视图；Console 的 `services/documents.py` 与 `database.py` 将未作废博益单的指纹核验、幂等更新和留痕放在同一事务，`routes/waybills.py` 提供编辑数据、保存和历史入口。
 - 生产库是跨地域 RDS：写库代码的批量写入、连接复用约束及实测见 `../../docs/mysql_rds_migration.md` 的“跨地域访问的性能约束”；插件调用清单按 lease 缓存于 `agent/automation_plugins/capability_proxy_v2.py`。
 
 ### `shared/finance/`

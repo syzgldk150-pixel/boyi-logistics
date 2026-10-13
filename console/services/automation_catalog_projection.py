@@ -1755,6 +1755,13 @@ def normalize_automation_plugin_catalog(
         schedule, schedule_valid = _normalize_plugin_schedule(
             raw.get("schedule"), scheduling
         )
+        schedule_sha256 = raw.get("schedule_sha256")
+        if schedule_sha256 is not None and (
+            not isinstance(schedule_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", schedule_sha256) is None
+        ):
+            schedule_sha256 = None
+            schedule_valid = False
         code_owned_config_fields, code_owned_config_fields_valid = (
             _normalize_plugin_code_owned_config_fields(
                 raw.get("code_owned_config_fields"),
@@ -2127,6 +2134,7 @@ def normalize_automation_plugin_catalog(
                 "config_schema_error": config_schema_error,
                 "scheduling": scheduling,
                 "schedule": schedule,
+                "schedule_sha256": schedule_sha256,
                 "entrypoints": entrypoints,
                 "entrypoint_kinds": entrypoint_kinds,
                 "console_entrypoints": console_entrypoints,

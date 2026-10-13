@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from shared import automation_plugin_repository as _repository
 from shared.plugin_json import plugin_json, plugin_json_digest
+from shared.automation_schedule_material import schedule_generation_shape
 from shared.automation_plugin_generation_transition_repository import (
     AutomationPluginGenerationTransitionRepositoryMixin,
     _apply_scheduled_task_projection,
@@ -357,10 +358,11 @@ class AutomationPluginGenerationRepositoryMixin(
             entrypoint_hash = _json_hash(normalized["enabled_entrypoints"])
             if entrypoint_hash != str(config.get("enabled_entrypoints_sha256") or ""):
                 raise ConcurrentUpdateError("runtime target entrypoints are stale")
-            if _json_hash(execution_metadata["schedule"]) != str(
-                config.get("desired_schedule_sha256") or ""
-            ) or str(normalized["schedule_sha256"]) != str(
-                config.get("desired_schedule_sha256") or ""
+            if (
+                _json_hash(execution_metadata["schedule"]) != normalized["schedule_sha256"]
+                or _json_hash(config["desired_schedule_json"]) != config["desired_schedule_sha256"]
+                or schedule_generation_shape(execution_metadata["schedule"])
+                != schedule_generation_shape(config["desired_schedule_json"])
             ):
                 raise ConcurrentUpdateError("runtime target schedule is stale")
             if plugin_json_digest(execution_metadata["compiled_invocations"]) != str(
@@ -1198,10 +1200,11 @@ class AutomationPluginGenerationRepositoryMixin(
                 raise ConcurrentUpdateError(
                     "project configuration version changed after preparation"
                 )
-            if _json_hash(execution_metadata.get("schedule")) != str(
-                config.get("desired_schedule_sha256") or ""
-            ) or str(snapshot.get("schedule_sha256") or "") != str(
-                config.get("desired_schedule_sha256") or ""
+            if (
+                _json_hash(execution_metadata.get("schedule")) != snapshot.get("schedule_sha256")
+                or _json_hash(config["desired_schedule_json"]) != config["desired_schedule_sha256"]
+                or schedule_generation_shape(execution_metadata.get("schedule"))
+                != schedule_generation_shape(config["desired_schedule_json"])
             ):
                 raise ConcurrentUpdateError(
                     "project schedule changed after generation preparation"
@@ -1281,6 +1284,7 @@ class AutomationPluginGenerationRepositoryMixin(
                 generation=safe_generation,
                 project=project,
                 snapshot=snapshot,
+                desired_schedule=config["desired_schedule_json"],
             )
             if expected_committed is not None and not archival_unknown_predecessor:
                 cursor.execute(

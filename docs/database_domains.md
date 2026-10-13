@@ -2,7 +2,7 @@
 module: database
 type: architecture
 status: active
-updated: 2026-10-11
+updated: 2026-10-13
 ---
 
 # 运行、运单回单、财务分库
@@ -42,6 +42,8 @@ updated: 2026-10-11
 迁移 056 删除了 `boyi_waybills` 的接货费、送货费；`waybills` 只读视图中博益 OCR 行的这两列读为 NULL，
 融辉、韵达平台表保留原值。删除前的行 ID 和两项费用原样保存在
 `waybill_db._migration_056_boyi_handling_fees`，该备份表不接入运行时视图，保留到业务验收完成。
+迁移 `057_boyi_waybill_edit_logs.sql` 在 `waybill_db` 新建 `boyi_waybill_edit_logs`，保存博益开单修改的运单身份、唯一请求 ID、操作人、字段前后值和修改时间。迁移执行后在 `agent_db` 创建同名 INVOKER 视图；业务更新与修改记录在同一事务提交，不改写旧迁移。发布前分别核验实际 Console 账号对视图和实体表的 SELECT、INSERT 权限，以及博益运单的 UPDATE 权限；不得用 Agent 的权限检查代替。
+
 同实例迁移或灾备必须覆盖三个库、跨库外键和视图，单独导出 `agent_db` 不再包含业务实体数据。
 
 ## 当前数据库连接身份

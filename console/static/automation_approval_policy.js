@@ -313,23 +313,11 @@
   }
 
   function expectedScheduleField(instance) {
-    // Only the Agent-saved schedule is a valid compare-and-swap base. A card
-    // still showing legacy rows sends none and takes the full save path.
-    try {
-      const saved = JSON.parse(instance.dataset.projectSchedule || "null");
-      if (
-        saved
-        && typeof saved === "object"
-        && typeof saved.kind === "string"
-        && Array.isArray(saved.times)
-        && typeof saved.enabled === "boolean"
-      ) {
-        return { expected_schedule: { kind: saved.kind, times: saved.times, enabled: saved.enabled } };
-      }
-    } catch (_error) {
-      // A malformed attribute is never sent; the full save path still applies.
-    }
-    return {};
+    // Legacy rows have no Agent digest and keep the full configuration path.
+    const digest = instance.dataset.projectScheduleSha256;
+    return typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest)
+      ? { expected_schedule_sha256: digest }
+      : {};
   }
 
   function addScheduleTimeFocus(form) {
@@ -425,7 +413,9 @@
         return;
       }
       const newVersion = Number(payload?.data?.project_configuration_version || 0);
-      if (!Number.isInteger(newVersion) || newVersion < 1) {
+      const scheduleSha256 = payload?.data?.schedule_sha256;
+      if (!Number.isInteger(newVersion) || newVersion < 1
+          || typeof scheduleSha256 !== "string" || !/^[0-9a-f]{64}$/.test(scheduleSha256)) {
         setPluginConfigurationFeedback(
           instance,
           "设置可能已经保存，但页面未取得新的配置版本。请刷新页面核对后再继续。",
@@ -434,8 +424,8 @@
         return;
       }
       instance.dataset.projectConfigurationVersion = String(newVersion);
-      // The saved schedule is the base of the next times-only save.
-      instance.dataset.projectSchedule = JSON.stringify(settings);
+      // The server's committed digest is the next times-only CAS base.
+      instance.dataset.projectScheduleSha256 = scheduleSha256;
       delete button.dataset.requestId;
       setPluginConfigurationFeedback(
         instance,

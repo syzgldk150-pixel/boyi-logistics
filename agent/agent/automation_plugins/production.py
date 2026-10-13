@@ -9,7 +9,9 @@ immutable snapshot built here.
 from __future__ import annotations
 
 import copy
+import logging
 import os
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
@@ -401,13 +403,14 @@ class ProductionRuntimeEffectDriver:
             evidence,
         )
 
-    def _refresh_scheduler_projection(self) -> Mapping[str, Any] | None:
+    def _refresh_scheduler_projection(self, automation_id: str = "*") -> Mapping[str, Any] | None:
         refresher = self._scheduler_projection_refresher
         if refresher is None:
             # Standalone tests and non-Agent embeddings may not own a live
             # Scheduler. Agent startup binds a stopped Scheduler before durable
             # reconciliation, so production activation never takes this path.
             return None
+        started = time.monotonic()
         try:
             evidence = refresher()
         except Exception as exc:
@@ -415,6 +418,11 @@ class ProductionRuntimeEffectDriver:
                 "live Scheduler projection refresh failed",
                 code="RUNTIME_PROJECTION_REFRESH_FAILED",
             ) from exc
+        finally:
+            logging.getLogger("agent").info(
+                "Plugin schedule phase automation_id=%s phase=reload elapsed_ms=%d",
+                automation_id, int((time.monotonic() - started) * 1000),
+            )
         invalid_tasks = (
             evidence.get("invalid_tasks")
             if isinstance(evidence, Mapping)
@@ -472,7 +480,7 @@ class ProductionRuntimeEffectDriver:
             nonlocal evidence, service_transition
             switch_service_route()
             try:
-                evidence = self._refresh_scheduler_projection()
+                evidence = self._refresh_scheduler_projection(automation_id)
                 return evidence
             except Exception:
                 if service_transition is not None:
@@ -1712,9 +1720,18 @@ class MySQLRuntimeTargetService:
         )
         if skip_without_consumers and not consumers:
             # The caller already reconciled this provider; with nobody to
-            # re-prepare, closing and reopening its own gate is redundant and
-            # briefly removes its live jobs.
-            return None
+            # re-prepare, an already open gate must not briefly lose its jobs.
+            # A closed gate still needs the normal dependency restoration.
+            with self._orchestration.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
+                cursor.execute(
+                    """SELECT COUNT(*) AS task_count,
+                              SUM(CASE WHEN enabled THEN 1 ELSE 0 END) AS enabled_count
+                       FROM scheduled_tasks WHERE automation_id=%s""",
+                    (provider_automation_id,),
+                )
+                gate = cursor.fetchone()
+            if gate and int(gate["task_count"]) > 0 and gate["task_count"] == gate["enabled_count"]:
+                return None
         if enabled:
             return self.restore_provider_dependency_tree(
                 provider_automation_id,

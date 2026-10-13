@@ -207,6 +207,16 @@ def _service_v2_inspection() -> dict:
 
 
 class AutomationPluginCatalogTests(unittest.TestCase):
+    def test_schedule_digest_is_whitelisted_and_invalid_digest_blocks_scheduling(self):
+        payload = _catalog_payload()
+        payload["instances"][0]["schedule_sha256"] = "a" * 64
+        _, instances, _ = normalize_automation_plugin_catalog(payload)
+        self.assertEqual("a" * 64, instances[0]["schedule_sha256"])
+        payload["instances"][0]["schedule_sha256"] = "not-a-digest"
+        _, instances, _ = normalize_automation_plugin_catalog(payload)
+        self.assertIsNone(instances[0]["schedule_sha256"])
+        self.assertTrue(instances[0]["blocked"])
+
     def test_daily_sign_account_roles_explain_the_two_external_systems(self):
         roles = _normalize_plugin_account_roles(
             [
@@ -1536,6 +1546,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
                 "ok": True,
                 "data": {
                     "project_configuration_version": 10,
+                    "schedule_sha256": "b" * 64,
                     "schedule_runtime_state": "ACTIVE",
                     "schedule_runtime_enabled": True,
                     "scheduler_refresh_completed": True,
@@ -1556,9 +1567,10 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual(expected, forwarded["payload"])
         self.assertEqual(HTTPStatus.OK, captured["status"])
         self.assertEqual(10, captured["payload"]["data"]["project_configuration_version"])
+        self.assertEqual("b" * 64, captured["payload"]["data"]["schedule_sha256"])
         self.assertEqual("定时计划已保存并生效。", captured["payload"]["message"])
 
-    def test_schedule_save_forwards_the_edited_schedule_as_times_only_cas_base(self):
+    def test_schedule_save_forwards_the_server_digest_as_times_only_cas_base(self):
         app, captured = self._app()
         calls = []
         app._agent_request = lambda *args, **kwargs: (
@@ -1566,6 +1578,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
                 "ok": True,
                 "data": {
                     "project_configuration_version": 10,
+                    "schedule_sha256": "b" * 64,
                     "schedule_runtime_state": "ACTIVE",
                     "schedule_runtime_enabled": True,
                     "scheduler_refresh_completed": True,
@@ -1573,19 +1586,21 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             }
         )
         payload = self._schedule_payload()
-        payload["expected_schedule"] = {"kind": "daily_times", "times": ["12:00", "08:00"], "enabled": True}
+        payload["expected_schedule_sha256"] = "a" * 64
         app._handle_automation_plugin_schedule_save(self._handler(payload), "finance_action_east")
 
         self.assertEqual(HTTPStatus.OK, captured["status"])
         self.assertEqual(
-            {"kind": "daily_times", "times": ["08:00", "12:00"], "enabled": True},
-            calls[0][1]["payload"]["expected_schedule"],
+            "a" * 64,
+            calls[0][1]["payload"]["expected_schedule_sha256"],
         )
 
     def test_schedule_save_rejects_a_malformed_cas_base_or_unknown_field(self):
         for extra in (
-            {"expected_schedule": {"kind": "daily_times", "times": ["25:00"], "enabled": True}},
-            {"expected_schedule": {"kind": "daily_times", "times": ["08:00"]}},
+            {"expected_schedule_sha256": "a" * 63},
+            {"expected_schedule_sha256": "A" * 64},
+            {"expected_schedule_sha256": None},
+            {"expected_schedule": {"kind": "daily_times", "times": ["08:00"], "enabled": True}},
             {"expected_generation": 3},
         ):
             with self.subTest(extra=extra):
@@ -2653,7 +2668,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             "plugin_schedule_supported": True,
             "plugin_schedule_max_daily_times": 5,
             "plugin_schedule_source": "agent",
-            "plugin_expected_schedule": {"kind": "daily_times", "times": ["08:00"], "enabled": True},
+            "plugin_schedule_sha256": "a" * 64,
             "approval_policy": build_automation_project_policy_view(
                 plugin["automation_id"],
                 {
@@ -2699,7 +2714,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertIn("data-plugin-configuration-save", card)
         self.assertIn("data-plugin-schedule-kind", card)
         self.assertIn(
-            "data-project-schedule='{\"enabled\": true, \"kind\": \"daily_times\", \"times\": [\"08:00\"]}'",
+            'data-project-schedule-sha256="' + "a" * 64 + '"',
             html,
         )
         self.assertNotIn("data-plugin-schedule-effect", card)

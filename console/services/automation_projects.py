@@ -1118,7 +1118,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             "request_id",
             "expected_project_configuration_version",
         }
-        if not required_fields <= set(values) <= {*required_fields, "expected_schedule"}:
+        if not required_fields <= set(values) <= {*required_fields, "expected_schedule_sha256"}:
             self._control_plane_error(
                 handler,
                 HTTPStatus.BAD_REQUEST,
@@ -1129,20 +1129,18 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         request_id = self._normalize_browser_request_uuid(values.get("request_id"))
         expected_version = values.get("expected_project_configuration_version")
         schedule = self._browser_plugin_schedule(values.get("schedule"))
-        # The schedule shown when the operator started editing; it lets the
-        # Agent save daily times alone with an exact compare-and-swap.
-        expected_schedule = (
-            self._browser_plugin_schedule(values.get("expected_schedule"))
-            if "expected_schedule" in values
-            else None
-        )
+        # Use the Agent-issued digest as the daily-times compare-and-swap base.
+        expected_schedule_sha256 = values.get("expected_schedule_sha256")
         if (
             not request_id
             or isinstance(expected_version, bool)
             or not isinstance(expected_version, int)
             or expected_version < 1
             or not schedule
-            or expected_schedule == {}
+            or ("expected_schedule_sha256" in values and (
+                not isinstance(expected_schedule_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_schedule_sha256) is None
+            ))
         ):
             self._control_plane_error(
                 handler,
@@ -1159,8 +1157,8 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 "request_id": request_id,
                 "expected_project_configuration_version": expected_version,
                 **(
-                    {"expected_schedule": expected_schedule}
-                    if expected_schedule is not None
+                    {"expected_schedule_sha256": expected_schedule_sha256}
+                    if expected_schedule_sha256 is not None
                     else {}
                 ),
             },
@@ -1188,11 +1186,14 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             return
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         new_version = data.get("project_configuration_version")
+        schedule_sha256 = data.get("schedule_sha256")
         runtime_state = str(data.get("schedule_runtime_state") or "REFRESH_FAILED").upper()
         if (
             isinstance(new_version, bool)
             or not isinstance(new_version, int)
             or new_version < 1
+            or not isinstance(schedule_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", schedule_sha256) is None
             or runtime_state not in AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES
         ):
             self._control_plane_error(
@@ -1218,6 +1219,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 "data": {
                     "automation_id": automation_id,
                     "project_configuration_version": new_version,
+                    "schedule_sha256": schedule_sha256,
                     "schedule_runtime_state": runtime_state,
                     "schedule_runtime_enabled": data.get("schedule_runtime_enabled") is True,
                     "scheduler_refresh_completed": data.get("scheduler_refresh_completed") is True,

@@ -153,7 +153,7 @@ class AutomationProjectConfigurationService:
         entry: PluginCatalogEntry,
         *,
         schedule: Mapping[str, Any],
-        expected_schedule: Mapping[str, Any],
+        expected_schedule_sha256: str,
         actor_id: str,
         actor_role: str,
         request_id: str,
@@ -184,7 +184,7 @@ class AutomationProjectConfigurationService:
         return saver(
             entry.automation_id,
             schedule=normalize_project_schedule(schedule, entry.scheduling),
-            expected_schedule=normalize_project_schedule(expected_schedule, entry.scheduling),
+            expected_schedule_sha256=expected_schedule_sha256,
             scheduling=copy.deepcopy(dict(entry.scheduling)),
             actor_id=str(actor_id).strip(),
             actor_role=str(actor_role).strip(),

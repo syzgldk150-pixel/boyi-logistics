@@ -325,72 +325,26 @@ def typed_project_scheduled_write_crons(
 ) -> tuple[str, ...]:
     """Return active signed project write crons, excluding exact quarantine."""
 
-    cursor.execute(
-        """
-        SELECT task.id AS task_id,
-               task.automation_id,
-               task.automation_generation,
-               task.tool_name,
-               task.cron_expression,
-               task.enabled,
-               project.committed_generation,
-               project.target_generation,
-               project.enabled AS project_enabled,
-               project.state AS project_state,
-               project.reconcile_state,
-               policy.mode AS policy_mode,
-               policy.project_generation AS policy_project_generation,
-               generation.state AS generation_state,
-               generation.error_code AS generation_error_code,
-               target_generation.state AS target_generation_state,
-               target_generation.base_committed_generation AS target_base_generation,
-               (SELECT CAST( COALESCE(MAX(history.generation), 0) AS UNSIGNED)
-                FROM automation_project_generations AS history
-                WHERE BINARY history.automation_id=BINARY project.automation_id) AS max_generation,
-               (SELECT COUNT(*) FROM automation_project_generations AS history
-                WHERE BINARY history.automation_id=BINARY project.automation_id
-                  AND history.generation<>project.committed_generation
-                  AND history.generation<>project.target_generation AND history.state<>'DISPOSED'
-                  AND NOT (history.generation<project.committed_generation
-                    AND history.state='BLOCKED' AND history.error_code='WRITE_OUTCOME_UNKNOWN'
-                    AND EXISTS (SELECT 1 FROM automation_project_generation_leases AS archive_lease
-                      WHERE BINARY archive_lease.automation_id=BINARY history.automation_id
-                        AND archive_lease.generation=history.generation
-                        AND archive_lease.outcome='WRITE_OUTCOME_UNKNOWN'))) AS unsafe_non_disposed_other_count,
-               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
-                WHERE BINARY lease.automation_id=BINARY project.automation_id
-                  AND lease.generation=project.committed_generation
-                  AND lease.outcome IN ('RUNNING', 'VERIFYING')) AS active_current_lease_count,
-               (SELECT COUNT(*) FROM automation_project_generation_leases AS lease
-                WHERE BINARY lease.automation_id=BINARY project.automation_id
-                  AND lease.generation=project.committed_generation
-                  AND lease.outcome='WRITE_OUTCOME_UNKNOWN') AS unknown_write_count,
-               generation.snapshot_json
-        FROM scheduled_tasks AS task
-        INNER JOIN automation_projects AS project
-          ON BINARY project.automation_id=BINARY task.automation_id
-        INNER JOIN automation_project_policies AS policy
-          ON BINARY policy.automation_id=BINARY project.automation_id
-        INNER JOIN automation_project_generations AS generation
-          ON BINARY generation.automation_id=BINARY project.automation_id
-         AND generation.generation=project.committed_generation
-        LEFT JOIN automation_project_generations AS target_generation
-          ON BINARY target_generation.automation_id=BINARY project.automation_id
-         AND target_generation.generation=project.target_generation
-        WHERE task.enabled=TRUE
-          AND task.automation_id IS NOT NULL
-          AND task.tool_name LIKE 'automation.%.run'
-        ORDER BY BINARY task.id
-        """
-    )
+    rows = plugin_migration_scope.read_project_schedule_rows(cursor)
     crons: list[str] = []
     seen_task_ids: set[str] = set()
     release_contract: dict[str, Any] | None = None
-    for row in cursor.fetchall():
+    v2_rows = []
+    for row in rows:
         if not isinstance(row, Mapping):
             raise error_class(
                 "PROJECT_SCHEDULE_RUNTIME_INVALID__CHECK_ROW_SHAPE_INVALID"
             )
+        try:
+            snapshot = _decode_json(row.get("snapshot_json"), code="PROJECT_SCHEDULE_CONTRACT_INVALID")
+        except AutomationProjectReleaseManifestError as exc:
+            raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID") from exc
+        if isinstance(snapshot, Mapping) and snapshot.get("runtime_model") == "SERVICE_V2":
+            v2_rows.append((row, snapshot))
+        # All V2 rows participate in the projection check; only enabled tasks
+        # contribute to the release's active write windows.
+        if row.get("task_id") is None or row.get("enabled") in (False, 0):
+            continue
         task_id = row.get("task_id")
         quarantined_unknown_write = is_staged_unknown_write_quarantine(row)
         isolated_runtime = quarantined_unknown_write or (is_staged_recoverable_runtime(row) and row.get("project_state") != "ENABLED")
@@ -416,13 +370,6 @@ def typed_project_scheduled_write_crons(
             "REQUIRE_EACH_RUN",
         }:
             raise error_class("PROJECT_SCHEDULE_POLICY_INVALID")
-        try:
-            snapshot = _decode_json(
-                row.get("snapshot_json"),
-                code="PROJECT_SCHEDULE_CONTRACT_INVALID",
-            )
-        except AutomationProjectReleaseManifestError as exc:
-            raise error_class("PROJECT_SCHEDULE_CONTRACT_INVALID") from exc
         execution_metadata = snapshot.get("execution_metadata")
         governance_anchor = (
             execution_metadata.get("governance_anchor")
@@ -462,6 +409,13 @@ def typed_project_scheduled_write_crons(
             continue
         if scheduled_write:
             crons.append(cron_expression)
+    if v2_rows:
+        plugin_migration_scope.validate_service_v2_schedule_projections(
+            v2_rows, release_contract or _load_release_contract(),
+            normalize_schedule=_normalized_schedule_expressions,
+            staged_runtime=lambda row: is_staged_unknown_write_quarantine(row) or is_staged_recoverable_runtime(row),
+            error_class=error_class,
+        )
     return tuple(sorted(set(crons)))
 
 
@@ -555,6 +509,7 @@ def _load_release_contract() -> dict[str, Any]:
             "shared.automation_plugin_repository",
             repository_path,
         )
+        schedule_generation_shape = sys.modules["shared.automation_schedule_material"].schedule_generation_shape
         select_migration_pair = sys.modules["shared.automation_plugin_v2_repository"]._select_authoritative_migration_pair
         source_is_superseded = sys.modules["shared.automation_plugin_migration_ownership"].source_is_superseded
         scheduler_contribution_binding = sys.modules[
@@ -793,6 +748,7 @@ def _load_release_contract() -> dict[str, Any]:
         "select_migration_pair": select_migration_pair,
         "source_is_superseded": source_is_superseded,
         "scheduler_contribution_binding": scheduler_contribution_binding,
+        "schedule_generation_shape": schedule_generation_shape,
         "persistence_error_class": repository.OrchestrationPersistenceError,
         "release_projects": release_projects,
         "deferred_projects": deferred_projects,
@@ -1622,7 +1578,9 @@ def _validate_release_projects_and_tasks(
                 not isolated_runtime
                 and (
                     execution_metadata.get("project_config_version") != config_version
-                    or not _strict_json_equal(execution_metadata.get("schedule"), desired_schedule)
+                    or not _strict_json_equal(
+                        contract["schedule_generation_shape"](execution_metadata.get("schedule")),
+                        contract["schedule_generation_shape"](desired_schedule))
                     or not _strict_json_equal(execution_metadata.get("compiled_invocations"), compiled)
                 )
             )
@@ -1707,7 +1665,7 @@ def _validate_release_projects_and_tasks(
             or not _valid_sha256(invocation_hash)
             or schedule_hash != _canonical_sha256(configured_schedule)
             or invocation_hash != _canonical_sha256(configured_compiled)
-            or project.get("generation_schedule_sha256") != _canonical_sha256(desired_schedule)
+            or project.get("generation_schedule_sha256") != _canonical_sha256(execution_metadata.get("schedule"))
             or project.get("generation_invocations_sha256") != _canonical_sha256(compiled)
         ):
             raise AutomationProjectReleaseManifestError(

@@ -23,6 +23,8 @@ def console_permission(method: str, path: str) -> str:
         return "customer_service"
     if _under(path, "/tracking") or _under(path, "/receipts"):
         return "customer_service" if path.endswith("/audit") else "business.query"
+    if path == "/waybills/source-refresh":
+        return "business.query"  # backfills the query the reader already may run
     if _under(path, "/waybills"):
         return "business.query" if read else "waybill.write"
     if any(_under(path, p) for p in ("/ocr", "/workspaces/ocr", "/upload", "/documents", "/templates", "/original-pages", "/waybill-entry")):

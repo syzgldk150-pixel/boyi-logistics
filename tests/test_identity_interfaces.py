@@ -66,6 +66,7 @@ def test_feishu_custom_identity_reader_is_allowed_and_then_revoked():
 @pytest.mark.parametrize("path,method,permission", [
     ("/waybills", "GET", "business.query"), ("/tracking/query", "POST", "business.query"),
     ("/receipts/data", "GET", "business.query"), ("/waybills/manual", "POST", "waybill.write"),
+    ("/waybills/source-refresh", "POST", "business.query"), ("/waybills/7/status", "POST", "waybill.write"),
     ("/original-pages/ronghui/launch", "GET", "waybill.write"),
     ("/finance/summary", "GET", "finance.read"), ("/finance/sync", "POST", "finance.manage"),
     ("/automations/tasks/run-now", "POST", "plugins.execute"),

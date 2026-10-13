@@ -52,6 +52,7 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.ports import PluginStoragePort
 from agent.orchestration.models import Actor, ActorType
 from shared.plugin_management import management_for, settings_mode
+from shared.orchestration_repository_support import _json_hash
 from shared.redaction import redact_text
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
@@ -298,6 +299,7 @@ class AutomationPluginManagementService:
             "configured": record.configured,
             "project_configuration_version": record.config_version,
             "schedule": dict(record.schedule),
+            "schedule_sha256": _json_hash(dict(record.schedule)),
             "enabled_entrypoints": list(record.enabled_entrypoints),
         }
 
@@ -2374,7 +2376,7 @@ class AutomationPluginManagementService:
         request_id: str,
         expected_project_configuration_version: int,
         actor: Actor,
-        expected_schedule: Mapping[str, Any] | None = None,
+        expected_schedule_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Update only the Console-owned schedule and scheduler entrypoint.
 
@@ -2384,11 +2386,11 @@ class AutomationPluginManagementService:
         """
 
         entry = self._catalog.require(automation_id)
-        if expected_schedule is not None:
+        if expected_schedule_sha256 is not None:
             times_only = self._save_schedule_times_only(
                 entry,
                 schedule=schedule,
-                expected_schedule=expected_schedule,
+                expected_schedule_sha256=expected_schedule_sha256,
                 request_id=request_id,
                 expected_project_configuration_version=expected_project_configuration_version,
                 actor=actor,
@@ -2427,7 +2429,7 @@ class AutomationPluginManagementService:
         entry: PluginCatalogEntry,
         *,
         schedule: Mapping[str, Any],
-        expected_schedule: Mapping[str, Any],
+        expected_schedule_sha256: str,
         request_id: str,
         expected_project_configuration_version: int,
         actor: Actor,
@@ -2449,7 +2451,7 @@ class AutomationPluginManagementService:
             result = self._configuration.save_schedule_times(
                 entry,
                 schedule=schedule,
-                expected_schedule=expected_schedule,
+                expected_schedule_sha256=expected_schedule_sha256,
                 actor_id=actor.actor_id,
                 actor_role=role,
                 request_id=request_id,
@@ -2478,6 +2480,7 @@ class AutomationPluginManagementService:
             "configured": True,
             "project_configuration_version": int(result["project_configuration_version"]),
             "schedule": dict(result["schedule"]),
+            "schedule_sha256": _json_hash(dict(result["schedule"])),
             "enabled_entrypoints": list(entry.current_enabled_entrypoints),
             "runtime_model": entry.runtime_model,
             "entrypoint_kinds": {

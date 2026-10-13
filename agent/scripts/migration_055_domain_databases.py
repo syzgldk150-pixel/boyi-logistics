@@ -31,6 +31,8 @@ NEW_TABLES = (
     "yunda_waybills", "ronghui_waybills", "boyi_waybills",
     "yunda_receipts", "ronghui_receipts", "boyi_receipts",
 )
+# Entity tables created by later migrations; projected once they exist.
+LATER_WAYBILL_TABLES = ("boyi_waybill_edit_logs",)
 
 
 def quote(identifier):
@@ -181,7 +183,10 @@ def _verify_split(cursor, runtime, waybill, *, moved):
 
 
 def _views(cursor, runtime, waybill, finance):
-    for schema, tables in ((finance, FINANCE_TABLES), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences"))):
+    cursor.execute("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s", (waybill,))
+    present = {row["name"] for row in cursor.fetchall()}
+    later = tuple(table for table in LATER_WAYBILL_TABLES if table in present)
+    for schema, tables in ((finance, FINANCE_TABLES), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences", *later))):
         for table in tables:
             cursor.execute(f"CREATE OR REPLACE ALGORITHM=MERGE SQL SECURITY INVOKER VIEW {qualified(runtime, table)} AS SELECT * FROM {qualified(schema, table)}")
     wb_columns = columns(cursor, waybill, "ronghui_waybills")

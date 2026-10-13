@@ -690,6 +690,132 @@ class DocumentServiceMixin:
         kind = "success" if stats.get("inserted", 0) else "warning"
         self._redirect_with_message(handler, return_to, message, kind)
 
+    # Browser field names of the edit form; weight and volume are joined by
+    # the server exactly as the manual entry page joins them.
+    _MANUAL_EDIT_FORM_FIELDS = frozenset(
+        {*(f"field_{field}" for field in MANUAL_WAYBILL_EDIT_FIELDS if field != "weight_volume"),
+         "field_weight_kg", "field_volume_m3"}
+    )
+
+    def _handle_manual_waybill_edit_data(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
+        """Current editable values and fingerprint of one Boyi manual waybill."""
+
+        if str(query.get("source", [""])[0]).strip() != "manual":
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "只有博益开单可以修改。"})
+            return
+        try:
+            row = self.repository.get_waybill(waybill_id, source="manual")
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "运单读取失败，请稍后重试。"})
+            return
+        if not row:
+            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在或不是博益开单。"})
+            return
+        values = {field: "" if row.get(field) is None else str(row.get(field)) for field in MANUAL_WAYBILL_EDIT_FIELDS}
+        values["open_date"] = values["open_date"].replace("/", "-")
+        split = split_manual_weight_volume(values["weight_volume"])
+        values["weight_kg"], values["volume_m3"] = split or ("", "")
+        cancelled = normalize_waybill_status(row.get("status")) == "cancelled"
+        self._send_json(handler, HTTPStatus.OK, {
+            "ok": True,
+            "waybill_no": str(row.get("waybill_no") or ""),
+            "values": {f"field_{field}": value for field, value in values.items() if field != "weight_volume"},
+            # Shown verbatim when the stored text is not the entry page's form.
+            "weight_volume_unparsed": "" if split is not None else values["weight_volume"],
+            "fingerprint": manual_waybill_fingerprint(row),
+            "editable": not cancelled,
+            "reason": "运单已作废，不能修改。" if cancelled else "",
+            "labels": dict(MANUAL_WAYBILL_EDIT_LABELS),
+            "payment_methods": list(MANUAL_PAYMENT_METHODS),
+            "delivery_methods": ["送货", "自提"],
+        })
+
+    def _handle_manual_waybill_edit_history(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
+        if str(query.get("source", [""])[0]).strip() != "manual":
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "只有博益开单有修改记录。"})
+            return
+        try:
+            if not self.repository.get_waybill(waybill_id, source="manual"):
+                self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在或不是博益开单。"})
+                return
+            edits = self.repository.list_manual_waybill_edits(waybill_id)
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "修改记录读取失败，请稍后重试。"})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "edits": edits})
+
+    def _handle_manual_waybill_update(self, handler: BaseHTTPRequestHandler, waybill_id: int) -> None:
+        """Save one edited Boyi manual waybill through the entry-page rules."""
+
+        def fail(status: HTTPStatus, message: str, code: str = "MANUAL_WAYBILL_EDIT_INVALID") -> None:
+            self._send_json(handler, status, {"ok": False, "error_code": code, "message": message})
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        request_id = self._normalize_browser_request_uuid(values.get("request_id") if isinstance(values, dict) else "")
+        if (
+            not isinstance(values, dict)
+            or set(values) != {"request_id", "fingerprint", "fields"}
+            or not request_id
+            or request_id != self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(values.get("fingerprint") or ""))
+            or not isinstance(values.get("fields"), dict)
+            or set(values["fields"]) != self._MANUAL_EDIT_FORM_FIELDS
+            or any(not isinstance(item, str) or len(item) > 2000 for item in values["fields"].values())
+        ):
+            fail(HTTPStatus.BAD_REQUEST, "修改内容不完整，请关闭后重新打开再修改。")
+            return
+        submitted = values["fields"]
+        try:
+            weight_volume = compose_manual_weight_volume(submitted["field_weight_kg"], submitted["field_volume_m3"])
+        except ValueError as exc:
+            fail(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+            return
+        form_values = {name: value.strip() for name, value in submitted.items()}
+        form_values["field_weight_volume"] = weight_volume
+        def validate_new_request() -> None:
+            # Saved requests replay before checking today's active validator set.
+            validation_ok, validation_message = self._validate_active_waybill_entry_extensions(handler, form_values)
+            if not validation_ok:
+                raise ManualWaybillEditError("WAYBILL_ENTRY_VALIDATION_FAILED", validation_message)
+
+        user = getattr(handler, "current_admin_user", None) or {}
+        request_sha256 = hashlib.sha256(json.dumps(
+            {"waybill_id": int(waybill_id), "fingerprint": values["fingerprint"], "fields": submitted},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        try:
+            result = self.service.apply_manual_waybill_update(
+                waybill_id, form_values,
+                expected_fingerprint=values["fingerprint"], request_id=request_id, request_sha256=request_sha256,
+                actor_id=str(user.get("id") or context["actor"].get("actor_id") or ""),
+                actor_name=str(user.get("display_name") or user.get("username") or "")[:128],
+                validate_new_request=validate_new_request,
+            )
+        except ManualWaybillEditError as exc:
+            status = {
+                "NOT_FOUND": HTTPStatus.NOT_FOUND,
+                "WAYBILL_ENTRY_VALIDATION_FAILED": HTTPStatus.UNPROCESSABLE_ENTITY,
+            }.get(exc.code, HTTPStatus.CONFLICT)
+            fail(status, str(exc), exc.code)
+            return
+        except Exception:
+            fail(HTTPStatus.SERVICE_UNAVAILABLE, "运单保存失败，请稍后重试；可重新打开运单核对是否已修改。", "MANUAL_WAYBILL_EDIT_FAILED")
+            return
+        if not result.get("ok"):
+            fail(HTTPStatus.UNPROCESSABLE_ENTITY, str(result.get("message") or "修改内容无效。"))
+            return
+        outcome = result["outcome"]
+        message = {
+            "UNCHANGED": "未修改任何内容。",
+        }.get(outcome, "运单已修改；如已打印面单，请重新打印。")
+        self._send_json(handler, HTTPStatus.OK, {
+            "ok": True, "outcome": outcome, "changes": result["changes"], "message": message,
+        })
+
     def _handle_waybill_status_update(self, handler: BaseHTTPRequestHandler, waybill_id: int) -> None:
         values = self._parse_urlencoded_form(handler)
         return_to = self._clean_next_url(values.get("return_to", "/waybills"))

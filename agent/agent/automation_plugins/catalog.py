@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from shared.orchestration_repository_support import _json_hash
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -1471,6 +1472,7 @@ class PluginCatalog:
                 "account_bindings": copy.deepcopy(dict(entry.account_bindings)),
                 "resource_bindings": copy.deepcopy(dict(entry.resource_bindings)),
                 "schedule": copy.deepcopy(dict(entry.project_schedule)),
+                "schedule_sha256": _json_hash(dict(entry.project_schedule)),
                 "device": (
                     {
                         "id": str(entry.device_binding.get("device_id") or ""),

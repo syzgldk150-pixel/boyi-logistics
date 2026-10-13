@@ -36,7 +36,7 @@ class AutomationProjectScheduleRepositoryMixin:
         automation_id: str,
         *,
         schedule: Mapping[str, Any],
-        expected_schedule: Mapping[str, Any],
+        expected_schedule_sha256: str,
         scheduling: Mapping[str, Any],
         actor_id: str,
         actor_role: str,
@@ -62,11 +62,11 @@ class AutomationProjectScheduleRepositoryMixin:
         normalized_role = _required_text(actor_role, "actor_role")
         normalized_request = _required_text(request_id, "request_id")
         new_schedule = _normalized_project_schedule(schedule)
-        prior_schedule = _normalized_project_schedule(expected_schedule)
+        expected_sha256 = _sha256(expected_schedule_sha256, "expected_schedule_sha256")
         request_payload_sha256 = _json_hash(
             {
                 "schedule": new_schedule,
-                "expected_schedule": prior_schedule,
+                "expected_schedule_sha256": expected_sha256,
                 "expected_project_configuration_version": expected_version,
             }
         )
@@ -193,7 +193,10 @@ class AutomationProjectScheduleRepositoryMixin:
             current_schedule = _normalized_project_schedule(
                 config.get("desired_schedule_json")
             )
-            if current_schedule != prior_schedule:
+            current_sha256 = _sha256(config.get("desired_schedule_sha256"), "desired_schedule_sha256")
+            if current_sha256 != _json_hash(current_schedule):
+                raise OrchestrationPersistenceError("persisted project schedule digest does not match its content")
+            if current_sha256 != expected_sha256:
                 raise ConcurrentUpdateError("automation project schedule changed")
             if (
                 current_schedule["kind"] != "daily_times"

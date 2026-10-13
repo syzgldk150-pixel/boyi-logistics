@@ -11,7 +11,9 @@ updated: 2026-10-13
 
 `056_drop_boyi_handling_fees.sql` 删除博益运单实体表 `waybill_db.boyi_waybills` 的 `pickup_fee`、`delivery_fee`：博益主单、录单页、OCR 模板与录单扩展草稿已不含接货费、送货费；融辉/韵达平台表保留这两列。发布前须重新核对博益表的行数与费用列使用情况，并保留当次备份。迁移先将原行 ID 与两项费用原样保存在 `waybill_db._migration_056_boyi_handling_fees`，再删除实体列；备份表保留到业务验收完成。它是首个 055 之后的普通迁移，用 `{{waybill_db}}` 引用实体库，`run_migrations.py` 按运行库绑定名称并在执行后重建 `agent_db` 视图投影；须与不再读写这两列的 Console 代码协调发布；迁移后不得回退到仍读写这两列的旧版本。
 
-`058_automation_project_schedule_changes.sql` 在运行库 `agent_db` 新增 `automation_project_schedule_changes`：每次只改“每天指定时间”时间点的保存记录一条幂等事实（请求 ID 唯一、操作人、前后定时与摘要、所绑定的代次和配置版本），不设外键，卸载实例后仍保留审计。只新增表，不改动既有表或历史迁移；回退旧版本代码时该表闲置无害。
+`057_boyi_waybill_edit_logs.sql` 在 `waybill_db` 新增 `boyi_waybill_edit_logs`，保存博益手工单的修改前后值、操作人、时间和唯一请求 ID；运单更新与留痕在同一事务内完成。迁移通过 `{{waybill_db}}` 绑定实体库，`migration_055_domain_databases.py` 同时将该表投影为 `agent_db` 中的同名视图。发布须核验 Console 对实体表与视图的 SELECT/INSERT 权限，并把新增实体表纳入三个库的备份范围；不改变平台运单或既有运单数据。新代码依赖此表，必须先迁移再重启。
+
+`058_automation_project_schedule_changes.sql` 在运行库 `agent_db` 新增 `automation_project_schedule_changes`：每次只改“每天指定时间”时间点的保存记录一条幂等事实（请求 ID 唯一、操作人、前后定时与摘要、所绑定的代次和配置版本），不设外键，卸载实例后仍保留审计。只新增表，不改动既有表或历史迁移；回退旧版本代码时该表闲置无害。057 与 058 随同一次 shared 发布执行。
 
 `054_boyi_waybill_sender_address.sql` 为博益手工单新增选填 `sender_address`，历史记录保持 NULL；录入、详情与打印共用已保存值。
 
@@ -31,7 +33,7 @@ updated: 2026-10-13
 
 当前由迁移统一管理以下运行时结构：
 
-- 工作流与运单：`scheduled_tasks`、`workflow_resources`、`waybills`、`boyi_waybills`；
+- 工作流与运单：`scheduled_tasks`、`workflow_resources`、`waybills`、`boyi_waybills`、`boyi_waybill_edit_logs`；
 - Console 文档、OCR、回单、管理员与专线联系人表；
 - 共享财务账本表；
 - Agent 会话、消息、工具日志、知识库和 Phase 7 表；

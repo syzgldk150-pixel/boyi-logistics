@@ -28,36 +28,26 @@ class _RenderHandler:
         pass
 
 
-def test_authenticated_waybill_refresh_calls_direct_query_before_consistent_local_read():
+def test_authenticated_waybill_get_reads_snapshot_without_calling_agent():
     repository = _WaybillRepo()
     app = _build_waybill_app(repository)
     handler = _RenderHandler()
-    handler.current_admin_user = {"id": 1}
-    principal = {"actor_id": "fixture-admin"}
-    app._control_plane_read_context = lambda _handler: {"_console_principal": principal}
-    calls = []
-    def direct(method, endpoint, **kwargs):
-        assert repository.calls == []
-        calls.append((method, endpoint, kwargs))
-        return {"ok": True, "data": {"complete": True}}
-    app._agent_request = direct
+    handler.current_admin_user = {"id": 1, "username": "fixture-admin"}
+    app._agent_request = lambda *_args, **_kwargs: unittest.TestCase().fail("GET must not call Agent")
     app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"], "date_to": ["2026-09-08"]})
-    assert len(calls) == 1
-    assert calls[0][:2] == ("POST", "/internal/v1/business/send-waybills-query")
-    assert calls[0][2]["payload"]["params"] == {"source": "yunda", "date_from": "2026-09-08", "date_to": "2026-09-08"}
-    assert calls[0][2]["console_principal"] == principal
     assert len(repository.calls) == 1
+    assert app._waybill_source_refresh_plan(handler, repository.calls[0]["filters"]) == (
+        {"source": "yunda", "date_from": "2026-09-08", "date_to": "2026-09-08"}, [])
 
 
-def test_incomplete_provider_refresh_does_not_present_local_total_as_platform_total():
+def test_basic_auth_snapshot_cannot_offer_provider_refresh():
     repository = _WaybillRepo()
     app = _build_waybill_app(repository)
     handler = _RenderHandler()
-    handler.current_admin_user = {"id": 1}
-    app._control_plane_read_context = lambda _handler: {"_console_principal": {"actor_id": "fixture"}}
-    app._agent_request = lambda *_args, **_kwargs: {"ok": False, "data": {"complete": False}}
+    handler.current_admin_user = {"id": 1, "username": "fixture", "is_legacy_basic_auth": True}
+    app._agent_request = lambda *_args, **_kwargs: unittest.TestCase().fail("GET must not call Agent")
     app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"]})
-    assert "仅代表已保存的服务器数据" in handler.wfile.getvalue().decode("utf-8")
+    assert "原平台补查需要已登录的管理员会话" in handler.wfile.getvalue().decode("utf-8")
     assert len(repository.calls) == 1
 
 
@@ -199,17 +189,18 @@ class WaybillQueryTemplateTests(unittest.TestCase):
                     "pickup_fee": "",
                     "delivery_fee": "5.00",
                     "transfer_fee": "",
-                    "payment_method": "寄付",
+                    "payment_method": "到付",
                     "delivery_method": "送货",
                     "insurance_amount": "",
-                    "cod_amount": "",
+                    "cod_amount": "4.00",
                     "remark": "",
+                    "source": "manual",
                     "source_label": "手工",
                     "status": "in_transit",
                     "status_label": "运输中",
                     "status_tone": "info",
                     "opening_cost": "20.00",
-                    "pickup_payment_amount": "0.00",
+                    "pickup_payment_amount": "4.00",
                     "print_data_url": "/waybills/1/print-data?source=manual",
                     "tracking_url": "/tracking?tracking_number=00000001",
                 }
@@ -221,8 +212,8 @@ class WaybillQueryTemplateTests(unittest.TestCase):
                 "fee_total": "25.00",
                 "opening_cost_total": "20.00",
                 "insurance_total": "0.00",
-                "cod_total": "0.00",
-                "pickup_payment_total": "0.00",
+                "cod_total": "4.00",
+                "pickup_payment_total": "4.00",
                 "invalid_money_count": 0,
                 "latest_created_at": "2026-05-12 10:00:00",
                 "latest_open_date": "2026/05/12",
@@ -278,7 +269,10 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         self.assertNotIn("15天", html)
         self.assertNotIn("1个月", html)
         self.assertNotIn("运单号 / 客户 / 网点 / 地址", html)
-        self.assertNotIn("保价金额", html)
+        self.assertIn("修改运单", html)
+        self.assertNotIn("付款状态", html)
+        self.assertNotIn("内部备注", html)
+        self.assertNotIn("费用合计", html)
         self.assertNotIn("导出当前页", html)
 
     def test_detail_opens_as_centered_modal_not_right_drawer(self):

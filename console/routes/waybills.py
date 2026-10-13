@@ -19,6 +19,15 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/line-haul-contacts":
         app._render_line_haul_contacts(handler, query)
         return True
+    if path.startswith("/waybills/") and path.endswith(("/edit-data", "/edit-history")):
+        waybill_id = app._parse_document_id(path)
+        if waybill_id is None:
+            app._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在。"})
+        elif path.endswith("/edit-data"):
+            app._handle_manual_waybill_edit_data(handler, waybill_id, query)
+        else:
+            app._handle_manual_waybill_edit_history(handler, waybill_id, query)
+        return True
     if path.startswith("/waybills/") and path.endswith("/print-data"):
         waybill_id = app._parse_document_id(path)
         if waybill_id is None:
@@ -38,6 +47,16 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if path == "/waybills/manual":
         app._handle_manual_waybill(handler)
+        return True
+    if path == "/waybills/source-refresh":
+        app._handle_waybill_source_refresh(handler)
+        return True
+    if path.startswith("/waybills/") and path.endswith("/manual-update"):
+        waybill_id = app._parse_document_id(path)
+        if waybill_id is None:
+            app._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在。"})
+        else:
+            app._handle_manual_waybill_update(handler, waybill_id)
         return True
     if path.startswith("/waybills/") and path.endswith("/status"):
         waybill_id = app._parse_document_id(path)

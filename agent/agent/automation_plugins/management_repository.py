@@ -117,7 +117,7 @@ class MySQLAutomationPluginManagementRepository:
         automation_id: str,
         *,
         schedule: Mapping[str, object],
-        expected_schedule: Mapping[str, object],
+        expected_schedule_sha256: str,
         scheduling: Mapping[str, object],
         actor_id: str,
         actor_role: str,
@@ -130,7 +130,7 @@ class MySQLAutomationPluginManagementRepository:
             result = uow.automation_plugins.save_project_schedule_times(
                 automation_id,
                 schedule=schedule,
-                expected_schedule=expected_schedule,
+                expected_schedule_sha256=expected_schedule_sha256,
                 scheduling=scheduling,
                 actor_id=actor_id,
                 actor_role=actor_role,

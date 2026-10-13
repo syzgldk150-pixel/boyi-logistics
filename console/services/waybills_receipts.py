@@ -5,6 +5,43 @@ from console.services.business_calls import call_business
 from console.services.waybill_printing import build_waybill_print_data
 
 
+# One provider backfill per (source, date range) at a time; a complete result
+# is reused briefly so repeated queries of the same range stay instant.
+WAYBILL_REFRESH_REUSE_SECONDS = 120
+WAYBILL_REFRESH_WAIT_SECONDS = 100
+_WAYBILL_REFRESH_LOCK = threading.Lock()
+_WAYBILL_REFRESH_FLIGHTS: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def _waybill_refresh_flight(key: tuple[str, str, str]) -> tuple[dict[str, Any], bool]:
+    """Return the shared flight for ``key`` and whether the caller runs it."""
+
+    now = time.monotonic()
+    with _WAYBILL_REFRESH_LOCK:
+        flight = _WAYBILL_REFRESH_FLIGHTS.get(key)
+        if flight is not None and not flight["done"].is_set():
+            return flight, False
+        if (
+            flight is not None
+            and (flight.get("result") or {}).get("complete") is True
+            and now - flight["finished_at"] < WAYBILL_REFRESH_REUSE_SECONDS
+        ):
+            return flight, False
+        flight = {"done": threading.Event(), "result": None, "finished_at": 0.0}
+        _WAYBILL_REFRESH_FLIGHTS[key] = flight
+        return flight, True
+
+
+def _finish_waybill_refresh_flight(key: tuple[str, str, str], flight: dict[str, Any]) -> None:
+    with _WAYBILL_REFRESH_LOCK:
+        flight["finished_at"] = time.monotonic()
+        if (flight.get("result") or {}).get("complete") is not True:
+            # Failures are never reused; waiters still read this result once.
+            if _WAYBILL_REFRESH_FLIGHTS.get(key) is flight:
+                del _WAYBILL_REFRESH_FLIGHTS[key]
+        flight["done"].set()
+
+
 class WaybillsReceiptsServiceMixin:
     def _render_dispatch(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         dispatch_config = {
@@ -87,39 +124,106 @@ class WaybillsReceiptsServiceMixin:
             return str(error)
         return "智能服务调用失败。"
 
-    def _refresh_waybill_sources(self, handler: BaseHTTPRequestHandler,
-                                filters: dict[str, Any]) -> dict[str, list[str]]:
-        status: dict[str, list[str]] = {"messages": [], "warnings": []}
+    def _waybill_source_refresh_plan(
+        self,
+        handler: BaseHTTPRequestHandler,
+        filters: dict[str, Any],
+    ) -> tuple[dict[str, str] | None, list[str]]:
+        """Decide, without network I/O, whether this query may backfill sources."""
+
         if not self._waybill_sync_providers(str(filters.get("source") or "all")):
-            return status
+            return None, []
         start, end, error = self._waybill_sync_date_span(filters)
         if error:
-            status["warnings"].append(error)
-            return status
+            return None, [error]
         if not start:
-            status["warnings"].append("未指定日期，本次仅查询服务器数据；请选择日期补查原平台。")
-            return status
+            return None, ["未指定日期，本次仅查询服务器数据；请选择日期补查原平台。"]
         # A browser page read uses the same authenticated principal as other
         # direct business reads. Never invent an account from a provider name.
         user = getattr(handler, "current_admin_user", None)
-        if not isinstance(user, dict) or user.get("legacy"):
-            status["warnings"].append("原平台补查需要已登录的管理员会话，当前展示服务器快照。")
-            return status
-        context = self._control_plane_read_context(handler)
-        if context is None:
-            status["warnings"].append("原平台补查身份不可用，当前展示服务器快照。")
-            return status
+        if self._mysql_console_principal(user) is None:
+            return None, ["原平台补查需要已登录的管理员会话，当前展示服务器快照。"]
+        return {"source": str(filters["source"]), "date_from": start, "date_to": end}, []
+
+    def _refresh_waybill_sources(
+        self,
+        principal: dict[str, Any],
+        plan: dict[str, str],
+    ) -> dict[str, Any]:
+        """Run one direct, scoped provider backfill; never raise to the page."""
+
         import uuid
-        result = self._agent_request("POST", "/internal/v1/business/send-waybills-query", payload={
-            "params": {"source": filters["source"], "date_from": start, "date_to": end},
-            "request_id": str(uuid.uuid4()), "timeout_sec": 90,
-        }, timeout=95, console_principal=context["_console_principal"])
+        try:
+            result = self._agent_request("POST", "/internal/v1/business/send-waybills-query", payload={
+                "params": dict(plan),
+                "request_id": str(uuid.uuid4()), "timeout_sec": 90,
+            }, timeout=95, console_principal=principal)
+        except Exception:
+            result = {"ok": False}
+        if not isinstance(result, dict):
+            result = {"ok": False}
         data = result.get("data") if isinstance(result.get("data"), dict) else result
-        if not result.get("ok") or not isinstance(data, dict) or data.get("complete") is not True:
-            status["warnings"].append("原平台数据未完整更新，以下列表和汇总仅代表已保存的服务器数据。")
-        else:
-            status["messages"].append("已按原平台覆盖范围更新数据，列表和汇总使用同一数据库快照。")
-        return status
+        complete = bool(result.get("ok")) and isinstance(data, dict) and data.get("complete") is True
+        return {
+            "complete": complete,
+            "messages": ["已按原平台覆盖范围更新数据，列表和汇总使用同一数据库快照。"] if complete else [],
+            "warnings": [] if complete else ["原平台数据未完整更新，以下列表和汇总仅代表已保存的服务器数据。"],
+            "refreshed_at": datetime.now().strftime("%H:%M"),
+        }
+
+    def _handle_waybill_source_refresh(self, handler: BaseHTTPRequestHandler) -> None:
+        """Backfill provider data after the page already showed the snapshot.
+
+        Identical concurrent requests share one Agent call; a complete result
+        is reused for two minutes so pagination, sorting and repeated clicks
+        do not page every provider again. Failures are never cached.
+        """
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        values = self._read_control_plane_json(handler)
+        if values is None:
+            return
+        if (
+            not isinstance(values, dict)
+            or set(values) != {"source", "date_from", "date_to"}
+            or any(not isinstance(value, str) for value in values.values())
+            or values["source"] not in {"all", *WAYBILL_SOURCE_LABELS}
+        ):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {
+                "ok": False, "message": "补查参数无效，请重新查询。"})
+            return
+        source = str(values.get("source") or "all").strip().lower() or "all"
+        filters = {
+            "source": source,
+            "date_from": normalize_open_date(str(values.get("date_from") or "")),
+            "date_to": normalize_open_date(str(values.get("date_to") or "")),
+        }
+        plan, warnings = self._waybill_source_refresh_plan(handler, filters)
+        if plan is None:
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {
+                "refreshed": False, "complete": False, "messages": [], "warnings": warnings,
+                "refreshed_at": "", "reused": False}})
+            return
+        key = (plan["source"], plan["date_from"], plan["date_to"])
+        flight, owner = _waybill_refresh_flight(key)
+        if owner:
+            try:
+                flight["result"] = self._refresh_waybill_sources(context["_console_principal"], plan)
+            finally:
+                _finish_waybill_refresh_flight(key, flight)
+        elif not flight["done"].wait(WAYBILL_REFRESH_WAIT_SECONDS):
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {
+                "refreshed": False, "complete": False, "messages": [],
+                "warnings": ["原平台补查仍在进行，请稍后重新查询。"], "refreshed_at": "", "reused": True}})
+            return
+        result = dict(flight.get("result") or {
+            "complete": False, "messages": [],
+            "warnings": ["原平台数据未完整更新，以下列表和汇总仅代表已保存的服务器数据。"],
+            "refreshed_at": ""})
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {
+            "refreshed": True, **result, "reused": not owner}})
 
     def _render_waybills(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         def first_value(name: str, default: str = "") -> str:
@@ -211,12 +315,12 @@ class WaybillsReceiptsServiceMixin:
             }
             return result
 
+        # The page shows the stored snapshot at once; an explicit query then
+        # asks /waybills/source-refresh to backfill providers asynchronously.
         sync_status: dict[str, list[str]] = {"messages": [], "warnings": []}
+        source_refresh: dict[str, str] | None = None
         if has_active_filters:
-            try:
-                sync_status = self._refresh_waybill_sources(handler, filters)
-            except Exception:
-                sync_status["warnings"].append("原平台补查暂不可用，以下列表和汇总仅代表已保存的服务器数据。")
+            source_refresh, sync_status["warnings"] = self._waybill_source_refresh_plan(handler, filters)
 
         if has_active_filters:
             try:
@@ -263,6 +367,7 @@ class WaybillsReceiptsServiceMixin:
             sort_options=sort_options,
             db_error=db_error,
             sync_status=sync_status,
+            source_refresh=source_refresh,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )

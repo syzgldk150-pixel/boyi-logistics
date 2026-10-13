@@ -24,7 +24,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
@@ -36,6 +36,11 @@ from console.runtime_config import load_console_environment
 from console.database import (
     DocumentRepository,
     MANUAL_PAYMENT_METHODS,
+    MANUAL_WAYBILL_EDIT_FIELDS,
+    MANUAL_WAYBILL_EDIT_LABELS,
+    ManualWaybillEditError,
+    manual_waybill_fingerprint,
+    split_manual_weight_volume,
     WAYBILL_SOURCE_LABELS,
     WAYBILL_STATUS_LABELS,
     WAYBILL_STATUS_TONES,
@@ -1470,11 +1475,36 @@ def normalize_money_amount(value: str) -> str:
 
 def normalize_manual_field_value(field_name: str, value: str) -> str:
     normalized = normalize_field_value(field_name, value)
+    if field_name == "open_date" and normalized:
+        try:
+            datetime.strptime(normalized, "%Y/%m/%d")
+        except ValueError as exc:
+            raise ValueError("日期格式无效，请选择有效的开单日期") from exc
     if field_name == "payment_method" and normalized and normalized not in MANUAL_PAYMENT_METHODS:
         raise ValueError("只能选择" + "、".join(MANUAL_PAYMENT_METHODS))
     if field_name in MONEY_FIELD_NAMES:
-        return normalize_money_amount(normalized)
+        amount = normalize_money_amount(normalized)
+        if amount and not Decimal(amount).is_finite():
+            raise ValueError("金额格式无效")
+        return amount
     return normalized
+
+
+def compose_manual_weight_volume(weight_kg: Any, volume_m3: Any) -> str:
+    """Join weight and volume exactly as the manual entry page does."""
+    parts = []
+    for raw, unit, label in ((weight_kg, "kg", "重量"), (volume_m3, "m³", "体积")):
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        try:
+            number = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError(f"{label}格式无效") from exc
+        if not number.is_finite() or number < 0:
+            raise ValueError(f"{label}不能为负数")
+        parts.append(f"{number:f}{unit}")
+    return " / ".join(parts)
 
 
 QUOTE_MONEY_SCALE = Decimal("0.01")
@@ -1956,9 +1986,13 @@ class DocumentService:
 
         return ActionResult(ok=status == "confirmed", message=message)
 
-    def apply_manual_waybill(self, form_values: dict[str, str]) -> ActionResult:
+    def _normalized_manual_waybill_fields(
+        self,
+        form_values: dict[str, str],
+    ) -> tuple[dict[str, str] | None, str]:
+        """Validate one manual waybill form; shared by create and edit."""
+
         template_spec = self._get_template_spec()
-        writer_id = form_values.get("writer_id", "").strip()
         fields: dict[str, str] = {}
         missing_labels: list[str] = []
 
@@ -1973,10 +2007,7 @@ class DocumentService:
                     form_values.get(f"field_{field_name}", ""),
                 )
             except ValueError as exc:
-                return ActionResult(
-                    ok=False,
-                    message=f"{field.get('label', field_name)}：{exc}",
-                )
+                return None, f"{field.get('label', field_name)}：{exc}"
             fields[field_name] = manual_value
             if field.get("required", False) and not manual_value:
                 missing_labels.append(str(field.get("label") or field_name))
@@ -1988,18 +2019,51 @@ class DocumentService:
                     form_values.get(f"field_{field_name}", ""),
                 )
             except ValueError as exc:
-                return ActionResult(ok=False, message=f"{label}：{exc}")
+                return None, f"{label}：{exc}"
 
         if missing_labels:
-            return ActionResult(
-                ok=False,
-                message="必填字段未填写：" + "、".join(missing_labels),
-            )
+            return None, "必填字段未填写：" + "、".join(missing_labels)
 
         receipt_value = form_values.get("field_receipt_required", "0")
         if receipt_value not in ("0", "1"):
-            return ActionResult(ok=False, message="回单选项无效，请重新勾选。")
+            return None, "回单选项无效，请重新勾选。"
         fields["receipt_required"] = receipt_value
+        return fields, ""
+
+    def apply_manual_waybill_update(
+        self,
+        waybill_id: int,
+        form_values: dict[str, str],
+        *,
+        expected_fingerprint: str,
+        request_id: str,
+        request_sha256: str,
+        actor_id: str,
+        actor_name: str,
+        validate_new_request: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Validate like a new manual waybill, then change the saved one."""
+
+        fields, error = self._normalized_manual_waybill_fields(form_values)
+        if fields is None:
+            return {"ok": False, "message": error}
+        result = self.repository.update_manual_waybill(
+            waybill_id,
+            {field: fields[field] for field in MANUAL_WAYBILL_EDIT_FIELDS},
+            expected_fingerprint=expected_fingerprint,
+            request_id=request_id,
+            request_sha256=request_sha256,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            validate_new_request=validate_new_request,
+        )
+        return {"ok": True, **result}
+
+    def apply_manual_waybill(self, form_values: dict[str, str]) -> ActionResult:
+        writer_id = form_values.get("writer_id", "").strip()
+        fields, error = self._normalized_manual_waybill_fields(form_values)
+        if fields is None:
+            return ActionResult(ok=False, message=error)
 
         waybill_id, waybill_no = self.repository.create_manual_waybill(fields, writer_id=writer_id)
         if writer_id:

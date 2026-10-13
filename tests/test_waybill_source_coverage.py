@@ -52,3 +52,45 @@ def test_unknown_scope_is_a_visible_partial_result_and_performs_no_writes():
     result = DirectWaybillQueryService(Repository(), unavailable).query({"source": "all", "date_from": "2026-09-08"})
     assert result["ok"] is False and result["data_status"] == "partial"
     assert result["error_code"] == "WAYBILL_SOURCE_SCOPE_UNVERIFIED"
+
+
+def test_all_sources_refresh_concurrently_and_keep_the_fixed_result_order():
+    import threading
+    from contextlib import contextmanager
+
+    barrier = threading.Barrier(2, timeout=5)
+    sessions = []
+
+    cache_reads = []
+
+    class Repository:
+        def read_cached(self, **_kwargs):
+            cache_reads.append(True)
+            return {"rows": [], "total": 0}
+
+        @contextmanager
+        def session(self):
+            sessions.append(threading.get_ident())
+            yield self
+
+        def coverage_range(self, *_args):
+            return {}
+
+        def publish(self, records, *, scope, business_date, **_kwargs):
+            return {"source": scope.source, "target_date": business_date.isoformat(), "complete": True}
+
+    def source(provider):
+        scope = WaybillSourceScope(provider, f"{provider}:native-waybill", "site/all", f"account-{provider}")
+
+        def fetch_day(_day):
+            barrier.wait()  # both providers must be in flight at the same time
+            return [], 0
+        return WaybillQuerySource(scope, fetch_day)
+
+    service = DirectWaybillQueryService(Repository(), source)
+    result = service.query({"source": "all", "date_from": "2026-09-08", "date_to": "2026-09-08"})
+    assert result["ok"] is True, result
+    assert [item["source"] for item in result["publications"]] == ["ronghui", "yunda"]
+    assert len(set(sessions)) == 2
+    # A date query reads the cache once, after refreshing, not also before it.
+    assert cache_reads == [True]

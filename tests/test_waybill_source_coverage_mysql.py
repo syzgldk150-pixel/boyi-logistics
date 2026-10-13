@@ -497,3 +497,91 @@ def test_ronghui_exact_native_detail_upserts_only_returned_identity(database, mo
     failed = service.query({"source": "ronghui", "waybill_no": "exact-one", "force_refresh": True})
     assert failed["errors"][0]["code"] == "WAYBILL_EXACT_QUERY_DATE_UNAVAILABLE"
     assert len(rows(database)) == 2
+
+
+def test_repeated_refresh_skips_unchanged_rows_and_inserts_in_one_statement(database):
+    statements = []
+
+    @contextmanager
+    def counting():
+        with database() as connection:
+            execute, executemany = connection.cursor().__class__.execute, connection.cursor().__class__.executemany
+
+            class Cursor(connection.cursor().__class__):
+                def execute(self, query, args=None):
+                    statements.append(query.split()[0].upper())
+                    return execute(self, query, args)
+
+                def executemany(self, query, args):
+                    statements.append("MANY:" + query.split()[0].upper())
+                    return executemany(self, query, args)
+
+            original = connection.cursor
+            connection.cursor = lambda cursor=None: original(cursor or Cursor)
+            yield connection
+
+    repository = WaybillSourceRepository(counting)
+    first = repository.publish([record("one"), record("two"), record("three")], scope=SCOPE, business_date=DAY,
+                               captured_at=CAPTURED, complete=True, expected_total=3)
+    assert first["creates"] == 3 and statements.count("MANY:INSERT") == 1
+    stamps = {row["waybill_no"]: row["updated_at"] for row in rows(database)}
+    statements.clear()
+    again = repository.publish([record("one"), record("two", piece="9"), record("three")], scope=SCOPE,
+                               business_date=DAY, captured_at=datetime(2026, 9, 9, 1, tzinfo=timezone.utc),
+                               complete=True, expected_total=3)
+    assert (again["creates"], again["updates"], again["unchanged"]) == (0, 3, 2)
+    # Only the changed row and the coverage row are updated.
+    assert statements.count("UPDATE") == 2 and "MANY:INSERT" not in statements
+    after = {row["waybill_no"]: row for row in rows(database)}
+    assert after["two"]["quantity_lines"] == "9"
+    assert after["one"]["updated_at"] == stamps["one"]
+
+
+def test_publication_holds_row_locks_on_an_autocommit_connection(database, monkeypatch):
+    """The production connection autocommits; publish must still be one transaction."""
+    @contextmanager
+    def autocommit():
+        with database() as connection:
+            connection.autocommit(True)
+            yield connection
+
+    repository = WaybillSourceRepository(autocommit)
+    repository.publish([record("one"), record("two")], scope=SCOPE, business_date=DAY, captured_at=CAPTURED,
+                       complete=True, expected_total=2)
+    import shared.waybill_source_coverage as coverage_module
+    original = coverage_module._publication_unchanged
+    calls = []
+
+    def fail_on_second_row(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            raise RuntimeError("interrupted mid publication")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(coverage_module, "_publication_unchanged", fail_on_second_row)
+    with pytest.raises(RuntimeError):
+        repository.publish([record("one", piece="7"), record("two", piece="8")], scope=SCOPE, business_date=DAY,
+                           captured_at=datetime(2026, 9, 9, 1, tzinfo=timezone.utc), complete=True, expected_total=2)
+    monkeypatch.setattr(coverage_module, "_publication_unchanged", original)
+    # The first row had already been updated; the whole publication rolled back.
+    assert [(row["waybill_no"], row["quantity_lines"]) for row in rows(database)] == [("one", "1"), ("two", "1")]
+    assert repository.coverage(SCOPE, DAY)["captured_at"] == CAPTURED.replace(tzinfo=None)
+
+
+def test_session_reuses_one_connection_and_reads_coverage_by_range(database):
+    opened = []
+
+    @contextmanager
+    def counted():
+        opened.append(True)
+        with database() as connection:
+            yield connection
+
+    repository = WaybillSourceRepository(counted)
+    with repository.session() as session:
+        session.publish([record("one")], scope=SCOPE, business_date=DAY, captured_at=CAPTURED,
+                        complete=True, expected_total=1)
+        coverage = session.coverage_range(SCOPE, DAY, date(2026, 9, 10))
+        session.read_cached(source="ronghui", date_from=DAY, date_to=DAY)
+    assert len(opened) == 1
+    assert list(coverage) == [DAY] and coverage[DAY]["record_count"] == 1

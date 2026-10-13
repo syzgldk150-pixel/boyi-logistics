@@ -147,8 +147,8 @@ class PluginScheduleUpdateRequest(BaseModel):
     schedule: PluginScheduleRequest
     request_id: str = Field(min_length=1, max_length=64)
     expected_project_configuration_version: int = Field(ge=0)
-    # The schedule the operator edited; enables the times-only CAS.
-    expected_schedule: PluginScheduleRequest | None = None
+    # Digest of the schedule the operator edited; enables the times-only CAS.
+    expected_schedule_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ArrivalStatsRecoveryReadbackRequest(BaseModel):
@@ -1232,11 +1232,7 @@ def create_automation_plugin_management_router(
                     payload.expected_project_configuration_version
                 ),
                 actor=actor,
-                expected_schedule=(
-                    payload.expected_schedule.model_dump()
-                    if payload.expected_schedule is not None
-                    else None
-                ),
+                expected_schedule_sha256=payload.expected_schedule_sha256,
             )
         ))
         if isinstance(response, JSONResponse):

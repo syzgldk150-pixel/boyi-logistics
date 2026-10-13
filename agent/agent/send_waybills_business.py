@@ -6,6 +6,7 @@ not permission to declare a platform-wide snapshot complete.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
@@ -69,51 +70,66 @@ class DirectWaybillQueryService:
             raise ValueError("waybill query requires a date range or exact identity")
         if start and (end is None or end < start or (end-start).days >= 31):
             raise ValueError("waybill date range must be within 31 days")
-        publications: list[dict[str, Any]] = []
-        errors: list[dict[str, str]] = []
-        cached = self.repository.read_cached(source=provider, date_from=start, date_to=end, waybill_no=wanted)
-        if wanted and not params.get("force_refresh") and cached["total"] == 1:
-            return {"ok": True, "complete": True, "data_status": "cached_exact",
-                    "publications": [], "errors": [], "data": cached}
-        for source in (["ronghui", "yunda"] if provider == "all" else [provider]):
+        if wanted and not params.get("force_refresh"):
+            cached = self.repository.read_cached(source=provider, date_from=start, date_to=end, waybill_no=wanted)
+            if cached["total"] == 1:
+                return {"ok": True, "complete": True, "data_status": "cached_exact",
+                        "publications": [], "errors": [], "data": cached}
+
+        def refresh(source: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+            publications: list[dict[str, Any]] = []
             try:
                 binding = (source_resolver or self.source_resolver)(source)
                 if not isinstance(binding, WaybillQuerySource) or binding.scope.source != source:
                     raise ValueError("WAYBILL_SOURCE_SCOPE_UNVERIFIED")
-                if wanted:
-                    if binding.fetch_exact is None:
-                        raise ValueError("WAYBILL_EXACT_QUERY_UNAVAILABLE")
-                    records = binding.fetch_exact(wanted)
-                    if any(str(row.get("waybill_no") or "").strip() != wanted for row in records):
-                        raise ValueError("WAYBILL_EXACT_QUERY_IDENTITY_MISMATCH")
-                    by_day: dict[date, list[dict[str, Any]]] = {}
-                    for row in records:
-                        by_day.setdefault(date.fromisoformat(row["open_date"]), []).append(row)
-                    for day, values in by_day.items():
-                        if datetime.now(timezone.utc) > deadline:
-                            raise ValueError("WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH")
-                        publications.append(self.repository.publish(values, scope=binding.scope,
-                            business_date=day, captured_at=started, complete=False))
-                    continue
-                current = start
-                while current is not None and end is not None and current <= end:
-                    coverage = self.repository.coverage(binding.scope, current)
-                    if not params.get("force_refresh") and coverage_satisfies(
-                            coverage, binding.scope, current, requested_at=started):
-                        publications.append({"source": source, "target_date": current.isoformat(),
-                                             "complete": True, "from_database": True})
-                    else:
-                        observed = datetime.now(timezone.utc)
-                        records, total = binding.fetch_day(current)
-                        if datetime.now(timezone.utc) > deadline:
-                            raise ValueError("WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH")
-                        publications.append(self.repository.publish(records, scope=binding.scope,
-                            business_date=current, captured_at=observed, complete=True, expected_total=total))
-                    current += timedelta(days=1)
+                # One connection per provider for its whole refresh.
+                with self.repository.session() as repository:
+                    if wanted:
+                        if binding.fetch_exact is None:
+                            raise ValueError("WAYBILL_EXACT_QUERY_UNAVAILABLE")
+                        records = binding.fetch_exact(wanted)
+                        if any(str(row.get("waybill_no") or "").strip() != wanted for row in records):
+                            raise ValueError("WAYBILL_EXACT_QUERY_IDENTITY_MISMATCH")
+                        by_day: dict[date, list[dict[str, Any]]] = {}
+                        for row in records:
+                            by_day.setdefault(date.fromisoformat(row["open_date"]), []).append(row)
+                        for day, values in by_day.items():
+                            if datetime.now(timezone.utc) > deadline:
+                                raise ValueError("WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH")
+                            publications.append(repository.publish(values, scope=binding.scope,
+                                business_date=day, captured_at=started, complete=False))
+                        return publications, []
+                    coverage = repository.coverage_range(binding.scope, start, end)
+                    current = start
+                    while current <= end:
+                        if not params.get("force_refresh") and coverage_satisfies(
+                                coverage.get(current), binding.scope, current, requested_at=started):
+                            publications.append({"source": source, "target_date": current.isoformat(),
+                                                 "complete": True, "from_database": True})
+                        else:
+                            observed = datetime.now(timezone.utc)
+                            records, total = binding.fetch_day(current)
+                            if datetime.now(timezone.utc) > deadline:
+                                raise ValueError("WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH")
+                            publications.append(repository.publish(records, scope=binding.scope,
+                                business_date=current, captured_at=observed, complete=True, expected_total=total))
+                        current += timedelta(days=1)
             except Exception as exc:
                 # No raw provider response, credentials or arbitrary error text.
                 code = str(exc) if str(exc).startswith("WAYBILL_") and str(exc).replace("_", "").isalnum() else "WAYBILL_SOURCE_QUERY_FAILED"
-                errors.append({"source": source, "code": code})
+                return publications, [{"source": source, "code": code}]
+            return publications, []
+
+        sources = ["ronghui", "yunda"] if provider == "all" else [provider]
+        if len(sources) > 1:
+            # Different platforms, accounts and connections: their wall times
+            # no longer add up. Results keep the fixed source order.
+            with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="waybill-source") as pool:
+                outcomes = list(pool.map(refresh, sources))
+        else:
+            outcomes = [refresh(sources[0])]
+        publications = [item for published, _errors in outcomes for item in published]
+        errors = [item for _published, failures in outcomes for item in failures]
         cached = self.repository.read_cached(source=provider, date_from=start, date_to=end, waybill_no=wanted)
         return {"ok": not errors, "complete": not errors, "publications": publications, "data": cached,
                 "coverage_kind": "current_query_profile", "all_organization_complete": False,

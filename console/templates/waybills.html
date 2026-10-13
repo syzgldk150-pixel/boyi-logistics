@@ -18,621 +18,158 @@
 
 {% block content %}
 <style>
-  .waybill-page { max-width: none; }
+  .waybill-page, .waybill-workbench, .waybill-list-panel { min-width: 0; }
   .waybill-page [hidden] { display: none !important; }
-  .waybill-workbench {
-    display: block;
-    min-width: 0;
-  }
-  .waybill-list-panel {
-    min-width: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: #fff;
-    box-shadow: var(--shadow-soft);
-  }
-  .waybill-list-panel { overflow: visible; }
-  .waybill-detail-dialog {
-    width: min(760px, calc(100vw - 32px));
-    max-height: min(820px, calc(100vh - 40px));
-    min-width: 0;
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-xl);
-    background: #fff;
-    box-shadow: 0 24px 80px rgba(15, 23, 42, .22);
-    overflow: hidden;
-  }
-  .waybill-detail-dialog::backdrop {
-    background: rgba(15, 23, 42, .34);
-    backdrop-filter: blur(2px);
-  }
-  .waybill-detail-dialog:not([open]) {
-    display: none;
-  }
-  .waybill-detail-close {
-    position: absolute;
-    top: 14px;
-    right: 14px;
-    z-index: 2;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 38px;
-    height: 38px;
-    min-width: 38px;
-    min-height: 38px;
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: #fff;
-    color: var(--muted);
-    box-shadow: 0 8px 22px rgba(15, 23, 42, .08);
-    cursor: pointer;
-    transition: border-color var(--fast), color var(--fast), background var(--fast);
-  }
-  .waybill-detail-close:hover {
-    border-color: #d1d5db;
-    background: #f9fafb;
-    color: var(--text-strong);
-  }
-  .waybill-detail-close .feather {
-    width: 17px;
-    height: 17px;
-  }
-  .waybill-filter-form {
-    display: grid;
-    grid-template-columns: minmax(320px, 1.25fr) minmax(260px, .9fr) minmax(170px, .48fr) auto;
-    gap: 12px 14px;
-    align-items: end;
-    padding: 18px var(--form-x-pad) 10px;
-  }
-  .waybill-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
-  .waybill-label { color: var(--text-strong); font-size: .78rem; font-weight: 800; }
-  .waybill-search-shell,
-  .waybill-date-trigger,
-  .waybill-select {
-    width: 100%;
-    min-height: 42px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: #fff;
-    color: var(--text-strong);
-    transition: border-color var(--fast), box-shadow var(--fast), background var(--fast);
-  }
-  .waybill-search-shell {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 13px;
-  }
-  .waybill-search-shell:focus-within,
-  .waybill-date-trigger:focus-visible,
-  .waybill-date-trigger.is-open,
-  .waybill-select:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--focus);
-    outline: none;
-  }
-  .waybill-search-shell .feather,
-  .waybill-date-trigger .feather { width: 16px; height: 16px; color: var(--muted); }
-  .waybill-search-shell input {
-    min-width: 0;
-    width: 100%;
-    border: 0;
-    outline: none;
-    background: transparent;
-    color: var(--text-strong);
-    font-size: .9rem;
-    font-weight: 650;
-  }
-  .waybill-search-shell input::placeholder { color: var(--muted); }
-  .waybill-select {
-    padding: 0 34px 0 12px;
-    font-size: .86rem;
-    font-weight: 750;
-    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-    background-position: calc(100% - 17px) 18px, calc(100% - 12px) 18px;
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-  }
-  .waybill-date-picker { position: relative; min-width: 0; }
-  .waybill-date-trigger {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    padding: 0 13px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .waybill-date-value {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--text-strong);
-    font-size: .88rem;
-    font-weight: 750;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .waybill-date-value.is-placeholder { color: var(--muted); font-weight: 650; }
-  .waybill-calendar-popover,
-  .waybill-popover {
-    position: absolute;
-    z-index: 30;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: #fff;
-    box-shadow: 0 18px 45px rgba(15, 23, 42, .16);
-  }
-  .waybill-calendar-popover {
-    top: calc(100% + 8px);
-    right: 0;
-    width: 344px;
-    max-width: calc(100vw - 40px);
-    padding: 12px;
-  }
-  .waybill-calendar-head {
-    display: grid;
-    grid-template-columns: 32px minmax(0, 1fr) 32px;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .waybill-calendar-title {
-    color: var(--text-strong);
-    font-size: .92rem;
-    font-weight: 850;
-    text-align: center;
-  }
-  .waybill-calendar-nav,
-  .waybill-icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: #fff;
-    color: var(--text);
-    cursor: pointer;
-    transition: background var(--fast), border-color var(--fast), color var(--fast);
-  }
-  .waybill-calendar-nav {
-    width: 32px;
-    height: 32px;
-    border-color: transparent;
-  }
-  .waybill-calendar-nav:hover,
-  .waybill-icon-btn:hover { background: #f9fafb; border-color: #d1d5db; color: var(--text-strong); }
-  .waybill-calendar-nav .feather,
-  .waybill-icon-btn .feather { width: 15px; height: 15px; }
-  .waybill-calendar-weekdays,
-  .waybill-calendar-grid {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 3px;
-  }
-  .waybill-calendar-weekdays {
-    margin-bottom: 5px;
-    color: var(--text);
-    font-size: .72rem;
-    font-weight: 800;
-    text-align: center;
-  }
-  .waybill-calendar-day {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 32px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-strong);
-    font-size: .84rem;
-    font-weight: 750;
-    cursor: pointer;
-  }
-  .waybill-calendar-day:hover { background: var(--accent-soft); color: var(--focus-strong); }
-  .waybill-calendar-day.is-outside { color: var(--muted); font-weight: 650; }
-  .waybill-calendar-day.is-in-range { border-radius: 0; background: var(--accent-soft); color: var(--text-strong); }
-  .waybill-calendar-day.is-range-start,
-  .waybill-calendar-day.is-range-end { border-radius: 6px; background: var(--accent); color: #fff; }
-  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px var(--focus-strong); }
-  .waybill-calendar-presets {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    margin-top: 10px;
-  }
-  .waybill-calendar-preset {
-    min-height: 34px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: #f9fafb;
-    color: var(--text-strong);
-    font-size: .8rem;
-    font-weight: 800;
-    cursor: pointer;
-    transition: background var(--fast), border-color var(--fast), color var(--fast);
-  }
-  .waybill-calendar-preset:hover,
-  .waybill-calendar-preset:focus-visible {
-    border-color: var(--accent);
-    background: #fef2f2;
-    color: var(--accent);
-    outline: none;
-  }
-  .waybill-calendar-foot {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--line);
-  }
-  .waybill-filter-actions {
-    display: inline-flex;
-    gap: 8px;
-    align-items: center;
-    justify-content: flex-end;
-    min-width: 0;
-    white-space: nowrap;
-  }
-  .waybill-filter-actions .waybill-tool-wrap { flex: 0 0 auto; }
-  .waybill-filter-actions .primary-btn,
-  .waybill-filter-actions .ghost-btn { min-height: 42px; white-space: nowrap; }
-  .waybill-filter-actions .primary-btn { min-width: 104px; }
-  .waybill-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    min-height: 64px;
-    padding: 12px var(--form-x-pad);
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-    background: #fbfcfe;
-  }
-  .waybill-meta-count { color: var(--text); font-size: .86rem; font-weight: 750; }
-  .waybill-toolbar-actions {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-    flex: 0 0 auto;
-    flex-wrap: nowrap;
-    min-width: 0;
-  }
-  .waybill-toolbar-actions .waybill-select {
-    flex: 0 0 260px;
-    width: 260px;
-    min-height: 40px;
-  }
-  .waybill-toolbar-actions .waybill-tool-wrap { flex: 0 0 auto; }
-  .waybill-tool-wrap { position: relative; }
-  .waybill-tool-btn {
-    min-height: 40px;
-    min-width: 112px;
-    padding: 0 14px;
-    border-radius: var(--radius-md);
-    font-size: .82rem;
-    font-weight: 800;
-  }
-  .waybill-tool-btn .feather { width: 15px; height: 15px; }
-  .waybill-popover {
-    top: calc(100% + 8px);
-    right: 0;
-    width: 250px;
-    padding: 14px;
-  }
-  .waybill-popover-title {
-    margin: 0 0 10px;
-    color: var(--text-strong);
-    font-size: .86rem;
-    font-weight: 850;
-  }
-  .waybill-popover-grid { display: grid; gap: 11px; }
-  .waybill-check {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    color: var(--text-strong);
-    font-size: .84rem;
-    font-weight: 750;
-    cursor: pointer;
-  }
-  .waybill-check input { width: 15px; height: 15px; accent-color: var(--accent); appearance: auto; }
-  .waybill-table-shell {
-    overflow: auto;
-    max-height: calc(100vh - 292px);
-    min-height: 440px;
-    background: #fff;
-    scrollbar-gutter: stable;
-  }
-  .waybill-table {
-    width: 100%;
-    min-width: 1040px;
-    border-collapse: separate;
-    border-spacing: 0 8px;
-    table-layout: fixed;
-    padding: 0 12px 8px;
-  }
-  .waybill-table th {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    padding: 12px 16px;
-    background: #fff;
-    color: var(--muted);
-    font-size: .76rem;
-    font-weight: 850;
-    white-space: nowrap;
-  }
-  .waybill-table td {
-    height: 72px;
-    padding: 13px 16px;
-    border-top: 1px solid #eef0f3;
-    border-bottom: 1px solid #eef0f3;
-    background: #fff;
-    vertical-align: middle;
-  }
-  .waybill-table td:first-child { border-left: 1px solid #eef0f3; border-radius: 8px 0 0 8px; }
-  .waybill-table td:last-child { border-right: 1px solid #eef0f3; border-radius: 0 8px 8px 0; }
-  .waybill-table tr.is-selected td {
-    border-top-color: var(--accent);
-    border-bottom-color: var(--accent);
-    background: #fff7f7;
-  }
-  .waybill-table tr.is-selected td:first-child { border-left-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-  .waybill-table tr.is-selected td:last-child { border-right-color: var(--accent); }
-  .waybill-table tbody tr:hover td { background: #fcfdff; }
-  .waybill-col-select { width: 54px; text-align: center; }
-  .waybill-col-no { width: 158px; }
-  .waybill-col-date { width: 118px; }
-  .waybill-col-party { width: 148px; }
-  .waybill-col-goods { width: 150px; }
-  .waybill-col-status { width: 112px; }
-  .waybill-col-fee { width: 126px; text-align: right; }
-  .waybill-select-row {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    flex: 0 0 18px;
-    width: 18px;
-    min-width: 18px;
-    height: 18px;
-    min-height: 18px;
-    aspect-ratio: 1 / 1;
-    padding: 0;
-    border: 1px solid #cbd5e1;
-    border-radius: 999px;
-    background: #fff;
-    cursor: pointer;
-    line-height: 0;
-    vertical-align: middle;
-    transition: border-color var(--fast), box-shadow var(--fast), background var(--fast);
-  }
-  .waybill-select-row::after {
-    content: "";
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--accent);
-    opacity: 0;
-    transform: scale(.65);
-    transition: opacity var(--fast), transform var(--fast);
-  }
-  tr.is-selected .waybill-select-row {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--focus);
-  }
-  tr.is-selected .waybill-select-row::after {
-    opacity: 1;
-    transform: scale(1);
-  }
-  .waybill-no-link {
-    display: block;
-    max-width: 100%;
-    overflow: hidden;
-    color: var(--text-strong);
-    font-family: var(--font-mono);
-    font-size: .88rem;
-    font-weight: 850;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .waybill-no-link:hover { color: var(--accent); }
-  .waybill-muted-line { color: var(--muted); font-size: .76rem; font-weight: 700; line-height: 1.35; }
-  .waybill-cell-main {
-    overflow: hidden;
-    color: var(--text-strong);
-    font-size: .88rem;
-    font-weight: 850;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .waybill-cell-sub {
-    overflow: hidden;
-    color: #64748b;
-    font-family: var(--font-mono);
-    font-size: .76rem;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .waybill-fee {
-    color: var(--text-strong);
-    font-family: var(--font-display);
-    font-size: .92rem;
-    font-weight: 900;
-    white-space: nowrap;
-  }
-  .waybill-status-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 24px;
-    padding: 0 10px;
-    border-radius: var(--radius-pill);
-    font-size: .74rem;
-    font-weight: 850;
-    white-space: nowrap;
-  }
-  .waybill-status-pill[data-tone="info"] { color: #b91c1c; background: #fee2e2; }
-  .waybill-status-pill[data-tone="success"] { color: #047857; background: #d1fae5; }
-  .waybill-status-pill[data-tone="warning"] { color: #b45309; background: #fef3c7; }
-  .waybill-status-pill[data-tone="muted"] { color: #64748b; background: #f1f5f9; }
-  .waybill-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    padding: 14px var(--form-x-pad);
-    border-top: 1px solid var(--line);
-    background: #fff;
-  }
-  .waybill-page-size-control {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--muted);
-    font-size: .82rem;
-    font-weight: 800;
-  }
-  .waybill-page-size-control .waybill-select { width: 94px; min-height: 36px; font-size: .8rem; }
-  .waybill-pager { display: inline-flex; align-items: center; gap: 8px; }
-  .waybill-empty {
-    display: grid;
-    place-items: center;
-    min-height: 320px;
-    color: var(--muted);
-    text-align: center;
-    font-size: .9rem;
-    font-weight: 650;
-  }
-  .waybill-empty .feather { width: 28px; height: 28px; margin: 0 auto 8px; color: #cbd5e1; }
-  .waybill-warning {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px var(--form-x-pad);
-    border-top: 1px solid #fde68a;
-    border-bottom: 1px solid #fde68a;
-    background: #fffbeb;
-    color: #92400e;
-    font-size: .82rem;
-    font-weight: 750;
-  }
-  .waybill-detail-slot { min-height: 100%; }
-  .waybill-detail-dialog .waybill-detail-slot {
-    max-height: min(820px, calc(100vh - 40px));
-    overflow: auto;
-  }
-  .waybill-detail-empty { padding: 88px 22px 32px; color: var(--muted); font-size: .88rem; font-weight: 650; text-align: center; }
-  .waybill-print-status { margin: 0; padding: 12px 22px; color: var(--text); font-size: .875rem; }
-  .waybill-detail-content { display: grid; gap: 0; }
-  .waybill-detail-head {
-    display: grid;
-    gap: 8px;
-    padding: 20px 68px 16px 20px;
-    border-bottom: 1px solid var(--line);
-  }
-  .waybill-detail-title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  .waybill-detail-title {
-    margin: 0;
-    color: var(--text-strong);
-    font-family: var(--font-display);
-    font-size: 1.16rem;
-    font-weight: 900;
-    line-height: 1.2;
-    word-break: break-all;
-  }
-  .waybill-detail-date { color: var(--muted); font-size: .78rem; font-weight: 750; }
-  .waybill-detail-section {
-    display: grid;
-    gap: 12px;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--line);
-  }
-  .waybill-detail-section h3 {
-    margin: 0;
-    color: var(--text-strong);
-    font-size: .92rem;
-    font-weight: 900;
-  }
-  .waybill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+  .waybill-list-panel { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--canvas); }
+  .waybill-filter-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; padding: 16px; }
+  .waybill-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .waybill-filter-form > .waybill-field { flex: 1 1 120px; }
+  .waybill-filter-form > .waybill-field:first-of-type { flex: 2 1 240px; }
+  .waybill-filter-form > .waybill-field:nth-of-type(2) { flex: 2 1 240px; }
+  .waybill-label { font-size: .8125rem; color: var(--text); font-weight: 500; }
+  .waybill-search-shell, .waybill-date-trigger, .waybill-select, .waybill-edit-input { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--canvas); color: var(--text-strong); }
+  .waybill-search-shell { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  .waybill-search-shell input { width: 100%; min-width: 0; min-height: 38px; border: 0; outline: none; background: transparent; }
+  .waybill-search-shell:focus-within, .waybill-page :is(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
+  .waybill-search-shell input:focus-visible { outline: none; }
+  .waybill-page input::placeholder, .waybill-page textarea::placeholder { color: var(--muted); }
+  .waybill-select { padding: 0 12px; appearance: auto; font-size: .875rem; }
+  .waybill-date-picker, .waybill-tool-wrap { position: relative; min-width: 0; }
+  .waybill-date-trigger { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 0 12px; cursor: pointer; }
+  .waybill-date-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .waybill-date-value.is-placeholder, .waybill-muted-line, .waybill-cell-sub, .waybill-meta-count { color: var(--muted); }
+  .waybill-calendar-popover, .waybill-popover { position: absolute; z-index: 30; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--canvas); box-shadow: var(--shadow-overlay); }
+  .waybill-calendar-popover { top: calc(100% + 8px); right: 0; width: 336px; max-width: calc(100vw - 32px); }
+  .waybill-calendar-head { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .waybill-calendar-title { text-align: center; font-weight: 600; }
+  .waybill-calendar-nav { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-md); cursor: pointer; color: var(--text); }
+  .waybill-calendar-nav:hover, .waybill-calendar-day:hover { background: var(--surface-muted); }
+  .waybill-calendar-weekdays, .waybill-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
+  .waybill-calendar-weekdays { font-size: .8125rem; color: var(--muted); }
+  .waybill-calendar-day { min-height: 40px; padding: 4px; border-radius: var(--radius-sm); color: var(--text); cursor: pointer; }
+  .waybill-calendar-day.is-outside { color: var(--muted); }
+  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px var(--line); }
+  .waybill-calendar-day.is-in-range { background: var(--surface-muted); }
+  .waybill-calendar-day.is-start, .waybill-calendar-day.is-end { background: var(--primary); color: var(--canvas); }
+  .waybill-calendar-presets, .waybill-calendar-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
+  .waybill-calendar-preset { flex: 1; min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; }
+  .waybill-filter-actions, .waybill-toolbar-actions, .waybill-pager, .waybill-page-size-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .waybill-filter-actions { margin-left: auto; }
+  .waybill-filter-count { min-width: 24px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text-strong); text-align: center; }
+  .waybill-popover { top: calc(100% + 8px); right: 0; width: 264px; max-width: calc(100vw - 32px); }
+  .waybill-popover-title { margin: 0 0 12px; font-size: .875rem; font-weight: 600; }
+  .waybill-popover-grid { display: grid; gap: 12px; }
+  .waybill-check { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+  .waybill-field.waybill-check { flex-direction: row; justify-content: flex-start; }
+  .waybill-check input { appearance: auto; width: 16px; height: 16px; accent-color: var(--primary); }
+  .waybill-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .waybill-toolbar-actions { margin-left: auto; }
+  .waybill-toolbar-actions > .waybill-select { width: auto; }
+  .waybill-meta-count { font-size: .8125rem; white-space: nowrap; }
+  .waybill-refresh-status { flex: 1 1 200px; margin: 0; padding: 8px 12px; font-size: .8125rem; }
+  .waybill-notice { margin: 0 16px 12px; }
+  .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; border-top: 1px solid var(--line); }
+  .waybill-table { width: 100%; border-collapse: collapse; font-size: .8125rem; text-align: left; }
+  .waybill-table th { position: sticky; top: 0; background: var(--surface); color: var(--text); font-weight: 600; white-space: nowrap; }
+  .waybill-table :is(th, td) { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .waybill-table tbody tr { height: 48px; cursor: pointer; }
+  .waybill-table tbody tr:hover, .waybill-table tbody tr.is-selected { background: var(--surface); }
+  .waybill-no-link { padding: 0; font-weight: 600; color: var(--text-strong); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .waybill-no-link:hover { text-decoration: underline; }
+  .waybill-source-label { display: inline-block; font-size: .75rem; color: var(--muted); }
+  .waybill-cell-main, .waybill-cell-sub, .waybill-muted-line { line-height: 16px; white-space: nowrap; }
+  .waybill-cell-main { color: var(--text-strong); }
+  .waybill-cell-sub, .waybill-muted-line { font-size: .75rem; }
+  .waybill-col-fee { text-align: right; }
+  .waybill-fee { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-strong); }
+  .waybill-row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .waybill-row-actions :is(button, a) { min-height: 32px; padding: 4px; color: var(--text); cursor: pointer; }
+  .waybill-status-pill { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text); font-size: .75rem; white-space: nowrap; }
+  .waybill-status-pill[data-tone="info"] { background: var(--accent-soft); color: #1d4ed8; }
+  .waybill-status-pill[data-tone="success"] { background: #ecfdf5; color: #047857; }
+  .waybill-status-pill[data-tone="warning"] { background: #fffbeb; color: #92400e; }
+  .waybill-status-pill[data-tone="danger"] { background: #fef2f2; color: #b91c1c; }
+  .waybill-empty { display: grid; place-items: center; min-height: 240px; padding: 32px; text-align: center; color: var(--muted); }
+  .waybill-empty .feather { margin: 0 auto 12px; }
+  .waybill-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
+  .waybill-page-size-control .waybill-select { width: auto; }
+  .waybill-detail-dialog { width: min(880px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
+  .waybill-detail-dialog:not([open]) { display: none; }
+  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; }
+  .waybill-detail-head { align-items: center; padding: 16px 24px; }
+  .waybill-detail-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .waybill-detail-title-row .waybill-detail-title { font-size: 1.125rem; font-weight: 600; overflow-wrap: anywhere; }
+  .waybill-detail-date { color: var(--muted); margin-top: 8px; font-size: .8125rem; }
+  .waybill-detail-body { overflow-y: auto; min-height: 0; padding: 0 24px; }
+  .waybill-detail-section { padding: 20px 0; border-bottom: 1px solid var(--line); }
+  .waybill-detail-section:last-child { border-bottom: 0; }
+  .waybill-detail-section h3 { margin: 0 0 12px; font-size: .875rem; font-weight: 600; color: var(--text-strong); }
+  .waybill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
   .waybill-detail-grid--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .waybill-detail-item { min-width: 0; }
-  .waybill-detail-item.is-wide { grid-column: 1 / -1; }
-  .waybill-detail-label { color: var(--muted); font-size: .74rem; font-weight: 800; }
-  .waybill-detail-value {
-    margin-top: 2px;
-    color: var(--text-strong);
-    font-size: .88rem;
-    font-weight: 850;
-    line-height: 1.45;
-    word-break: break-word;
+  .waybill-detail-label { margin-bottom: 4px; color: var(--muted); font-size: .8125rem; }
+  .waybill-detail-value { color: var(--text-strong); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .waybill-detail-value.is-money { font-variant-numeric: tabular-nums; }
+  .waybill-party p { margin: 4px 0; overflow-wrap: anywhere; }
+  .waybill-party strong { font-weight: 600; color: var(--text-strong); }
+  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: .8125rem; color: var(--muted); padding: 16px 0; }
+  .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 24px; border-top: 1px solid var(--line); background: var(--canvas); }
+  .waybill-detail-action-group { display: flex; gap: 8px; flex-wrap: wrap; }
+  .waybill-detail-actions form { margin: 0; }
+  .waybill-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fef2f2; color: #b91c1c; cursor: pointer; }
+  .waybill-danger-btn:hover { background: #fee2e2; }
+  .waybill-danger-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .waybill-detail-message, .waybill-print-status { margin: 12px 24px; }
+  .waybill-history summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .waybill-history summary::before { content: "＋"; }
+  .waybill-history[open] summary::before { content: "−"; }
+  .waybill-history-list { margin: 0; padding-left: 20px; }
+  .waybill-history-list > li { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .waybill-history-list p { margin: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .waybill-history-meta { color: var(--muted); font-size: .8125rem; }
+  .waybill-edit-form { min-height: 0; display: flex; flex-direction: column; }
+  .waybill-edit-input { padding: 8px 12px; }
+  .waybill-edit-input:is(textarea) { min-height: 80px; resize: vertical; }
+  .waybill-edit-wide { grid-column: 1 / -1; }
+  .waybill-edit-loading { padding: 24px; color: var(--muted); }
+  @media (max-width: 1024px) { .waybill-filter-actions { width: 100%; justify-content: flex-end; } }
+  @media (max-width: 640px) {
+    .waybill-filter-form { flex-direction: column; align-items: stretch; }
+    .waybill-filter-form > .waybill-field, .waybill-filter-form > .waybill-field:first-of-type, .waybill-filter-form > .waybill-field:nth-of-type(2) { flex: none; }
+    .waybill-filter-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+    .waybill-filter-actions > .waybill-tool-wrap { grid-column: 1 / -1; }
+    .waybill-filter-actions .waybill-tool-btn { width: 100%; }
+    .waybill-toolbar-actions { width: 100%; justify-content: space-between; margin: 0; }
+    .waybill-toolbar-actions > .waybill-select { flex: 1; min-width: 0; }
+    .waybill-calendar-popover { right: auto; left: 0; width: 100%; padding: 8px; }
+    .waybill-popover { position: fixed; top: 50%; left: 16px; right: 16px; width: auto; transform: translateY(-50%); }
+    .waybill-table-shell { max-height: none; overflow: visible; }
+    .waybill-table, .waybill-table tbody { display: block; }
+    .waybill-table thead { display: none; }
+    .waybill-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; padding: 12px 16px; gap: 8px 12px; border-bottom: 1px solid var(--line); }
+    .waybill-table td { display: block; padding: 0; border: 0; min-width: 0; }
+    .waybill-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: .75rem; }
+    .waybill-table .waybill-col-no { grid-column: 1 / -1; }
+    .waybill-table .waybill-col-status { grid-column: 2; grid-row: 2; text-align: right; }
+    .waybill-table .waybill-col-actions { grid-column: 1 / -1; }
+    .waybill-no-link, .waybill-cell-main, .waybill-cell-sub, .waybill-muted-line { white-space: normal; overflow-wrap: anywhere; }
+    .waybill-col-fee { text-align: left; }
+    .waybill-row-actions { justify-content: flex-end; }
+    .waybill-row-actions :is(button, a), .waybill-page :is(.ghost-btn, .primary-btn, .waybill-danger-btn, .waybill-select, .waybill-date-trigger, .waybill-search-shell, .waybill-edit-input, .waybill-calendar-nav, .waybill-calendar-day, .waybill-calendar-preset, .waybill-check, .extension-dialog-close, .waybill-no-link) { min-height: 44px; }
+    .waybill-page .extension-dialog-close { min-width: 44px; }
+    .waybill-footer { justify-content: center; }
+    .waybill-pager { justify-content: center; }
+    .waybill-detail-dialog { width: 100%; max-height: calc(100dvh - 16px); margin: auto 0 0; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+    .waybill-detail-content { max-height: calc(100dvh - 16px); }
+    .waybill-detail-head, .waybill-detail-actions { padding: 16px; }
+    .waybill-detail-body { padding: 0 16px; }
+    .waybill-detail-grid, .waybill-detail-grid--three { grid-template-columns: 1fr; }
+    .waybill-detail-actions { flex-wrap: wrap; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+    .waybill-detail-action-group { width: 100%; }
+    .waybill-detail-action-group > * { flex: 1; }
+    .waybill-detail-message, .waybill-print-status { margin: 12px 16px; }
   }
-  .waybill-detail-value.is-money { font-family: var(--font-display); font-size: 1rem; }
-  .waybill-detail-total { color: var(--accent); font-family: var(--font-display); font-size: 1.05rem; font-weight: 900; }
-  .waybill-detail-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 16px 20px 20px;
-  }
-  .waybill-danger-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 38px;
-    padding: 0 13px;
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: #dc2626;
-    color: #fff;
-    font-size: .84rem;
-    font-weight: 800;
-    cursor: pointer;
-  }
-  .waybill-danger-btn:hover { background: #b91c1c; }
-  .waybill-danger-btn[disabled] { opacity: .55; cursor: not-allowed; }
-  .waybill-row-actions { display: none; }
-  @media (max-width: 1380px) {
-    .waybill-filter-form { grid-template-columns: minmax(260px, 1fr) minmax(230px, .9fr); }
-    .waybill-filter-actions { justify-content: flex-start; }
-  }
-  @media (max-width: 980px) {
-    .waybill-toolbar { align-items: flex-start; flex-direction: column; }
-    .waybill-toolbar-actions { width: 100%; justify-content: flex-start; }
-    .waybill-toolbar-actions .waybill-select { flex: 1 1 260px; width: auto; }
-    .waybill-table-shell { max-height: none; }
-    .waybill-detail-dialog { width: min(640px, calc(100vw - 16px)); max-height: calc(100vh - 16px); }
-    .waybill-detail-dialog .waybill-detail-slot { max-height: calc(100vh - 16px); }
-  }
-  @media (max-width: 720px) {
-    .waybills-page-body .app-shell { display: block; }
-    .waybills-page-body .sidebar { display: none; }
-    .waybills-page-body .main-content { padding: 16px; }
-    .waybill-filter-form { grid-template-columns: 1fr; padding: 14px; }
-    .waybill-toolbar,
-    .waybill-footer { align-items: stretch; flex-direction: column; }
-    .waybill-filter-actions,
-    .waybill-toolbar-actions,
-    .waybill-pager { width: 100%; justify-content: stretch; }
-    .waybill-filter-actions > *,
-    .waybill-pager > * { flex: 1; }
-    .waybill-toolbar-actions .waybill-select,
-    .waybill-toolbar-actions .waybill-tool-wrap,
-    .waybill-toolbar-actions .waybill-tool-btn { width: 100%; flex: 1 1 100%; }
-    .waybill-calendar-popover,
-    .waybill-popover { left: 0; right: auto; width: min(100%, 344px); }
-    .waybill-detail-grid,
-    .waybill-detail-grid--three { grid-template-columns: 1fr; }
-  }
+  @media (prefers-reduced-motion: reduce) { .waybill-page * { scroll-behavior: auto; transition: none; } }
 </style>
 
 {% macro status_pill(row) -%}
@@ -640,147 +177,68 @@
   {% set scan_short = row.scan_status_short | default('', true) %}
   {% set status_text = row.status_label | default('运输中', true) %}
   {% set display_text = scan_short or status_text %}
-  <span class="waybill-status-pill" data-tone="{{ row.status_tone | default('info') }}"{% if scan_status %} title="{{ scan_status }}"{% endif %}>{{ display_text }}</span>
+  <span class="waybill-status-pill" data-tone="{{ 'info' if row.status == 'in_transit' else row.status_tone | default('info') }}"{% if scan_status %} title="{{ scan_status }}"{% endif %}>{{ display_text }}</span>
 {%- endmacro %}
 
 {% macro empty_dash(value) -%}
   {{ value if value else '-' }}
 {%- endmacro %}
 
+{% macro detail_item(label, value, money=false) %}
+  <div class="waybill-detail-item"><div class="waybill-detail-label">{{ label }}</div><div class="waybill-detail-value{% if money %} is-money{% endif %}">{% if money and value is defined and value is not none and value|string != '' %}¥{{ value }}{% else %}{{ empty_dash(value) }}{% endif %}</div></div>
+{% endmacro %}
+
 {% macro detail_template(row) %}
-  <div class="waybill-detail-content" data-waybill-detail-content>
-    <div class="waybill-detail-head">
-      <div class="waybill-detail-title-row">
-        <h2 class="waybill-detail-title">{{ row.waybill_no }}</h2>
-        {{ status_pill(row) }}
+  <div class="waybill-detail-content" data-waybill-detail-content data-waybill-id="{{ row.id }}" data-waybill-source="{{ row.source }}">
+    <header class="extension-dialog-header waybill-detail-head">
+      <div>
+        <div class="waybill-detail-title-row"><h2 class="waybill-detail-title">{{ row.waybill_no }}</h2><span class="waybill-source-label">{{ row.source_label }}</span>{{ status_pill(row) }}</div>
+        <div class="waybill-detail-date">{{ row.open_date or '无开单日期' }} · {{ row.destination_site or '无到站信息' }} · {{ row.payment_method or '无结算方式' }}</div>
       </div>
-      <div class="waybill-detail-date">开单日期：{{ row.open_date or '-' }}{% if row.created_at %} · 入库 {{ row.created_at }}{% endif %}</div>
+      <button class="extension-dialog-close" type="button" data-waybill-detail-close aria-label="关闭详情"><i data-feather="x"></i></button>
+    </header>
+    <div class="waybill-detail-message notice" data-waybill-detail-message role="status" hidden></div>
+    <div class="waybill-detail-body" data-waybill-read-view>
+      <section class="waybill-detail-section waybill-detail-grid">
+        <div class="waybill-party"><h3>发货方</h3><p><strong>{{ empty_dash(row.sender_name) }}</strong></p><p>{{ empty_dash(row.sender_phone) }}</p><p>{{ empty_dash(row.sender_address) }}</p></div>
+        <div class="waybill-party"><h3>收货方</h3><p><strong>{{ empty_dash(row.receiver_name) }}</strong></p><p>{{ empty_dash(row.receiver_phone) }}</p><p>{{ empty_dash(row.receiver_address) }}</p></div>
+      </section>
+      <section class="waybill-detail-section"><h3>货物信息</h3><div class="waybill-detail-grid waybill-detail-grid--three">
+        {{ detail_item('货物名称', row.goods_name_lines) }}{{ detail_item('件数', row.quantity_lines) }}{{ detail_item('包装', row.package_type_lines) }}
+        {{ detail_item('重量 / 体积', row.weight_volume) }}{{ detail_item('送货方式', row.delivery_method) }}
+        {{ detail_item('需要回单', '是' if row.receipt_required in [1, '1', true] else ('否' if row.receipt_required in [0, '0', false] else '无数据')) }}
+      </div></section>
+      <section class="waybill-detail-section"><h3>费用信息</h3><div class="waybill-detail-grid waybill-detail-grid--three">
+        {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价'), ('cod_amount', '代收')] %}
+          {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+        {% endfor %}
+        {% if row.payment_method and ('到付' in row.payment_method or '提付' in row.payment_method) and (row.cod_amount or row.freight_fee) %}{{ detail_item('提付金额', row.pickup_payment_amount, true) }}{% endif %}
+        {% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
+        {% if row.source in ['yunda', 'ronghui'] %}{% for name, label in [('pickup_fee', '接货费'), ('delivery_fee', '送货费')] %}
+          {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+        {% endfor %}{% endif %}
+      </div></section>
+      <section class="waybill-detail-section"><h3>备注</h3><div class="waybill-detail-value">{{ empty_dash(row.remark) }}</div></section>
+      {% if row.source == 'manual' %}<details class="waybill-detail-section waybill-history" data-waybill-history><summary>修改记录</summary><div data-waybill-history-body aria-live="polite"></div></details>{% endif %}
+      <div class="waybill-detail-times"><span>创建时间：{{ row.created_at or '无数据' }}</span><span>最近更新：{{ row.updated_at or '无数据' }}</span></div>
     </div>
-
-    <section class="waybill-detail-section">
-      <h3>基础信息</h3>
-      <div class="waybill-detail-grid">
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">收货人</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.receiver_name) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">发货人</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.sender_name) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">电话</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.receiver_phone) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">电话</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.sender_phone) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">收货地址</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.receiver_address) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">发货地址</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.sender_address) }}</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="waybill-detail-section">
-      <h3>货物信息</h3>
-      <div class="waybill-detail-grid waybill-detail-grid--three">
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">货物名称</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.goods_name_lines) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">件数</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.quantity_lines) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">包装</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.package_type_lines) }}</div>
-        </div>
-        <div class="waybill-detail-item is-wide">
-          <div class="waybill-detail-label">重量 / 体积</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.weight_volume) }}</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="waybill-detail-section">
-      <h3>费用信息</h3>
-      <div class="waybill-detail-grid waybill-detail-grid--three">
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">开单成本</div>
-          <div class="waybill-detail-value is-money">¥{{ row.opening_cost or '0.00' }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">提付金额</div>
-          <div class="waybill-detail-value is-money">¥{{ row.pickup_payment_amount or '0.00' }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">现结 / 派送</div>
-          <div class="waybill-detail-value is-money">¥{{ row.delivery_fee or '0.00' }}</div>
-        </div>
-        <div class="waybill-detail-item is-wide">
-          <div class="waybill-detail-label">费用合计</div>
-          <div class="waybill-detail-total">¥{{ row.opening_cost or '0.00' }}</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="waybill-detail-section">
-      <h3>付款信息</h3>
-      <div class="waybill-detail-grid waybill-detail-grid--three">
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">付款方式</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.payment_method) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">付款状态</div>
-          <div class="waybill-detail-value">{{ '未付款' if row.pickup_payment_amount != '0.00' else '-' }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">应收金额</div>
-          <div class="waybill-detail-value is-money">¥{{ row.pickup_payment_amount or '0.00' }}</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="waybill-detail-section">
-      <h3>备注信息</h3>
-      <div class="waybill-detail-grid">
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">备注</div>
-          <div class="waybill-detail-value">{{ empty_dash(row.remark) }}</div>
-        </div>
-        <div class="waybill-detail-item">
-          <div class="waybill-detail-label">内部备注</div>
-          <div class="waybill-detail-value">无</div>
-        </div>
-      </div>
-    </section>
-
-    <div class="waybill-detail-actions">
-      <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}"><i data-feather="printer"></i> 打印</button>
-      <a class="ghost-btn" href="{{ row.tracking_url }}"><i data-feather="map-pin"></i> 轨迹跟踪</a>
+    <footer class="waybill-detail-actions" data-waybill-read-actions>
       <form action="/waybills/{{ row.id }}/status" method="post" data-waybill-cancel-form>
-        <input type="hidden" name="source" value="{{ row.source }}">
-        <input type="hidden" name="status" value="cancelled">
-        <input type="hidden" name="return_to" value="{{ current_url | default('/waybills') }}">
-        <button class="waybill-danger-btn" type="submit" {% if row.status == 'cancelled' %}disabled{% endif %}>
-          <i data-feather="x-circle"></i> 作废运单
-        </button>
+        <input type="hidden" name="source" value="{{ row.source }}"><input type="hidden" name="status" value="cancelled"><input type="hidden" name="return_to" value="{{ current_url | default('/waybills') }}">
+        <button class="waybill-danger-btn" type="submit" {% if row.status == 'cancelled' %}disabled{% endif %}><i data-feather="x-circle"></i> 作废运单</button>
       </form>
-    </div>
+      <div class="waybill-detail-action-group">
+        <a class="ghost-btn" href="{{ row.tracking_url }}"><i data-feather="map-pin"></i> 轨迹跟踪</a>
+        <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}"><i data-feather="printer"></i> 打印</button>
+        {% if row.source == 'manual' and row.status != 'cancelled' %}<button class="primary-btn" type="button" data-waybill-edit><i data-feather="edit-2"></i> 修改运单</button>{% endif %}
+      </div>
+    </footer>
     <p class="waybill-print-status" data-waybill-print-status role="status" hidden></p>
   </div>
 {% endmacro %}
 
 <section class="waybill-page">
-  <div class="waybill-workbench" data-waybill-ajax-panel aria-live="polite">
+  <div class="waybill-workbench" data-waybill-ajax-panel data-waybill-source-refresh='{{ {"allowed": source_refresh is defined and source_refresh is not none, "source": filters.source, "date_from": filters.date_from, "date_to": filters.date_to, "reason": (sync_status.warnings | join("；")) if sync_status else ""} | tojson }}' >
     <section class="waybill-list-panel">
       <form id="waybillFilterForm" class="waybill-filter-form" method="get" action="/waybills" data-waybill-filter-form>
         <input type="hidden" name="page" value="1">
@@ -830,22 +288,20 @@
             {% endfor %}
           </select>
         </div>
+        <div class="waybill-field">
+          <label class="waybill-label" for="waybillSource">来源</label>
+          <select id="waybillSource" class="waybill-select" name="source">
+            {% for item in source_options %}<option value="{{ item.value }}" {% if filters.source == item.value %}selected{% endif %}>{{ item.label }}</option>{% endfor %}
+          </select>
+        </div>
         <div class="waybill-filter-actions">
           <div class="waybill-tool-wrap" data-popover-wrap>
             <button class="ghost-btn waybill-tool-btn" type="button" data-popover-toggle="filters" aria-expanded="false">
-              <i data-feather="sliders"></i> 更多筛选
+              <i data-feather="sliders"></i> 更多筛选 <span class="waybill-filter-count" data-waybill-filter-count>{{ (1 if filters.payment_method else 0) + (1 if filters.delivery_method else 0) }}</span>
             </button>
             <div class="waybill-popover" data-popover-panel="filters" hidden>
               <h3 class="waybill-popover-title">更多筛选</h3>
               <div class="waybill-popover-grid">
-                <div class="waybill-field">
-                  <label class="waybill-label" for="waybillSource">来源</label>
-                  <select id="waybillSource" class="waybill-select" name="source">
-                    {% for item in source_options %}
-                    <option value="{{ item.value }}" {% if filters.source == item.value %}selected{% endif %}>{{ item.label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
                 <div class="waybill-field">
                   <label class="waybill-label" for="waybillPayment">结算方式</label>
                   <select id="waybillPayment" class="waybill-select" name="payment_method">
@@ -866,12 +322,13 @@
             </div>
           </div>
           <a class="ghost-btn" href="/waybills">重置</a>
-          <button class="primary-btn" type="submit"><i data-feather="search"></i> 查询</button>
+          <button class="primary-btn" type="submit" data-waybill-query><i data-feather="search"></i> 查询</button>
         </div>
       </form>
 
       <div class="waybill-toolbar">
-        <div class="waybill-meta-count">共 {{ pagination.total }} 条{% if pagination.total %}，显示 {{ pagination.offset + 1 }} 到 {{ pagination.offset + rows|length }}{% endif %}</div>
+        <div class="waybill-meta-count">共 {{ pagination.total }} 条 · 显示 {{ pagination.offset + 1 if pagination.total else 0 }}–{{ pagination.offset + rows|length }}</div>
+        <p class="waybill-refresh-status notice" data-waybill-refresh-status aria-live="polite" role="status" hidden></p>
         <div class="waybill-toolbar-actions">
           <select class="waybill-select" name="sort" form="waybillFilterForm" data-waybill-sort aria-label="排序方式">
             {% for item in sort_options %}
@@ -888,7 +345,9 @@
                 <label class="waybill-check"><input type="checkbox" data-col-toggle="date" checked> 开单日期</label>
                 <label class="waybill-check"><input type="checkbox" data-col-toggle="receiver" checked> 收货人</label>
                 <label class="waybill-check"><input type="checkbox" data-col-toggle="sender" checked> 发货人</label>
-                <label class="waybill-check"><input type="checkbox" data-col-toggle="goods" checked> 货物名称</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="destination" checked> 到站</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="goods" checked> 货物</label>
+                <label class="waybill-check"><input type="checkbox" data-col-toggle="payment" checked> 结算方式</label>
                 <label class="waybill-check"><input type="checkbox" data-col-toggle="status" checked> 状态</label>
                 <label class="waybill-check"><input type="checkbox" data-col-toggle="fee" checked> 费用</label>
               </div>
@@ -898,13 +357,13 @@
       </div>
 
       {% if sync_status and sync_status.warnings %}
-      <div class="waybill-warning"><i data-feather="alert-triangle"></i> {{ sync_status.warnings | join('；') }}</div>
+      <div class="notice notice--warning waybill-notice"><i data-feather="alert-triangle"></i> {{ sync_status.warnings | join('；') }}</div>
       {% endif %}
 
       {% if db_error %}
-      <div class="waybill-warning"><i data-feather="alert-triangle"></i> 数据库查询失败：{{ db_error }}</div>
+      <div class="notice notice--warning waybill-notice"><i data-feather="alert-triangle"></i> 数据库查询失败：{{ db_error }}</div>
       {% elif summary.invalid_money_count %}
-      <div class="waybill-warning"><i data-feather="alert-triangle"></i> 有 {{ summary.invalid_money_count }} 个金额字段无法换算，汇总时已按 0.00 处理。</div>
+      <div class="notice notice--warning waybill-notice"><i data-feather="alert-triangle"></i> 有 {{ summary.invalid_money_count }} 个金额字段无法换算，汇总时已按 0.00 处理。</div>
       {% endif %}
 
       <div class="waybill-table-shell">
@@ -912,47 +371,47 @@
         <table class="waybill-table">
           <thead>
             <tr>
-              <th class="waybill-col-select"></th>
               <th class="waybill-col-no" data-col="no">运单号</th>
               <th class="waybill-col-date" data-col="date">开单日期</th>
               <th class="waybill-col-party" data-col="receiver">收货人</th>
               <th class="waybill-col-party" data-col="sender">发货人</th>
-              <th class="waybill-col-goods" data-col="goods">货物名称</th>
-              <th class="waybill-col-status" data-col="status">状态</th>
+              <th data-col="destination">到站</th>
+              <th class="waybill-col-goods" data-col="goods">货物</th>
+              <th data-col="payment">结算方式</th>
               <th class="waybill-col-fee" data-col="fee">费用(元)</th>
+              <th class="waybill-col-status" data-col="status">状态</th>
+              <th class="waybill-col-actions">操作</th>
             </tr>
           </thead>
           <tbody>
             {% for row in rows %}
             <tr data-waybill-row="{{ row.source }}:{{ row.id }}">
-              <td class="waybill-col-select">
-                <button class="waybill-select-row" type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情"></button>
-              </td>
               <td class="waybill-col-no" data-col="no">
-                <a class="waybill-no-link" href="{{ row.tracking_url }}">{{ row.waybill_no }}</a>
-                <div class="waybill-muted-line">{{ row.source_label }}</div>
+                <button class="waybill-no-link" type="button" data-waybill-select="{{ row.source }}:{{ row.id }}">{{ row.waybill_no }}</button>
+                <div class="waybill-source-label">{{ row.source_label }}</div>
               </td>
-              <td class="waybill-col-date" data-col="date">
+              <td class="waybill-col-date" data-col="date" data-label="开单日期">
                 <div class="waybill-cell-main">{{ row.open_date or '-' }}</div>
-                <div class="waybill-muted-line">{{ row.created_at[:10] if row.created_at else '' }}</div>
               </td>
-              <td class="waybill-col-party" data-col="receiver">
+              <td class="waybill-col-party" data-col="receiver" data-label="收货人">
                 <div class="waybill-cell-main" title="{{ row.receiver_name or '-' }}">{{ row.receiver_name or '-' }}</div>
                 <div class="waybill-cell-sub">{{ row.receiver_phone or '-' }}</div>
               </td>
-              <td class="waybill-col-party" data-col="sender">
+              <td class="waybill-col-party" data-col="sender" data-label="发货人">
                 <div class="waybill-cell-main" title="{{ row.sender_name or '-' }}">{{ row.sender_name or '-' }}</div>
                 <div class="waybill-cell-sub">{{ row.sender_phone or '-' }}</div>
               </td>
-              <td class="waybill-col-goods" data-col="goods">
+              <td data-col="destination" data-label="到站">{{ row.destination_site or '-' }}</td>
+              <td class="waybill-col-goods" data-col="goods" data-label="货物">
                 <div class="waybill-cell-main" title="{{ row.goods_name_lines or '-' }}">{{ row.goods_name_lines or '-' }}</div>
-                <div class="waybill-muted-line">{{ row.quantity_lines or '' }}{% if row.package_type_lines %} / {{ row.package_type_lines }}{% endif %}</div>
+                <div class="waybill-muted-line">{{ row.quantity_lines or '' }}{% if row.package_type_lines %} · {{ row.package_type_lines }}{% endif %}</div>
+              </td>
+              <td data-col="payment" data-label="结算方式">{{ row.payment_method or '-' }}</td>
+              <td class="waybill-col-fee" data-col="fee" data-label="费用">
+                <div class="waybill-fee">{% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}¥{{ row.opening_cost }}{% else %}无数据{% endif %}</div>
               </td>
               <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}</td>
-              <td class="waybill-col-fee" data-col="fee">
-                <div class="waybill-fee">¥{{ row.opening_cost or '0.00' }}</div>
-                <div class="waybill-muted-line">{{ row.payment_method or '-' }}</div>
-              </td>
+              <td class="waybill-col-actions"><div class="waybill-row-actions"><button type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情">详情</button><a href="{{ row.tracking_url }}" aria-label="跟踪 {{ row.waybill_no }} 轨迹">轨迹</a></div></td>
             </tr>
             {% endfor %}
           </tbody>
@@ -997,8 +456,7 @@
       </div>
     </section>
 
-    <dialog class="waybill-detail-dialog" data-waybill-detail-dialog role="dialog" aria-modal="true" aria-hidden="true" aria-label="运单详情">
-      <button class="waybill-detail-close" type="button" data-waybill-detail-close aria-label="关闭详情"><i data-feather="x"></i></button>
+    <dialog class="extension-install-dialog waybill-detail-dialog" data-waybill-detail-dialog role="dialog" aria-modal="true" aria-hidden="true" aria-label="运单详情">
       <div class="waybill-detail-slot" data-waybill-detail-slot>
         <div class="waybill-detail-empty">选择一条运单查看详情</div>
       </div>
@@ -1012,8 +470,13 @@
 {% block scripts %}
 <script>
 (() => {
+  if (window.WaybillAjaxSearch) {
+    window.WaybillAjaxSearch.init();
+    return;
+  }
+  let bindingController = null;
   const COLUMN_KEY = "shipnow.waybills.visibleColumns";
-  const DEFAULT_COLUMNS = ["date", "receiver", "sender", "goods", "status", "fee"];
+  const DEFAULT_COLUMNS = ["date", "receiver", "sender", "destination", "goods", "payment", "status", "fee"];
 
   function panel() {
     return document.querySelector("[data-waybill-ajax-panel]");
@@ -1230,7 +693,7 @@
       document.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : null;
         if (target && !target.closest("[data-date-range-picker]")) setOpen(false);
-      });
+      }, { signal: bindingController.signal });
 
       syncInputs();
       resetDraftFromCommitted();
@@ -1298,18 +761,18 @@
     scope.querySelectorAll("[data-popover-panel]").forEach((panelEl) => {
       panelEl.addEventListener("click", (event) => event.stopPropagation());
     });
-    document.addEventListener("click", () => setPopoverOpen(scope, "", false));
+    document.addEventListener("click", () => setPopoverOpen(scope, "", false), { signal: bindingController.signal });
     scope.addEventListener("keydown", (event) => {
       if (event.key === "Escape") setPopoverOpen(scope, "", false);
     });
   }
 
-  function selectWaybill(scope, id) {
+  function selectWaybill(scope, id, detailTemplate = null) {
     const row = scope.querySelector(`[data-waybill-row="${CSS.escape(String(id))}"]`);
-    const template = scope.querySelector(`[data-waybill-detail-template="${CSS.escape(String(id))}"]`);
+    const template = detailTemplate || scope.querySelector(`[data-waybill-detail-template="${CSS.escape(String(id))}"]`);
     const detail = scope.querySelector("[data-waybill-detail-dialog]");
     const slot = scope.querySelector("[data-waybill-detail-slot]");
-    if (!row || !template || !detail || !slot) return;
+    if (!template || !detail || !slot) return false;
     scope.querySelectorAll("[data-waybill-row]").forEach((item) => item.classList.toggle("is-selected", item === row));
     slot.replaceChildren(template.content.cloneNode(true));
     scope.classList.add("is-detail-open");
@@ -1320,10 +783,12 @@
     } else {
       detail.setAttribute("open", "");
     }
+    bindHistory(slot);
     window.ConsoleUI?.refreshIcons?.();
+    return true;
   }
 
-  function closeWaybillDetail(scope) {
+  function closeWaybillDetail(scope, { reload = true } = {}) {
     const detail = scope.querySelector("[data-waybill-detail-dialog]");
     scope.classList.remove("is-detail-open");
     scope.querySelectorAll("[data-waybill-row]").forEach((item) => item.classList.remove("is-selected"));
@@ -1334,11 +799,226 @@
     } else {
       detail?.removeAttribute("open");
     }
+    if (reload && pendingRefresh && !loadInProgress && scope === panel()) {
+      pendingRefresh = false;
+      loadWaybills(new URL(window.location.href), { pushState: false });
+    }
+  }
+
+  function detailMessage(content, message, kind = "warning") {
+    const status = content?.querySelector("[data-waybill-detail-message]");
+    if (!status) return;
+    status.hidden = !message;
+    status.textContent = message;
+    status.classList.toggle("notice--warning", kind === "warning");
+    status.classList.toggle("notice--success", kind === "success");
+  }
+
+  async function requestJSON(url, options = {}, timeoutMs = 20000) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: options.signal || controller.signal });
+      const result = await response.json();
+      if (!response.ok || result.ok !== true) throw new Error(result.message || "请求失败，请稍后重试。");
+      return result;
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("请求超时，请稍后重试。");
+      throw error;
+    } finally { window.clearTimeout(timeout); }
+  }
+
+  function bindHistory(slot) {
+    const history = slot.querySelector("[data-waybill-history]");
+    if (!history) return;
+    const body = history.querySelector("[data-waybill-history-body]");
+    const content = history.closest("[data-waybill-detail-content]");
+    async function loadHistory() {
+      if (history.dataset.loading === "true" || history.dataset.loaded === "true") return;
+      history.dataset.loading = "true";
+      body.textContent = "正在读取修改记录…";
+      try {
+        const result = await requestJSON(`/waybills/${content.dataset.waybillId}/edit-history?source=manual`);
+        if (!Array.isArray(result.edits)) throw new Error("修改记录读取失败，请重试。");
+        body.replaceChildren();
+        if (!result.edits.length) body.textContent = "暂无修改记录。";
+        const list = document.createElement("ol");
+        list.className = "waybill-history-list";
+        result.edits.forEach((edit) => {
+          const item = document.createElement("li");
+          const meta = document.createElement("p");
+          meta.className = "waybill-history-meta";
+          meta.textContent = `${edit.created_at || "无时间"} · ${edit.actor || "无操作人"}`;
+          item.append(meta);
+          (edit.changes || []).forEach((change) => {
+            const line = document.createElement("p");
+            line.textContent = `${change.label || change.field}：${change.before === "" ? "空" : change.before} → ${change.after === "" ? "空" : change.after}`;
+            item.append(line);
+          });
+          list.append(item);
+        });
+        body.append(list);
+        history.dataset.loaded = "true";
+      } catch (error) {
+        body.textContent = error.message || "修改记录读取失败。";
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "ghost-btn";
+        retry.textContent = "重新读取";
+        retry.addEventListener("click", loadHistory);
+        body.append(retry);
+      } finally { history.dataset.loading = "false"; }
+    }
+    history.addEventListener("toggle", () => { if (history.open) loadHistory(); });
+  }
+
+  const EDIT_GROUPS = [
+    ["开单信息", [["open_date", "开单日期", "date"], ["destination_site", "到站"], ["receipt_required", "需要回单", "checkbox"]]],
+    ["发货方", [["sender_name", "发货人"], ["sender_phone", "发货电话", "tel"], ["sender_address", "发货地址", "textarea"]]],
+    ["收货方", [["receiver_name", "收货人"], ["receiver_phone", "收货电话", "tel"], ["receiver_address", "收货地址", "textarea"]]],
+    ["货物信息", [["goods_name_lines", "货物名称"], ["package_type_lines", "包装类型"], ["quantity_lines", "件数"], ["weight_kg", "重量（kg）", "decimal"], ["volume_m3", "体积（m³）", "decimal"], ["delivery_method", "送货方式", "select"]]],
+    ["费用结算", [["freight_fee", "运费", "decimal"], ["transfer_fee", "中转费", "decimal"], ["payment_method", "结算方式", "select"], ["insurance_amount", "保价金额", "decimal"], ["cod_amount", "代收金额", "decimal"], ["remark", "备注", "textarea"]]],
+  ];
+  const REQUIRED_EDIT_FIELDS = new Set(["open_date", "destination_site", "receiver_name", "receiver_phone", "receiver_address", "goods_name_lines", "package_type_lines", "quantity_lines", "delivery_method", "freight_fee", "payment_method"]);
+
+  async function beginEdit(scope) {
+    const content = scope.querySelector("[data-waybill-detail-slot] [data-waybill-detail-content]");
+    const button = content?.querySelector("[data-waybill-edit]");
+    if (!content || !button || button.disabled || content.querySelector("[data-waybill-edit-form]")) return;
+    button.disabled = true;
+    detailMessage(content, "正在读取最新运单…", "info");
+    try {
+      const result = await requestJSON(`/waybills/${content.dataset.waybillId}/edit-data?source=manual`);
+      if (!content.isConnected) return;
+      if (!result.editable) throw new Error(result.reason || "这张运单当前不能修改。");
+      if (!result.values || !result.fingerprint) throw new Error("运单编辑数据不完整，请重新打开。");
+      const form = document.createElement("form");
+      form.className = "waybill-edit-form";
+      form.dataset.waybillEditForm = "";
+      const body = document.createElement("div");
+      body.className = "waybill-detail-body";
+      EDIT_GROUPS.forEach(([title, fields]) => {
+        const section = document.createElement("section");
+        section.className = "waybill-detail-section";
+        const heading = document.createElement("h3");
+        heading.textContent = title;
+        const grid = document.createElement("div");
+        grid.className = "waybill-detail-grid";
+        fields.forEach(([name, label, type = "text"]) => {
+          const field = document.createElement("div");
+          field.className = "waybill-field" + (type === "textarea" ? " waybill-edit-wide" : "");
+          const caption = document.createElement("label");
+          caption.className = "waybill-label";
+          caption.htmlFor = `edit_field_${name}`;
+          caption.textContent = label + (REQUIRED_EDIT_FIELDS.has(name) ? " *" : "");
+          const input = document.createElement(type === "textarea" ? "textarea" : type === "select" ? "select" : "input");
+          input.name = `field_${name}`;
+          input.id = caption.htmlFor;
+          input.className = "waybill-edit-input";
+          if (type === "select") {
+            const options = name === "payment_method" ? result.payment_methods : result.delivery_methods;
+            if (!Array.isArray(options)) throw new Error("运单选项读取失败，请重试。");
+            ["", ...options].forEach((value) => input.add(new Option(value || "请选择", value)));
+          } else if (type !== "textarea") {
+            input.type = type === "decimal" ? "text" : type;
+            if (type === "decimal") input.inputMode = "decimal";
+          }
+          input.required = REQUIRED_EDIT_FIELDS.has(name);
+          const value = String(result.values[input.name] ?? "");
+          if (type === "checkbox") {
+            input.checked = value === "1";
+            input.value = "1";
+            field.classList.add("waybill-check");
+            input.className = "";
+          } else input.value = value;
+          if (type !== "select" && type !== "checkbox") input.maxLength = 2000;
+          if (type === "checkbox") field.append(input, caption);
+          else field.append(caption, input);
+          grid.append(field);
+        });
+        section.append(heading, grid);
+        body.append(section);
+      });
+      const actions = document.createElement("footer");
+      actions.className = "waybill-detail-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "ghost-btn";
+      cancel.textContent = "取消修改";
+      const save = document.createElement("button");
+      save.type = "submit";
+      save.className = "primary-btn";
+      save.textContent = "保存修改";
+      actions.append(cancel, save);
+      form.append(body, actions);
+      content.querySelector("[data-waybill-read-view]").hidden = true;
+      content.querySelector("[data-waybill-read-actions]").hidden = true;
+      content.querySelector("[data-waybill-print-status]").hidden = true;
+      content.append(form);
+      cancel.addEventListener("click", () => {
+        form.remove();
+        content.querySelector("[data-waybill-read-view]").hidden = false;
+        content.querySelector("[data-waybill-read-actions]").hidden = false;
+        detailMessage(content, "");
+        button.focus();
+      });
+      detailMessage(content, result.weight_volume_unparsed ? `原重量 / 体积为“${result.weight_volume_unparsed}”，请核对并重新填写重量和体积后保存。` : "");
+      let lastPayload = "";
+      let requestId = "";
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (save.disabled) return;
+        const fields = Object.fromEntries(new FormData(form));
+        fields.field_receipt_required = form.elements.field_receipt_required.checked ? "1" : "0";
+        if (result.weight_volume_unparsed && !fields.field_weight_kg.trim() && !fields.field_volume_m3.trim()) {
+          detailMessage(content, "原重量 / 体积无法自动拆分，请核对并填写重量或体积后保存。");
+          form.elements.field_weight_kg.focus();
+          return;
+        }
+        const signature = JSON.stringify(fields);
+        if (signature !== lastPayload) { requestId = crypto.randomUUID(); lastPayload = signature; }
+        save.disabled = true;
+        cancel.disabled = true;
+        save.textContent = "正在保存…";
+        detailMessage(content, "");
+        let saved = false;
+        try {
+          const outcome = await requestJSON(`/waybills/${content.dataset.waybillId}/manual-update`, {
+            method: "POST", headers: { "Content-Type": "application/json", "X-Browser-Request-UUID": requestId },
+            body: JSON.stringify({ request_id: requestId, fingerprint: result.fingerprint, fields }),
+          }, 95000);
+          saved = true;
+          const id = `manual:${content.dataset.waybillId}`;
+          const message = outcome.outcome === "UNCHANGED" ? "未修改任何内容。" : "已修改；如已打印面单，请重新打印。";
+          await loadWaybills(new URL(window.location.href), { pushState: false, silent: true });
+          const current = panel();
+          if (!current) return;
+          if (!selectWaybill(current, id)) {
+            const url = new URL("/waybills", window.location.origin);
+            url.search = new URLSearchParams({ q: result.waybill_no, source: "manual" });
+            const next = await fetchPanel(url);
+            const template = next.querySelector(`[data-waybill-detail-template="${CSS.escape(id)}"]`);
+            if (!template || !selectWaybill(current, id, template)) throw new Error("已保存，但更新后的运单详情暂未读到，请重新查询。");
+          }
+          detailMessage(current.querySelector("[data-waybill-detail-slot]"), message, "success");
+        } catch (error) {
+          detailMessage(content.isConnected ? content : panel()?.querySelector("[data-waybill-detail-slot]"), saved ? "已保存，但详情刷新失败，请关闭后重新查询并核对。" : error.message);
+          if (saved && !content.isConnected) setRefreshNotice("已保存，但详情刷新失败，请重新查询并核对。", "warning");
+        } finally {
+          if (!saved) { save.disabled = false; cancel.disabled = false; save.textContent = "保存修改"; }
+        }
+      });
+      form.querySelector("input")?.focus();
+    } catch (error) { detailMessage(content, error.message); }
+    finally { if (button.isConnected) button.disabled = false; }
   }
 
   function bindDetail(scope) {
     const detail = scope.querySelector("[data-waybill-detail-dialog]");
-    scope.querySelector("[data-waybill-detail-close]")?.addEventListener("click", () => closeWaybillDetail(scope));
+    detail?.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("[data-waybill-detail-close]")) closeWaybillDetail(scope);
+      if (event.target instanceof Element && event.target.closest("[data-waybill-edit]")) beginEdit(scope);
+    });
     detail?.addEventListener("cancel", (event) => {
       event.preventDefault();
       closeWaybillDetail(scope);
@@ -1415,34 +1095,126 @@
     });
   }
 
-  async function loadWaybills(url, { pushState = true } = {}) {
-    setBusy(true);
+  let refreshController = null;
+  let refreshState = null;
+  let loadNumber = 0;
+  let loadInProgress = false;
+  let pendingRefresh = false;
+
+  function refreshPlan(scope = panel()) {
+    try { return JSON.parse(scope?.dataset.waybillSourceRefresh || "null"); }
+    catch { return null; }
+  }
+
+  function refreshKey(plan) {
+    return plan ? JSON.stringify([plan.source, plan.date_from, plan.date_to]) : "";
+  }
+
+  function setRefreshNotice(message, kind = "info") {
+    const status = panel()?.querySelector("[data-waybill-refresh-status]");
+    if (!status) return;
+    status.textContent = message;
+    status.hidden = !message;
+    status.classList.toggle("notice--warning", kind === "warning");
+    status.classList.toggle("notice--success", kind === "success");
+  }
+
+  function restoreRefreshNotice() {
+    if (refreshState && refreshState.key === refreshKey(refreshPlan())) setRefreshNotice(refreshState.message, refreshState.kind);
+  }
+
+  async function fetchPanel(url) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     try {
-      const response = await fetch(url.href, {
-        headers: {
-          Accept: "text/html",
-          "X-Requested-With": "WaybillAjaxSearch",
-        },
+      const response = await fetch(url.href, { signal: controller.signal, headers: { Accept: "text/html", "X-Requested-With": "WaybillAjaxSearch" } });
+      if (!response.ok) throw new Error("运单列表读取失败，请重新查询。");
+      const documentNext = new DOMParser().parseFromString(await response.text(), "text/html");
+      const next = documentNext.querySelector("[data-waybill-ajax-panel]");
+      if (!next) throw new Error("运单列表读取失败，请重新查询。");
+      return next;
+    } finally { window.clearTimeout(timeout); }
+  }
+
+  async function refreshSources() {
+    const plan = refreshPlan();
+    refreshController?.abort();
+    refreshController = null;
+    refreshState = null;
+    if (!plan?.allowed) {
+      if (plan?.reason) setRefreshNotice(plan.reason, "warning");
+      return;
+    }
+    const key = refreshKey(plan);
+    const controller = new AbortController();
+    refreshController = controller;
+    refreshState = { key, message: "正在补查原平台数据…", kind: "info" };
+    restoreRefreshNotice();
+    const timeout = window.setTimeout(() => controller.abort(), 105000);
+    try {
+      const response = await fetch("/waybills/source-refresh", {
+        method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: plan.source, date_from: plan.date_from, date_to: plan.date_to }),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const html = await response.text();
-      const nextDocument = new DOMParser().parseFromString(html, "text/html");
-      const nextPanel = nextDocument.querySelector("[data-waybill-ajax-panel]");
-      const currentPanel = panel();
-      if (!nextPanel || !currentPanel) {
-        window.location.assign(url.href);
+      const result = await response.json();
+      if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || "补查失败，当前显示服务器数据，请重新查询。");
+      if (controller !== refreshController || !panel() || window.location.pathname !== "/waybills") return;
+      const data = result.data;
+      const time = data.refreshed_at ? `（${data.refreshed_at}）` : "";
+      refreshState = {
+        key,
+        message: data.complete ? `已按原平台更新${time}${data.reused ? "，复用两分钟内的补查结果" : ""}` : (data.warnings || []).join("；") || "原平台数据未完整更新，当前显示已保存的服务器数据。",
+        kind: data.complete ? "success" : "warning",
+      };
+      if (key !== refreshKey(refreshPlan())) return;
+      // Preserve an in-progress query or unsaved edit while providers finish.
+      if (loadInProgress || panel()?.querySelector("[data-waybill-edit-form]")) {
+        pendingRefresh = true;
+        restoreRefreshNotice();
         return;
       }
+      // Pagination/sorting during the backfill remains the current view.
+      await loadWaybills(new URL(window.location.href), { pushState: false, silent: true });
+      restoreRefreshNotice();
+    } catch (error) {
+      if (controller !== refreshController) return;
+      refreshState = { key, message: error?.name === "AbortError" ? "补查等待已结束，当前显示服务器数据；请稍后重新查询。" : error.message, kind: "warning" };
+      restoreRefreshNotice();
+    } finally { window.clearTimeout(timeout); }
+  }
+
+  async function loadWaybills(url, { pushState = true, refresh = false, silent = false } = {}) {
+    const sequence = ++loadNumber;
+    loadInProgress = true;
+    pendingRefresh = false;
+    if (refresh) { refreshController?.abort(); refreshController = null; refreshState = null; pendingRefresh = false; }
+    if (!silent) setBusy(true);
+    try {
+      const nextPanel = await fetchPanel(url);
+      const currentPanel = panel();
+      if (sequence !== loadNumber || !currentPanel || window.location.pathname !== "/waybills") return false;
+      closeWaybillDetail(currentPanel, { reload: false });
       currentPanel.replaceWith(document.importNode(nextPanel, true));
       if (pushState) window.history.pushState({ waybillAjax: true }, "", url.href);
       bindWaybillSearch();
       window.ConsoleUI?.initPage?.(panel() || document);
       window.ConsoleUI?.refreshIcons?.();
+      restoreRefreshNotice();
+      if (refresh) refreshSources();
+      return true;
     } catch (error) {
-      console.warn("Waybill ajax search failed, falling back to full navigation.", error);
-      window.location.assign(url.href);
+      if (silent) throw error;
+      setRefreshNotice(error.message || "运单列表读取失败，请重新查询。", "warning");
+      return false;
     } finally {
-      setBusy(false);
+      if (sequence === loadNumber) {
+        loadInProgress = false;
+        setBusy(false);
+        if (pendingRefresh && !panel()?.querySelector("[data-waybill-edit-form]")) {
+          pendingRefresh = false;
+          loadWaybills(new URL(window.location.href), { pushState: false });
+        }
+      }
     }
   }
 
@@ -1458,10 +1230,16 @@
     const current = panel();
     if (!current || current.dataset.ajaxBound === "true") return;
     current.dataset.ajaxBound = "true";
+    bindingController?.abort();
+    bindingController = new AbortController();
     initDateRangePickers(current);
     bindPopovers(current);
     bindColumnSettings(current);
     bindDetail(current);
+    const moreFilters = current.querySelector('[data-popover-panel="filters"]');
+    moreFilters?.addEventListener("change", () => {
+      current.querySelector("[data-waybill-filter-count]").textContent = String(Array.from(moreFilters.querySelectorAll("select")).filter((item) => item.value).length);
+    });
 
     const form = current.querySelector("[data-waybill-filter-form]");
     form?.addEventListener("submit", (event) => {
@@ -1472,7 +1250,8 @@
       if (pageSize instanceof HTMLSelectElement) params.set(pageSize.name, pageSize.value);
       normalizeParams(params);
       url.search = params.toString();
-      loadWaybills(url);
+      const activeQuery = event.submitter?.matches("[data-waybill-query]") === true;
+      loadWaybills(url, { refresh: activeQuery });
     });
 
     current.querySelector("[data-waybill-page-size]")?.addEventListener("change", () => {
@@ -1495,6 +1274,11 @@
   }
 
   if (!window.WaybillAjaxSearch) {
+    window.addEventListener("pagehide", () => { refreshController?.abort(); refreshController = null; });
+    // The app also replaces page content without a full browser navigation.
+    new MutationObserver(() => {
+      if (!panel()) { refreshController?.abort(); refreshController = null; bindingController?.abort(); }
+    }).observe(document.body, { childList: true, subtree: true });
     window.addEventListener("popstate", () => {
       if (window.location.pathname === "/waybills" && panel()) {
         loadWaybills(new URL(window.location.href), { pushState: false });

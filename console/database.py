@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 import time
@@ -5,7 +6,7 @@ from collections import deque
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pymysql
 
@@ -222,6 +223,73 @@ def _close_quietly(connection: Any) -> None:
         connection.close()
     except Exception:
         pass
+
+
+# Fields of a saved Boyi manual waybill an operator may change from the query
+# page; the waybill number, source and status are not editable here.
+MANUAL_WAYBILL_EDIT_LABELS = {
+    "sender_name": "发货人",
+    "sender_phone": "发货电话",
+    "sender_address": "发货地址",
+    "receiver_name": "收货人",
+    "receiver_phone": "收货电话",
+    "receiver_address": "收货地址",
+    "destination_site": "到站",
+    "open_date": "开单日期",
+    "goods_name_lines": "货物名称",
+    "package_type_lines": "包装类型",
+    "quantity_lines": "件数",
+    "weight_volume": "重量 / 体积",
+    "delivery_method": "送货方式",
+    "freight_fee": "运费",
+    "transfer_fee": "中转费",
+    "payment_method": "结算方式",
+    "insurance_amount": "保价金额",
+    "cod_amount": "代收金额",
+    "remark": "备注",
+    "receipt_required": "需要回单",
+}
+MANUAL_WAYBILL_EDIT_FIELDS = tuple(MANUAL_WAYBILL_EDIT_LABELS)
+_MANUAL_WEIGHT_PART = re.compile(r"^(\d+(?:\.\d+)?)kg$")
+_MANUAL_VOLUME_PART = re.compile(r"^(\d+(?:\.\d+)?)m³$")
+
+
+def split_manual_weight_volume(text: Any) -> tuple[str, str] | None:
+    """Split the entry page's weight/volume value; None for unrecognized text."""
+    value = str(text or "").strip()
+    if not value:
+        return "", ""
+    weight = volume = ""
+    for part in (item.strip() for item in value.split(" / ")):
+        weight_match = _MANUAL_WEIGHT_PART.fullmatch(part)
+        volume_match = _MANUAL_VOLUME_PART.fullmatch(part)
+        if weight_match and not weight and not volume:
+            weight = weight_match.group(1)
+        elif volume_match and not volume:
+            volume = volume_match.group(1)
+        else:
+            return None
+    return weight, volume
+
+
+class ManualWaybillEditError(ValueError):
+    """A manual waybill edit that must not be saved, with a stable code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _stored_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def manual_waybill_fingerprint(row: dict[str, Any]) -> str:
+    """Digest of the editable content and status the operator started from."""
+    material = {field: _stored_text(row.get(field)) for field in MANUAL_WAYBILL_EDIT_FIELDS}
+    material["status"] = _stored_text(row.get("status"))
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _now_iso() -> str:
@@ -1769,6 +1837,100 @@ class DocumentRepository:
         if sort == "open_date_asc":
             return "open_date ASC, created_at ASC, source ASC, id ASC"
         return "open_date DESC, created_at DESC, source DESC, id DESC"
+
+    def update_manual_waybill(
+        self,
+        waybill_id: int,
+        fields: dict[str, str],
+        *,
+        expected_fingerprint: str,
+        request_id: str,
+        request_sha256: str,
+        actor_id: str,
+        actor_name: str,
+        validate_new_request: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Change one Boyi manual waybill and append its edit record atomically.
+
+        The row is locked and compared with the fingerprint the operator edited;
+        only changed columns are written. The same request replays its saved
+        result; a reused request ID with other content is rejected.
+        """
+        table = waybill_table("manual")
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                f"SELECT * FROM {table} WHERE id = {self.placeholder} AND source = 'manual' FOR UPDATE",
+                [int(waybill_id)],
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise ManualWaybillEditError("NOT_FOUND", "运单不存在或不是博益开单。")
+            cursor.execute(
+                f"SELECT waybill_id, request_sha256, changes_json FROM boyi_waybill_edit_logs "
+                f"WHERE request_id = {self.placeholder} FOR UPDATE",
+                [request_id],
+            )
+            prior = cursor.fetchone()
+            if prior is not None:
+                if int(prior["waybill_id"]) != int(waybill_id) or prior["request_sha256"] != request_sha256:
+                    raise ManualWaybillEditError("REQUEST_REUSED", "同一保存请求不能用于其他内容，请刷新后重试。")
+                changes = prior["changes_json"]
+                return {"outcome": "REPLAYED",
+                        "changes": json.loads(changes) if isinstance(changes, (str, bytes)) else changes}
+            if normalize_waybill_status(row.get("status")) == "cancelled":
+                raise ManualWaybillEditError("CANCELLED", "运单已作废，不能修改。")
+            if manual_waybill_fingerprint(row) != expected_fingerprint:
+                raise ManualWaybillEditError("STALE", "运单已被修改，请关闭后重新打开再修改。")
+            if not fields["weight_volume"] and split_manual_weight_volume(row.get("weight_volume")) is None:
+                raise ManualWaybillEditError("WEIGHT_VOLUME_UNPARSED", "原重量 / 体积无法解析，请核对并重新填写后保存。")
+            if validate_new_request is not None:
+                validate_new_request()
+            changes = []
+            for field in MANUAL_WAYBILL_EDIT_FIELDS:
+                before = _stored_text(row.get(field))
+                after = _waybill_date_bound(fields[field]) if field == "open_date" else fields[field]
+                if before != after:
+                    changes.append({"field": field, "label": MANUAL_WAYBILL_EDIT_LABELS[field],
+                                    "before": before, "after": after})
+            if not changes:
+                return {"outcome": "UNCHANGED", "changes": []}
+            assignments = ", ".join(f"{item['field']} = {self.placeholder}" for item in changes)
+            values = [int(item["after"]) if item["field"] == "receipt_required" else item["after"]
+                      for item in changes]
+            cursor.execute(
+                f"UPDATE {table} SET {assignments}, updated_at = {self.placeholder} "
+                f"WHERE id = {self.placeholder} AND source = 'manual'",
+                [*values, _now_iso(), int(waybill_id)],
+            )
+            cursor.execute(
+                "INSERT INTO boyi_waybill_edit_logs (waybill_id, waybill_no, request_id, request_sha256, "
+                "actor_id, actor_name, changes_json) VALUES "
+                f"({', '.join([self.placeholder] * 7)})",
+                [int(waybill_id), str(row.get("waybill_no") or ""), request_id, request_sha256,
+                 actor_id, actor_name, json.dumps(changes, ensure_ascii=False)],
+            )
+            return {"outcome": "SAVED", "changes": changes}
+
+    def list_manual_waybill_edits(self, waybill_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT actor_name, actor_id, changes_json, created_at FROM boyi_waybill_edit_logs "
+                f"WHERE waybill_id = {self.placeholder} ORDER BY created_at DESC, id DESC LIMIT {int(limit)}",
+                [int(waybill_id)],
+            )
+            rows = cursor.fetchall()
+        edits = []
+        for row in rows:
+            changes = row["changes_json"]
+            created_at = row["created_at"]
+            edits.append({
+                "actor": str(row.get("actor_name") or row.get("actor_id") or ""),
+                "created_at": created_at.strftime("%Y-%m-%d %H:%M") if hasattr(created_at, "strftime") else str(created_at)[:16],
+                "changes": json.loads(changes) if isinstance(changes, (str, bytes)) else changes,
+            })
+        return edits
 
     def update_waybill_status(self, waybill_id: int, status: str, *, source: str | None = None) -> bool:
         normalized = normalize_waybill_status(status)

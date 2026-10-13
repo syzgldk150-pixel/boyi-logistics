@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import json
 import threading
 from datetime import date
@@ -101,8 +102,11 @@ def test_real_read_lifecycle_keeps_actual_provider_account_until_cancelled_threa
         class Repository:
             def read_cached(self, **kwargs):
                 return {"rows": [], "total": 0}
-            def coverage(self, *args):
-                return None
+            @contextmanager
+            def session(self):
+                yield self
+            def coverage_range(self, *args):
+                return {}
             def publish(self, *args, **kwargs):
                 assert finish.is_set()
                 return {"complete": True}

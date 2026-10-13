@@ -318,7 +318,7 @@
           data-automation-id="{{ task.task_id }}"
           data-record-version="{{ plugin.record_version }}"
           data-project-configuration-version="{{ plugin.project_configuration_version }}"
-          {% if task.plugin_expected_schedule %}data-project-schedule='{{ task.plugin_expected_schedule | tojson }}'{% endif %}
+          {% if task.plugin_schedule_sha256 %}data-project-schedule-sha256="{{ task.plugin_schedule_sha256 }}"{% endif %}
           data-current-version="{{ plugin.version }}"
           aria-label="{{ task.name_value }} 插件实例"
         >
