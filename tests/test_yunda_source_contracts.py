@@ -523,20 +523,24 @@ def test_send_sheet_lost_response_waits_for_delayed_exact_readback_without_rewri
     sleeps: list[float] = []
     stale_values = [list(values[0])]
     stale_values[0][1] = "stale"
+    resource = {
+        "spreadsheet_token": "sheet-token",
+        "sheet_id": "Sheet1",
+        "sheet_range": "A2:A2",
+        "sheet_clear_range": "A2:Y5000",
+    }
+    original_resource = dict(resource)
     monkeypatch.setattr(
         adapters,
         "_exact_workflow_resource",
-        lambda *_args, **_kwargs: {
-            "spreadsheet_token": "sheet-token",
-            "sheet_id": "Sheet1",
-            "sheet_range": "A2:A2",
-            "sheet_clear_range": "A2:Y5000",
-        },
+        lambda *_args, **_kwargs: resource,
     )
 
     def sync_snapshot(resource_id, written, params):
         assert written == values
         assert params["dry_run"] is False
+        assert params["range"] == "Sheet1!A2:AD2"
+        assert params["clear_range"] == "Sheet1!A2:AD5000"
         sync_calls.append(resource_id)
         raise TimeoutError("response lost after commit")
 
@@ -565,6 +569,7 @@ def test_send_sheet_lost_response_waits_for_delayed_exact_readback_without_rewri
 
     assert read_calls == ["read_sheet"] * 4
     assert sync_calls == ["resource"]
+    assert resource == original_resource
     assert sleeps == [0.5, 1.0, 2.0]
     assert result | {
         "ok": True,
@@ -606,6 +611,7 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
     def operation(action, _params):
         if _params["range"] == "Sheet1!A1:AD1":
             return {"ok": True, "data": {"valueRange": {"values": [list(send_sink.FIELD_NAMES)]}}}
+        assert _params["range"] == "Sheet1!A2:AD5000"
         read_calls.append(action)
         return {
             "ok": True,
@@ -614,7 +620,7 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
                     "values": [
                         *values,
                         ["" for _ in send_sink.FIELD_NAMES],
-                        ["STALE", *["" for _ in send_sink.FIELD_NAMES[1:]]],
+                        [*["" for _ in send_sink.FIELD_NAMES[:-1]], "STALE"],
                     ]
                 }
             },

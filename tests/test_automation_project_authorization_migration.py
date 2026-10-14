@@ -15,6 +15,7 @@ from unittest.mock import patch
 from agent.automation_plugins.first_party import release_first_party_automation_ids
 from shared.automation_project_manifest import FIRST_PARTY_MIGRATION_INSTANCE_TEMPLATES
 from tests.automation_project_migration_contract import (
+    migrated_code_owned_resources,
     migration_018_code_owned_resources,
 )
 
@@ -320,6 +321,15 @@ class AutomationProjectAuthorizationMigrationTests(TestCase):
         self.assertIn("BINARY JSON_UNQUOTE", self.sql)
         self.assertIn("cp018_scheduler_backup_incomplete", self.sql)
         self.assertIn("automation_id VARCHAR(128) NOT NULL", self.sql)
+
+    def test_current_yunda_sheet_width_does_not_change_persisted_migration_contract(self):
+        from agent.phase7_resource_import import BUILTIN_RESOURCES
+
+        key = "phase7.yunda_send_waybills_sheet"
+        self.assertEqual("Sheet1!A2:AD5000", BUILTIN_RESOURCES[key]["clear_range"])
+        self.assertEqual("Sheet1!A2:Y5000", migration_018_code_owned_resources()[key]["clear_range"])
+        self.assertEqual("Sheet1!A2:Y5000", migrated_code_owned_resources()[key]["clear_range"])
+        self.assertEqual("Sheet1!A2:AD5000", BUILTIN_RESOURCES[key]["clear_range"])
 
     def test_reviewed_resources_are_exactly_backed_up_and_hash_guarded(self):
         first_alter = self.sql.index("ALTER TABLE scheduled_tasks ADD COLUMN")
