@@ -477,9 +477,12 @@ def test_actual_nightly_projection_uses_verified_scope_and_rebinds_account(datab
     assert second["updates"] == 1 and second["creates"] == 0 and second["deleted_stale"] == 1
     assert len(rows(database)) == 1 and rows(database)[0]["source_account_id"] == "b"
     yunda = _replace_yunda_waybill_projection(
-        [{"运单编号": "night-one", "发件日期": DAY.isoformat(), "件数": "7"}], DAY.isoformat(), {"account_id": "c"})
+        [{"运单编号": "night-one", "发件日期": DAY.isoformat(), "件数": "7", "status": "signed"}],
+        DAY.isoformat(), {"account_id": "c"})
     assert yunda["verified"] and yunda["creates"] == 1
     assert len(rows(database)) == 2
+    assert [(row["source_account_id"], row["status"]) for row in rows(database)
+            if row["source"] == "yunda"] == [("c", "signed")]
     def unavailable(*_args):
         raise ValueError("WAYBILL_SOURCE_SCOPE_UNVERIFIED")
     monkeypatch.setattr(waybill_query, "resolve_source_scope", unavailable)
