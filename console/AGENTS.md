@@ -104,7 +104,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 页面和正文列表交互在 `templates/portal.html`、`static/monitoring.js`，代理与路由在 `services/monitoring_finance.py`、`routes/monitoring.py`
   - Agent 聚合入口在 `../agent/agent/tms_runtime/monitoring.py`，平台协议分别在同目录 `monitoring_ronghui.py`、`monitoring_yunda.py`
   - Console 只代理分类汇总、SSE、每页 20 条正文和服务端详情链接，沿用超级管理员权限；只提交来源、分类与页码，不保存第三方凭据或正文到数据库。未知数量显示“—”，不同分类口径不重复相加，旧内容必须标明更新时间与过期状态；刷新和查看正文不标已读、不处理工单。账号范围与登录初始化见 [消息监控说明](../docs/monitoring_messages.md)
-  - 首页“今日应签未签”卡片走 Console `/monitoring/daily-sign` 代理 Agent `/internal/v1/admin/monitoring/daily-sign`，Agent 读取 `phase7.daily_sign_sheet` 飞书普通电子表格中的“应签明细”快照，按当日 `应签收时间` 计数，并用 `scheduled_tasks` 中“每日应签”任务的启用定时点返回刷新时间；接口只返回计数、状态和刷新元数据，不返回应签明细、账号、表格 token 或请求体
+  - 首页不再展示应签统计，也不请求或定时刷新 `/monitoring/daily-sign`；应签明细直接在现有飞书表查看。首页仅保留消息与工单统计、来源分类和正文刷新，后端原有应签接口与每日应签插件不受此页面调整影响。
 - 改后台登录、管理员账号、会话 Cookie：
   - `app.py`
   - `database.py`

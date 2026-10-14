@@ -243,12 +243,11 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertIn('/static/monitoring.js?v=', template)
         self.assertIn("new EventSource('/monitoring/stream')", script)
         self.assertIn("/monitoring/items?", script)
-        self.assertIn("data-monitoring-daily-sign", template)
-        self.assertIn("/monitoring/daily-sign", script)
-        self.assertIn("今日应签未签", template)
-        self.assertIn("飞书应签明细", template)
-        self.assertIn("scheduleDailySignRefresh", script)
-        self.assertIn("payload?.poll_interval_sec", script)
+        self.assertNotIn("data-monitoring-daily-sign", template)
+        self.assertNotIn("/monitoring/daily-sign", script)
+        self.assertNotIn("今日应签未签", template)
+        self.assertNotIn("飞书应签明细", template)
+        self.assertNotIn("dailySign", script)
         self.assertNotIn("R13 实时未签明细", template)
         self.assertIn("AbortController", script)
         self.assertIn("addEventListener('click', (event)", script)
@@ -296,7 +295,6 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertIn("Boolean(pageRoot?.hidden)", script)
         self.assertIn("onPageCleanup", script)
         self.assertIn("source?.close()", script)
-        self.assertIn("window.clearTimeout(dailySignTimer)", script)
         self.assertIn("window.clearInterval(summaryTimer)", script)
         self.assertIn("item.items_supported && item.count > 0", script)
         self.assertIn("itemsRequest?.key === key && !force", script)
@@ -312,6 +310,60 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertNotIn("monitor-live", template)
         self.assertNotIn("data-monitoring-live", template)
         self.assertNotIn("setLive(", template)
+
+    def test_portal_only_requests_message_data_on_load_refresh_and_restore(self):
+        from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest("Playwright is required for the monitoring request regression")
+        env = Environment(loader=ChoiceLoader([
+            DictLoader({"base.html": "{% block page_actions %}{% endblock %}"
+                        "{% block content %}{% endblock %}{% block scripts %}{% endblock %}"}),
+            FileSystemLoader(CONSOLE_DIR / "templates"),
+        ]), autoescape=True)
+        template = env.get_template("portal.html").render()
+        script = (CONSOLE_DIR / "static" / "monitoring.js").read_text(encoding="utf-8")
+        requests = []
+        summary_requests = []
+
+        def respond(route):
+            url = route.request.url
+            requests.append(url)
+            if url == "https://console.test/":
+                route.fulfill(body=template, content_type="text/html")
+            elif "/static/monitoring.js?" in url:
+                route.fulfill(body=script, content_type="application/javascript")
+            elif "/monitoring/summary?" in url:
+                summary_requests.append(url)
+                route.fulfill(json={
+                    "ok": True, "systems": [],
+                    "totals": {"total_pending": len(summary_requests)},
+                })
+            else:
+                route.fulfill(status=404, json={"ok": False})
+
+        with sync_playwright() as playwright:
+            if not Path(playwright.chromium.executable_path).is_file():
+                self.skipTest("Chromium is required for the monitoring request regression")
+            with playwright.chromium.launch() as browser:
+                page = browser.new_page()
+                page.route("**/*", respond)
+                page.add_init_script("window.EventSource = undefined;")
+                page.goto("https://console.test/")
+                page.wait_for_function("document.querySelector('[data-monitoring-total]').textContent === '1'")
+                self.assertEqual(4, page.locator(".monitor-metric").count())
+                self.assertEqual(0, page.locator("[data-monitoring-daily-sign]").count())
+
+                page.locator("[data-monitoring-refresh]").click()
+                page.wait_for_function("document.querySelector('[data-monitoring-total]').textContent === '3'")
+                self.assertIn("force=1", summary_requests[1])
+                self.assertIn("prefer_cached=0", summary_requests[2])
+
+                page.evaluate("dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+                page.wait_for_function("document.querySelector('[data-monitoring-total]').textContent === '4'")
+                self.assertFalse(any("/monitoring/daily-sign" in url for url in requests), requests)
 
 
 if __name__ == "__main__":

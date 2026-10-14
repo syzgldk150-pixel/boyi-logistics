@@ -20,7 +20,7 @@
   }
   .monitor-metrics {
     display: grid;
-    grid-template-columns: repeat(5, minmax(150px, 1fr));
+    grid-template-columns: repeat(4, minmax(150px, 1fr));
     gap: 14px;
     margin-bottom: 18px;
   }
@@ -347,11 +347,6 @@
       <strong data-monitoring-exception>加载中</strong>
       <small data-monitoring-updated>等待同步</small>
     </div>
-    <div class="monitor-metric" data-monitoring-daily-sign>
-      <span>今日应签未签</span>
-      <strong data-monitoring-daily-sign-count>加载中</strong>
-      <small data-monitoring-daily-sign-meta>飞书应签明细</small>
-    </div>
   </div>
 
   <div class="monitor-shell">
@@ -381,5 +376,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/monitoring.js?v=20261014"></script>
+<script src="/static/monitoring.js?v=20261015"></script>
 {% endblock %}

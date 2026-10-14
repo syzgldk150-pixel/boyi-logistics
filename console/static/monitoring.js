@@ -6,7 +6,7 @@
   const find = (name) => root.querySelector(`[data-monitoring-${name}]`);
   const els = {
     total: find('total'), yunda: find('yunda'), ronghui: find('ronghui'), exception: find('exception'),
-    updated: find('updated'), dailySign: find('daily-sign-count'), dailySignMeta: find('daily-sign-meta'),
+    updated: find('updated'),
     systems: find('systems'), detailTitle: find('detail-title'), detailSubtitle: find('detail-subtitle'),
     items: find('items'), itemsStatus: find('items-status'), pagination: find('pagination'),
     pageLabel: find('page-label'), prev: find('prev'), next: find('next'), open: find('open'), reload: find('reload'),
@@ -17,7 +17,6 @@
   const systemNodes = new Map();
   let source = null;
   let summaryTimer = 0;
-  let dailySignTimer = 0;
   let refreshTimer = 0;
   let refreshCooldown = false;
   let latestSnapshotKey = '';
@@ -31,7 +30,6 @@
   let itemsRequest = null;
   let itemsRequestSeq = 0;
   let summaryRequest = null;
-  let dailySignRequest = null;
   let disposed = false;
 
   function pageHidden() {
@@ -51,11 +49,6 @@
 
   function fmt(value) {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString('zh-CN') : '—';
-  }
-
-  function timeOnly(value) {
-    const text = String(value || '').trim();
-    return text.match(/\d{2}:\d{2}:\d{2}/)?.[0] || text;
   }
 
   function categoryKey(item) {
@@ -108,20 +101,6 @@
     } finally {
       window.clearTimeout(timeout);
     }
-  }
-
-  function renderDailySign(payload) {
-    if (disposed) return;
-    if (payload?.ok === false) {
-      setText(els.dailySign, '—');
-      setText(els.dailySignMeta, payload.message || '智能服务不可用，应签明细暂时无法获取');
-      return;
-    }
-    setText(els.dailySign, fmt(payload?.counts?.unsigned_today));
-    const updated = payload?.updated_at ? ` · 最后刷新 ${timeOnly(payload.updated_at)}` : '';
-    const state = payload?.stale ? ' · 缓存已过期' : '';
-    const refreshing = payload?.refreshing ? ' · 后台刷新中' : '';
-    setText(els.dailySignMeta, `${payload?.message || '飞书应签明细'}${updated}${state}${refreshing}`);
   }
 
   function renderSummaryUnavailable() {
@@ -389,31 +368,9 @@
     return summaryRequest;
   }
 
-  function scheduleDailySignRefresh(payload = {}) {
-    window.clearTimeout(dailySignTimer);
-    if (pageHidden()) return;
-    const seconds = Number(payload?.poll_interval_sec || 60);
-    const delay = Math.max(30, Math.min(Number.isFinite(seconds) ? seconds : 60, 24 * 60 * 60)) * 1000;
-    dailySignTimer = window.setTimeout(() => fetchDailySign(false, true, true), delay);
-  }
-
-  async function fetchDailySign(force = false, preferCached = false, scheduleNext = false) {
-    if (dailySignRequest) return dailySignRequest;
-    dailySignRequest = fetchMonitoringJson(`/monitoring/daily-sign?force=${force ? '1' : '0'}&${preferCachedQueryValue(preferCached)}`)
-      .then((payload) => {
-        renderDailySign(payload);
-        if (scheduleNext) scheduleDailySignRefresh(payload);
-      }).catch(() => {
-        renderDailySign({ ok: false, message: '飞书应签明细获取失败，请稍后刷新' });
-        if (scheduleNext) scheduleDailySignRefresh();
-      }).finally(() => { dailySignRequest = null; });
-    return dailySignRequest;
-  }
-
   function startUpdates() {
     if (pageHidden()) return;
     fetchSummary(false, true);
-    fetchDailySign(false, true, true);
     if (window.EventSource && !source) {
       source = new EventSource('/monitoring/stream');
       source.addEventListener('snapshot', (event) => {
@@ -429,7 +386,6 @@
     source?.close();
     source = null;
     window.clearInterval(summaryTimer);
-    window.clearTimeout(dailySignTimer);
     window.clearTimeout(refreshTimer);
     itemsRequest?.controller.abort();
     itemsRequest = null;
@@ -463,11 +419,10 @@
     if (refreshCooldown) return;
     refreshCooldown = true;
     setRefreshing(true);
-    Promise.allSettled([fetchSummary(true, true), fetchDailySign(true, true), fetchItems(true)]).finally(() => {
+    Promise.allSettled([fetchSummary(true, true), fetchItems(true)]).finally(() => {
       if (pageHidden()) return;
       refreshTimer = window.setTimeout(() => {
         fetchSummary(false, false);
-        fetchDailySign(false, false, true);
         refreshCooldown = false;
         setRefreshing(false);
       }, 1200);
