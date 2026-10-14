@@ -276,10 +276,10 @@
       <div class="waybill-detail-times"><span>创建时间：{{ row.created_at or '无数据' }}</span><span>最近更新：{{ row.updated_at or '无数据' }}</span></div>
     </div>
     <footer class="waybill-detail-actions" data-waybill-read-actions>
-      <form action="/waybills/{{ row.id }}/status" method="post" data-waybill-cancel-form>
+      {% if row.source not in ('ronghui', 'yunda') %}<form action="/waybills/{{ row.id }}/status" method="post" data-waybill-cancel-form>
         <input type="hidden" name="source" value="{{ row.source }}"><input type="hidden" name="status" value="cancelled"><input type="hidden" name="return_to" value="{{ current_url | default('/waybills') }}">
         <button class="waybill-danger-btn" type="submit" {% if row.status == 'cancelled' %}disabled{% endif %}><i data-feather="x-circle"></i> 作废运单</button>
-      </form>
+      </form>{% endif %}
       <div class="waybill-detail-action-group">
         <a class="ghost-btn" href="{{ row.tracking_url }}"><i data-feather="map-pin"></i> 轨迹跟踪</a>
         <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}"><i data-feather="printer"></i> 打印</button>

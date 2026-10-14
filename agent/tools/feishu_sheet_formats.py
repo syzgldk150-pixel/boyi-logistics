@@ -38,9 +38,14 @@ def sheet_format_operation(action, params, *, call_api, sheet_info, mark_write_s
     if not isinstance(output, dict) or output.get("error"):
         raise RuntimeError("FEISHU_SHEET_FORMAT_RESPONSE_INVALID")
     if write:
-        if not isinstance(output.get("conditional_format_id"), str) or not output["conditional_format_id"]:
-            raise RuntimeError("FEISHU_SHEET_FORMAT_ACK_MISSING")
-        return {"ok": True}
+        ack = output.get("conditional_format_id")
+        if isinstance(ack, str) and ack:
+            return {"ok": True}
+        # Feishu answers a successful update without echoing the rule id; the
+        # caller's mandatory readback proves the range. Creates still need an id.
+        if rule_id and ack is None:
+            return {"ok": True}
+        raise RuntimeError("FEISHU_SHEET_FORMAT_ACK_MISSING")
     sheets = output.get("sheets")
     if not isinstance(sheets, list) or type(output.get("total")) is not int:
         raise RuntimeError("FEISHU_SHEET_FORMAT_SNAPSHOT_MISSING")

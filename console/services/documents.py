@@ -888,7 +888,10 @@ class DocumentServiceMixin:
             return
         try:
             source = str(values.get("source", "") or "")
-            if source in {"manual", "ocr", "yunda", "ronghui"}:
+            if source in {"yunda", "ronghui"}:
+                # 融辉、韵达寄件以原站为准，后台不提供作废。
+                raise ValueError("融辉、韵达运单以原站为准，不能在后台作废")
+            if source in {"manual", "ocr"}:
                 updated = self.repository.update_waybill_status(waybill_id, status, source=source)
             else:
                 raise ValueError("运单来源无效")

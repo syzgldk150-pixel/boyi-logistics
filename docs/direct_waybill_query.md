@@ -47,6 +47,8 @@
 
 ## 博益运单修改
 
+作废（`POST /waybills/{id}/status`）只对博益开单和 OCR 开放；融辉、韵达寄件以原站为准，详情不显示作废按钮，服务端也拒绝其作废请求（2026-10-14）。原站已取消的平台单由同步与人工核实后剔除，不在后台作废。
+
 查询详情可修改未作废的博益开单（`source=manual`），OCR 和平台同步单只读。`GET /waybills/{id}/edit-data?source=manual` 返回当前字段与原值指纹；`POST /waybills/{id}/manual-update` 提交稳定请求 UUID、指纹与 `field_*` 字段，使用与新建相同的规范化和当前生效的扩展校验。修改不能改变运单号。
 
 仓储在同一事务中锁定精确博益记录，核对原值指纹、保存字段差异并写 `boyi_waybill_edit_logs`。旧版本、已作废或来源错误明确拒绝，重复请求幂等返回原结果。`GET /waybills/{id}/edit-history?source=manual` 在用户展开记录时读取修改人、时间和前后值；保存后刷新列表和详情，打印继续读取最新数据。迁移 057 的实体库及权限要求见 [分库说明](database_domains.md)。

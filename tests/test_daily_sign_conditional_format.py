@@ -139,3 +139,20 @@ def test_invalid_or_partial_api_read_cannot_look_empty(output):
 def test_format_range_exception_does_not_allow_private_targets(value):
     with pytest.raises(ConnectorSensitiveDataDenied):
         _reject_sensitive_result({"ranges": [value]}, sensitive_identifiers=("private-tab",), reject_wrapped_identifiers=False)
+
+
+def test_update_ack_without_rule_id_is_accepted_but_create_still_requires_it():
+    # Feishu answers a successful update without echoing conditional_format_id;
+    # the plugin's mandatory readback proves the range afterwards.
+    api = Mock(return_value={"code": 0, "data": {"output": '{"revision":13128}'}})
+    info = Mock(return_value={"sheet_id": "actual-tab"})
+    params = {"spreadsheet_token": "bound-token", "range": "title!A2:L7",
+              "properties": {"rule_type": "expression", "attrs": [{"formula": [QUANTITY_FORMULA]}]}}
+    assert sheet_format_operation("write_sheet_format", {**params, "rule_id": "format-id"},
+        call_api=api, sheet_info=info) == {"ok": True}
+    with pytest.raises(RuntimeError, match="FEISHU_SHEET_FORMAT_ACK_MISSING"):
+        sheet_format_operation("write_sheet_format", params, call_api=api, sheet_info=info)
+    api.return_value = {"code": 0, "data": {"output": '{"conditional_format_id":""}'}}
+    with pytest.raises(RuntimeError, match="FEISHU_SHEET_FORMAT_ACK_MISSING"):
+        sheet_format_operation("write_sheet_format", {**params, "rule_id": "format-id"},
+            call_api=api, sheet_info=info)

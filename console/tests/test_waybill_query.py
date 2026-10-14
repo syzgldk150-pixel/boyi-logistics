@@ -727,7 +727,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         handler = _PostHandler(
             {
                 "status": "cancelled",
-                "source": "ronghui",
+                "source": "manual",
                 "return_to": "/waybills?q=R001&status=in_transit",
             }
         )
@@ -739,7 +739,18 @@ class WaybillQueryRenderTests(unittest.TestCase):
             ("Location", "/waybills?q=R001&status=in_transit&message=%E8%BF%90%E5%8D%95%E5%B7%B2%E4%BD%9C%E5%BA%9F%E3%80%82&kind=success"),
             handler.sent_headers,
         )
-        self.assertIn({"waybill_id": 12, "status": "cancelled", "source": "ronghui"}, repository.calls)
+        self.assertIn({"waybill_id": 12, "status": "cancelled", "source": "manual"}, repository.calls)
+
+    def test_platform_waybills_cannot_be_cancelled(self):
+        for source in ("ronghui", "yunda"):
+            repository = _WaybillRepo()
+            app = _build_waybill_app(repository)
+            handler = _PostHandler({"status": "cancelled", "source": source})
+            app._handle_waybill_status_update(handler, 12)
+            self.assertEqual(303, handler.status)
+            self.assertEqual([], repository.calls)
+            location = dict(handler.sent_headers)["Location"]
+            self.assertIn("kind=warning", location)
 
 
 class WaybillQuerySummaryTests(unittest.TestCase):
