@@ -37,14 +37,50 @@ def resolve_source_scope(source: str, account_id: str) -> WaybillSourceScope:
         session.close()
 
 
-def prepare_waybill_sources(providers):
-    """Bind actual configured accounts before network I/O and credential admission."""
+RONGHUI_SEND_SYNC_PLUGIN = "sync_daily_send_orders_v2"
+RONGHUI_SEND_SYNC_ACCOUNT_ROLE = "daily_send_source"
+
+
+def ronghui_send_sync_accounts(catalog) -> tuple[str, ...]:
+    """Ronghui accounts of the enabled nightly send-order sync instances.
+
+    Page refreshes follow exactly the sites the business syncs; the general
+    default account may see other branches and is not used for Ronghui.
+    """
+    accounts = set()
+    for entry in catalog.list(include_disabled=False):
+        if entry.plugin_id != RONGHUI_SEND_SYNC_PLUGIN:
+            continue
+        account_id = dict(entry.account_bindings).get(RONGHUI_SEND_SYNC_ACCOUNT_ROLE)
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("WAYBILL_ACCOUNT_BINDING_UNAVAILABLE")
+        accounts.add(account_id)
+    return tuple(sorted(accounts))
+
+
+def prepare_waybill_sources(providers, *, catalog=None):
+    """Bind actual configured accounts before network I/O and credential admission.
+
+    With a catalog, Ronghui uses every enabled send-order sync account and each
+    one keeps only waybills sent by its own login site.
+    """
     from agent.tms_runtime.account_manager import get_account_manager
     from plugin_core_adapters.waybill_query_scope import observe_query_scope, source_session
     manager = get_account_manager()
     available = manager.list_accounts(include_status=False)
     bindings, failures = {}, {}
     for provider in providers:
+        if provider == "ronghui" and catalog is not None:
+            try:
+                account_ids = ronghui_send_sync_accounts(catalog)
+            except ValueError as exc:
+                failures[provider] = str(exc)
+                continue
+            if not account_ids:
+                failures[provider] = "WAYBILL_ACCOUNT_BINDING_UNAVAILABLE"
+                continue
+            bindings[provider] = [manager.require_active_binding_descriptor(item) for item in account_ids]
+            continue
         candidates = [row for row in available if row.get("system") == provider
                       and row.get("account_purpose", "general") == "general"
                       and row.get("is_active") is True and row.get("is_default") is True]
@@ -53,11 +89,7 @@ def prepare_waybill_sources(providers):
             continue
         bindings[provider] = manager.require_active_binding_descriptor(candidates[0]["account_id"])
 
-    def resolve(provider):
-        if provider in failures or provider not in bindings:
-            raise ValueError(failures.get(provider, "WAYBILL_ACCOUNT_BINDING_UNAVAILABLE"))
-        descriptor = bindings[provider]
-
+    def bind(provider, descriptor, *, own_site_only):
         def observe():
             if manager.require_active_binding_descriptor(descriptor["account_id"]) != descriptor:
                 raise ValueError("WAYBILL_ACCOUNT_BINDING_CHANGED")
@@ -67,9 +99,19 @@ def prepare_waybill_sources(providers):
             finally:
                 session.close()
 
-        return build_reviewed_provider_source(scope=observe(), descriptor=descriptor, verify_scope=observe)
+        return build_reviewed_provider_source(scope=observe(), descriptor=descriptor, verify_scope=observe,
+                                              own_site_only=own_site_only)
 
-    return tuple(sorted(item["account_id"] for item in bindings.values())), resolve
+    def resolve(provider):
+        if provider in failures or provider not in bindings:
+            raise ValueError(failures.get(provider, "WAYBILL_ACCOUNT_BINDING_UNAVAILABLE"))
+        descriptor = bindings[provider]
+        if isinstance(descriptor, list):
+            return tuple(bind(provider, item, own_site_only=True) for item in descriptor)
+        return bind(provider, descriptor, own_site_only=False)
+
+    accounts = [item for value in bindings.values() for item in (value if isinstance(value, list) else [value])]
+    return tuple(sorted(item["account_id"] for item in accounts)), resolve
 
 
 def publish_collected_waybills(records, *, source, target_date, account_id,
@@ -161,6 +203,15 @@ def publish_verified_waybills(records, *, source, target_date, account_id,
             "readback_count": len(actual),
             "readback_sha256": canonical_sha256([actual[key] for key in sorted(actual)])}
 
+def _own_site_rows(session, rows):
+    """Keep rows sent by the session's login site; a missing site code fails."""
+    from plugin_core_adapters.waybill_query_scope import read_ronghui_site
+    site_code, _site_name = read_ronghui_site(session)
+    if any(not str(row.get("SEND_SITE_CODE") or "").strip() for row in rows):
+        raise ValueError("WAYBILL_SOURCE_SEND_SITE_MISSING")
+    return [row for row in rows if str(row.get("SEND_SITE_CODE")).strip() == site_code]
+
+
 def collect_ronghui_day(session, day: date, *, site_code=None, check_deadline=None):
     """One complete native list protocol shared by waybill and weight readers."""
     from agent.tms_runtime.scripts import Send_order
@@ -179,7 +230,8 @@ def collect_ronghui_day(session, day: date, *, site_code=None, check_deadline=No
 
 
 def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Mapping[str, Any],
-                                   verify_scope: Callable[[], WaybillSourceScope]) -> WaybillQuerySource:
+                                   verify_scope: Callable[[], WaybillSourceScope],
+                                   own_site_only: bool = False) -> WaybillQuerySource:
     """Use the actual reviewed list protocols after fresh scope verification.
 
     The callback checks source ownership and permission coverage, not merely an
@@ -204,6 +256,8 @@ def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Map
             raw, _total = collect_ronghui_day(session, day)
             if any(_date_from_value(row.get("REGISTER_DATE")) != day.isoformat() for row in raw):
                 raise ValueError("WAYBILL_SOURCE_DATE_MISMATCH")
+            if own_site_only:
+                raw = _own_site_rows(session, raw)
             normalized = Send_order.normalize_records({"data": raw})
             records = _console_waybill_records(normalized, target_date=day)
         else:
@@ -244,6 +298,9 @@ def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Map
             raw = items[0]
             if str(raw.get("BILL_CODE") or "").strip() != wanted:
                 raise ValueError("WAYBILL_EXACT_QUERY_IDENTITY_MISMATCH")
+            # The detail endpoint answers any branch's waybill.
+            if own_site_only and not _own_site_rows(session, [raw]):
+                raise ValueError("WAYBILL_EXACT_QUERY_OUT_OF_SCOPE")
             day_text = _date_from_value(raw.get("REGISTER_DATE"))
             if not day_text:
                 raise ValueError("WAYBILL_EXACT_QUERY_DATE_UNAVAILABLE")

@@ -14,7 +14,9 @@ def build_business_service(*, catalog, invocations):
     service = DirectBusinessService(registry=catalog, invocation_service=invocations)
     service.register_read("receipts-query", lambda params, timeout_sec: query_receipts_async(params, timeout_sec, read_lifecycle=invocations))
     service.register_read("send-waybills-query", build_direct_waybill_query_service(
-        connection_factory=waybill_connection, prepare_sources=prepare_waybill_sources, read_lifecycle=invocations))
+        connection_factory=waybill_connection,
+        prepare_sources=lambda providers: prepare_waybill_sources(providers, catalog=catalog),
+        read_lifecycle=invocations))
 
     async def receipt_detail(params, timeout_sec):
         return await call_blocking(query_receipt_feishu_detail, params, timeout_sec=timeout_sec)
