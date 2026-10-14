@@ -2,7 +2,7 @@
 module: automation-plugin-platform
 type: historical-source-guide
 status: historical
-updated: 2026-10-13
+updated: 2026-10-14
 ---
 
 # V1 离线迁移回归材料
@@ -18,3 +18,5 @@ updated: 2026-10-13
 自提问题件 V1 1.0.26、分批问题件 V1 1.0.26、到货统计 V1 1.0.22 的 `frozen/action.py` 均取自提交 `289d74ff2dd86ebb69b4fe3edb808ddae4a13732` 中对应 V2 包的 `payload/action.py`。仅离线 V1 构建器使用这些历史字节，三个重建包均与现有 `digests.json` 精确匹配；当前 V2 action、旧摘要和发布范围保持原样。
 
 当前开发和打包入口见仓库根 `agent/service_v2_plugins/README.md`。线上仅接受经过退役索引和完整迁移记录验证的 Service-V2-only 发布。
+
+客服问题件、融辉寄件和韵达寄件的 V1 `frozen/action.py` 同样仅用于还原现有旧包摘要。客服问题件取自提交 `289d74ff2dd86ebb69b4fe3edb808ddae4a13732`，融辉寄件和韵达寄件取自提交 `9101e4fb42dd32fb90c9c673bc2a8e4e9e022201` 中对应 V2 包的 `payload/action.py`。三个离线重建包与原 `digests.json` 精确匹配；冻结文件不进入 ECS 发布或 V2 打包，当前业务源码和旧摘要均不变。

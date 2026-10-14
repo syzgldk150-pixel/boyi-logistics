@@ -1402,6 +1402,7 @@ def first_party_payload_files(manifest: AutomationPluginManifest) -> dict[str, b
     # V2 business changes cannot alter these retired package locks.
     frozen_action = manifest.plugin_id in {
         "sync_scan_codes", "self_pickup_problem_upload", "split_pending_problem_upload", "sync_arrival_stats",
+        "sync_customer_service_problems", "sync_daily_send_orders", "sync_yunda_send_waybills",
     }
     action_path = ((LEGACY_ROOT / manifest.plugin_id / "frozen/action.py")
                    if frozen_action else legacy_action_source(manifest.plugin_id))
