@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from agent.automation_plugins.connector_registry import ConnectorRegistry
+from agent.automation_plugins.core_adapter import AccountManagerSessionResolver, CoreBrokerInvocationContext
+from agent.automation_plugins.daily_send_connectors_v2 import build_daily_send_connectors
 from agent.automation_plugins.daily_send_handlers import build_daily_send_handler_map
-from agent.automation_plugins.first_party import resolve_first_party_manifests
-from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-from agent.tool_registry import ToolRegistry
 from plugin_core_adapters.daily_send import build_production_daily_send_ports
-from tests.test_first_party_action_payloads import (
-    _ExactResourceResolver,
-    _execute_yunda_write_generation,
-    _load_action,
-    _prepare_yunda_generation,
-)
+from tests.service_v2_production_protocol_support import PackagedConnectorHost
 
 
 _ACCOUNT_ID = "daily-send-ronghui"
@@ -35,6 +30,7 @@ _SOURCE_ROW = {
     "PIECE_NUMBER": "2",
     "FEE_WEIGHT": "10.50",
     "GUEST_FREIGHT": "12.50",
+    "FREIGHT": "8.25",
     "R_BILLCODE": "",
     "REMARK": "测试",
     "PAYMENT_TYPE": "现付",
@@ -60,22 +56,19 @@ class _AccountManager:
         raise AssertionError("production describe_account must not authenticate online")
 
 
-def test_signed_daily_send_package_runs_production_ports_through_write_verifier(
+class _ResourceResolver:
+    def __init__(self):
+        self.calls = []
+
+    def require_active(self, *, resource_id, allowed_kinds):
+        self.calls.append((resource_id, tuple(allowed_kinds)))
+        assert resource_id == _RESOURCE_ID and tuple(allowed_kinds) == ("feishu_bitable",)
+        return {"resource_id": resource_id, "kind": "feishu_bitable"}
+
+
+def test_current_daily_send_v2_package_runs_production_ports_through_write_verifier(
     tmp_path,
 ) -> None:
-    manifest = resolve_first_party_manifests(ToolRegistry())["sync_daily_send_orders"]
-    manifest_mapping = manifest.to_mapping()
-    resource_roles = deepcopy(list(manifest_mapping["resource_roles"]))
-    capability = _prepare_yunda_generation(
-        manifest=manifest,
-        tmp_path=tmp_path,
-        automation_id="daily-send-east-instance",
-        account_bindings={"account_id": [_ACCOUNT_ID]},
-        resource_bindings={"send_order_bitable": _RESOURCE_ID},
-        resource_roles=resource_roles,
-        broker_operations=deepcopy(list(manifest_mapping["runtime_permissions"]["broker_operations"])),
-    )
-
     bitable_rows: list[dict[str, object]] = []
     projection_rows: list[dict[str, object]] = []
 
@@ -137,38 +130,27 @@ def test_signed_daily_send_package_runs_production_ports_through_write_verifier(
         cursor_secret=b"daily-send-router-generation-secret-v1",
     )
 
-    def direct_broker(operation, *, action, role, arguments):
-        context = CoreBrokerInvocationContext(
-            automation_id="daily-send-east-instance",
-            plugin_version="1.0.0",
-            tool_name="sync_daily_send_orders",
-            operation=operation,
-            action=action,
-            role=role,
-            account_ids=(_ACCOUNT_ID,) if role == "account_id" else (),
-            resource_id=_RESOURCE_ID if role == "send_order_bitable" else None,
-            account_bindings={"account_id": (_ACCOUNT_ID,)},
-            resource_bindings={"send_order_bitable": _RESOURCE_ID},
-        )
-        return handlers[(operation, action)](context, arguments)
-
-    direct = _load_action("sync_daily_send_orders").run_action(
-        {"target_date": _TARGET_DATE},
-        direct_broker,
+    resolver = _ResourceResolver()
+    context = CoreBrokerInvocationContext(
+        automation_id="daily-send-east-instance",
+        plugin_version="2.1.0",
+        tool_name="sync_daily_send_orders_v2",
+        operation="service.invoke",
+        action="run",
+        role="__system__",
+        account_bindings={"daily_send_source": (_ACCOUNT_ID,)},
+        resource_bindings={"send_order_bitable": _RESOURCE_ID},
     )
-    assert direct["status"] == "SUCCESS"
-    bitable_rows.clear()
-    projection_rows.clear()
-
-    resolver = _ExactResourceResolver({_RESOURCE_ID: "feishu_bitable"})
-    raw, verified, leases = _execute_yunda_write_generation(
-        tmp_path=tmp_path,
-        capability=capability,
-        handlers=handlers,
-        manager=manager,
+    host = PackagedConnectorHost(
+        tmp_path,
+        "sync_daily_send_orders_v2",
+        ConnectorRegistry(build_daily_send_connectors(handlers)),
+        context,
         resource_resolver=resolver,
-        arguments={"target_date": _TARGET_DATE},
+        account_resolver=AccountManagerSessionResolver(manager),
     )
+    raw = host.execute({"target_date": _TARGET_DATE}, operation="run")
+    verified = host.verified_outcome
 
     assert raw["status"] == "SUCCESS"
     assert raw["data"]["fetched"] == 1
@@ -176,7 +158,13 @@ def test_signed_daily_send_package_runs_production_ports_through_write_verifier(
     assert raw["data"]["sql_upserted"] == 1
     assert verified.accepted is True
     assert verified.code == "VERIFIED"
-    assert leases.finalized and leases.finalized[0]["outcome"] == "WRITE_VERIFIED"
+    assert host.receipts
+    assert host.verification_settlements
+    assert host.verification_settlements[0]["outcome"].value == "WRITE_VERIFIED"
+    assert bitable_rows[0]["fields"]["录单运费"] == "12.50"
+    assert bitable_rows[0]["fields"]["运费"] == "8.25"
+    assert projection_rows[0]["recorded_cost"] == "12.50"
+    assert projection_rows[0]["freight_fee"] == "8.25"
     assert resolver.calls and set(resolver.calls) == {(_RESOURCE_ID, ("feishu_bitable",))}
     assert _ACCOUNT_ID not in repr(raw)
     assert _RESOURCE_ID not in repr(raw)

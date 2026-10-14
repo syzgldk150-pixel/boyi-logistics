@@ -275,6 +275,7 @@ class _ExactResourceResolver:
             raise AssertionError("router substituted or widened an exact resource binding")
         return {
             "resource_id": str(resource_id),
+            "kind": expected_kind,
             "resource_kind": expected_kind,
             "source": "test-managed-resource",
             "configuration_version": "1",
@@ -407,6 +408,7 @@ def _prepare_yunda_generation(
     resource_roles: list[dict[str, object]],
     broker_operations: list[dict[str, object]],
 ) -> dict[str, Any]:
+    """Build offline V1 material; current V2 tests use PackagedConnectorHost."""
     install_root = tmp_path / automation_id
     package_root = install_root / "package"
     for relative, content in first_party_payload_files(manifest).items():
@@ -2411,90 +2413,18 @@ def test_yunda_dispatch_runs_router_to_write_verifier_with_exact_bindings(
     assert "yunda-account" not in json.dumps(raw, sort_keys=True)
 
 
-def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
+def test_current_yunda_send_v2_runs_write_verifier_with_exact_bindings(
     tmp_path: Path,
 ) -> None:
-    resource_roles: list[dict[str, object]] = [
-        {
-            "role": "send_waybills_bitable",
-            "allowed_kinds": ["feishu_bitable"],
-            "required": True,
-        },
-        {
-            "role": "send_waybills_sheet",
-            "allowed_kinds": ["feishu_sheet"],
-            "required": True,
-        },
-    ]
-    broker_operations: list[dict[str, object]] = [
-        {
-            "operation": "browser.invoke",
-            "action": "yunda.send_waybill.list_page",
-            "roles": ["account_id"],
-            "effect": "read",
-        },
-        {
-            "operation": "browser.invoke",
-            "action": "yunda.special_line.list_page",
-            "roles": ["account_id"],
-            "effect": "read",
-        },
-        {
-            "operation": "browser.invoke",
-            "action": "yunda.waybill.tracking_detail",
-            "roles": ["account_id"],
-            "effect": "read",
-        },
-        {
-            "operation": "browser.invoke",
-            "action": "yunda.waybill.original_data",
-            "roles": ["account_id"],
-            "effect": "read",
-        },
-        {
-            "operation": "browser.invoke",
-            "action": "yunda.send_waybill.renderer_detail",
-            "roles": ["account_id"],
-            "effect": "read",
-        },
-        {
-            "operation": "network.request",
-            "action": "feishu.bitable.replace_yunda_send_waybills_date",
-            "roles": ["send_waybills_bitable"],
-            "effect": "write",
-        },
-        {
-            "operation": "network.request",
-            "action": "feishu.sheet.replace_yunda_send_waybills",
-            "roles": ["send_waybills_sheet"],
-            "effect": "write",
-        },
-        {
-            "operation": "projection.invoke",
-            "action": "waybill.yunda.replace_date",
-            "roles": ["account_id"],
-            "effect": "write",
-        },
-    ]
-    manifest = _temporary_yunda_manifest(
-        plugin_id="sync_yunda_send_waybills",
-        resource_roles=resource_roles,
-        broker_operations=broker_operations,
-    )
-    account_bindings = {"account_id": ["yunda-account"]}
+    from agent.automation_plugins.connector_registry import ConnectorRegistry
+    from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
+    from agent.automation_plugins.yunda_connectors_v2 import build_yunda_connectors
+    from tests.service_v2_production_protocol_support import PackagedConnectorHost
+
     resource_bindings = {
         "send_waybills_bitable": "send-bitable-resource",
         "send_waybills_sheet": "send-sheet-resource",
     }
-    capability = _prepare_yunda_generation(
-        manifest=manifest,
-        tmp_path=tmp_path,
-        automation_id="yunda-send-instance",
-        account_bindings=account_bindings,
-        resource_bindings=resource_bindings,
-        resource_roles=resource_roles,
-        broker_operations=broker_operations,
-    )
     account_calls: list[str] = []
     primitive_calls: list[tuple[object, ...]] = []
 
@@ -2526,12 +2456,14 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
             "items": [
                 {
                     "Logistics_Id": "YD-1",
+                    "Mail_Date": "2026-08-15 09:00:00",
+                    "Sign_State": "已签收",
                     "Shipping_Methods": "231",
                     "Item_Total_Number": "1",
                     "Gross_Weight": "1.00",
                     "Settlement_Total_Number": "1.00",
                     "Volume": "0.001",
-                    "Special_Freight": "10.00",
+                    "Freight": "10.00",
                     "Created_Dot_Code": "56739382",
                 }
             ],
@@ -2583,9 +2515,12 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
         primitive_calls.append(
             ("renderer", descriptor["account_id"], bill_code, created_dot_code)
         )
-        return {"price": {"Total": "1.00"}}
+        return {"Logistics_Id": bill_code, "price": {"Total": "1.00"}}
 
     def resource_commit(resource_id, records, target_date, ensure_fields):
+        assert records[0]["录单运费"] == "1.00"
+        assert records[0]["运费"] == "10.00"
+        assert records[0]["status"] == "signed"
         primitive_calls.append(
             (
                 "resource",
@@ -2620,6 +2555,8 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
     handlers = build_first_party_core_handler_map(
         FirstPartyCoreHandlerPorts(
             describe_account=manager.require_authenticated_binding,
+            yunda_dispatch_read_page=lambda *_: pytest.fail("send invocation must not query dispatch"),
+            append_yunda_dispatch_bitable=lambda *_: pytest.fail("send invocation must not write dispatch"),
             yunda_send_read_page=send_page,
             yunda_special_line_read_page=special_page,
             yunda_tracking_detail_read=tracking,
@@ -2637,29 +2574,41 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
             "send-sheet-resource": "feishu_sheet",
         }
     )
-    raw, verified, leases = _execute_yunda_write_generation(
-        tmp_path=tmp_path,
-        capability=capability,
-        handlers=handlers,
-        manager=manager,
+    host = PackagedConnectorHost(
+        tmp_path,
+        "sync_yunda_send_waybills_v2",
+        ConnectorRegistry(build_yunda_connectors(handlers)),
+        CoreBrokerInvocationContext(
+            automation_id="yunda-send-instance",
+            plugin_version="2.1.0",
+            tool_name="sync_yunda_send_waybills_v2",
+            operation="service.invoke",
+            action="run",
+            role="__system__",
+            account_bindings={"yunda_send_source": ("yunda-account",)},
+            resource_bindings=resource_bindings,
+        ),
+        account_resolver=AccountManagerSessionResolver(manager),
         resource_resolver=resources,
-        arguments={
+    )
+    raw = host.execute(
+        {
             "target_date": "2026-08-15",
             "sync_sheet": True,
             "ensure_fields": True,
             "page_size": 200,
             "max_pages": 50,
-            "dry_run": False,
             "sql_only": False,
             "sync_sql": True,
         },
+        operation="run",
     )
-    assert raw["status"] == "SUCCESS"
+    verified = host.verified_outcome
+    assert raw["status"] == "SUCCESS", raw
     assert raw["data"]["fetched"] == 1
     assert raw["data"]["written"] == 1
     assert raw["data"]["sql_upserted"] == 1
     assert raw["data"]["sheet_rows"] == 1
-    assert raw.generation_verification.account_ids == ("yunda-account",)
     assert verified.accepted is True
     assert verified.code == "VERIFIED"
     assert set(account_calls) == {"yunda-account"}
@@ -2673,13 +2622,13 @@ def test_yunda_send_runs_router_to_write_verifier_with_exact_bindings(
         "projection",
         "resource",
     ]
-    assert resources.calls == [
+    assert resources.calls and set(resources.calls) == {
         ("send-bitable-resource", ("feishu_bitable",)),
         ("send-sheet-resource", ("feishu_sheet",)),
-    ]
-    assert len(raw["meta"]["evidence_refs"]) == 9
-    assert len(set(raw["meta"]["evidence_refs"])) == 9
-    assert leases.released == [RuntimeLeaseOutcome.VERIFYING]
-    assert len(leases.finalized) == 1
-    assert leases.finalized[0]["outcome"] == RuntimeLeaseOutcome.WRITE_VERIFIED
+    }
+    assert len(raw["meta"]["evidence_refs"]) == len(primitive_calls) == 8
+    assert len(set(raw["meta"]["evidence_refs"])) == 8
+    assert len(host.receipts) == 3
+    assert len(host.verification_settlements) == 1
+    assert host.verification_settlements[0]["outcome"] == RuntimeLeaseOutcome.WRITE_VERIFIED
     assert "yunda-account" not in json.dumps(raw, sort_keys=True)
