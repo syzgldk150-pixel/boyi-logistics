@@ -113,18 +113,19 @@ def _username(session: Any) -> str:
 
 
 def _export_params(session: Any, action: str) -> dict[str, str]:
-    # Match the original page's beforeSend cookie-to-query transport. Values
-    # stay inside the request and must never be projected or logged.
+    # The original page sends literal ssid=null; its scoped export cookie
+    # authenticates the request and must never be copied into the URL.
     cookies = getattr(session, "cookies", ())
     values = {
         cookie.value
         for cookie in cookies
-        if cookie.name == "cip_sessionid"
-        and (cookie.domain.lstrip(".") == "yunda56.com" or cookie.domain.lstrip(".") == "ky-export.yunda56.com")
+        if cookie.name == "ydky_rabbit_web_cip_sessionid"
+        and cookie.domain.lstrip(".") == "ky-export.yunda56.com"
+        and _text(cookie.value)
     }
     if len(values) != 1:
         raise TMSAuthStateError("AUTH_REQUIRED", "韵达消息中心会话未就绪，请重新登录。")
-    return {"actionId": action, "ssid": next(iter(values))}
+    return {"actionId": action, "ssid": "null"}
 
 
 def _export(session: Any, endpoint: str, action: str, data: dict[str, Any]) -> dict:

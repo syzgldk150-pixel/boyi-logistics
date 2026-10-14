@@ -226,6 +226,22 @@ class SessionPersistenceMixin:
             "pending_since": str(meta.get("pending_since") or ""),
             "expires_at": str(meta.get("expires_at") or ""),
         }
+        initialization = meta.get("query_session_initialization")
+        if isinstance(initialization, dict):
+            # Persist fixed diagnostics only, never upstream responses or auth data.
+            query_status = {}
+            for capability in ("yunda_report", "yunda_problem", "yunda_message", "yunda_work_order"):
+                result = initialization.get(capability)
+                if not isinstance(result, dict):
+                    continue
+                status, code = result.get("status"), result.get("code")
+                if (status, code) in (
+                    ("initialized", ""),
+                    ("unavailable", "AUTH_REQUIRED"),
+                    ("unavailable", "QUERY_PAGE_NOT_READY"),
+                ):
+                    query_status[capability] = {"status": status, "code": code}
+            payload["query_session_initialization"] = query_status
         if payload["status"] == "pending_code":
             for key in (
                 "captcha_image",

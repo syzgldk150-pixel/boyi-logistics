@@ -597,9 +597,11 @@ class ProviderSessionAdapterBase:
                              timeout=self._yunda_initialization_timeout(deadline))
             if self._is_yunda_sms_page(client_page) or self._is_yunda_login_page(client_page):
                 raise TMSAuthStateError("AUTH_REQUIRED", "韵达工单子系统尚未完成登录。")
+            app_link = client_page.get_by_text("快运工单系统", exact=True)
+            app_link.wait_for(state="visible", timeout=self._yunda_initialization_timeout(deadline))
             with client_page.expect_popup(timeout=self._yunda_initialization_timeout(deadline)) as popup:
-                client_page.get_by_text("快运工单系统", exact=True).click(
-                    timeout=self._yunda_initialization_timeout(deadline))
+                # Activate this application only; do not acknowledge client notices.
+                app_link.dispatch_event("click", timeout=self._yunda_initialization_timeout(deadline))
             work_order_page = popup.value
             work_order_page.locator("#app").wait_for(
                 state="attached", timeout=self._yunda_initialization_timeout(deadline))

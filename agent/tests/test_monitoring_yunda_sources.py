@@ -24,7 +24,7 @@ class Response:
 def session():
     result = Mock()
     result.cookies = requests.cookies.RequestsCookieJar()
-    result.cookies.set("cip_sessionid", "synthetic-session", domain=".yunda56.com", path="/")
+    result.cookies.set("ydky_rabbit_web_cip_sessionid", "synthetic-session", domain="ky-export.yunda56.com", path="/")
     return result
 
 
@@ -53,7 +53,10 @@ class YundaSourceTests(unittest.TestCase):
         self.assertTrue(call.args[0].endswith("/getAdviseReadByStatus.do"))
         condition = json.loads(call.kwargs["data"]["search_condition"])
         self.assertEqual({"user": "synthetic-user", "handleStatus": "0", "showModel": "1"}, condition)
-        self.assertEqual("synthetic-session", call.kwargs["params"]["ssid"])
+        self.assertEqual({"actionId": "kyimport_message_notice_info_urlSearchAdviseData", "ssid": "null"},
+                         call.kwargs["params"])
+        prepared_url = requests.Request("POST", call.args[0], params=call.kwargs["params"]).prepare().url
+        self.assertNotIn("synthetic-session", prepared_url)
         self.assertEqual(15, call.kwargs["timeout"])
         self.assertFalse(call.kwargs["allow_redirects"])
         self.assertNotIn("synthetic-session", str(result))
@@ -142,6 +145,9 @@ class YundaSourceTests(unittest.TestCase):
         categories = source.collect_categories(current)
 
         self.assertEqual("down", current.post.call_args_list[0].kwargs["data"]["sourceFlag"])
+        self.assertEqual({"actionId": "kyimport_message_notice_info_getTypes", "ssid": "null"},
+                         current.post.call_args_list[0].kwargs["params"])
+        self.assertNotIn("synthetic-session", str(current.post.call_args_list))
         self.assertEqual([5, 7, 11, 3, 0], [item["count"] for item in categories])
         self.assertTrue(all(not item["include_in_total"] for item in categories))
         self.assertEqual("pending_notifications", categories[1]["count_scope"])
@@ -253,12 +259,37 @@ class YundaSourceTests(unittest.TestCase):
 
     def test_conflicting_message_cookies_are_not_arbitrarily_chosen(self):
         current = session()
-        current.cookies.set("cip_sessionid", "synthetic-other", domain="ky-export.yunda56.com", path="/")
+        current.cookies.set("ydky_rabbit_web_cip_sessionid", "synthetic-other",
+                            domain="ky-export.yunda56.com", path="/ydky_rabbit_web")
         current.get.return_value = Response({"code": 200, "details": {"username": "synthetic-user"}})
         result = source.collect_items(current, "yunda:notifications", 1)
         self.assertEqual("auth_required", result["status"])
         self.assertNotIn("synthetic-other", str(result))
         current.post.assert_not_called()
+
+    def test_wrong_name_domain_or_empty_export_cookie_is_auth_required(self):
+        for name, domain, value in (
+            ("cip_sessionid", "ky-export.yunda56.com", "synthetic-session"),
+            ("ydky_rabbit_web_cip_sessionid", "ky-client.yunda56.com", "synthetic-session"),
+            ("ydky_rabbit_web_cip_sessionid", ".yunda56.com", "synthetic-session"),
+            ("ydky_rabbit_web_cip_sessionid", "ky-export.yunda56.com", ""),
+        ):
+            with self.subTest(name=name, domain=domain, empty=not value):
+                current = session()
+                current.cookies.clear()
+                current.cookies.set(name, value, domain=domain, path="/")
+                current.get.return_value = Response({"code": 200, "details": {"username": "synthetic-user"}})
+                result = source.collect_items(current, "yunda:notifications", 1)
+                self.assertEqual("auth_required", result["status"])
+                current.post.assert_not_called()
+
+    def test_export_cookie_does_not_override_business_auth_failure(self):
+        current = session()
+        current.get.return_value = Response({"code": 200, "details": {"username": "synthetic-user"}})
+        current.post.return_value = Response({"errorCode": 1001, "rows": [], "total": 0})
+        result = source.collect_items(current, "yunda:notifications", 1)
+        self.assertEqual("auth_required", result["status"])
+        self.assertIsNone(result["total"])
 
     def test_missing_work_order_body_does_not_fabricate_content(self):
         current = session()

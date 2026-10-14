@@ -15,6 +15,8 @@
 
 融辉查询通过 `POST /dataQuery/findAllByCallId` 或 `findPageByCallId` 执行只读查询，工单分页使用 `pageIndex/pageSize`。韵达消息中心使用 `/ydky_rabbit_web/actions/message/*.do`：`getTypes` 读取顶层 `rows` 分类；`getNoticeReadByStatus` 按字符串 `readStatus="0"/showModel="0"` 查询未读公告；`getAdviseReadByStatus` 按字符串 `handleStatus="0"/showModel="1"` 查询待处理通知，不能将筛选值改成数字零。消息查询中的 `user` 只取当前客户端 `details.username`，不由浏览器提交。CSSP 分页使用 `offset/limit`。
 
+消息原页请求的查询参数为 `actionId` 和字面字符串 `ssid="null"`。实际会话由 `ky-export.yunda56.com` 域的 `ydky_rabbit_web_cip_sessionid` Cookie 承载；后台要求该 Cookie 有唯一非空值，缺失或冲突明确返回登录失效。不能以通用 `cip_sessionid` 替代，也不能把实际会话值写入 URL；来源接口的业务认证失败仍按实际响应处理。
+
 分类汇总、通知、公告和工单的计数范围可能重叠，不能把它们重复相加。只有明确标记为可合计的独立来源参与总量；无法确认的总量和失败来源数量为 JSON `null`，页面显示“—”，真实成功空列表才显示零。融辉两个待办状态分开读取；已完结历史不计待办。融辉沿用原系统登记时间分页，仅在当前页内按最新处理时间排序，不保证全局最新回复置顶。韵达仅展示 `getTypes` 顶层分类，不展开字段形状不同且可能复用类型编号的 `chidList`；通知、公告、收到工单和催单待回复支持正文分页，其他分类仅显示原系统计数并提供原系统入口。
 
 ## 接口与账号边界
@@ -27,7 +29,9 @@
 
 ## 会话、刷新与失败
 
-韵达登录继续先建立寄件会话，再独立初始化报表、问题件、待办消息与 CSSP。消息页使用实际 iframe 的 `input#notice_readStatus` 确认就绪。CSSP 通过同一浏览器 context 中“快运工单系统”应用入口打开临时页面，只有 `getUser` 明确返回成功及 `User.userId` 才记为就绪；临时页面关闭后，既有保存步骤统一保存会话。四个可选来源各最多 10 秒、共享 40 秒预算，并受现有 staged 登录总期限约束；单个子系统失败不清除已建立的寄件登录态。
+韵达登录继续先建立寄件会话，再独立初始化报表、问题件、待办消息与 CSSP。消息页以实际 iframe 中隐藏的 `input#notice_readStatus` 已附加到 DOM 确认页面加载，消息认证仍由实际接口响应判断。CSSP 在同一浏览器 context 的客户端首页等待精确“快运工单系统”应用链接可见，再向该链接派发 `click` 事件打开临时页面；不点击或确认遮挡鼠标的公告、资料填写等业务提醒。只有 `getUser` 明确返回成功及 `User.userId` 才记为就绪；临时页面关闭后，既有保存步骤统一保存会话。四个可选来源各最多 10 秒、共享 40 秒预算，并受现有 staged 登录总期限约束；单个子系统失败不清除已建立的寄件登录态。
+
+`query_session_initialization` 只持久化上述四个子系统的固定 `status/code`，正常账号状态刷新保留，退出登录时清除；不保存任意原页响应或认证数据。
 
 升级后应在后台韵达账号管理中重新登录一次，以初始化新增子系统会话。已有会话缺少消息/CSSP Cookie 时明确显示该来源不可用，不用其他账号或旧成功值掩盖失败。凭据和 Cookie 只由现有 SessionBroker 管理，消息模块不保存凭据，不将正文写入数据库或运行文件。
 

@@ -26,14 +26,22 @@ def browser_pages(payload):
     return page, client, work_order
 
 
-def test_cssp_enters_client_app_and_verifies_real_user_before_initializing(broker):
+def test_cssp_activates_visible_app_without_acknowledging_client_notices(broker):
     page, client, work_order = browser_pages({"code": 0, "User": {"userId": "synthetic-user"}})
     with (patch.object(broker, "_is_yunda_sms_page", return_value=False),
           patch.object(broker, "_is_yunda_login_page", return_value=False)):
         broker._initialize_yunda_work_order_session_in_browser_locked(page, deadline=time.monotonic() + 10)
     assert client.goto.call_args.args[0] == YUNDA_CLIENT_SYSTEM_HOME_URL
     client.get_by_text.assert_called_once_with("快运工单系统", exact=True)
-    client.get_by_text.return_value.click.assert_called_once()
+    app_link = client.get_by_text.return_value
+    assert [call[0] for call in app_link.method_calls] == ["wait_for", "dispatch_event"]
+    assert app_link.wait_for.call_args.kwargs["state"] == "visible"
+    assert app_link.dispatch_event.call_args.args == ("click",)
+    assert all(0 < call.kwargs["timeout"] <= 10_000 for call in app_link.method_calls)
+    client.expect_popup.assert_called_once()
+    client.locator.assert_not_called()
+    client.get_by_role.assert_not_called()
+    client.evaluate.assert_not_called()
     work_order.locator.assert_called_once_with("#app")
     assert work_order.request.get.call_args.args[0] == YUNDA_CSSP_USER_URL
     assert 0 < work_order.request.get.call_args.kwargs["timeout"] <= 10_000
@@ -60,13 +68,27 @@ def test_cssp_empty_or_rejected_identity_is_not_initialized(broker, payload):
 
 def test_cssp_popup_timeout_closes_only_its_temporary_client_page(broker):
     page, client, _work_order = browser_pages(None)
-    client.get_by_text.return_value.click.side_effect = TimeoutError()
+    client.get_by_text.return_value.dispatch_event.side_effect = TimeoutError()
     with (patch.object(broker, "_is_yunda_sms_page", return_value=False),
           patch.object(broker, "_is_yunda_login_page", return_value=False),
           pytest.raises(TimeoutError)):
         broker._initialize_yunda_work_order_session_in_browser_locked(page, deadline=time.monotonic() + 10)
     client.close.assert_called_once()
     page.close.assert_not_called()
+
+
+def test_cssp_invisible_app_is_not_activated(broker):
+    page, client, _work_order = browser_pages(None)
+    app_link = client.get_by_text.return_value
+    app_link.wait_for.side_effect = TimeoutError()
+    with (patch.object(broker, "_is_yunda_sms_page", return_value=False),
+          patch.object(broker, "_is_yunda_login_page", return_value=False),
+          pytest.raises(TimeoutError)):
+        broker._initialize_yunda_work_order_session_in_browser_locked(page, deadline=time.monotonic() + 10)
+    client.expect_popup.assert_not_called()
+    app_link.dispatch_event.assert_not_called()
+    app_link.click.assert_not_called()
+    client.close.assert_called_once()
 
 
 def test_expired_initialization_budget_never_opens_another_page(broker):
@@ -98,3 +120,62 @@ def test_message_timeout_does_not_block_cssp_initialization(broker):
     assert result["yunda_message"] == {"status": "unavailable", "code": "QUERY_PAGE_NOT_READY"}
     assert result["yunda_work_order"]["status"] == "initialized"
     initialize_cssp.assert_called_once()
+
+
+def test_initialization_diagnostics_survive_persistence_and_status_refresh(broker, tmp_path):
+    expected = {
+        "yunda_report": {"status": "initialized", "code": ""},
+        "yunda_problem": {"status": "unavailable", "code": "AUTH_REQUIRED"},
+        "yunda_message": {"status": "unavailable", "code": "QUERY_PAGE_NOT_READY"},
+        "yunda_work_order": {"status": "initialized", "code": ""},
+    }
+    storage = {"cookies": [], "origins": []}
+
+    def save_storage(**_kwargs):
+        broker._state_store.write_dict(broker._storage_state_path, storage)
+        return storage
+
+    context = Mock()
+    context.storage_state.side_effect = save_storage
+    with (patch.object(broker, "_ensure_yunda_inms_session_in_browser_locked"),
+          patch.object(broker, "_initialize_yunda_query_sessions_in_browser_locked", return_value=expected)):
+        result = broker._persist_storage_state_locked(context, Mock())
+    assert result["query_session_initialization"] == expected
+
+    reloaded = SessionBroker(profile_name="yunda", login_mode="yunda_password", state_dir_override=tmp_path)
+    assert reloaded._load_meta()["query_session_initialization"] == expected
+    with (patch.object(reloaded, "_session_from_saved_state_locked", return_value=Mock()),
+          patch.object(reloaded, "_validate_capability_once")):
+        refreshed = reloaded._validate(force=True)
+    assert refreshed["status"] == "authenticated"
+    assert refreshed["last_validation_at"]
+    assert reloaded._load_meta()["query_session_initialization"] == expected
+    assert reloaded._read_meta_snapshot()["query_session_initialization"] == expected
+
+    reloaded.clear()
+    assert "query_session_initialization" not in reloaded._load_meta()
+
+
+@pytest.mark.parametrize("invalid_result", [
+    {"status": "synthetic-private-status", "code": ""},
+    {"status": "unavailable", "code": "synthetic-private-code"},
+    {"status": "initialized", "code": "AUTH_REQUIRED"},
+    {"status": "unavailable", "code": {"response": "synthetic-private-data"}},
+    "synthetic-private-data",
+])
+def test_initialization_diagnostics_only_persist_known_status_and_code(broker, invalid_result):
+    broker._save_meta({
+        "status": "authenticated",
+        "query_session_initialization": {
+            "yunda_message": {
+                "status": "initialized", "code": "", "response": {"token": "synthetic-private-data"},
+            },
+            "yunda_work_order": invalid_result,
+            "unknown_source": {"status": "initialized", "code": ""},
+        },
+        "response": "synthetic-private-data",
+    })
+    saved = broker._load_meta()
+    assert saved["query_session_initialization"] == {"yunda_message": {"status": "initialized", "code": ""}}
+    assert "response" not in saved
+    assert "synthetic-private" not in broker._meta_path.read_text(encoding="utf-8")
