@@ -35,6 +35,7 @@ _FIELDS = {
     "收件地址": "测试地址",
     "寄件人": "寄件人",
     "寄件手机": "13000000000",
+    "寄件地址": "测试寄件地址",
     "收货人": "收货人",
     "收货电话": "13100000000",
     "货物名称": "配件",
@@ -42,7 +43,12 @@ _FIELDS = {
     "派送方式": "送货",
     "件数": 2,
     "实际重量": "10.50",
-    "录单金额": "12.50",
+    "计费重量": "11",
+    "录单运费": "12.50",
+    "运费": "8.25",
+    "代收货款": "7.50",
+    "保价金额": 100,
+    "需要回单": "是",
     "回单号": "",
     "备注": "测试",
     "支付类型": "现付",
@@ -60,18 +66,23 @@ _PROJECTION = {
     "receiver_phone": "13100000000",
     "sender_name": "寄件人",
     "sender_phone": "13000000000",
+    "sender_address": "测试寄件地址",
     "goods_name_lines": "配件",
     "package_type_lines": "纸箱",
     "quantity_lines": "2",
     "weight_volume": "实际重量 10.50",
     "delivery_method": "送货",
-    "freight_fee": "12.50",
+    "recorded_cost": "12.50",
+    "freight_fee": "8.25",
     "pickup_fee": "",
     "delivery_fee": "",
     "transfer_fee": "",
     "payment_method": "现付",
-    "insurance_amount": "",
-    "cod_amount": "3.40",
+    "insurance_amount": "100",
+    "cod_amount": "7.50",
+    "to_pay_amount": "3.40",
+    "receipt_required": "1",
+    "receipt_number": "",
     "remark": "测试",
     "scan_status": "签收扫描",
     "status": "signed",
@@ -189,6 +200,41 @@ def test_bitable_write_fails_closed_when_fresh_fields_do_not_match():
             [{"fields": deepcopy(_FIELDS)}],
         )
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_bitable_update_keeps_record_identity_and_non_managed_values():
+    rows = [{"record_id": "keep-id", "fields": {
+        **deepcopy(_FIELDS), "录单运费": "old-invalid-value",
+        "人工备注": "保留", "附件": ["synthetic-attachment"], "关联": ["synthetic-link"],
+    }}]
+
+    def feishu(action, params):
+        if action == "list_records":
+            return {"ok": True, "items": deepcopy(rows)}
+        assert action == "write_records"
+        assert params["records"] == [{"record_id": "keep-id", "fields": _FIELDS}]
+        rows[0]["fields"].update(params["records"][0]["fields"])
+        return {"ok": True, "written": 1}
+
+    ports = build_production_daily_send_ports(
+        account_manager=_AccountManager(), resource_loader=_resource_loader, feishu_operation=feishu)
+    assert ports.bitable_write("exact-resource", [{"record_id": "keep-id", "fields": deepcopy(_FIELDS)}]) == {
+        "ok": True, "verified": True, "written": 1}
+    assert len(rows) == 1 and rows[0]["record_id"] == "keep-id"
+    assert rows[0]["fields"]["人工备注"] == "保留"
+    assert rows[0]["fields"]["附件"] == ["synthetic-attachment"]
+    assert rows[0]["fields"]["关联"] == ["synthetic-link"]
+
+
+def test_bitable_update_refuses_a_changed_waybill_before_writing():
+    def feishu(action, _params):
+        assert action == "list_records"
+        return {"ok": True, "items": [{"record_id": "keep-id", "fields": {**_FIELDS, "运单编号": "R-OTHER"}}]}
+
+    ports = build_production_daily_send_ports(
+        account_manager=_AccountManager(), resource_loader=_resource_loader, feishu_operation=feishu)
+    with pytest.raises(PluginExecutionError, match="identity changed"):
+        ports.bitable_write("exact-resource", [{"record_id": "keep-id", "fields": deepcopy(_FIELDS)}])
 
 
 @pytest.mark.parametrize("mutation", ["write", "delete"])

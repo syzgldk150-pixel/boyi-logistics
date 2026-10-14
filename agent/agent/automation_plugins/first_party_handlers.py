@@ -1477,8 +1477,17 @@ class _FirstPartyCoreHandlers:
         ensure_fields = values.get("ensure_fields", True)
         if not isinstance(ensure_fields, bool):
             raise _error("ensure_fields is invalid", "BROKER_ARGUMENT_INVALID")
+        raw_records = values.get("records")
+        if identity_field == "运单编号":
+            fields = (*fields, "scan_status", "status")
+            if isinstance(raw_records, list):
+                raw_records = [
+                    {**row, "scan_status": row.get("scan_status", "")}
+                    if isinstance(row, Mapping) else row
+                    for row in raw_records
+                ]
         records = _strict_record_list(
-            values.get("records"),
+            raw_records,
             fields=fields,
             label="Yunda sink",
         )
@@ -1488,8 +1497,11 @@ class _FirstPartyCoreHandlers:
             if identity in identities:
                 raise _error("Yunda sink contains duplicate identities", "BROKER_ARGUMENT_INVALID")
             identities.add(identity)
-            if identity_field == "5.14编号" and record.get("日期") != target_date:
-                raise _error("Yunda send record date drifted", "BROKER_ARGUMENT_INVALID")
+            if identity_field == "运单编号":
+                if record.get("发件日期") != target_date:
+                    raise _error("Yunda send record date drifted", "BROKER_ARGUMENT_INVALID")
+                if record.get("status") not in {"in_transit", "signed"}:
+                    raise _error("Yunda send signing status is invalid", "BROKER_ARGUMENT_INVALID")
         return records, target_date, ensure_fields
 
     def _yunda_resource_commit(
@@ -1581,7 +1593,7 @@ class _FirstPartyCoreHandlers:
             "readback_count": len(records),
             "readback_sha256": readback_sha256,
         }
-        for key in ("written", "deleted", "created_fields", "skipped"):
+        for key in ("written", "deleted", "created_fields", "skipped", "retained_unmatched"):
             value = raw.get(key)
             if isinstance(value, (bool, int)):
                 proof[key] = value
@@ -1621,7 +1633,7 @@ class _FirstPartyCoreHandlers:
             tool_name=_YUNDA_SEND_TOOL,
             role=_YUNDA_SEND_BITABLE_ROLE,
             fields=_YUNDA_SEND_FIELDS,
-            identity_field="5.14编号",
+            identity_field="运单编号",
             port=self._ports.replace_yunda_send_bitable,
             label="yunda-send-bitable-replace-date",
         )
@@ -1637,7 +1649,7 @@ class _FirstPartyCoreHandlers:
             tool_name=_YUNDA_SEND_TOOL,
             role=_YUNDA_SEND_SHEET_ROLE,
             fields=_YUNDA_SEND_FIELDS,
-            identity_field="5.14编号",
+            identity_field="运单编号",
             port=self._ports.replace_yunda_send_sheet,
             label="yunda-send-sheet-replace",
         )
@@ -1655,7 +1667,7 @@ class _FirstPartyCoreHandlers:
         records, target_date, _ensure_fields = self._yunda_records(
             arguments,
             fields=_YUNDA_SEND_FIELDS,
-            identity_field="5.14编号",
+            identity_field="运单编号",
         )
         self._mark_write_started(context)
         try:

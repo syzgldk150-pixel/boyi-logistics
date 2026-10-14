@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+
+from yunda_send_fields import FIELD_NAMES as _FIELDS, delivery_method as _delivery_method, normalize_record as _normalize_record
 
 from boyi_plugin_result import (
     broker_evidence_ref,
@@ -37,34 +38,6 @@ _ALLOWED_ARGUMENTS = frozenset(
         "sync_sql",
     }
 )
-_FIELDS = (
-    "5.14编号",
-    "目的网点",
-    "收件区/县",
-    "收件地址",
-    "寄件人",
-    "寄件手机",
-    "收货人",
-    "收货电话",
-    "货物名称",
-    "包装类型",
-    "派送方式",
-    "件数",
-    "实际重量",
-    "现付",
-    "月结",
-    "提付",
-    "中转运费",
-    "回单号",
-    "备注",
-    "结算重量",
-    "体积",
-    "支付类型",
-    "体积重",
-    "到付款",
-    "日期",
-)
-
 
 def _object(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
@@ -133,18 +106,6 @@ def _first(*values: object) -> object:
     return ""
 
 
-def _decimal_text(value: object) -> str:
-    text = _text(value).replace(",", "")
-    if not text or text == "*":
-        return ""
-    try:
-        number = Decimal(text)
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("Yunda send financial value is invalid") from exc
-    if not number.is_finite():
-        raise ValueError("Yunda send financial value is invalid")
-    return text
-
 
 def _collect_source(
     *,
@@ -195,10 +156,14 @@ def _merge_sources(
     merged: list[tuple[dict[str, object], str]] = []
     seen: dict[str, str] = {}
     for source, rows in ((_SOURCE_SEND, send_rows), (_SOURCE_SPECIAL, special_rows)):
+        source_seen: set[str] = set()
         for row in rows:
             bill_code = _text(row.get("Logistics_Id"))
             if not bill_code:
                 raise ValueError("Yunda send source row has no waybill identity")
+            if bill_code in source_seen:
+                raise ValueError("Yunda send source contains duplicate waybills")
+            source_seen.add(bill_code)
             previous_source = seen.get(bill_code)
             if previous_source == _SOURCE_SEND and source == _SOURCE_SPECIAL:
                 continue
@@ -235,134 +200,6 @@ def _detail(
         broker_evidence_ref(result, action),
     )
 
-
-def _delivery_method(row: Mapping[str, object], detail: Mapping[str, object]) -> str:
-    raw = _text(_first(row.get("Shipping_Methods"), detail.get("Shipping_Methods")))
-    if raw == "231":
-        return "送货进仓"
-    if raw == "179":
-        return "送货上楼"
-    if raw in {"自提", "不上楼", "送货进仓", "送货上楼"}:
-        return raw
-    fallback = _text(
-        _first(
-            row.get("Pickup_Method"),
-            detail.get("Pickup_Method"),
-            row.get("Shipping_Type_Name"),
-        )
-    )
-    if not fallback:
-        raise ValueError("Yunda send delivery method is missing")
-    return fallback
-
-
-def _normalize_record(
-    row: Mapping[str, object],
-    detail: Mapping[str, object],
-    original: Mapping[str, object],
-    renderer: Mapping[str, object],
-    *,
-    target_date: str,
-) -> dict[str, object]:
-    bill_code = _text(_first(row.get("Logistics_Id"), detail.get("Logistics_Id")))
-    if not bill_code:
-        raise ValueError("Yunda send detail changed the waybill identity")
-    payment_type = _text(_first(row.get("Payment_Type"), detail.get("Payment_Type")))
-    freight = _decimal_text(
-        _first(row.get("Special_Freight"), row.get("Freight"), detail.get("Freight"))
-    )
-    renderer_price = renderer.get("price")
-    price = dict(renderer_price) if isinstance(renderer_price, Mapping) else {}
-    record = {
-        "5.14编号": bill_code,
-        "目的网点": _text(
-            _first(
-                row.get("Buyer_Destination_Dot_Name"),
-                detail.get("Buyer_Destination_Dot_Code"),
-            )
-        ),
-        "收件区/县": _text(
-            _first(
-                row.get("Buyer_Area_Name"),
-                row.get("Buyer_Area"),
-                detail.get("Buyer_Area_Name"),
-            )
-        ),
-        "收件地址": _text(
-            _first(
-                original.get("Buyer_Address"),
-                row.get("Buyer_Address"),
-                detail.get("Buyer_Address"),
-            )
-        ),
-        "寄件人": _text(
-            _first(
-                original.get("Sender_Name"),
-                row.get("Sender_Name"),
-                detail.get("Sender_Name"),
-            )
-        ),
-        "寄件手机": _text(
-            _first(
-                original.get("Sender_Mobile"),
-                row.get("Sender_Mobile"),
-                detail.get("Sender_Mobile"),
-                original.get("Sender_Phone"),
-                row.get("Sender_Phone"),
-                detail.get("Sender_Phone"),
-            )
-        ),
-        "收货人": _text(
-            _first(
-                original.get("Buyer_Name"),
-                row.get("Buyer_Name"),
-                detail.get("Buyer_Name"),
-            )
-        ),
-        "收货电话": _text(
-            _first(
-                original.get("Buyer_Mobile"),
-                row.get("Buyer_Mobile"),
-                detail.get("Buyer_Mobile"),
-                original.get("Buyer_Phone"),
-                row.get("Buyer_Phone"),
-                detail.get("Buyer_Phone"),
-            )
-        ),
-        "货物名称": _text(_first(row.get("Item_Name"), detail.get("Item_Name"))),
-        "包装类型": _text(_first(row.get("Packing_Type"), detail.get("Packing_Type"))),
-        "派送方式": _delivery_method(row, detail),
-        "件数": _text(_first(row.get("Item_Total_Number"), detail.get("Item_Total_Number"))),
-        "实际重量": _text(_first(row.get("Gross_Weight"), detail.get("Gross_Weight"))),
-        "现付": freight if payment_type == "现金" else "",
-        "月结": freight if payment_type == "月结" else "",
-        "提付": freight if payment_type == "到付" else "",
-        "中转运费": _decimal_text(
-            _first(
-                price.get("Total"),
-                row.get("Total_Cost_Money"),
-                detail.get("Total_Cost_Money"),
-            )
-        ),
-        "回单号": _text(
-            _first(row.get("Return_Logistics_Id"), detail.get("Return_Logistics_Id"))
-        ),
-        "备注": _text(_first(row.get("Remarks"), detail.get("Remarks"))),
-        "结算重量": _text(
-            _first(
-                row.get("Settlement_Total_Number"),
-                detail.get("Settlement_Total_Number"),
-            )
-        ),
-        "体积": _text(_first(row.get("Volume"), detail.get("Volume"))),
-        "支付类型": payment_type,
-        "体积重": _text(_first(detail.get("Extend_Field1"), row.get("Extend_Field1"))),
-        "到付款": _text(_first(detail.get("COD"), row.get("COD"))),
-        "日期": target_date,
-    }
-    if tuple(record) != _FIELDS:
-        raise ValueError("Yunda send normalized field order drifted")
-    return record
 
 
 def _collect_date(
@@ -420,6 +257,7 @@ def _collect_date(
                 original,
                 renderer,
                 target_date=target_date,
+                source=source,
             )
         )
     return (
@@ -518,6 +356,7 @@ def run_action(
         "fetched": 0,
         "written": 0,
         "deleted": 0,
+        "retained_unmatched": 0,
         "sql_upserted": 0,
         "sql_deleted_stale": 0,
         "sheet_rows": 0,
@@ -537,6 +376,7 @@ def run_action(
             "source_evidence_count": page_evidence_count,
             "written": 0,
             "deleted": 0,
+            "retained_unmatched": 0,
             "sql_upserted": 0,
             "sql_deleted_stale": 0,
             "sheet_rows": 0,
@@ -562,6 +402,7 @@ def run_action(
                 )
                 summary["written"] = int(bitable.get("written") or 0)
                 summary["deleted"] = int(bitable.get("deleted") or 0)
+                summary["retained_unmatched"] = int(bitable.get("retained_unmatched") or 0)
                 if summary["written"] != len(records):
                     raise ValueError("Yunda send Bitable write count changed")
             if flags["sync_sql"]:
@@ -619,7 +460,7 @@ def run_action(
         and totals["fetched"] == 0
         and (not flags["sql_only"] or flags["sync_sql"])
     ):
-        execution_result = "no_data_cleared"
+        execution_result = "no_data_existing_rows_retained"
     elif flags["dry_run"]:
         execution_result = "dry_run_complete"
     else:

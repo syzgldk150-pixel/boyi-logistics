@@ -24,6 +24,7 @@ from agent.runtime_config import load_agent_environment
 from agent.workflow_resource_store import upsert_workflow_resource
 from tools.feishu_cli_tool import feishu_operation
 from tools.yunda_send_waybills_sync_tool import FIELD_NAMES
+from tools.phase7_sync_common import _number_to_column
 
 
 RESOURCE_KEY = "phase7.yunda_send_waybills_sheet"
@@ -90,7 +91,7 @@ def _read_headers(
         "read_sheet",
         {
             "spreadsheet_token": str(config.get("spreadsheet_token") or "").strip(),
-            "range": f"{sheet_id}!A1:Y1",
+            "range": f"{sheet_id}!A1:{_number_to_column(len(FIELD_NAMES))}1",
             "sheet_id": sheet_id,
             "value_render_option": "FormattedValue",
         },
@@ -113,7 +114,7 @@ def _write_headers(
         "write_sheet",
         {
             "spreadsheet_token": str(config.get("spreadsheet_token") or "").strip(),
-            "range": f"{sheet_id}!A1:Y1",
+            "range": f"{sheet_id}!A1:{_number_to_column(len(FIELD_NAMES))}1",
             "sheet_id": sheet_id,
             "values": [list(FIELD_NAMES)],
         },

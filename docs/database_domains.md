@@ -2,7 +2,7 @@
 module: database
 type: architecture
 status: active
-updated: 2026-10-13
+updated: 2026-10-14
 ---
 
 # 运行、运单回单、财务分库
@@ -44,6 +44,7 @@ updated: 2026-10-13
 `waybill_db._migration_056_boyi_handling_fees`，该备份表不接入运行时视图，保留到业务验收完成。
 迁移 `057_boyi_waybill_edit_logs.sql` 在 `waybill_db` 新建 `boyi_waybill_edit_logs`，保存博益开单修改的运单身份、唯一请求 ID、操作人、字段前后值和修改时间。迁移执行后在 `agent_db` 创建同名 INVOKER 视图；业务更新与修改记录在同一事务提交，不改写旧迁移。发布前分别核验实际 Console 账号对视图和实体表的 SELECT、INSERT 权限，以及博益运单的 UPDATE 权限；不得用 Agent 的权限检查代替。
 迁移 `059_boyi_waybill_platform_link.sql` 给 `waybill_db.boyi_waybills` 增加可空的绑定平台与平台运单号两列，执行后重建视图；运行库 `boyi_waybills` 视图随之投影，`waybills` 联合视图不含这两列。
+迁移 `060_platform_waybill_fields.sql` 给融辉、韵达实体表增加 `recorded_cost`、`to_pay_amount`、`sender_address`、`receipt_required`、`receipt_number`，重建运行视图并使旧平台覆盖证明失效。费用只由原页重新采集填入；Boyi 行的新平台专用费用与回单编号在联合视图中为 NULL，Boyi 已有地址和回单标记仍用原列。原始运费、代收货款、到付款和录单成本独立保存，字段来源见[寄件字段与金额](direct_waybill_query.md#寄件字段与金额2026-10-14)。
 
 同实例迁移或灾备必须覆盖三个库、跨库外键和视图，单独导出 `agent_db` 不再包含业务实体数据。
 

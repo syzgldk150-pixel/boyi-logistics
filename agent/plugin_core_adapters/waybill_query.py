@@ -197,14 +197,14 @@ def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Map
             raise ValueError("WAYBILL_SOURCE_SCOPE_CHANGED")
         if scope.source == "ronghui":
             from agent.tms_runtime.scripts import Send_order
-            from tools.send_order_sync_tool import _console_waybill_records, _filter_receipt_like_rows, _date_from_value
+            from tools.send_order_sync_tool import _console_waybill_records, _date_from_value
             session = Send_order.TMSAuth(profile=profile).login_and_get_session()
             if session is None:
                 raise ValueError("WAYBILL_SOURCE_LOGIN_REQUIRED")
             raw, _total = collect_ronghui_day(session, day)
             if any(_date_from_value(row.get("REGISTER_DATE")) != day.isoformat() for row in raw):
                 raise ValueError("WAYBILL_SOURCE_DATE_MISMATCH")
-            normalized, _excluded = _filter_receipt_like_rows([Send_order.normalize_record(row) for row in raw])
+            normalized = Send_order.normalize_records({"data": raw})
             records = _console_waybill_records(normalized, target_date=day)
         else:
             from agent.tms_runtime.scripts import yunda_send_waybills as yunda

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,6 +12,9 @@ from agent.tms_runtime.session_broker import get_session_broker
 
 from agent.tms_runtime.scripts.yunda_original_data import ORIGINAL_DATA_URL, fetch_yunda_original_data
 from shared.waybill_pagination import authoritative_total, collect_complete_pages
+from service_v2_plugins.sync_yunda_send_waybills_v2.payload.yunda_send_fields import (
+    FIELD_NAMES, delivery_method as _delivery_method, normalize_record,
+)
 
 
 YUNDA_INMS_ORIGIN = "https://kyinms.yunda56.com"
@@ -35,38 +37,10 @@ MAIL_LIST_URL = f"{YUNDA_INMS_ORIGIN}/ky_inms/public/index.php/system/mail/list.
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_PAGE_SIZE = 200
 DEFAULT_MAX_PAGES = 50
-DATE_FIELD_NAME = "日期"
+DATE_FIELD_NAME = "发件日期"
 SOURCE_SEND_WAYBILL = "send_waybill"
 SOURCE_SPECIAL_LINE = "special_line"
 INTERNAL_SOURCE_FIELD = "_sync_source"
-
-FIELD_NAMES = (
-    "5.14编号",
-    "目的网点",
-    "收件区/县",
-    "收件地址",
-    "寄件人",
-    "寄件手机",
-    "收货人",
-    "收货电话",
-    "货物名称",
-    "包装类型",
-    "派送方式",
-    "件数",
-    "实际重量",
-    "现付",
-    "月结",
-    "提付",
-    "中转运费",
-    "回单号",
-    "备注",
-    "结算重量",
-    "体积",
-    "支付类型",
-    "体积重",
-    "到付款",
-    DATE_FIELD_NAME,
-)
 
 
 def _target_date(params: dict[str, Any]) -> dt.date:
@@ -96,16 +70,6 @@ def _first(*values: Any) -> Any:
             return value
     return ""
 
-
-def _decimal_text_or_blank(value: Any) -> str:
-    text = _clean_str(value).replace(",", "")
-    if not text or text == "*":
-        return ""
-    try:
-        Decimal(text)
-    except (InvalidOperation, ValueError):
-        return ""
-    return text
 
 
 def _auth_if_login_response(response: Any, body: str) -> None:
@@ -375,12 +339,15 @@ def _merge_rows_by_waybill(*row_groups: list[dict[str, Any]]) -> list[dict[str, 
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
     for rows in row_groups:
+        source_seen: set[str] = set()
         for row in rows:
             bill_code = _clean_str(row.get("Logistics_Id"))
-            if not bill_code or bill_code in seen:
-                continue
-            seen.add(bill_code)
-            merged.append(row)
+            if not bill_code or bill_code in source_seen:
+                raise ValueError("WAYBILL_PAGE_IDENTITY_MISSING_OR_DUPLICATED")
+            source_seen.add(bill_code)
+            if bill_code not in seen:
+                seen.add(bill_code)
+                merged.append(row)
     return merged
 
 
@@ -405,7 +372,13 @@ def _extract_logistics(payload: Any, bill_code: str) -> dict[str, Any]:
     logistics = matches[0]["logistics"]
     if _clean_str(logistics.get("Logistics_Id")) != bill_code:
         raise ValueError("WAYBILL_EXACT_QUERY_IDENTITY_MISMATCH")
-    return logistics
+    smi = matches[0].get("smi")
+    info = smi.get("info") if isinstance(smi, dict) else None
+    scan_flags = info.get("scanFlag") if isinstance(info, dict) else None
+    result = {key: value for key, value in logistics.items() if key != "Scan_Flag_Keys"}
+    if isinstance(scan_flags, dict):
+        result["Scan_Flag_Keys"] = list(scan_flags)
+    return result
 
 
 def fetch_waybill_detail(session: Any, bill_code: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -418,7 +391,7 @@ def fetch_waybill_detail(session: Any, bill_code: str, params: dict[str, Any]) -
     }
     response = session.post(
         MAIL_LIST_URL,
-        data={"Ids[]": bill_code, "bringSub": "true", "page": 1, "history": "now"},
+        data={"Ids[]": bill_code, "bringSub": "true", "page": 1, "history": "extra"},
         headers=headers,
         allow_redirects=False,
         timeout=_coerce_int(params.get("request_timeout_sec"), 30),
@@ -458,83 +431,6 @@ def fetch_send_waybill_renderer(
     return payload if isinstance(payload, dict) else {}
 
 
-def _delivery_method(row: dict[str, Any], detail: dict[str, Any]) -> str:
-    raw = _clean_str(_first(row.get("Shipping_Methods"), detail.get("Shipping_Methods")))
-    if raw == "231":
-        return "送货进仓"
-    if raw == "179":
-        return "送货上楼"
-    if raw in {"自提", "不上楼", "送货进仓", "送货上楼"}:
-        return raw
-    fallback = _clean_str(_first(row.get("Pickup_Method"), detail.get("Pickup_Method"), row.get("Shipping_Type_Name")))
-    return fallback or "不上楼"
-
-
-def normalize_record(
-    row: dict[str, Any],
-    detail: dict[str, Any],
-    original: dict[str, Any],
-    renderer: dict[str, Any],
-    *,
-    target_date: dt.date,
-) -> dict[str, Any]:
-    bill_code = _clean_str(_first(row.get("Logistics_Id"), detail.get("Logistics_Id")))
-    payment_type = _clean_str(_first(row.get("Payment_Type"), detail.get("Payment_Type")))
-    freight = _decimal_text_or_blank(_first(row.get("Special_Freight"), row.get("Freight"), detail.get("Freight")))
-    cash_amount = freight if payment_type == "现金" else ""
-    monthly_amount = freight if payment_type == "月结" else ""
-    collect_amount = freight if payment_type == "到付" else ""
-    renderer_price = renderer.get("price") if isinstance(renderer.get("price"), dict) else {}
-
-    return {
-        "5.14编号": bill_code,
-        "目的网点": _first(row.get("Buyer_Destination_Dot_Name"), detail.get("Buyer_Destination_Dot_Code")),
-        "收件区/县": _first(row.get("Buyer_Area_Name"), row.get("Buyer_Area"), detail.get("Buyer_Area_Name")),
-        "收件地址": _first(original.get("Buyer_Address"), row.get("Buyer_Address"), detail.get("Buyer_Address")),
-        "寄件人": _first(original.get("Sender_Name"), row.get("Sender_Name"), detail.get("Sender_Name")),
-        "寄件手机": _first(
-            original.get("Sender_Mobile"),
-            row.get("Sender_Mobile"),
-            detail.get("Sender_Mobile"),
-            original.get("Sender_Phone"),
-            row.get("Sender_Phone"),
-            detail.get("Sender_Phone"),
-        ),
-        "收货人": _first(original.get("Buyer_Name"), row.get("Buyer_Name"), detail.get("Buyer_Name")),
-        "收货电话": _first(
-            original.get("Buyer_Mobile"),
-            row.get("Buyer_Mobile"),
-            detail.get("Buyer_Mobile"),
-            original.get("Buyer_Phone"),
-            row.get("Buyer_Phone"),
-            detail.get("Buyer_Phone"),
-        ),
-        "货物名称": _first(row.get("Item_Name"), detail.get("Item_Name")),
-        "包装类型": _first(row.get("Packing_Type"), detail.get("Packing_Type")),
-        "派送方式": _delivery_method(row, detail),
-        "件数": _first(row.get("Item_Total_Number"), detail.get("Item_Total_Number")),
-        "实际重量": _first(row.get("Gross_Weight"), detail.get("Gross_Weight")),
-        "现付": cash_amount,
-        "月结": monthly_amount,
-        "提付": collect_amount,
-        # 编辑页“成本信息-总计”来自 renderer.price.Total；列表 Total_Money 是“实收总金额”。
-        "中转运费": _decimal_text_or_blank(
-            _first(
-                renderer_price.get("Total"),
-                row.get("Total_Cost_Money"),
-                detail.get("Total_Cost_Money"),
-            )
-        ),
-        "回单号": _first(row.get("Return_Logistics_Id"), detail.get("Return_Logistics_Id")),
-        "备注": _first(row.get("Remarks"), detail.get("Remarks")),
-        "结算重量": _first(row.get("Settlement_Total_Number"), detail.get("Settlement_Total_Number")),
-        "体积": _first(row.get("Volume"), detail.get("Volume")),
-        "支付类型": payment_type,
-        "体积重": _first(detail.get("Extend_Field1"), row.get("Extend_Field1")),
-        "到付款": _first(detail.get("COD"), row.get("COD")),
-        DATE_FIELD_NAME: target_date.isoformat(),
-    }
-
 
 def enrich_records(
     session: Any,
@@ -555,7 +451,10 @@ def enrich_records(
             if row.get(INTERNAL_SOURCE_FIELD) == SOURCE_SEND_WAYBILL
             else {}
         )
-        records.append(normalize_record(row, detail, original, renderer, target_date=target_date))
+        records.append(normalize_record(
+            row, detail, original, renderer, target_date=target_date,
+            source=str(row[INTERNAL_SOURCE_FIELD]),
+        ))
     return records
 
 

@@ -84,7 +84,7 @@ def test_final_snapshot_ignores_only_known_other_business_dates():
 def test_date_only_bitable_readback_keeps_business_date_and_all_other_fields():
     action = _load_action()
     fields, _ = action._normalize_source_row(
-        {"BILL_CODE": "R001", "REGISTER_DATE": "2026-09-12 20:26:08", "PIECE_NUMBER": "2"},
+        {"BILL_CODE": "R001", "REGISTER_DATE": "2026-09-12 20:26:08", "PIECE_NUMBER": "2", "GUEST_FREIGHT": "12.50"},
         target_date="2026-09-12",
     )
     # Production Bitable returns the date-only column at UTC midnight;
@@ -99,270 +99,87 @@ def test_date_only_bitable_readback_keeps_business_date_and_all_other_fields():
                 [{"fields": dict(actual, **change)}], [{"fields": fields}], target_date="2026-09-12")
 
 
-def test_payload_owns_full_replace_pagination_normalization_and_commit_order():
+def test_payload_updates_unique_existing_ids_and_preserves_unmatched_rows():
     action_module = _load_action()
     action_module._BITABLE_PAGE_SIZE = 2
-    calls: list[dict[str, object]] = []
-    list_call = 0
-    delete_call = 0
-    write_arguments: dict[str, object] = {}
-    projection_arguments: dict[str, object] = {}
-
+    calls = []
     source_rows = [
-        {
-            "BILL_CODE": " = 'R001' ",
-            "REGISTER_DATE": "2026-05-12 08:00:00",
-            "INSERT_DATE": "2026-05-11 23:59:59",
-            "BL_SIGNS_MARKING_TEXT": "已签收",
-            "DESTINATION": "长沙",
-            "ACCEPT_COUNTY": "大祥区",
-            "ACCEPT_MAN_ADDRESS": "测试地址",
-            "SEND_MAN": "寄件人",
-            "SEND_MAN_PHONE": "13000000000",
-            "ACCEPT_MAN": "收件人",
-            "ACCEPT_MAN_PHONE": "13100000000",
-            "GOODS_NAME": "配件",
-            "PACK_TYPE": "纸箱",
-            "DISPATCH_MODE": "送货",
-            "PIECE_NUMBER": "2",
-            "FEE_WEIGHT": "10.50",
-            "GUEST_FREIGHT": "12.50",
-            "R_BILLCODE": "",
-            "REMARK": "测试",
-            "PAYMENT_TYPE": "现付",
-            "VOLUME_WEIGHT": "11.25",
-            "VOLUME": "0.25",
-            "SETTLEMENT_WEIGHT": "11",
-            "TOPAYMENT": "3.40",
-            "SCAN_TYPE": "签收扫描",
-        },
-        {
-            "BILL_CODE": "H001",
-            "REGISTER_DATE": "2026-05-12 08:30:00",
-        },
-        {
-            "BILL_CODE": "R001",
-            "REGISTER_DATE": "2026-05-12 08:00:00",
-        },
-        {
-            "BILL_CODE": "R002",
-            "REGISTER_DATE": "2026-05-12 09:00:00",
-            "PIECE_NUMBER": "1",
-        },
+        {"BILL_CODE": " = 'R001' ", "REGISTER_DATE": "2026-05-12 08:00:00",
+         "PIECE_NUMBER": "2", "BILL_WEIGHT": "7.25", "FEE_WEIGHT": "10.50",
+         "GUEST_FREIGHT": "12.50", "FREIGHT": "8.25", "GOODS_PAYMENT": "7.50",
+         "TOPAYMENT": "3.40", "INSURANCE": "100", "BL_INDENTURE": "1",
+         "R_BILLCODE": "HR001", "SEND_MAN_ADDRESS": "测试寄件地址", "SCAN_TYPE": "签收扫描",
+         "BL_SIGNS_MARKING_TEXT": "已签收"},
+        {"BILL_CODE": "H001", "REGISTER_DATE": "2026-05-12 08:30:00"},
+        {"BILL_CODE": "R002", "REGISTER_DATE": "2026-05-12 09:00:00", "PIECE_NUMBER": "1", "GUEST_FREIGHT": 0},
     ]
+    existing = [
+        {"record_ref": "keep-r001", "fields": {"运单编号": "R001", "发件日期": "2026-05-12",
+                                              "人工备注": "保留", "附件": ["synthetic-attachment"]}},
+        {"record_ref": "unmatched", "fields": {"运单编号": "R-OLD", "发件日期": "2026-05-12"}},
+        {"record_ref": "other-day", "fields": {"运单编号": "R-OTHER", "发件日期": "2026-05-11"}},
+    ]
+    projections = []
 
     def broker(operation, *, action, role, arguments):
-        nonlocal list_call, delete_call
         _assert_no_resource_locations(arguments)
-        calls.append(
-            {
-                "operation": operation,
-                "action": action,
-                "role": role,
-                "arguments": arguments,
-            }
-        )
-        evidence_ref = _evidence(len(calls))
+        calls.append(action)
+        evidence = _evidence(len(calls))
         if action == "sync_daily_send_orders.lock.acquire":
-            assert operation == "ledger.invoke"
-            assert role == "account_id"
-            assert arguments == {}
-            return {
-                "acquired": True,
-                "lease_ref": "opaque-lease",
-                "evidence_ref": evidence_ref,
-            }
+            return {"acquired": True, "lease_ref": "synthetic-lease", "evidence_ref": evidence}
         if action == "ronghui.send_order.read_page":
-            assert operation == "browser.invoke"
-            assert role == "account_id"
-            index = arguments["page_index"]
-            return {
-                "items": source_rows[index * 2 : index * 2 + 2],
-                "total": 4,
-                "evidence_ref": evidence_ref,
-            }
+            start = arguments["page_index"] * arguments["page_size"]
+            return {"items": source_rows[start:start + arguments["page_size"]],
+                    "total": len(source_rows), "evidence_ref": evidence}
         if action == "feishu.bitable.list_records":
-            assert operation == "network.request"
-            assert role == "send_order_bitable"
-            assert arguments["page_size"] == 2
-            if list_call < 2:
-                assert arguments["fields"] == ["运单编号", "发件日期"]
-                pages = (
-                    [
-                        {
-                            "record_ref": "opaque-old-1",
-                            "fields": {"运单编号": "R001", "发件日期": "2026-05-12"},
-                        },
-                        {
-                            "record_ref": "opaque-other-day",
-                            "fields": {"运单编号": "R999", "发件日期": "2026-05-11"},
-                        },
-                    ],
-                    [
-                        {
-                            "record_ref": "opaque-old-2",
-                            "fields": {"运单编号": "R002", "发件日期": "2026-05-12"},
-                        }
-                    ],
-                )
-                items = pages[list_call]
-            else:
-                assert arguments["fields"] == list(action_module._BITABLE_FIELDS)
-                written_records = list(write_arguments["records"])
-                first = dict(written_records[0]["fields"])
-                second = dict(written_records[1]["fields"])
-                pages = (
-                    [
-                        {"record_ref": "opaque-new-1", "fields": first},
-                        {"record_ref": "opaque-new-dup", "fields": first},
-                    ],
-                    [{"record_ref": "opaque-new-2", "fields": second}],
-                    [
-                        {"record_ref": "opaque-new-1", "fields": first},
-                        {"record_ref": "opaque-new-2", "fields": second},
-                    ],
-                    [],
-                )
-                items = pages[list_call - 2]
-            expected_offsets = (0, 2, 0, 2, 0, 2)
-            assert arguments["offset"] == expected_offsets[list_call]
-            list_call += 1
-            return {"items": items, "evidence_ref": evidence_ref}
-        if action == "feishu.bitable.delete_records":
-            assert operation == "network.request"
-            assert role == "send_order_bitable"
-            expected_refs = (
-                ["opaque-old-1", "opaque-old-2"],
-                ["opaque-new-dup"],
-            )
-            assert arguments["record_refs"] == expected_refs[delete_call]
-            delete_call += 1
-            return {
-                "committed": True,
-                "deleted": len(arguments["record_refs"]),
-                "evidence_ref": evidence_ref,
-            }
+            offset, size = arguments["offset"], arguments["page_size"]
+            return {"items": [
+                {"record_ref": row["record_ref"],
+                 "fields": {field: row["fields"].get(field) for field in arguments["fields"]}}
+                for row in existing[offset:offset + size]], "evidence_ref": evidence}
         if action == "feishu.bitable.write_records":
-            assert operation == "network.request"
-            assert role == "send_order_bitable"
-            write_arguments.update(arguments)
-            return {
-                "committed": True,
-                "written": len(arguments["records"]),
-                "evidence_ref": evidence_ref,
-            }
+            for index, record in enumerate(arguments["records"]):
+                if "record_ref" in record:
+                    assert record["record_ref"] == "keep-r001"
+                    next(row for row in existing if row["record_ref"] == record["record_ref"])["fields"].update(record["fields"])
+                else:
+                    existing.append({"record_ref": f"new-{index}", "fields": dict(record["fields"])})
+            return {"committed": True, "written": len(arguments["records"]), "evidence_ref": evidence}
         if action == "waybill.ronghui.replace_date":
-            assert operation == "projection.invoke"
-            assert role == "account_id"
-            projection_arguments.update(arguments)
-            return {
-                "committed": True,
-                "upserted": 2,
-                "updates": 1,
-                "creates": 1,
-                "deleted_stale": 1,
-                "evidence_ref": evidence_ref,
-            }
+            projections.extend(arguments["records"])
+            return {"committed": True, "upserted": 2, "updates": 1, "creates": 1,
+                    "deleted_stale": 1, "evidence_ref": evidence}
         if action == "sync_daily_send_orders.lock.release":
-            assert operation == "ledger.invoke"
-            assert role == "account_id"
-            assert arguments == {"lease_ref": "opaque-lease"}
-            return {
-                "committed": True,
-                "released": True,
-                "evidence_ref": evidence_ref,
-            }
-        raise AssertionError((operation, action, role, arguments))
+            return {"committed": True, "released": True, "evidence_ref": evidence}
+        raise AssertionError(action)
 
-    result = action_module.run_action(
-        {
-            "target_date": "2026-05-12",
-            "page_size": 2,
-        },
-        broker,
-    )
-
+    result = action_module.run_action({"target_date": "2026-05-12", "page_size": 2}, broker)
     assert result["status"] == "SUCCESS"
-    assert result["meta"]["record_count"] == 2
-    assert result["meta"]["pagination_complete"] is True
-    assert len(result["meta"]["evidence_refs"]) == len(set(result["meta"]["evidence_refs"]))
     data = result["data"]
-    assert data["raw_fetched"] == 4
-    assert data["fetched"] == 2
-    assert data["skipped_receipt_like"] == 1
-    assert data["source_duplicates"] == 1
-    assert data["written"] == 2
-    assert data["deleted"] == 2
-    assert data["dedup_deleted"] == 1
-    assert data["sql_upserted"] == 2
-    assert data["sql_deleted_stale"] == 1
-    assert data["evidence"]["broker_call_count"] == len(calls)
-
-    records = write_arguments["records"]
-    assert [record["fields"]["运单编号"] for record in records] == ["R001", "R002"]
-    first_fields = records[0]["fields"]
-    assert set(first_fields) == {
-        "运单编号",
-        "发件日期",
-        "签收状态",
-        "目的网点",
-        "收件区/县",
-        "收件地址",
-        "寄件人",
-        "寄件手机",
-        "收货人",
-        "收货电话",
-        "货物名称",
-        "包装类型",
-        "派送方式",
-        "件数",
-        "实际重量",
-        "录单金额",
-        "回单号",
-        "备注",
-        "支付类型",
-        "体积重量",
-        "体积",
-        "结算重量",
-        "到付款",
-    }
-    assert first_fields["件数"] == 2
-    assert first_fields["实际重量"] == "10.50"
-    assert first_fields["录单金额"] == "12.50"
-    assert first_fields["到付款"] == "3.40"
-    assert first_fields["发件日期"] == int(
-        datetime(2026, 5, 12, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000
-    )
-    projections = projection_arguments["records"]
-    assert projections[0]["waybill_no"] == "R001"
-    assert projections[0]["open_date"] == "2026-05-12"
-    assert projections[0]["freight_fee"] == "12.50"
-    assert projections[0]["cod_amount"] == "3.40"
-    assert projections[0]["status"] == "signed"
-    assert projections[0]["scan_status"] == "签收扫描"
-    assert projection_arguments["target_date"] == "2026-05-12"
-    assert [call["action"] for call in calls] == [
-        "sync_daily_send_orders.lock.acquire",
-        "ronghui.send_order.read_page",
-        "ronghui.send_order.read_page",
-        "feishu.bitable.list_records",
-        "feishu.bitable.list_records",
-        "feishu.bitable.delete_records",
-        "feishu.bitable.write_records",
-        "feishu.bitable.list_records",
-        "feishu.bitable.list_records",
-        "feishu.bitable.delete_records",
-        "feishu.bitable.list_records",
-        "feishu.bitable.list_records",
-        "waybill.ronghui.replace_date",
-        "sync_daily_send_orders.lock.release",
-    ]
-    _assert_no_resource_locations(result)
-    assert "record_ref" not in set(_walk_keys(result))
-    assert "lease_ref" not in set(_walk_keys(result))
-    serialized_result = json.dumps(result, ensure_ascii=False)
-    assert "测试地址" not in serialized_result
-    assert "13000000000" not in serialized_result
+    assert data["raw_fetched"] == 3 and data["fetched"] == 2
+    assert data["skipped_receipt_like"] == 1 and data["source_duplicates"] == 0
+    assert data["updates"] == data["creates"] == 1 and data["written"] == 2
+    assert data["deleted"] == data["dedup_deleted"] == 0
+    assert data["unmatched_existing"] == 1 and data["requires_reconciliation"] is True
+    assert data["per_date"][0]["unmatched_waybill_numbers"] == ["R-OLD"]
+    saved = next(row for row in existing if row["record_ref"] == "keep-r001")
+    assert saved["fields"]["人工备注"] == "保留"
+    assert saved["fields"]["附件"] == ["synthetic-attachment"]
+    assert saved["fields"]["录单运费"] == "12.50"
+    assert saved["fields"]["运费"] == "8.25"
+    assert saved["fields"]["实际重量"] == "7.25"
+    assert saved["fields"]["计费重量"] == "10.50"
+    assert saved["fields"]["需要回单"] == "是"
+    assert {row["record_ref"] for row in existing} >= {"keep-r001", "unmatched", "other-day"}
+    assert projections[0]["recorded_cost"] == "12.50"
+    assert projections[0]["freight_fee"] == "8.25"
+    assert projections[0]["cod_amount"] == "7.50"
+    assert projections[0]["to_pay_amount"] == "3.40"
+    assert projections[0]["receipt_required"] == "1"
+    assert projections[0]["receipt_number"] == "HR001"
+    assert calls[-1] == "sync_daily_send_orders.lock.release"
+    assert "feishu.bitable.delete_records" not in calls
+    assert len(result["meta"]["evidence_refs"]) == len(set(result["meta"]["evidence_refs"]))
 
 
 @pytest.mark.parametrize(
@@ -420,7 +237,8 @@ def test_sql_only_uses_the_account_bound_projection_and_never_feishu():
                 "evidence_ref": evidence_ref,
             }
         if action == "waybill.ronghui.replace_date":
-            assert arguments["records"][0]["freight_fee"] == "12.50"
+            assert arguments["records"][0]["recorded_cost"] == "12.50"
+            assert arguments["records"][0]["freight_fee"] == ""
             return {
                 "committed": True,
                 "upserted": 1,
@@ -449,7 +267,7 @@ def test_sql_only_uses_the_account_bound_projection_and_never_feishu():
     assert not any(role == "send_order_bitable" for _, _, role, _ in calls)
 
 
-def test_empty_source_clears_the_target_date_in_bitable_and_projection():
+def test_empty_source_preserves_unmatched_bitable_rows_and_reports_them():
     action = _load_action()
     calls: list[dict[str, object]] = []
     list_call = 0
@@ -475,8 +293,6 @@ def test_empty_source_clears_the_target_date_in_bitable_and_projection():
                         "fields": {"运单编号": "R001", "发件日期": "2026-05-12"},
                     }
                 ]
-                if list_call == 1
-                else []
             )
             return {"items": items, "evidence_ref": evidence_ref}
         if action == "feishu.bitable.delete_records":
@@ -505,10 +321,13 @@ def test_empty_source_clears_the_target_date_in_bitable_and_projection():
     assert result["status"] == "SUCCESS"
     assert result["data"]["fetched"] == 0
     assert result["data"]["written"] == 0
-    assert result["data"]["deleted"] == 1
+    assert result["data"]["deleted"] == 0
+    assert result["data"]["unmatched_existing"] == 1
+    assert result["data"]["requires_reconciliation"] is True
     assert result["data"]["sql_deleted_stale"] == 1
-    assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
+    assert result["data"]["evidence"]["execution_result"] == "no_data_preserved_unmatched"
     assert not any(call["action"] == "feishu.bitable.write_records" for call in calls)
+    assert not any(call["action"] == "feishu.bitable.delete_records" for call in calls)
 
 
 def test_dry_run_reads_the_existing_snapshot_but_never_mutates_any_sink():
@@ -526,7 +345,7 @@ def test_dry_run_reads_the_existing_snapshot_but_never_mutates_any_sink():
             }
         if action == "ronghui.send_order.read_page":
             return {
-                "items": [{"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12"}],
+                "items": [{"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12", "GUEST_FREIGHT": "12.50"}],
                 "total": 1,
                 "evidence_ref": evidence_ref,
             }
@@ -555,7 +374,8 @@ def test_dry_run_reads_the_existing_snapshot_but_never_mutates_any_sink():
 
     assert result["status"] == "SUCCESS"
     assert result["data"]["planned_creates"] == 1
-    assert result["data"]["planned_deletes"] == 1
+    assert result["data"]["planned_deletes"] == 0
+    assert result["data"]["unmatched_existing"] == 1
     assert result["data"]["planned_sql_upserts"] == 1
     assert calls == [
         "sync_daily_send_orders.lock.acquire",

@@ -2286,7 +2286,8 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                                         "Item_Total_Number": 16,
                                         "Gross_Weight": "250.00",
                                         "Freight": "115.00",
-                                        "Payment_Type": "到付",
+                                        "Sign_State": "未签收",
+                                    "Payment_Type": "到付",
                                         "Transfer_Cost": "*",
                                         "Total_Cost_Money": "*",
                                         "Total_Money": "999.99",
@@ -2318,6 +2319,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                                     "Item_Total_Number": 12,
                                     "Gross_Weight": "522.00",
                                     "Freight": "12.00",
+                                    "Sign_State": "未签收",
                                     "Payment_Type": "现金",
                                     "Transfer_Cost": "8.50",
                                     "Total_Cost_Money": "106.50",
@@ -2341,6 +2343,8 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                                     bill_code: {
                                         "logistics": {
                                             "Logistics_Id": bill_code,
+                                            "Mail_Date": "2026-05-15 09:00:00",
+                                            "Sign_State": "未签收",
                                             "Extend_Field1": "200" if bill_code == "978284775" else "557.90",
                                             "COD": "115.00" if bill_code == "978284775" else "0.00",
                                         }
@@ -2355,6 +2359,8 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                     return Response(
                         {
                             "Logistics_Id": bill_code,
+                                            "Mail_Date": "2026-05-15 09:00:00",
+                                            "Sign_State": "未签收",
                             "price": {
                                 "Total": "81.85" if bill_code == "978284775" else "257.69",
                             },
@@ -2396,7 +2402,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         self.assertEqual([1, 2], [call["data"]["page"] for call in session.calls if "sendwaybill/list" in call["url"]])
         self.assertEqual([1], [call["data"]["page"] for call in session.calls if "specialLine/specialLineManage/getList" in call["url"]])
         first = result["records"][0]
-        self.assertEqual("978284775", first["5.14编号"])
+        self.assertEqual("978284775", first["运单编号"])
         self.assertEqual("湖南省长沙市岳麓区梅溪湖街道金茂梅溪湖29栋3902", first["收件地址"])
         self.assertEqual("勇胜", first["寄件人"])
         self.assertEqual("07315186128", first["寄件手机"])
@@ -2405,16 +2411,16 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         self.assertEqual("", first["现付"])
         self.assertEqual("", first["月结"])
         self.assertEqual("115.00", first["提付"])
-        self.assertEqual("81.85", first["中转运费"])
-        self.assertEqual("200", first["体积重"])
+        self.assertEqual("81.85", first["录单运费"])
+        self.assertEqual("200", first["体积重量"])
         self.assertEqual("115.00", first["到付款"])
-        self.assertEqual("2026-05-15", first["日期"])
+        self.assertEqual("2026-05-15", first["发件日期"])
         second = result["records"][1]
         self.assertEqual("送货进仓", second["派送方式"])
         self.assertEqual("12.00", second["现付"])
         self.assertEqual("", second["月结"])
         self.assertEqual("", second["提付"])
-        self.assertEqual("257.69", second["中转运费"])
+        self.assertEqual("257.69", second["录单运费"])
 
     def test_yunda_send_waybills_fetch_includes_special_line_rows(self):
         case = self
@@ -2478,8 +2484,11 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                             "rows": [
                                 {
                                     bill_code: {
+                                        "smi": {"info": {"scanFlag": {"send": 0}}},
                                         "logistics": {
                                             "Logistics_Id": bill_code,
+                                            "Mail_Date": "2026-05-15 09:00:00",
+                                            "Sign_State": "未签收",
                                             "Item_Name": "安全帽",
                                             "Packing_Type": "纸箱:110",
                                             "Extend_Field1": "2800",
@@ -2514,7 +2523,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         self.assertEqual(1, result["fetched"])
         self.assertEqual({"send_waybill": 0, "special_line": 1}, result["source_counts"])
         record = result["records"][0]
-        self.assertEqual("978288946", record["5.14编号"])
+        self.assertEqual("978288946", record["运单编号"])
         self.assertEqual("云南昆明官渡六甲公司昌宏分部", record["目的网点"])
         self.assertEqual("官渡区", record["收件区/县"])
         self.assertEqual("云南省昆明市官渡区国雅陶瓷市场B区3栋19号", record["收件地址"])
@@ -2526,8 +2535,8 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         self.assertEqual("349.00", record["现付"])
         self.assertEqual("", record["月结"])
         self.assertEqual("", record["提付"])
-        self.assertEqual("1037.25", record["中转运费"])
-        self.assertEqual("2800", record["体积重"])
+        self.assertEqual("1037.25", record["录单运费"])
+        self.assertEqual("2800", record["体积重量"])
         self.assertEqual("0.00", record["到付款"])
 
     def test_yunda_send_waybills_fetch_auth_redirect_raises_auth_required(self):
@@ -2618,9 +2627,9 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         self.assertEqual(["signed", "in_transit"], [record["status"] for record in records])
         self.assertEqual(["签收扫描", "发件扫描"], [record["scan_status"] for record in records])
 
-    def test_yunda_console_waybill_records_default_to_in_transit(self):
+    def test_yunda_console_waybill_records_use_verified_signing_status(self):
         records = yunda_send_waybills_sync_tool._console_waybill_records(
-            [{"5.14编号": "978284775", "日期": "2026-05-12", "scan_type": "派件扫描"}],
+            [{"运单编号": "978284775", "发件日期": "2026-05-12", "status": "in_transit", "scan_type": "派件扫描"}],
             target_date=date(2026, 5, 12),
         )
 

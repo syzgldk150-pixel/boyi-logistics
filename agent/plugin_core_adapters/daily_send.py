@@ -35,6 +35,7 @@ _BITABLE_FIELDS = (
     "收件地址",
     "寄件人",
     "寄件手机",
+    "寄件地址",
     "收货人",
     "收货电话",
     "货物名称",
@@ -42,7 +43,12 @@ _BITABLE_FIELDS = (
     "派送方式",
     "件数",
     "实际重量",
-    "录单金额",
+    "计费重量",
+    "录单运费",
+    "运费",
+    "代收货款",
+    "保价金额",
+    "需要回单",
     "回单号",
     "备注",
     "支付类型",
@@ -52,7 +58,8 @@ _BITABLE_FIELDS = (
     "到付款",
 )
 _BITABLE_NUMERIC_FIELDS = frozenset(
-    {"件数", "实际重量", "录单金额", "体积重量", "体积", "结算重量", "到付款"}
+    {"件数", "实际重量", "计费重量", "录单运费", "运费", "代收货款", "保价金额",
+     "体积重量", "体积", "结算重量", "到付款"}
 )
 _PROJECTION_FIELDS = (
     "waybill_no",
@@ -63,18 +70,23 @@ _PROJECTION_FIELDS = (
     "receiver_phone",
     "sender_name",
     "sender_phone",
+    "sender_address",
     "goods_name_lines",
     "package_type_lines",
     "quantity_lines",
     "weight_volume",
     "delivery_method",
     "freight_fee",
+    "recorded_cost",
     "pickup_fee",
     "delivery_fee",
     "transfer_fee",
     "payment_method",
     "insurance_amount",
     "cod_amount",
+    "to_pay_amount",
+    "receipt_required",
+    "receipt_number",
     "remark",
     "scan_status",
     "status",
@@ -395,7 +407,7 @@ def _verify_bitable_records(
 
 
 def _normalize_projection(record: Mapping[str, Any]) -> dict[str, str] | None:
-    payload = {field: str(record.get(field, "") or "").strip() for field in _PROJECTION_FIELDS}
+    payload = {field: "" if record.get(field) is None else str(record[field]).strip() for field in _PROJECTION_FIELDS}
     return payload if payload["waybill_no"] else None
 
 
@@ -532,6 +544,22 @@ def build_production_daily_send_ports(
             resource_id=resource_id,
         )
         before_ids = {str(item.get("record_id") or "") for item in before}
+        before_by_id = {str(item["record_id"]): item for item in before}
+        update_ids: set[str] = set()
+        create_count = 0
+        for record in records:
+            record_id = str(record.get("record_id") or "")
+            if not record_id:
+                create_count += 1
+                continue
+            previous = before_by_id.get(record_id)
+            if previous is None or record_id in update_ids:
+                raise _error("daily-send update record is unavailable or duplicated", "BROKER_SOURCE_INVALID")
+            expected = _canonical_bitable_record(record["fields"])
+            old_identity = "".join(str(previous["fields"].get("运单编号") or "").removeprefix("=").strip(" '\"").split())
+            if old_identity != expected["运单编号"]:
+                raise _error("daily-send update waybill identity changed", "BROKER_SOURCE_INVALID")
+            update_ids.add(record_id)
         write_error: Exception | None = None
         try:
             invoke_feishu(
@@ -557,10 +585,19 @@ def build_production_daily_send_ports(
 
         def matches(observed: Sequence[Mapping[str, Any]]) -> bool:
             after_ids = {str(item.get("record_id") or "") for item in observed}
+            target_ids = update_ids | (after_ids - before_ids)
+            targeted = [item for item in observed if str(item.get("record_id") or "") in target_ids]
+            observed_by_id = {str(item.get("record_id") or ""): item for item in targeted}
+            for record in records:
+                record_id = str(record.get("record_id") or "")
+                if record_id:
+                    actual = observed_by_id.get(record_id)
+                    if actual is None or _canonical_bitable_record(actual["fields"]) != _canonical_bitable_record(record["fields"]):
+                        return False
             return (
                 before_ids <= after_ids
-                and len(after_ids - before_ids) == len(records)
-                and _verify_bitable_records(records, observed)
+                and len(after_ids - before_ids) == create_count
+                and _verify_bitable_records(records, targeted)
             )
 
         _feishu_readback.retry_readback(

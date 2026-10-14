@@ -235,15 +235,17 @@
             {# 博益开单按录单字段原样展示，不显示查询页派生的开单成本/提付金额 #}
             {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价金额'), ('cod_amount', '代收金额')] %}{{ detail_item(label, row[name], true) }}{% endfor %}
             {{ detail_item('结算方式', row.payment_method) }}
+          {% elif row.source in ['yunda', 'ronghui'] %}
+            {{ detail_item('录单成本', row.opening_cost if row.opening_cost else '无数据', true if row.opening_cost else false) }}
+            {% for name, label in [('insurance_amount', '保价金额'), ('cod_amount', '代收货款'), ('to_pay_amount', '到付款')] %}
+              {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
+            {% endfor %}
           {% else %}
             {% for name, label in [('freight_fee', '运费'), ('transfer_fee', '中转费'), ('insurance_amount', '保价'), ('cod_amount', '代收')] %}
               {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
             {% endfor %}
             {% if row.payment_method and ('到付' in row.payment_method or '提付' in row.payment_method) and (row.cod_amount or row.freight_fee) %}{{ detail_item('提付金额', row.pickup_payment_amount, true) }}{% endif %}
-            {% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
-            {% if row.source in ['yunda', 'ronghui'] %}{% for name, label in [('pickup_fee', '接货费'), ('delivery_fee', '送货费')] %}
-              {% if row[name] is defined and row[name] is not none and row[name]|string != '' %}{{ detail_item(label, row[name], true) }}{% endif %}
-            {% endfor %}{% endif %}
+            {% if row.opening_cost %}{{ detail_item('开单成本', row.opening_cost, true) }}{% endif %}
           {% endif %}
         {% endset %}
         <section class="waybill-facts-block"><h3>费用信息</h3>{% if fee_items | trim %}<dl class="waybill-kv">{{ fee_items }}</dl>{% else %}<p class="waybill-kv-empty">无数据</p>{% endif %}</section>
@@ -414,7 +416,7 @@
       {% if db_error %}
       <div class="notice notice--warning waybill-notice"><i data-feather="alert-triangle"></i> 数据库查询失败：{{ db_error }}</div>
       {% elif summary.invalid_money_count %}
-      <div class="notice notice--warning waybill-notice"><i data-feather="alert-triangle"></i> 有 {{ summary.invalid_money_count }} 个金额字段无法换算，汇总时已按 0.00 处理。</div>
+      <div class="notice notice--warning waybill-notice"><i data-feather="alert-triangle"></i> 有 {{ summary.invalid_money_count }} 个金额字段缺失或格式不正确，对应汇总暂不可用，请重新核对来源数据。</div>
       {% endif %}
 
       <div class="waybill-table-shell">
@@ -459,7 +461,7 @@
               </td>
               <td data-col="payment" data-label="结算方式">{{ row.payment_method or '-' }}</td>
               <td class="waybill-col-fee" data-col="fee" data-label="费用">
-                <div class="waybill-fee">{% if (row.source == 'yunda' and row.transfer_fee) or (row.source != 'yunda' and row.freight_fee) %}¥{{ row.opening_cost }}{% else %}无数据{% endif %}</div>
+                <div class="waybill-fee">{% if row.opening_cost and ((row.source in ['ronghui', 'yunda']) or row.freight_fee) %}¥{{ row.opening_cost }}{% else %}无数据{% endif %}</div>
               </td>
               <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}</td>
               <td class="waybill-col-actions"><div class="waybill-row-actions"><button type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情">详情</button><a href="{{ row.tracking_url }}" aria-label="跟踪 {{ row.waybill_no }} 轨迹">轨迹</a></div></td>

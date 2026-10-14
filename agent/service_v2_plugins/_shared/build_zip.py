@@ -98,6 +98,8 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
                         "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py"}
         entries["payload/action.py"] = (source / "payload/action.py").read_bytes()
         entries["payload/boyi_plugin_result.py"] = (shared / "result.py").read_bytes()
+        if manifest["plugin_id"] == "sync_yunda_send_waybills_v2":
+            entries["payload/yunda_send_fields.py"] = (source / "payload/yunda_send_fields.py").read_bytes()
         if manifest["plugin_id"] == "sync_finance_bills_v2":
             entries["payload/finance_fields.py"] = (source.parents[2] / "shared/ronghui_finance_fields.py").read_bytes()
         if manifest["plugin_id"] == "sync_customer_service_problems_v2":

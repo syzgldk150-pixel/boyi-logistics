@@ -1444,7 +1444,7 @@ def test_yunda_handlers_use_exact_account_resource_roles_and_closed_schemas() ->
     assert committed["committed"] is True
 
     send_record = {
-        "5.14编号": "YD-1",
+        "运单编号": "YD-1",
         "目的网点": "长沙",
         "收件区/县": "岳麓区",
         "收件地址": "地址",
@@ -1460,15 +1460,21 @@ def test_yunda_handlers_use_exact_account_resource_roles_and_closed_schemas() ->
         "现付": "1.00",
         "月结": "",
         "提付": "",
-        "中转运费": "0.50",
+        "录单运费": "0.50",
         "回单号": "",
         "备注": "",
         "结算重量": "1.00",
         "体积": "0.001",
         "支付类型": "现金",
-        "体积重": "1.00",
+        "体积重量": "1.00",
         "到付款": "0.00",
-        "日期": "2026-08-15",
+        "发件日期": "2026-08-15",
+        "运费": "1.00",
+        "代收货款": "0.00",
+        "寄件地址": "",
+        "需要回单": "",
+        "保价金额": "",
+        "status": "in_transit",
     }
     bitable_context = _context(
         tool_name="sync_yunda_send_waybills",
@@ -1515,10 +1521,10 @@ def test_yunda_handlers_use_exact_account_resource_roles_and_closed_schemas() ->
         "resource-dispatch",
         "resource-bitable",
     ]
-    assert projection_calls == [([send_record], "2026-08-15")]
+    assert projection_calls == [([{**send_record, "scan_status": ""}], "2026-08-15")]
 
     invalid = dict(send_record)
-    invalid["日期"] = "2026-08-14"
+    invalid["发件日期"] = "2026-08-14"
     with pytest.raises(PluginExecutionError) as exc:
         handlers[
             ("network.request", "feishu.bitable.replace_yunda_send_waybills_date")
@@ -1763,6 +1769,7 @@ def test_production_yunda_sources_use_exact_profile_and_low_level_primitives(
     assert rendered["record"] == {
         "Logistics_Id": "YD-1",
         "price": {"Total": "1.00"},
+        "Delivers_Return": None,
     }
     assert profiles == ["profile-yunda-a"] * 6
     assert source_calls == [

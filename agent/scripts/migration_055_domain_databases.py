@@ -193,7 +193,8 @@ def _views(cursor, runtime, waybill, finance):
     wb_cols = ','.join(map(quote, wb_columns))
     # Boyi rows have no platform-only handling fees since migration 056.
     boyi_present = set(columns(cursor, waybill, "boyi_waybills"))
-    boyi_cols = ','.join(f"NULL AS {quote(c)}" if c in {"pickup_fee", "delivery_fee"} and c not in boyi_present else quote(c) for c in wb_columns)
+    platform_only = {"pickup_fee", "delivery_fee", "recorded_cost", "to_pay_amount", "receipt_number"}
+    boyi_cols = ','.join(f"NULL AS {quote(c)}" if c in platform_only and c not in boyi_present else quote(c) for c in wb_columns)
     cursor.execute(f"CREATE OR REPLACE SQL SECURITY INVOKER VIEW {qualified(runtime, 'waybills')} AS SELECT {wb_cols} FROM {qualified(waybill, 'ronghui_waybills')} UNION ALL SELECT {wb_cols} FROM {qualified(waybill, 'yunda_waybills')} UNION ALL SELECT {boyi_cols} FROM {qualified(waybill, 'boyi_waybills')} WHERE source='ocr'")
     cursor.execute(f"CREATE OR REPLACE SQL SECURITY INVOKER VIEW {qualified(runtime, 'receipt_records')} AS " + " UNION ALL ".join(f"SELECT * FROM {qualified(waybill, platform + '_receipts')}" for platform in ("yunda", "ronghui", "boyi")))
 

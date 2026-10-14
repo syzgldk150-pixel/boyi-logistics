@@ -1401,25 +1401,18 @@ _YUNDA_SEND_SOURCE_FIELDS = (
     "Buyer_Phone",
     "Extend_Field1",
     "COD",
+    'Mail_Date',
+    'Sender_Address',
+    'Collection_Money',
+    'Insured_Amount',
+    'Delivers_Return',
+    'Scan_Description',
+    'Sign_State',
 )
-_YUNDA_SPECIAL_LINE_SOURCE_FIELDS = (
-    "Logistics_Id",
-    "Return_Logistics_Id",
-    "Created_Dot_Code",
-    "Buyer_Destination_Dot_Name",
-    "Buyer_Area",
-    "Payment_Type",
-    "Shipping_Methods",
-    "Freight",
-    "Item_Total_Number",
-    "Gross_Weight",
-    "Settlement_Total_Number",
-    "Volume",
-    "Special_Freight",
-    "Total_Cost_Money",
-)
+_YUNDA_SPECIAL_LINE_SOURCE_FIELDS = (*_YUNDA_SEND_SOURCE_FIELDS, "Buyer_Area", "Special_Freight")
 _YUNDA_TRACKING_SOURCE_FIELDS = (
     "Logistics_Id",
+    "Scan_Flag_Keys",
     "Buyer_Destination_Dot_Code",
     "Buyer_Area_Name",
     "Buyer_Address",
@@ -1444,6 +1437,14 @@ _YUNDA_TRACKING_SOURCE_FIELDS = (
     "Volume",
     "Extend_Field1",
     "COD",
+    'Mail_Date',
+    'Sender_Address',
+    'Collection_Money',
+    'Insured_Amount',
+    'Delivers_Return',
+    'Scan_Description',
+    'Sign_State',
+    'Buyer_Destination_Dot_Name',
 )
 _YUNDA_ORIGINAL_SOURCE_FIELDS = (
     "Buyer_Address",
@@ -1547,6 +1548,7 @@ def _yunda_send_read_page(
             page_size=page_size,
         )
     )
+    source_rows, total = yunda_send_waybills._complete_page_shape(raw)
     rows = [
         _project_yunda_source_record(
             row,
@@ -1554,14 +1556,13 @@ def _yunda_send_read_page(
             required_fields=("Logistics_Id",),
             label="Yunda send-waybill source row",
         )
-        for row in yunda_send_waybills._extract_rows(raw)
+        for row in source_rows
     ]
-    total = yunda_send_waybills._extract_total(raw)
     return {
         "items": rows,
         "returned": len(rows),
         "total": total,
-        "total_authoritative": total is not None,
+        "total_authoritative": True,
     }
 
 
@@ -1583,6 +1584,7 @@ def _yunda_special_line_read_page(
             page_size=page_size,
         )
     )
+    source_rows, total = yunda_send_waybills._complete_page_shape(raw)
     rows = [
         _project_yunda_source_record(
             row,
@@ -1590,14 +1592,13 @@ def _yunda_special_line_read_page(
             required_fields=("Logistics_Id",),
             label="Yunda special-line source row",
         )
-        for row in yunda_send_waybills._extract_rows(raw)
+        for row in source_rows
     ]
-    total = yunda_send_waybills._extract_total(raw)
     return {
         "items": rows,
         "returned": len(rows),
         "total": total,
-        "total_authoritative": total is not None,
+        "total_authoritative": True,
     }
 
 
@@ -1672,6 +1673,7 @@ def _yunda_renderer_detail_read(
     return {
         "Logistics_Id": record["Logistics_Id"],
         "price": {"Total": price.get("Total")},
+        "Delivers_Return": raw.get("Delivers_Return"),
     }
 
 
@@ -2329,133 +2331,119 @@ def _replace_yunda_send_bitable(
     from tools.feishu_cli_tool import feishu_operation
 
     resource = _exact_workflow_resource(
-        resource_id,
-        kind="feishu_bitable",
-        required_fields=("base_token", "table_id"),
+        resource_id, kind="feishu_bitable", required_fields=("base_token", "table_id"),
     )
-    base_token = str(resource["base_token"])
-    table_id = str(resource["table_id"])
-    params = {
-        "base_token": base_token,
-        "table_id": table_id,
-        "ensure_fields": ensure_fields,
-        "dry_run": False,
-    }
-    field_result = sink._ensure_fields(base_token, table_id, params)
+    base_token, table_id = str(resource["base_token"]), str(resource["table_id"])
+    field_result = sink._ensure_fields(base_token, table_id, {
+        "base_token": base_token, "table_id": table_id,
+        "ensure_fields": ensure_fields, "dry_run": False,
+    })
     if not isinstance(field_result, Mapping) or field_result.get("error"):
-        return {"ok": False, "record_count": 0}
+        raise PluginExecutionError("Yunda managed field schema could not be prepared", code="BROKER_RESOURCE_INVALID")
     field_map = field_result.get("field_name_map")
-    if not isinstance(field_map, dict) or not field_map:
-        return {"ok": False, "record_count": 0}
-    if any(not str(field_map.get(name) or "").strip() for name in sink.FIELD_NAMES):
-        return {"ok": False, "record_count": 0}
+    if not isinstance(field_map, dict) or any(not str(field_map.get(name) or "").strip() for name in sink.FIELD_NAMES):
+        raise PluginExecutionError("Yunda managed field schema is incomplete", code="BROKER_RESOURCE_INVALID")
     normalized_field_map = {name: str(field_map[name]).strip() for name in sink.FIELD_NAMES}
     if len(set(normalized_field_map.values())) != len(normalized_field_map):
-        return {"ok": False, "record_count": 0}
-    canonical_by_actual = {actual_name: canonical_name for canonical_name, actual_name in normalized_field_map.items()}
-    business_date = date.fromisoformat(target_date)
-    date_field_name = normalized_field_map[sink.DATE_FIELD_NAME]
-    if not date_field_name:
-        return {"ok": False, "record_count": 0}
-    payload, _updates, _creates = sink._build_records(
-        records,
-        existing_by_waybill={},
-        field_name_map=normalized_field_map,
-        target_date=business_date,
-    )
-    if len(payload) != len(records):
-        return {"ok": False, "record_count": 0}
-    if any(
-        set(item.get("fields", {})) != set(normalized_field_map.values())
-        for item in payload
-        if isinstance(item.get("fields"), Mapping)
-    ):
-        return {"ok": False, "record_count": 0}
+        raise PluginExecutionError("Yunda managed fields are ambiguous", code="BROKER_RESOURCE_INVALID")
+    canonical_by_actual = {actual: canonical for canonical, actual in normalized_field_map.items()}
+    identity_field = normalized_field_map[sink.INDEX_FIELD_NAME]
+    date_field = normalized_field_map[sink.DATE_FIELD_NAME]
     before = _list_exact_bitable_records(base_token, table_id)
-    record_ids = [
-        str(item["record_id"])
+    before_by_id = {str(item["record_id"]): item["fields"] for item in before}
+    existing_by_identity: dict[str, str] = {}
+    for item in before:
+        identity = sink._normalize_waybill(item["fields"].get(identity_field))
+        if not identity or identity in existing_by_identity:
+            raise PluginExecutionError("Yunda Bitable identity is missing or duplicated", code="BROKER_RESOURCE_INVALID")
+        existing_by_identity[identity] = str(item["record_id"])
+    identities = [sink._normalize_waybill(row.get(sink.INDEX_FIELD_NAME)) for row in records]
+    if any(not identity for identity in identities) or len(set(identities)) != len(identities):
+        raise PluginExecutionError("Yunda source identities are invalid", code="BROKER_SOURCE_INVALID")
+    payload, _updates, _creates = sink._build_records(
+        records, existing_by_waybill=existing_by_identity,
+        field_name_map=normalized_field_map, target_date=date.fromisoformat(target_date),
+    )
+    if len(payload) != len(records) or any(set(item["fields"]) != set(normalized_field_map.values()) for item in payload):
+        raise PluginExecutionError("Yunda normalized payload lost fields", code="BROKER_SOURCE_INVALID")
+    expected_identities = set(identities)
+    retained_unmatched = sum(
+        sink._date_text_from_field_value(item["fields"].get(date_field)) == target_date
+        and sink._normalize_waybill(item["fields"].get(identity_field)) not in expected_identities
         for item in before
-        if sink._date_text_from_field_value(item["fields"].get(date_field_name)) == target_date
-    ]
-    target_record_ids = set(record_ids)
-    prior_non_target_ids = {
-        str(item["record_id"]) for item in before if str(item["record_id"]) not in target_record_ids
-    }
-    deleted = 0
-    delete_confirmed = True
-    if record_ids:
+    )
+    if payload:
         try:
-            delete_result = feishu_operation(
-                "delete_records",
-                {
-                    "base_token": base_token,
-                    "table_id": table_id,
-                    "record_ids": record_ids,
-                    "as": "bot",
-                    "dry_run": False,
-                },
-            )
-        except Exception:
-            delete_result = None
-        deleted_value = delete_result.get("deleted") if isinstance(delete_result, Mapping) else None
-        delete_confirmed = bool(
-            isinstance(delete_result, Mapping)
-            and not delete_result.get("error")
-            and not delete_result.get("errors")
-            and isinstance(deleted_value, int)
-            and not isinstance(deleted_value, bool)
-            and deleted_value == len(record_ids)
-        )
-        if delete_confirmed:
-            deleted = deleted_value
-    if payload and delete_confirmed:
-        try:
-            feishu_operation(
-                "write_records",
-                {
-                    "base_token": base_token,
-                    "table_id": table_id,
-                    "records": payload,
-                    "as": "bot",
-                    "dry_run": False,
-                },
-            )
+            feishu_operation("write_records", {
+                "base_token": base_token, "table_id": table_id,
+                "records": payload, "as": "bot", "dry_run": False,
+            })
         except Exception:
             pass
+
     def readback_digest() -> str:
         after = _list_exact_bitable_records(base_token, table_id)
-        after_ids = {str(item["record_id"]) for item in after}
-        if not prior_non_target_ids.issubset(after_ids):
-            _yunda_write_unknown(
-                "Yunda replacement readback did not preserve non-target resource rows"
-            )
+        after_by_id = {str(item["record_id"]): item["fields"] for item in after}
+        if not set(before_by_id).issubset(after_by_id):
+            _yunda_write_unknown("Yunda upsert removed existing resource identities")
+        touched_ids = {existing_by_identity[value] for value in expected_identities if value in existing_by_identity}
+        managed_fields = set(normalized_field_map.values())
+        for record_id, previous_fields in before_by_id.items():
+            preserved = {key: value for key, value in previous_fields.items()
+                         if record_id not in touched_ids or key not in managed_fields}
+            if any(after_by_id[record_id].get(key) != value for key, value in preserved.items()):
+                _yunda_write_unknown("Yunda upsert changed an unmanaged or unmatched field")
+        for identity in expected_identities & set(existing_by_identity):
+            if sink._normalize_waybill(after_by_id[existing_by_identity[identity]].get(identity_field)) != identity:
+                _yunda_write_unknown("Yunda upsert replaced an existing waybill identity")
         return _verify_exact_bitable_records(
-            actual_records=after,
-            expected_payload=payload,
-            canonical_by_actual=canonical_by_actual,
-            identity_actual_field=normalized_field_map[sink.INDEX_FIELD_NAME],
-            number_fields=sink.NUMBER_FIELDS,
-            exact_date_field=date_field_name,
-            exact_date=target_date,
-            date_parser=sink._date_text_from_field_value,
-            require_exact_date_snapshot=True,
+            actual_records=after, expected_payload=payload, canonical_by_actual=canonical_by_actual,
+            identity_actual_field=identity_field, number_fields=sink.NUMBER_FIELDS,
+            exact_date_field=date_field, exact_date=target_date,
+            date_parser=sink._date_text_from_field_value, require_exact_date_snapshot=False,
         )
 
     digest = _retry_feishu_readback(
-        readback_digest,
-        lambda observed: isinstance(observed, str) and len(observed) == 64,
-        label="Yunda send-waybill Bitable replacement",
+        readback_digest, lambda observed: isinstance(observed, str) and len(observed) == 64,
+        label="Yunda send-waybill Bitable upsert",
     )
     return {
-        "ok": True,
-        "record_count": len(records),
-        "written": len(records),
-        "deleted": deleted,
+        "ok": True, "record_count": len(records), "written": len(records), "deleted": 0,
+        "retained_unmatched": retained_unmatched,
         "created_fields": len(field_result.get("created") or []),
-        "verified": True,
-        "readback_count": len(records),
-        "readback_sha256": digest,
+        "verified": True, "readback_count": len(records), "readback_sha256": digest,
     }
+
+
+def _ensure_yunda_send_sheet_headers(spreadsheet_token: str, sheet_ref: str) -> None:
+    from tools import yunda_send_waybills_sync_tool as sink
+    from tools.feishu_cli_tool import feishu_operation
+    from tools.phase7_sync_common import build_range_from_template
+
+    header_range = build_range_from_template(f"{sheet_ref}!A1:A1", 1, len(sink.FIELD_NAMES))
+    result = feishu_operation("read_sheet", {
+        "spreadsheet_token": spreadsheet_token, "range": header_range, "as": "bot",
+    })
+    rows = _strict_sheet_values(result)
+    current = list(rows[0]) if rows else []
+    current.extend([""] * (len(sink.FIELD_NAMES) - len(current)))
+    for index, canonical in enumerate(sink.FIELD_NAMES):
+        name = str(current[index] or "").strip()
+        if name and name not in sink.FIELD_ALIASES.get(canonical, (canonical,)):
+            raise ValueError("Yunda sheet header conflicts with the reviewed field order")
+    if current == list(sink.FIELD_NAMES):
+        return
+    result = feishu_operation("write_sheet", {
+        "spreadsheet_token": spreadsheet_token, "range": header_range,
+        "values": [list(sink.FIELD_NAMES)], "as": "bot",
+    })
+    if result.get("error") or result.get("errors"):
+        raise ValueError("Yunda sheet header update failed")
+    observed = _strict_sheet_values(feishu_operation("read_sheet", {
+        "spreadsheet_token": spreadsheet_token, "range": header_range, "as": "bot",
+    }))
+    if observed != [list(sink.FIELD_NAMES)]:
+        raise ValueError("Yunda sheet header update was not verified")
 
 
 def _replace_yunda_send_sheet(
@@ -2484,6 +2472,13 @@ def _replace_yunda_send_sheet(
         )
     template = sink._qualify_sheet_range(template, sheet_ref)
     clear_range = sink._qualify_sheet_range(clear_range, sheet_ref)
+    clear_match = re.fullmatch(r"(?P<sheet>[^!]+)!(?P<column>[A-Z]+)(?P<start>\d+):[A-Z]+(?P<end>\d+)", clear_range)
+    if clear_match is None:
+        raise PluginExecutionError("Yunda sheet clear range is invalid", code="BROKER_RESOURCE_INVALID")
+    clear_range = build_range_from_template(
+        clear_range, int(clear_match["end"]) - int(clear_match["start"]) + 1, len(sink.FIELD_NAMES),
+    )
+    _ensure_yunda_send_sheet_headers(str(resource["spreadsheet_token"]), sheet_ref)
     values = sink._build_sheet_values(records, target_date=date.fromisoformat(target_date))
     if len(values) != len(records):
         return {"ok": False, "record_count": 0}

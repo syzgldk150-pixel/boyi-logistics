@@ -56,6 +56,11 @@ def database():
         # Post-055 migration on this pre-split fixture: the entity table is local.
         migration = (ROOT / "agent/migrations/059_boyi_waybill_platform_link.sql").read_text()
         cursor.execute(migration.replace("{{waybill_db}}.", ""))
+        # Apply the source-field DDL to this deliberately pre-split source table.
+        # The complete physical-table migration is covered in the split test suite.
+        migration = (ROOT / "agent/migrations/060_platform_waybill_fields.sql").read_text()
+        source_ddl = migration.split(";", 1)[0].replace("{{waybill_db}}.ronghui_waybills", "waybills")
+        cursor.execute(source_ddl)
         connection.commit()
 
         # This fixture also exercises historical 050/051 in-place migrations.
@@ -137,7 +142,7 @@ def test_manual_boyi_sequence_and_saved_date_keyword_query(manual_repository):
     assert repo.get_waybill(first_id, source="manual")["open_date"] == "2026-09-16"
     assert repo.get_waybill_by_no(first_no, source="manual")["id"] == first_id
     assert repo.get_waybill(first_id, source="manual")["receipt_required"] == 1
-    assert repo.get_waybill_by_no(first_no)["receipt_required"] == 1
+    assert str(repo.get_waybill_by_no(first_no)["receipt_required"]) == "1"
     assert repo.get_waybill(second_id, source="manual")["receipt_required"] == 0
     assert repo.get_waybill(first_id, source="manual")["sender_address"] == "湖南省邵阳市测试路8号"
     assert repo.get_waybill_by_no(first_no)["sender_address"] == "湖南省邵阳市测试路8号"
@@ -183,8 +188,14 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
     with repo.connect() as connection, connection.cursor() as cursor:
         cursor.execute("UPDATE boyi_waybills SET id = id + 100, open_date = '2026/09/16'")
         cursor.execute("SHOW COLUMNS FROM waybills")
-        columns = ", ".join("`" + row["Field"] + "`" for row in cursor.fetchall())
-        cursor.execute(f"INSERT INTO waybills ({columns}) SELECT {columns} FROM boyi_waybills")
+        source_columns = [row["Field"] for row in cursor.fetchall()]
+        columns = ", ".join("`" + name + "`" for name in source_columns)
+        # Platform-only fields did not exist on the historical Boyi source rows.
+        boyi_projection = ", ".join(
+            "NULL" if name in {"recorded_cost", "to_pay_amount", "receipt_number"} else "`" + name + "`"
+            for name in source_columns
+        )
+        cursor.execute(f"INSERT INTO waybills ({columns}) SELECT {boyi_projection} FROM boyi_waybills")
         cursor.execute("DELETE FROM boyi_waybills")
         cursor.execute("UPDATE waybills SET open_date = '2026/09/16' WHERE id = %s", [provider_id])
     before = rows(repo.connect)
@@ -204,8 +215,12 @@ def test_local_date_migration_preserves_numbers_fields_and_totals(manual_reposit
                 cursor.execute(sql)
         cursor.execute("SELECT * FROM boyi_waybills ORDER BY id")
         moved = cursor.fetchall()
-    assert moved == [dict(row, receipt_required=0, sender_address=None, linked_platform=None, linked_waybill_no=None)
-                     for row in expected if row["source"] == "manual"]
+    assert moved == [
+        dict({key: value for key, value in row.items()
+              if key not in {"recorded_cost", "to_pay_amount", "receipt_number"}},
+             receipt_required=0, sender_address=None, linked_platform=None, linked_waybill_no=None)
+        for row in expected if row["source"] == "manual"
+    ]
     assert rows(repo.connect) == [row for row in expected if row["source"] != "manual"]
     result = repo.search_waybills({"source": "manual", "date_from": "2026-09-16", "date_to": "2026-09-16"})
     assert result["summary"]["total"] == 1
@@ -271,7 +286,7 @@ def test_fresh_native_identity_reconciles_legacy_without_duplicate_totals(databa
     console = DocumentRepository.__new__(DocumentRepository)
     console.connect = database
     console.placeholder = "%s"
-    fresh = {**original, "status": "signed", "freight_fee": "18.25", "transfer_fee": "18.25", "quantity_lines": "5",
+    fresh = {**original, "status": "signed", "recorded_cost": "18.25", "freight_fee": "10.25", "transfer_fee": "8.00", "quantity_lines": "5",
              "receiver_name": "corrected recipient"}
     for _ in range(2):
         result = repository.publish([fresh], scope=scope, business_date=DAY,
@@ -409,6 +424,9 @@ def test_real_provider_paging_normalization_database_and_cached_query_chain(data
     from types import SimpleNamespace
     source_rows = [{"BILL_CODE": f"R-fixture-{index:03d}", "REGISTER_DATE": "2026/09/08 12:00:00",
                     "PIECE_NUMBER": 1, "GUEST_FREIGHT": "12.50"} for index in range(101)]
+    # Receipt documents count toward native pagination but are excluded before
+    # required send-order costs are parsed or SQL coverage is published.
+    source_rows.append({"BILL_CODE": "H-fixture", "REGISTER_DATE": "2026/09/08 12:00:00"})
     requests = []
     fail_second_page = False
     class Session:
@@ -459,7 +477,7 @@ def test_actual_nightly_projection_uses_verified_scope_and_rebinds_account(datab
     assert second["updates"] == 1 and second["creates"] == 0 and second["deleted_stale"] == 1
     assert len(rows(database)) == 1 and rows(database)[0]["source_account_id"] == "b"
     yunda = _replace_yunda_waybill_projection(
-        [{"5.14编号": "night-one", "日期": DAY.isoformat(), "件数": "7"}], DAY.isoformat(), {"account_id": "c"})
+        [{"运单编号": "night-one", "发件日期": DAY.isoformat(), "件数": "7"}], DAY.isoformat(), {"account_id": "c"})
     assert yunda["verified"] and yunda["creates"] == 1
     assert len(rows(database)) == 2
     def unavailable(*_args):
@@ -476,7 +494,7 @@ def test_ronghui_exact_native_detail_upserts_only_returned_identity(database, mo
     from agent.tms_runtime.scripts import Send_order, query_waybill_detail
     from types import SimpleNamespace
     calls = []
-    raw = {"BILL_CODE": "exact-one", "REGISTER_DATE": DAY.isoformat(), "PIECE_NUMBER": 4}
+    raw = {"BILL_CODE": "exact-one", "REGISTER_DATE": DAY.isoformat(), "PIECE_NUMBER": 4, "GUEST_FREIGHT": "12.50"}
     class Session:
         def post(self, url, *, data, **kwargs):
             assert url == query_waybill_detail.DETAIL_URL

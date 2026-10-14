@@ -169,6 +169,7 @@ def test_yunda_detail_adapters_bind_echoed_identity_and_exact_contact_fields(
         for index, field in enumerate(adapters._YUNDA_TRACKING_SOURCE_FIELDS)
     }
     tracking["Logistics_Id"] = bill_code
+    tracking["Scan_Flag_Keys"] = ["send", "signed"]
     tracking["unreviewed_server_field"] = "drop"
     original = {
         field: f"contact-{index}"
@@ -201,10 +202,12 @@ def test_yunda_detail_adapters_bind_echoed_identity_and_exact_contact_fields(
     projected_renderer = adapters._yunda_renderer_detail_read({}, bill_code, "dot")
 
     assert tuple(projected_tracking) == adapters._YUNDA_TRACKING_SOURCE_FIELDS
+    assert projected_tracking["Scan_Flag_Keys"] == ["send", "signed"]
     assert tuple(projected_original) == adapters._YUNDA_ORIGINAL_SOURCE_FIELDS
     assert projected_renderer == {
         "Logistics_Id": bill_code,
         "price": {"Total": "12.30"},
+        "Delivers_Return": None,
     }
 
     changed = dict(tracking, Logistics_Id="DIFFERENT-WAYBILL")
@@ -258,6 +261,8 @@ def _send_sink_record() -> dict[str, object]:
         record[name] = "1.25" if name in send_sink.NUMBER_FIELDS else f"value-{index}"
     record[send_sink.INDEX_FIELD_NAME] = "YD-SEND-1"
     record[send_sink.DATE_FIELD_NAME] = "2026-08-15"
+    record["需要回单"] = "是"
+    record["status"] = "signed"
     return record
 
 
@@ -442,84 +447,66 @@ def test_send_bitable_ack_waits_for_delayed_exact_readback_without_rewriting(
     field_map = {name: name for name in send_sink.FIELD_NAMES}
     expected_payload, _updates, _creates = send_sink._build_records(
         [record],
-        existing_by_waybill={},
+        existing_by_waybill={str(record[send_sink.INDEX_FIELD_NAME]): "old-1"},
         field_name_map=field_map,
         target_date=adapters.date(2026, 8, 15),
     )
+    attachment = [{"file_token": "fixture-file"}]
     old = {
         "record_id": "old-1",
         "fields": {
-            send_sink.INDEX_FIELD_NAME: "OLD",
+            send_sink.INDEX_FIELD_NAME: record[send_sink.INDEX_FIELD_NAME],
             send_sink.DATE_FIELD_NAME: expected_payload[0]["fields"][send_sink.DATE_FIELD_NAME],
+            "附件": attachment,
+        },
+    }
+    unmatched = {
+        "record_id": "unmatched-1",
+        "fields": {
+            send_sink.INDEX_FIELD_NAME: "UNMATCHED",
+            send_sink.DATE_FIELD_NAME: expected_payload[0]["fields"][send_sink.DATE_FIELD_NAME],
+            "人工备注": "keep",
         },
     }
     calls: list[str] = []
     sleeps: list[float] = []
-
     monkeypatch.setattr(
-        adapters,
-        "_exact_workflow_resource",
+        adapters, "_exact_workflow_resource",
         lambda *_args, **_kwargs: {"base_token": "base", "table_id": "table"},
     )
     monkeypatch.setattr(
-        send_sink,
-        "_ensure_fields",
+        send_sink, "_ensure_fields",
         lambda *_args, **_kwargs: {
-            "ok": True,
-            "created": [],
-            "field_name_map": field_map,
+            "ok": True, "created": [], "field_name_map": field_map,
         },
     )
 
-    def operation(action, _params):
+    def operation(action, params):
         calls.append(action)
-        if action == "list_records" and calls.count("list_records") == 1:
-            return {"data": {"items": [old], "has_more": False}}
-        if action == "delete_records":
-            return {"ok": True, "deleted": 1}
         if action == "write_records":
+            assert params["records"] == expected_payload
+            assert params["records"][0]["record_id"] == "old-1"
+            assert "附件" not in params["records"][0]["fields"]
             return {"ok": True, "written": 1}
         if action == "list_records":
-            if calls.count("list_records") < 5:
-                return {"data": {"items": [old], "has_more": False}}
-            return {
-                "data": {
-                    "items": [
-                        {"record_id": "new-1", "fields": expected_payload[0]["fields"]}
-                    ],
-                    "has_more": False,
-                }
+            updated = {
+                "record_id": "old-1",
+                "fields": {**expected_payload[0]["fields"], "附件": attachment},
             }
+            items = [old, unmatched] if calls.count("list_records") < 5 else [updated, unmatched]
+            return {"data": {"items": items, "has_more": False}}
         raise AssertionError(action)
 
     monkeypatch.setattr(feishu_cli_tool, "feishu_operation", operation)
     monkeypatch.setattr("agent.feishu_readback.time.sleep", sleeps.append)
     result = adapters._replace_yunda_send_bitable(
-        "resource",
-        [record],
-        "2026-08-15",
-        True,
+        "resource", [record], "2026-08-15", True,
     )
-
-    assert calls == [
-        "list_records",
-        "delete_records",
-        "write_records",
-        "list_records",
-        "list_records",
-        "list_records",
-        "list_records",
-    ]
-    assert calls.count("delete_records") == 1
-    assert calls.count("write_records") == 1
+    assert calls == ["list_records", "write_records", *["list_records"] * 4]
     assert sleeps == [0.5, 1.0, 2.0]
     assert result | {
-        "ok": True,
-        "record_count": 1,
-        "written": 1,
-        "deleted": 1,
-        "verified": True,
-        "readback_count": 1,
+        "ok": True, "record_count": 1, "written": 1, "deleted": 0,
+        "verified": True, "readback_count": 1, "retained_unmatched": 1,
     } == result
 
 
@@ -559,9 +546,11 @@ def test_send_sheet_lost_response_waits_for_delayed_exact_readback_without_rewri
     )
 
     def operation(action, _params):
-        read_calls.append(action)
         assert action == "read_sheet"
-        assert _params["range"] == "Sheet1!A2:Y5000"
+        if _params["range"] == "Sheet1!A1:AD1":
+            return {"ok": True, "data": {"valueRange": {"values": [list(send_sink.FIELD_NAMES)]}}}
+        read_calls.append(action)
+        assert _params["range"] == "Sheet1!A2:AD5000"
         observed = stale_values if len(read_calls) < 4 else values
         return {"ok": True, "data": {"valueRange": {"values": observed}}}
 
@@ -615,6 +604,8 @@ def test_send_sheet_replace_rejects_a_stale_managed_tail_after_clear_ack(
     )
 
     def operation(action, _params):
+        if _params["range"] == "Sheet1!A1:AD1":
+            return {"ok": True, "data": {"valueRange": {"values": [list(send_sink.FIELD_NAMES)]}}}
         read_calls.append(action)
         return {
             "ok": True,

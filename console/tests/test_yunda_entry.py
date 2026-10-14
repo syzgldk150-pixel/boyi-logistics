@@ -1633,6 +1633,38 @@ class YundaEntryBackendTests(unittest.TestCase):
 
 
 class SharedYundaMapperTests(unittest.TestCase):
+    def test_synced_fields_keep_source_cost_freight_cod_and_to_pay_independent(self):
+        row = build_console_waybill_from_yunda_data({
+            "运单编号": "SYNTH-001", "发件日期": "2026-10-01", "status": "signed",
+            "录单运费": "48.35", "运费": "65.00", "到付款": "75.00",
+            "代收货款": "200.00", "保价金额": "1000", "需要回单": "否",
+            "寄件地址": "合成地址", "回单号": "RC-TEST", "体积重量": 0,
+        })
+        self.assertEqual("48.35", row["recorded_cost"])
+        self.assertEqual("65.00", row["freight_fee"])
+        self.assertEqual("75.00", row["to_pay_amount"])
+        self.assertEqual("200.00", row["cod_amount"])
+        self.assertEqual("1000.00", row["insurance_amount"])
+        self.assertEqual("", row["transfer_fee"])
+        self.assertEqual("0", row["receipt_required"])
+        self.assertEqual("合成地址", row["sender_address"])
+        self.assertEqual("RC-TEST", row["receipt_number"])
+        self.assertEqual("signed", row["status"])
+        self.assertIn("体积重 0", row["weight_volume"])
+
+    def test_missing_source_amount_is_not_invented_from_old_fee(self):
+        row = build_console_waybill_from_yunda_data({
+            "运单编号": "SYNTH-002", "中转运费": "123", "COD": "45", "status": "in_transit",
+        })
+        self.assertEqual("", row["recorded_cost"])
+        self.assertEqual("", row["cod_amount"])
+        self.assertEqual("45.00", row["to_pay_amount"])
+
+    def test_invalid_source_amount_is_explicit_failure(self):
+        for amount in ("bad", "NaN", "Infinity"):
+            with self.subTest(amount=amount), self.assertRaisesRegex(ValueError, "YUNDA_AMOUNT_INVALID"):
+                build_console_waybill_from_yunda_data({"运单编号": "SYNTH-003", "录单运费": amount})
+
     def test_shared_mapper_keeps_live_and_sync_shapes_consistent(self):
         live_row = {
             "LogisticsId": "YD009",

@@ -2,6 +2,28 @@
 
 寄件查询与夜间同步分开：Console 和 Agent 查询走 `send-waybills-query` 普通接口；夜间插件独立采集并写同一数据库。查询不创建 Command、Run 或后台领取任务。
 
+## 寄件字段与金额（2026-10-14）
+
+两个寄件插件 2.1.0 的飞书总成本字段统一为 **录单运费**，Console 统一读取 `recorded_cost`，只显示一项 **录单成本**。它不是客户运费，也不再写入 `transfer_fee`。融辉从原页 `GUEST_FREIGHT`（原页标签“录单金额”）读取；韵达普通寄件逐票读取原页编辑器 `renderer.price.Total`，填仓寄件读取本次列表 `Total_Cost_Money`。普通列表成本可能被掩码，不能拿掩码替代编辑器金额，也不能使用旧成本填补新查询失败。
+
+| 字段 | 融辉原页 | 韵达原页 |
+| --- | --- | --- |
+| 实际重量 | `BILL_WEIGHT` | `Gross_Weight` |
+| 目的网点 | `DISPATCH_UNDERLING_SITE`；`DESTINATION` 是目的地 | `Buyer_Destination_Dot_Name` |
+| 计费重量 | `FEE_WEIGHT`，独立保留 | 不用其他重量猜测 |
+| 运费 | `FREIGHT` | `Freight` |
+| 到付款 | `TOPAYMENT` | `COD` |
+| 代收货款 | `GOODS_PAYMENT` | `Collection_Money` |
+| 保价金额 | `INSURANCE` | `Insured_Amount` |
+| 寄件地址 | `SEND_MAN_ADDRESS` | `Sender_Address` |
+| 需要回单 | `BL_INDENTURE` | 编辑器 `Delivers_Return`；`Return_Type` 是退回件 |
+
+金额用 Decimal 校验，保留真实零值；缺失、非数值、非有限数字或身份不唯一必须明确失败/无数据，不能替换为零。迁移 `060_platform_waybill_fields.sql` 新增平台费用、地址与回单字段，刷新跨库视图并撤销旧覆盖证明。旧成本不自动拷入新字段，旧融辉重量在重新读取前显示“历史重量（待核验）”。Console 缺失/非法成本显示无数据并停止对应汇总。
+
+韵达详情按原页“全部历史数据”选项显式请求 `history=extra`；`history=now` 在原页标为“近10月”，不能用它的空结果判定历史运单不存在。普通寄件只按列表 `Sign_State` 原文“已签收”/“未签收”映射 `signed`/`in_transit`，未知值阻断同步。填仓单按精确运单根的 `smi.info.scanFlag` 键集合判断：存在 `signed` 为已签收，否则存在 `send`、`transfer` 或 `deliver` 为运输中；缺失、空集合或仅有问题标记均失败。两种来源不互相回退，历史回填不默认运输中。编辑器返回的 `Logistics_Id` 必须与请求精确一致，再使用 `price.Total`。
+
+飞书历史字段按已有字段 ID 原位改名、按唯一运单编号更新托管字段，保留记录 ID、附件、关联和人工列。普通日期、编号、体积重量同义字段统一；旧名称与新名称同时存在等歧义不能任选其一。源列表未返回的既有飞书记录保留并报告，不能据此删除；缺单号的业务行也不能猜测匹配。韵达普通 Sheet 保持现有当日快照语义，历史全集位于对应 Bitable 和运单数据库。
+
 ## 已实现的路径
 
 - 发货计费吨位复用 `waybill_query.collect_ronghui_day` 完整分页，在 `shipment_source.py` 中按宿主唯一用途账号、真实站点与开单日期构建本次快照，不新增账本或复用旧展示重量。每次按需刷新，因此能排除已从原查询消失的作废单；详细来源合同与验收边界见 [发货吨位与飞书知识](shipment_knowledge_queries.md)。

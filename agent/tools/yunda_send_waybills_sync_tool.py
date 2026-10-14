@@ -16,6 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from agent.workflow_resource_store import get_workflow_resource
 from shared.yunda_console_waybill import build_console_waybill_from_yunda_data
+from service_v2_plugins.sync_yunda_send_waybills_v2.payload.yunda_send_fields import FIELD_NAMES
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import sync_console_waybills
 from tools.phase7_sync_common import (
@@ -38,37 +39,16 @@ DEFAULT_SHEET_TEMPLATE_RANGE = f"{DEFAULT_SHEET_REF}!A2:A2"
 DEFAULT_SHEET_CLEAR_END_ROW = 5000
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 NO_FETCHED_ROWS_REASON = "no_fetched_rows"
-INDEX_FIELD_NAME = "5.14编号"
-INDEX_FIELD_ALIASES = (INDEX_FIELD_NAME, "运单编号", "运单号")
-DATE_FIELD_NAME = "日期"
+INDEX_FIELD_NAME = "运单编号"
+INDEX_FIELD_ALIASES = (INDEX_FIELD_NAME, "5.14编号", "运单号")
+FIELD_ALIASES = {
+    "运单编号": ("运单编号", "5.14编号", "运单号"),
+    "发件日期": ("发件日期", "日期"),
+    "体积重量": ("体积重量", "体积重"),
+    "录单运费": ("录单运费", "中转运费"),
+}
+DATE_FIELD_NAME = "发件日期"
 
-FIELD_NAMES = (
-    INDEX_FIELD_NAME,
-    "目的网点",
-    "收件区/县",
-    "收件地址",
-    "寄件人",
-    "寄件手机",
-    "收货人",
-    "收货电话",
-    "货物名称",
-    "包装类型",
-    "派送方式",
-    "件数",
-    "实际重量",
-    "现付",
-    "月结",
-    "提付",
-    "中转运费",
-    "回单号",
-    "备注",
-    "结算重量",
-    "体积",
-    "支付类型",
-    "体积重",
-    "到付款",
-    DATE_FIELD_NAME,
-)
 
 NUMBER_FIELDS = {
     "件数",
@@ -76,11 +56,14 @@ NUMBER_FIELDS = {
     "现付",
     "月结",
     "提付",
-    "中转运费",
+    "录单运费",
     "结算重量",
     "体积",
-    "体积重",
+    "体积重量",
     "到付款",
+    "运费",
+    "代收货款",
+    "保价金额",
 }
 DATE_FIELDS = {DATE_FIELD_NAME}
 FIELD_TYPES = {
@@ -145,8 +128,10 @@ def _to_number(value: Any) -> int | float | None:
         return None
     try:
         number = Decimal(text)
-    except (InvalidOperation, ValueError):
-        return None
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("Yunda send numeric value is invalid") from exc
+    if not number.is_finite():
+        raise ValueError("Yunda send numeric value is invalid")
     if number == number.to_integral_value():
         return int(number)
     return float(number)
@@ -284,7 +269,7 @@ def _resolve_index_field_name(existing_fields: set[str], primary_field_name: str
     for alias in INDEX_FIELD_ALIASES:
         if alias in existing_fields:
             return alias
-    return primary_field_name or INDEX_FIELD_NAME
+    return INDEX_FIELD_NAME
 
 
 def _build_field_name_map(
@@ -329,14 +314,41 @@ def _ensure_fields(base_token: str, table_id: str, params: dict[str, Any]) -> di
         return {"error": "飞书读取多维表字段失败", "feishu_result": list_result}
 
     field_items = _extract_items(list_result)
+    # Rename reviewed synonyms in place so existing values and references retain
+    # their field identity. Multiple matching columns need an explicit merge.
+    for canonical in FIELD_NAMES:
+        aliases = FIELD_ALIASES.get(canonical, (canonical,))
+        matches = [item for item in field_items if _field_name(item) in aliases]
+        if len(matches) > 1:
+            return {"error": f"飞书存在重复同义字段，需要先归并：{canonical}"}
+        if not matches:
+            continue
+        item = matches[0]
+        actual_type = item.get("type")
+        if actual_type is None:
+            return {"error": f"飞书字段类型缺失：{canonical}"}
+        if actual_type != FIELD_TYPES[canonical] and canonical != INDEX_FIELD_NAME:
+            return {"error": f"飞书字段类型不匹配：{canonical}"}
+        if _field_name(item) != canonical or actual_type != FIELD_TYPES[canonical]:
+            field_id = str(item.get("field_id") or "").strip()
+            if not field_id:
+                return {"error": f"飞书旧字段缺少身份：{canonical}"}
+            rename_result = feishu_operation("update_field", {
+                "base_token": base_token, "table_id": table_id,
+                "field_id": field_id, "field_name": canonical,
+                "type": FIELD_TYPES[canonical],
+                "as": params.get("as", "bot"),
+            })
+            if rename_result.get("error") or rename_result.get("errors"):
+                return {"error": f"飞书字段改名失败：{canonical}"}
+            item["field_name"] = canonical
+            item["type"] = FIELD_TYPES[canonical]
     existing = {_field_name(item) for item in field_items}
     primary_field_name = _primary_field_name(field_items)
     index_field_name = _resolve_index_field_name(existing, primary_field_name)
     has_explicit_index_field = index_field_name == INDEX_FIELD_NAME
     created: list[dict[str, Any]] = []
     for name in FIELD_NAMES if create_missing else ():
-        if name == INDEX_FIELD_NAME and primary_field_name and not has_explicit_index_field:
-            continue
         if name in existing:
             continue
         create_result = feishu_operation(
@@ -466,6 +478,8 @@ def _build_sheet_values(rows: list[dict[str, Any]], *, target_date: dt.date) -> 
     return values
 
 
+
+
 def _sync_sheet_copy(rows: list[dict[str, Any]], params: dict[str, Any], *, target_date: dt.date) -> dict[str, Any]:
     if params.get("sync_sheet") is False or params.get("_skip_sheet_sync") is True:
         return {"ok": True, "skipped": True, "rows": 0}
@@ -496,7 +510,7 @@ def _weight_volume_text(row: dict[str, Any]) -> str:
         ("实际重量", "实际重量"),
         ("体积", "体积"),
         ("结算重量", "结算重量"),
-        ("体积重", "体积重"),
+        ("体积重量", "体积重"),
     ):
         value = _text_from_field_value(row.get(field_name))
         if value:
@@ -530,45 +544,12 @@ def _scan_status_text(row: dict[str, Any]) -> str:
 
 
 def _console_waybill_records(rows: list[dict[str, Any]], *, target_date: dt.date) -> list[dict[str, Any]]:
-    shared_records: list[dict[str, Any]] = []
-    for row in rows:
-        mapped = build_console_waybill_from_yunda_data(row, target_date=target_date)
-        if mapped:
-            shared_records.append(mapped)
-    if shared_records:
-        return shared_records
     records: list[dict[str, Any]] = []
     for row in rows:
-        waybill_no = _normalize_waybill(row.get(INDEX_FIELD_NAME))
-        if not waybill_no:
-            continue
-        records.append(
-            {
-                "waybill_no": waybill_no,
-                "destination_site": row.get("目的网点", ""),
-                "open_date": _console_date_text(row.get(DATE_FIELD_NAME), target_date=target_date),
-                "receiver_address": row.get("收件地址", ""),
-                "receiver_name": row.get("收货人", ""),
-                "receiver_phone": row.get("收货电话", ""),
-                "sender_name": row.get("寄件人", ""),
-                "sender_phone": row.get("寄件手机", ""),
-                "goods_name_lines": row.get("货物名称", ""),
-                "package_type_lines": row.get("包装类型", ""),
-                "quantity_lines": row.get("件数", ""),
-                "weight_volume": _weight_volume_text(row),
-                "delivery_method": row.get("派送方式", ""),
-                "freight_fee": _freight_fee_text(row),
-                "pickup_fee": "",
-                "delivery_fee": "",
-                "transfer_fee": row.get("中转运费", ""),
-                "payment_method": row.get("支付类型", ""),
-                "insurance_amount": "",
-                "cod_amount": row.get("到付款", ""),
-                "remark": row.get("备注", ""),
-                "scan_status": _scan_status_text(row),
-                "status": "in_transit",
-            }
-        )
+        mapped = build_console_waybill_from_yunda_data(row, target_date=target_date)
+        if mapped is None:
+            raise ValueError("Yunda console record identity is missing")
+        records.append(mapped)
     return records
 
 
@@ -604,12 +585,13 @@ def _existing_record_index(
             record_id = str(item.get("record_id") or "").strip()
             fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
             waybill_no = _normalize_waybill(fields.get(index_field_name))
-            if record_id and waybill_no and waybill_no not in index:
-                index[waybill_no] = record_id
+            if not record_id or not waybill_no or waybill_no in index or record_id in index.values():
+                return None, {"error": "Yunda Bitable identity is missing or duplicated"}
+            index[waybill_no] = record_id
         if len(items) < limit:
-            break
+            return index, {"pages": pages, "indexed": len(index)}
         offset += limit
-    return index, {"pages": pages, "indexed": len(index)}
+    return None, {"error": "Yunda Bitable pagination exceeded max_pages"}
 
 
 def _existing_record_ids_for_date(
@@ -856,45 +838,19 @@ def _run_yunda_send_waybills_sync_for_date(params: dict[str, Any], target_date: 
             "records": records,
         }
 
-    date_field_name = str(field_name_map.get(DATE_FIELD_NAME) or DATE_FIELD_NAME).strip()
-    target_date_record_ids, list_result = _existing_record_ids_for_date(
-        base_token,
-        table_id,
-        params,
-        date_field_name=date_field_name,
-        target_date=target_date,
+    existing_by_waybill, list_result = _existing_record_index(
+        base_token, table_id, params,
+        index_field_name=str(field_name_map.get(INDEX_FIELD_NAME) or INDEX_FIELD_NAME),
     )
-    if target_date_record_ids is None:
-        return {"error": "飞书读取现有寄件运单记录失败", "list_result": list_result, "fetched": len(rows)}
-
+    if existing_by_waybill is None:
+        return {"error": "飞书现有运单编号缺失、重复或读取不完整", "list_result": list_result, "fetched": len(rows)}
     records, update_count, create_count = _build_records(
         rows,
-        existing_by_waybill={},
+        existing_by_waybill=existing_by_waybill,
         field_name_map=field_name_map,
         target_date=target_date,
     )
-
     delete_result: dict[str, Any] = {"ok": True, "requested": 0, "deleted": 0, "results": []}
-    if target_date_record_ids:
-        delete_result = feishu_operation(
-            "delete_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "record_ids": target_date_record_ids,
-                "as": params.get("as", "bot"),
-            },
-        )
-        if "error" in delete_result or delete_result.get("errors"):
-            return {
-                "error": "delete target-date yunda send waybill records failed",
-                "fetched": len(rows),
-                "updates": update_count,
-                "creates": create_count,
-                "target_date_record_ids": target_date_record_ids,
-                "delete_result": delete_result,
-                "list_result": list_result,
-            }
 
     write_result: dict[str, Any] = {"ok": True, "requested": 0, "written": 0, "results": []}
     if records:

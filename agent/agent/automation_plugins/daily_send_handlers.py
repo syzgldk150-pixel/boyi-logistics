@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
@@ -57,6 +58,7 @@ _BITABLE_FIELDS = (
     "收件地址",
     "寄件人",
     "寄件手机",
+    "寄件地址",
     "收货人",
     "收货电话",
     "货物名称",
@@ -64,7 +66,12 @@ _BITABLE_FIELDS = (
     "派送方式",
     "件数",
     "实际重量",
-    "录单金额",
+    "计费重量",
+    "录单运费",
+    "运费",
+    "代收货款",
+    "保价金额",
+    "需要回单",
     "回单号",
     "备注",
     "支付类型",
@@ -77,7 +84,11 @@ _NUMERIC_FIELDS = frozenset(
     {
         "件数",
         "实际重量",
-        "录单金额",
+        "计费重量",
+        "录单运费",
+        "运费",
+        "代收货款",
+        "保价金额",
         "体积重量",
         "体积",
         "结算重量",
@@ -89,19 +100,25 @@ _SOURCE_FIELDS = frozenset(
         "BILL_CODE",
         "REGISTER_DATE",
         "BL_SIGNS_MARKING_TEXT",
-        "DESTINATION",
+        "DISPATCH_UNDERLING_SITE",
         "ACCEPT_COUNTY",
         "ACCEPT_MAN_ADDRESS",
         "SEND_MAN",
         "SEND_MAN_PHONE",
+        "SEND_MAN_ADDRESS",
         "ACCEPT_MAN",
         "ACCEPT_MAN_PHONE",
         "GOODS_NAME",
         "PACK_TYPE",
         "DISPATCH_MODE",
         "PIECE_NUMBER",
+        "BILL_WEIGHT",
         "FEE_WEIGHT",
         "GUEST_FREIGHT",
+        "FREIGHT",
+        "GOODS_PAYMENT",
+        "INSURANCE",
+        "BL_INDENTURE",
         "R_BILLCODE",
         "REMARK",
         "PAYMENT_TYPE",
@@ -128,18 +145,23 @@ _PROJECTION_FIELDS = (
     "receiver_phone",
     "sender_name",
     "sender_phone",
+    "sender_address",
     "goods_name_lines",
     "package_type_lines",
     "quantity_lines",
     "weight_volume",
     "delivery_method",
     "freight_fee",
+    "recorded_cost",
     "pickup_fee",
     "delivery_fee",
     "transfer_fee",
     "payment_method",
     "insurance_amount",
     "cod_amount",
+    "to_pay_amount",
+    "receipt_required",
+    "receipt_number",
     "remark",
     "scan_status",
     "status",
@@ -415,7 +437,7 @@ def _date_text(value: object) -> str:
         if timestamp > 10_000_000_000:
             timestamp /= 1000
         try:
-            return datetime.fromtimestamp(timestamp).date().isoformat()
+            return datetime.fromtimestamp(timestamp, ZoneInfo("Asia/Shanghai")).date().isoformat()
         except (OSError, OverflowError, ValueError):
             return ""
     text = str(value).strip()
@@ -477,6 +499,8 @@ def _projection_records(value: object) -> list[dict[str, str]]:
         if not isinstance(raw, Mapping) or set(raw) != set(_PROJECTION_FIELDS):
             raise _error("daily-send projection record is invalid", "BROKER_ARGUMENT_INVALID")
         record = {field: _optional_text(raw.get(field), field) for field in _PROJECTION_FIELDS}
+        if record["receipt_required"] not in {"", "0", "1"}:
+            raise _error("daily-send receipt requirement is invalid", "BROKER_ARGUMENT_INVALID")
         identity = record["waybill_no"]
         if not identity or identity in identities:
             raise _error("daily-send projection identities are invalid", "BROKER_ARGUMENT_INVALID")
@@ -706,15 +730,24 @@ class _DailySendHandlers:
             raise _error("daily-send Bitable records are invalid", "BROKER_ARGUMENT_INVALID")
         normalized: list[dict[str, Any]] = []
         identities: set[str] = set()
+        updated_record_ids: set[str] = set()
         for raw in records:
-            if not isinstance(raw, Mapping) or set(raw) != {"fields"}:
+            if not isinstance(raw, Mapping) or set(raw) not in ({"fields"}, {"fields", "record_ref"}):
                 raise _error("daily-send Bitable record is invalid", "BROKER_ARGUMENT_INVALID")
             canonical = _canonical_fields(raw.get("fields"))
             identity = str(canonical[_WAYBILL_FIELD])
             if identity in identities:
                 raise _error("daily-send Bitable identities are duplicated", "BROKER_ARGUMENT_INVALID")
             identities.add(identity)
-            normalized.append({"fields": dict(raw["fields"])})
+            record = {"fields": dict(raw["fields"])}
+            if "record_ref" in raw:
+                payload = self._codec.decode(context, "record", raw["record_ref"])
+                record_id = _text(payload.get("record_id"), "record_id", maximum=512)
+                if record_id in updated_record_ids:
+                    raise _error("daily-send update references are duplicated", "BROKER_ARGUMENT_INVALID")
+                updated_record_ids.add(record_id)
+                record["record_id"] = record_id
+            normalized.append(record)
         self._mark_write_started(context)
         raw = self._ports.bitable_write(resource_id, normalized)
         if (

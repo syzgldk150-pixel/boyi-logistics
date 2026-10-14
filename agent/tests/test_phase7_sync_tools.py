@@ -406,9 +406,9 @@ class Phase7SyncToolTests(unittest.TestCase):
                 self.calls.append({"url": url, "params": params, "data": data})
                 page_index = int(data["pageIndex"])
                 rows = [
-                    {"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12 08:00:00", "PIECE_NUMBER": "1"},
-                    {"BILL_CODE": "R002", "REGISTER_DATE": "2026-05-12 09:00:00", "PIECE_NUMBER": "2"},
-                    {"BILL_CODE": "R003", "REGISTER_DATE": "2026-05-12 10:00:00", "PIECE_NUMBER": "3"},
+                    {"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12 08:00:00", "PIECE_NUMBER": "1", "GUEST_FREIGHT": "12.50"},
+                    {"BILL_CODE": "R002", "REGISTER_DATE": "2026-05-12 09:00:00", "PIECE_NUMBER": "2", "GUEST_FREIGHT": 0},
+                    {"BILL_CODE": "R003", "REGISTER_DATE": "2026-05-12 10:00:00", "PIECE_NUMBER": "3", "GUEST_FREIGHT": "15.50"},
                 ]
                 start = page_index * 2
                 return Response({"total": 3, "data": rows[start:start + 2]})
@@ -433,7 +433,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             def json(self):
                 return {
                     "total": 3,
-                    "data": [{"BILL_CODE": "R003", "REGISTER_DATE": "2026-05-12 10:00:00"}],
+                    "data": [{"BILL_CODE": "R003", "REGISTER_DATE": "2026-05-12 10:00:00", "GUEST_FREIGHT": "15.50"}],
                 }
 
         class Session:
@@ -484,7 +484,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                     "运单编号": "R001",
                     "发件日期": "2026-05-12 08:00:00",
                     "件数": "1",
-                    "录单金额": "12.50",
+                    "录单运费": "12.50",
+                    "运费": "8.25",
                 }
             ],
         }
@@ -518,7 +519,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 self.assertEqual(1, len(records))
                 self.assertNotIn("record_id", records[0])
                 self.assertEqual("R001", records[0]["fields"]["运单编号"])
-                self.assertEqual(12.5, records[0]["fields"]["录单金额"])
+                self.assertEqual("12.50", records[0]["fields"]["录单运费"])
                 return {"ok": True, "written": 1}
             if action == "delete_records":
                 self.assertEqual(["rec-keep", "rec-stale"], params["record_ids"])
@@ -543,7 +544,8 @@ class Phase7SyncToolTests(unittest.TestCase):
         sql_records = self.send_order_sql_mock.call_args.args[0]
         self.assertEqual("R001", sql_records[0]["waybill_no"])
         self.assertEqual("2026-05-12", sql_records[0]["open_date"])
-        self.assertEqual("12.50", sql_records[0]["freight_fee"])
+        self.assertEqual("12.50", sql_records[0]["recorded_cost"])
+        self.assertEqual("8.25", sql_records[0]["freight_fee"])
         self.assertEqual("ronghui", self.send_order_sql_mock.call_args.kwargs["source"])
         self.assertTrue(self.send_order_sql_mock.call_args.kwargs["replace_date"])
         self.assertEqual("2026-05-12", call_http.call_args.args[1]["params"]["target_date"])
@@ -776,7 +778,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         feishu_op.assert_not_called()
         self.send_order_sql_mock.assert_called_once()
 
-    def test_init_waybills_sql_from_feishu_reads_ronghui_and_yunda(self):
+    def test_init_waybills_sql_from_feishu_rejects_yunda_without_verified_status(self):
         captured: list[tuple[str, list[dict[str, Any]]]] = []
 
         def _fake_resource(key):
@@ -841,14 +843,11 @@ class Phase7SyncToolTests(unittest.TestCase):
         ):
             result = init_waybills_sql_from_feishu_tool.run_init_waybills_sql_from_feishu({"list_limit": 500})
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(3, result["feishu_records"])
-        self.assertEqual(1, result["skipped_receipt_like"])
-        self.assertEqual(2, result["sql_upserted"])
+        self.assertEqual("yunda", result["provider"])
+        self.assertEqual("YUNDA_WAYBILL_STATUS_MISSING", result["raw_error"])
+        self.assertEqual(1, len(captured))
         self.assertEqual("ronghui", captured[0][0])
         self.assertEqual("R00015275708", captured[0][1][0]["waybill_no"])
-        self.assertEqual("yunda", captured[1][0])
-        self.assertEqual("978288946", captured[1][1][0]["waybill_no"])
         cleanup.assert_called_once_with(source="ronghui")
 
     def test_send_order_sync_zero_rows_clears_target_date(self):
@@ -1223,8 +1222,9 @@ class Phase7SyncToolTests(unittest.TestCase):
                 "total": 1,
                 "records": [
                     {
-                        "5.14编号": "978SQL001",
-                        "日期": "2026-05-15",
+                        "status": "in_transit",
+                        "运单编号": "978SQL001",
+                        "发件日期": "2026-05-15",
                         "目的网点": "测试网点",
                         "收件地址": "测试地址",
                         "寄件人": "勇胜",
@@ -1281,7 +1281,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                 "data": {
                     "ok": True,
                     "total": 1,
-                    "records": [{"5.14编号": f"978{target_date[-2:]}", "日期": target_date}],
+                    "records": [{"status": "in_transit", "运单编号": f"978{target_date[-2:]}", "发件日期": target_date}],
                 },
             }
 
@@ -1308,7 +1308,7 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(2, result["sql_upserted"])
         self.assertEqual(31, result["sql_deleted_stale"])
 
-    def test_yunda_send_waybills_sync_replaces_target_date_with_new_bitable_snapshot(self):
+    def test_yunda_send_waybills_sync_updates_existing_bitable_identity(self):
         tms_payload = {
             "ok": True,
             "data": {
@@ -1316,7 +1316,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                 "total": 2,
                 "records": [
                     {
-                        "5.14编号": "978284775",
+                        "status": "in_transit",
+                        "运单编号": "978284775",
                         "目的网点": "湖南长沙岳麓区梅溪湖公司",
                         "收件区/县": "岳麓区",
                         "收件地址": "湖南省长沙市岳麓区梅溪湖街道金茂梅溪湖29栋3902",
@@ -1332,17 +1333,19 @@ class Phase7SyncToolTests(unittest.TestCase):
                         "现付": "",
                         "月结": "",
                         "提付": "115.00",
-                        "中转运费": "81.85",
+                        "运费": "115.00",
+                        "录单运费": "81.85",
                         "回单号": "",
                         "备注": "",
                         "结算重量": "250.00",
                         "体积": "1.0000",
                         "支付类型": "到付",
-                        "体积重": "200",
+                        "体积重量": "200",
                         "到付款": "115.00",
                     },
                     {
-                        "5.14编号": "978281237",
+                        "status": "in_transit",
+                        "运单编号": "978281237",
                         "目的网点": "安徽铜陵公司三分部",
                         "收件区/县": "郊区",
                         "收件地址": "安徽省铜陵市郊区铜都大道中段铜南小区",
@@ -1356,15 +1359,16 @@ class Phase7SyncToolTests(unittest.TestCase):
                         "件数": "12",
                         "实际重量": "522.00",
                         "现付": "12.00",
+                        "运费": "12.00",
                         "月结": "",
                         "提付": "",
-                        "中转运费": "257.69",
+                        "录单运费": "257.69",
                         "回单号": "HD001",
                         "备注": "测试备注",
                         "结算重量": "557.90",
                         "体积": "2.7895",
                         "支付类型": "现金",
-                        "体积重": "557.90",
+                        "体积重量": "557.90",
                         "到付款": "0.00",
                     },
                 ],
@@ -1378,8 +1382,8 @@ class Phase7SyncToolTests(unittest.TestCase):
             if action == "list_fields":
                 return {
                     "ok": True,
-                    "items": [{"field_name": "5.14编号", "is_primary": True}]
-                    + [{"field_name": name} for name in yunda_send_waybills_sync_tool.FIELD_NAMES if name != "5.14编号"],
+                    "items": [{"field_name": "运单编号", "type": 1, "is_primary": True}]
+                    + [{"field_name": name, "type": yunda_send_waybills_sync_tool.FIELD_TYPES[name]} for name in yunda_send_waybills_sync_tool.FIELD_NAMES if name != "运单编号"],
                 }
             if action == "list_records":
                 return {
@@ -1387,11 +1391,11 @@ class Phase7SyncToolTests(unittest.TestCase):
                     "items": [
                         {
                             "record_id": "rec-old",
-                            "fields": {"5.14编号": "978284775", "日期": "2026-05-15"},
+                            "fields": {"运单编号": "978284775", "发件日期": "2026-05-15"},
                         },
                         {
                             "record_id": "rec-other-day",
-                            "fields": {"5.14编号": "978284700", "日期": "2026-05-14"},
+                            "fields": {"运单编号": "978284700", "发件日期": "2026-05-14"},
                         },
                     ],
                 }
@@ -1400,21 +1404,21 @@ class Phase7SyncToolTests(unittest.TestCase):
                 return {"ok": True, "deleted": 1}
             if action == "write_records":
                 records = params["records"]
-                self.assertNotIn("record_id", records[0])
+                self.assertEqual("rec-old", records[0]["record_id"])
                 self.assertNotIn("record_id", records[1])
                 first_fields = records[0]["fields"]
                 self.assertEqual(16, first_fields["件数"])
                 self.assertEqual(115, first_fields["提付"])
                 self.assertIsNone(first_fields["现付"])
                 self.assertIsNone(first_fields["月结"])
-                self.assertEqual(81.85, first_fields["中转运费"])
+                self.assertEqual(81.85, first_fields["录单运费"])
                 self.assertEqual(
                     yunda_send_waybills_sync_tool._to_date_timestamp_ms("2026-05-15"),
-                    first_fields["日期"],
+                    first_fields["发件日期"],
                 )
                 second_fields = records[1]["fields"]
                 self.assertEqual(12, second_fields["现付"])
-                self.assertEqual(257.69, second_fields["中转运费"])
+                self.assertEqual(257.69, second_fields["录单运费"])
                 return {"ok": True, "written": 2}
             if action == "clear_sheet":
                 sheet_calls.append(params)
@@ -1436,9 +1440,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(0, result["updates"])
-        self.assertEqual(2, result["creates"])
-        self.assertEqual(1, result["deleted"])
+        self.assertEqual(1, result["updates"])
+        self.assertEqual(1, result["creates"])
+        self.assertEqual(0, result["deleted"])
         self.assertEqual(2, result["written"])
         self.assertEqual(2, result["sql_upserted"])
         self.yunda_send_sql_mock.assert_called_once()
@@ -1446,22 +1450,20 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual("978284775", sql_records[0]["waybill_no"])
         self.assertEqual("2026-05-15", sql_records[0]["open_date"])
         self.assertEqual("115.00", sql_records[0]["freight_fee"])
-        self.assertEqual("81.85", sql_records[0]["transfer_fee"])
+        self.assertEqual("81.85", sql_records[0]["recorded_cost"])
+        self.assertEqual("", sql_records[0]["transfer_fee"])
         self.assertEqual("yunda", self.yunda_send_sql_mock.call_args.kwargs["source"])
         self.assertTrue(self.yunda_send_sql_mock.call_args.kwargs["replace_date"])
-        self.assertLess(
-            [action for action, _params in calls].index("delete_records"),
-            [action for action, _params in calls].index("write_records"),
-        )
+        self.assertNotIn("delete_records", [action for action, _params in calls])
         self.assertEqual(2, result["sheet_rows"])
         self.assertEqual(2, len(sheet_calls))
         self.assertEqual(yunda_send_waybills_sync_tool.DEFAULT_SPREADSHEET_TOKEN, sheet_calls[0]["spreadsheet_token"])
-        self.assertEqual("Sheet1!A2:Y5000", sheet_calls[0]["range"])
-        self.assertEqual("Sheet1!A2:Y3", sheet_calls[1]["range"])
+        self.assertEqual("Sheet1!A2:AD5000", sheet_calls[0]["range"])
+        self.assertEqual("Sheet1!A2:AD3", sheet_calls[1]["range"])
         self.assertEqual("978284775", sheet_calls[1]["values"][0][0])
-        self.assertEqual("2026-05-15", sheet_calls[1]["values"][0][-1])
+        self.assertEqual("2026-05-15", sheet_calls[1]["values"][0][24])
 
-    def test_yunda_send_waybills_sync_zero_rows_clears_target_date(self):
+    def test_yunda_send_waybills_sync_zero_rows_retains_bitable_records(self):
         tms_payload = {
             "ok": True,
             "data": {
@@ -1478,14 +1480,14 @@ class Phase7SyncToolTests(unittest.TestCase):
             if action == "list_fields":
                 return {
                     "ok": True,
-                    "items": [{"field_name": name} for name in yunda_send_waybills_sync_tool.FIELD_NAMES],
+                    "items": [{"field_name": name, "type": yunda_send_waybills_sync_tool.FIELD_TYPES[name]} for name in yunda_send_waybills_sync_tool.FIELD_NAMES],
                 }
             if action == "list_records":
                 return {
                     "ok": True,
                     "items": [
-                        {"record_id": "rec-target", "fields": {"日期": "2026-05-21"}},
-                        {"record_id": "rec-other", "fields": {"日期": "2026-05-20"}},
+                        {"record_id": "rec-target", "fields": {"运单编号": "OLD-1", "发件日期": "2026-05-21"}},
+                        {"record_id": "rec-other", "fields": {"运单编号": "OLD-2", "发件日期": "2026-05-20"}},
                     ],
                 }
             if action == "delete_records":
@@ -1515,11 +1517,12 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(0, result["fetched"])
         self.assertEqual(0, result["written"])
         self.assertEqual(0, result["sql_upserted"])
-        self.assertEqual(1, result["deleted"])
+        self.assertEqual(0, result["deleted"])
         self.assertEqual(1, result["sql_deleted_stale"])
         self.assertEqual(0, result["sheet_rows"])
         self.assertTrue(result["sheet_result"]["skipped"])
         self.assertNotIn("write_records", [action for action, _params in calls])
+        self.assertNotIn("delete_records", [action for action, _params in calls])
         self.yunda_send_sql_mock.assert_called_once()
 
     def test_yunda_send_waybills_sync_supports_date_range(self):
@@ -1538,6 +1541,7 @@ class Phase7SyncToolTests(unittest.TestCase):
                     "total": 1,
                     "records": [
                         {
+                            "status": "in_transit",
                             yunda_send_waybills_sync_tool.INDEX_FIELD_NAME: f"978{target_date[-2:]}",
                             yunda_send_waybills_sync_tool.DATE_FIELD_NAME: target_date,
                             "件数": "1",
@@ -1550,9 +1554,9 @@ class Phase7SyncToolTests(unittest.TestCase):
             if action == "list_fields":
                 return {
                     "ok": True,
-                    "items": [{"field_name": yunda_send_waybills_sync_tool.INDEX_FIELD_NAME, "is_primary": True}]
+                    "items": [{"field_name": yunda_send_waybills_sync_tool.INDEX_FIELD_NAME, "is_primary": True, "type": 1}]
                     + [
-                        {"field_name": name}
+                        {"field_name": name, "type": yunda_send_waybills_sync_tool.FIELD_TYPES[name]}
                         for name in yunda_send_waybills_sync_tool.FIELD_NAMES
                         if name != yunda_send_waybills_sync_tool.INDEX_FIELD_NAME
                     ],
@@ -1583,32 +1587,32 @@ class Phase7SyncToolTests(unittest.TestCase):
         self.assertEqual(3, result["written"])
         self.assertEqual(3, len(write_batches))
 
-    def test_yunda_send_waybills_sync_uses_primary_field_when_index_field_missing(self):
+    def test_yunda_send_waybills_sync_rejects_unrecognized_primary_identity(self):
         tms_payload = {
             "ok": True,
             "data": {
                 "ok": True,
                 "total": 1,
-                "records": [{"5.14编号": "978284775", "件数": "16", "支付类型": "到付", "提付": "115.00"}],
+                "records": [{"status": "in_transit", "运单编号": "978284775", "件数": "16", "支付类型": "到付", "提付": "115.00"}],
             },
         }
 
         def _fake_feishu_operation(action, params):
             if action == "list_fields":
-                return {"ok": True, "items": [{"field_name": "编号", "is_primary": True}, {"field_name": "件数"}, {"field_name": "支付类型"}, {"field_name": "提付"}]}
+                return {"ok": True, "items": [{"field_name": "编号", "type": 1, "is_primary": True}, {"field_name": "件数", "type": 2}, {"field_name": "支付类型", "type": 1}, {"field_name": "提付", "type": 2}]}
             if action == "create_field":
-                self.assertNotEqual("5.14编号", params["field_name"])
+                self.assertTrue(params["field_name"])
                 return {"ok": True, "field": params["field_name"]}
             if action == "list_records":
-                return {"ok": True, "items": [{"record_id": "rec-old", "fields": {"编号": "978284775", "日期": "2026-05-15"}}]}
+                return {"ok": True, "items": [{"record_id": "rec-old", "fields": {"编号": "978284775", "发件日期": "2026-05-15"}}]}
             if action == "delete_records":
                 self.assertEqual(["rec-old"], params["record_ids"])
                 return {"ok": True, "deleted": 1}
             if action == "write_records":
                 record = params["records"][0]
-                self.assertNotIn("record_id", record)
+                self.assertEqual("rec-old", record["record_id"])
                 self.assertEqual("978284775", record["fields"]["编号"])
-                self.assertNotIn("5.14编号", record["fields"])
+                self.assertNotIn("运单编号", record["fields"])
                 return {"ok": True, "written": 1}
             if action == "clear_sheet":
                 return {"ok": True}
@@ -1626,10 +1630,8 @@ class Phase7SyncToolTests(unittest.TestCase):
                 _yunda_params(target_date="2026-05-15")
             )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(0, result["updates"])
-        self.assertEqual(1, result["creates"])
-        self.assertEqual(1, result["deleted"])
+        self.assertIn("error", result)
+        self.assertIn("identity", result["list_result"]["error"])
 
     def test_yunda_send_waybills_sync_maps_waybill_number_primary_when_ensure_fields_disabled(self):
         tms_payload = {
@@ -1639,10 +1641,12 @@ class Phase7SyncToolTests(unittest.TestCase):
                 "total": 1,
                 "records": [
                     {
-                        "5.14编号": "978284775",
+                        "status": "in_transit",
+                        "运单编号": "978284775",
                         "件数": "16",
                         "支付类型": "到付",
                         "提付": "115.00",
+                        "运费": "115.00",
                     }
                 ],
             },
@@ -1652,15 +1656,15 @@ class Phase7SyncToolTests(unittest.TestCase):
         def _fake_feishu_operation(action, params):
             actions.append(action)
             if action == "list_fields":
-                return {"ok": True, "items": [{"field_name": "运单编号", "is_primary": True}, {"field_name": "件数"}]}
+                return {"ok": True, "items": [{"field_name": "运单编号", "type": 1, "is_primary": True}, {"field_name": "件数", "type": 2}]}
             if action == "list_records":
-                return {"ok": True, "items": [{"record_id": "rec-old", "fields": {"运单编号": "978284775", "日期": "2026-05-15"}}]}
+                return {"ok": True, "items": [{"record_id": "rec-old", "fields": {"运单编号": "978284775", "发件日期": "2026-05-15"}}]}
             if action == "delete_records":
                 self.assertEqual(["rec-old"], params["record_ids"])
                 return {"ok": True, "deleted": 1}
             if action == "write_records":
                 record = params["records"][0]
-                self.assertNotIn("record_id", record)
+                self.assertEqual("rec-old", record["record_id"])
                 self.assertEqual({"运单编号": "978284775", "件数": 16}, record["fields"])
                 return {"ok": True, "written": 1}
             if action == "clear_sheet":
@@ -1680,10 +1684,11 @@ class Phase7SyncToolTests(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(0, result["updates"])
-        self.assertEqual(1, result["creates"])
-        self.assertEqual(1, result["deleted"])
+        self.assertEqual(1, result["updates"])
+        self.assertEqual(0, result["creates"])
+        self.assertEqual(0, result["deleted"])
         self.assertNotIn("create_field", actions)
+        self.assertNotIn("delete_records", actions)
 
     def test_yunda_send_waybills_sync_dry_run_does_not_call_feishu(self):
         tms_payload = {
@@ -1691,7 +1696,7 @@ class Phase7SyncToolTests(unittest.TestCase):
             "data": {
                 "ok": True,
                 "total": 1,
-                "records": [{"5.14编号": "978284775", "件数": "16", "支付类型": "到付", "提付": "115.00"}],
+                "records": [{"status": "in_transit", "运单编号": "978284775", "件数": "16", "支付类型": "到付", "提付": "115.00"}],
             },
         }
 

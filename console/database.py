@@ -371,6 +371,8 @@ def _to_money_decimal(value: Any) -> tuple[Decimal, bool]:
         return Decimal("0.00"), False
     try:
         amount = Decimal(str(cleaned)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if not amount.is_finite():
+            return Decimal("0.00"), True
     except (InvalidOperation, ValueError):
         return Decimal("0.00"), True
     return amount, False
@@ -956,7 +958,9 @@ class DocumentRepository:
         "transfer_fee", "payment_method", "insurance_amount",
         "cod_amount", "remark", "scan_status",
     ]
-    _PLATFORM_ONLY_FIELD_NAMES = ["pickup_fee", "delivery_fee"]
+    _PLATFORM_ONLY_FIELD_NAMES = [
+        "pickup_fee", "delivery_fee", "recorded_cost", "to_pay_amount", "receipt_number",
+    ]
 
     @classmethod
     def _waybill_query_table(cls, source: str | None = None) -> str:
@@ -970,7 +974,7 @@ class DocumentRepository:
         platform_only = ", ".join(cls._PLATFORM_ONLY_FIELD_NAMES)
         boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
         return (
-            f"(SELECT {columns}, {platform_only}, NULL AS receipt_required, NULL AS sender_address, "
+            f"(SELECT {columns}, {platform_only}, receipt_required, sender_address, "
             "NULL AS linked_platform, NULL AS linked_waybill_no FROM waybills UNION ALL "
             f"SELECT {columns}, {boyi_absent}, receipt_required, sender_address, linked_platform, linked_waybill_no "
             "FROM boyi_waybills WHERE source='manual') AS saved_waybills"
@@ -1778,9 +1782,14 @@ class DocumentRepository:
             f"ORDER BY {self._waybill_order_clause(filters)} "
             f"LIMIT {self.placeholder} OFFSET {self.placeholder}"
         )
+        platform_amounts = (
+            "NULL AS recorded_cost, NULL AS to_pay_amount"
+            if filters.get("source") in {"manual", "ocr"}
+            else "recorded_cost, to_pay_amount"
+        )
         summary_sql = (
             "SELECT source, created_at, open_date, freight_fee, transfer_fee, "
-            f"payment_method, cod_amount FROM {table} WHERE {where_sql}"
+            f"payment_method, cod_amount, {platform_amounts} FROM {table} WHERE {where_sql}"
         )
 
         with self.connect() as connection:
@@ -2044,10 +2053,16 @@ class DocumentRepository:
 
     def _waybill_opening_cost(self, row: dict[str, Any]) -> tuple[Decimal, bool]:
         source = str(row.get("source", "") or "").strip()
-        field_name = "transfer_fee" if source == "yunda" else "freight_fee"
+        field_name = "recorded_cost" if source in {"ronghui", "yunda"} else "freight_fee"
+        if source in {"ronghui", "yunda"} and row.get(field_name) in (None, ""):
+            return Decimal("0.00"), True
         return _to_money_decimal(row.get(field_name))
 
     def _waybill_pickup_payment(self, row: dict[str, Any]) -> tuple[Decimal, bool]:
+        if row.get("source") in {"ronghui", "yunda"}:
+            if row.get("to_pay_amount") in (None, ""):
+                return Decimal("0.00"), True
+            return _to_money_decimal(row.get("to_pay_amount"))
         payment_method = str(row.get("payment_method", "") or "")
         if "提付" not in payment_method and "到付" not in payment_method:
             return Decimal("0.00"), False
@@ -2062,6 +2077,8 @@ class DocumentRepository:
             "pickup_payment_total": Decimal("0.00"),
         }
         invalid_money_count = 0
+        invalid_cost = False
+        invalid_payment = False
         source_counts: dict[str, int] = {}
         latest_created_at = ""
         latest_open_date = ""
@@ -2085,12 +2102,14 @@ class DocumentRepository:
             amount, invalid = self._waybill_opening_cost(row)
             totals["opening_cost_total"] += amount
             invalid_money_count += int(invalid)
+            invalid_cost = invalid_cost or invalid
             amount, invalid = self._waybill_pickup_payment(row)
             totals["pickup_payment_total"] += amount
             invalid_money_count += int(invalid)
+            invalid_payment = invalid_payment or invalid
 
-        opening_cost_total = _format_money(totals["opening_cost_total"])
-        pickup_payment_total = _format_money(totals["pickup_payment_total"])
+        opening_cost_total = "" if invalid_cost else _format_money(totals["opening_cost_total"])
+        pickup_payment_total = "" if invalid_payment else _format_money(totals["pickup_payment_total"])
         return {
             "total": total,
             "manual_count": source_counts.get("manual", 0),
@@ -2121,10 +2140,10 @@ class DocumentRepository:
         scan_status = normalize_waybill_scan_status(data.get("scan_status", ""))
         data["scan_status"] = "" if status == "cancelled" else scan_status
         data["scan_status_short"] = "" if status == "cancelled" else short_waybill_scan_status(scan_status)
-        opening_cost, _ = self._waybill_opening_cost(data)
-        pickup_payment, _ = self._waybill_pickup_payment(data)
-        data["opening_cost"] = _format_money(opening_cost)
-        data["pickup_payment_amount"] = _format_money(pickup_payment)
+        opening_cost, invalid_cost = self._waybill_opening_cost(data)
+        pickup_payment, invalid_payment = self._waybill_pickup_payment(data)
+        data["opening_cost"] = "" if invalid_cost else _format_money(opening_cost)
+        data["pickup_payment_amount"] = "" if invalid_payment else _format_money(pickup_payment)
         data["print_data_url"] = f"/waybills/{data.get('id')}/print-data"
         if data.get("source") in WAYBILL_SOURCE_LABELS:
             data["print_data_url"] += f"?source={data['source']}"

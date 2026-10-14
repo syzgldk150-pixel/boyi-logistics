@@ -286,15 +286,18 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         self.assertNotIn("费用合计", html)
         self.assertNotIn("导出当前页", html)
 
-    def test_platform_detail_keeps_derived_opening_cost_and_pickup_amount(self):
+    def test_platform_detail_shows_single_recorded_cost_and_separate_payment_fields(self):
         html = self._render_page(self._sample_row(
             source="ronghui", source_label="融辉寄件", opening_cost="20.00", pickup_payment_amount="4.00",
+            recorded_cost="20.00", to_pay_amount="4.00", cod_amount="25.00",
             print_data_url="/waybills/1/print-data?source=ronghui",
         ))
 
-        self.assertIn("<dt>开单成本</dt>", html)
-        self.assertIn("<dt>提付金额</dt>", html)
-        self.assertNotIn("<dt>保价金额</dt>", html)
+        self.assertEqual(1, html.count("<dt>录单成本</dt>"))
+        self.assertRegex(html, r"<dt>到付款</dt><dd[^>]*>\s*¥4.00\s*</dd>")
+        self.assertRegex(html, r"<dt>代收货款</dt><dd[^>]*>\s*¥25.00\s*</dd>")
+        for label in ("开单成本", "中转费", "运费", "提付金额"):
+            self.assertNotIn(f"<dt>{label}</dt>", html)
 
     def test_detail_opens_as_centered_modal_not_right_drawer(self):
         template_text = (Path(__file__).resolve().parents[1] / "templates" / "waybills.html").read_text(encoding="utf-8")
@@ -750,6 +753,8 @@ class WaybillQuerySummaryTests(unittest.TestCase):
                     "created_at": "2026-05-12 10:00:00",
                     "open_date": "2026/05/12",
                     "freight_fee": "20",
+                    "recorded_cost": "20",
+                    "to_pay_amount": "8",
                     "transfer_fee": "500",
                     "payment_method": "到付",
                     "cod_amount": "8",
@@ -759,6 +764,8 @@ class WaybillQuerySummaryTests(unittest.TestCase):
                     "created_at": "2026-05-13 10:00:00",
                     "open_date": "2026/05/13",
                     "freight_fee": "115",
+                    "recorded_cost": "81.85",
+                    "to_pay_amount": "115",
                     "transfer_fee": "81.85",
                     "payment_method": "到付",
                     "cod_amount": "",
@@ -788,8 +795,8 @@ class WaybillQuerySummaryTests(unittest.TestCase):
         self.assertEqual(4, summary["total"])
         self.assertEqual(1, summary["manual_count"])
         self.assertEqual(1, summary["ocr_count"])
-        self.assertEqual("104.19", summary["opening_cost_total"])
-        self.assertEqual("104.19", summary["fee_total"])
+        self.assertEqual("", summary["opening_cost_total"])
+        self.assertEqual("", summary["fee_total"])
         self.assertEqual("123.00", summary["pickup_payment_total"])
         self.assertEqual("123.00", summary["cod_total"])
         self.assertEqual("0.00", summary["insurance_total"])
@@ -807,6 +814,8 @@ class WaybillQuerySummaryTests(unittest.TestCase):
                 "updated_at": "2026-05-15 10:00:00",
                 "freight_fee": "115.00",
                 "transfer_fee": "81.85",
+                "recorded_cost": "82.35",
+                "to_pay_amount": "15.00",
                 "payment_method": "到付",
                 "cod_amount": "",
                 "status": "signed",
@@ -815,8 +824,23 @@ class WaybillQuerySummaryTests(unittest.TestCase):
 
         self.assertEqual("韵达寄件", row["source_label"])
         self.assertEqual("已签收", row["status_label"])
-        self.assertEqual("81.85", row["opening_cost"])
-        self.assertEqual("115.00", row["pickup_payment_amount"])
+        self.assertEqual("82.35", row["opening_cost"])
+        self.assertEqual("15.00", row["pickup_payment_amount"])
+
+    def test_missing_platform_cost_does_not_fall_back_to_old_fee(self):
+        repository = DocumentRepository.__new__(DocumentRepository)
+        for value in (None, "", "bad", "NaN", "Infinity"):
+            row = repository._row_to_waybill({
+                "source": "yunda", "freight_fee": "100", "transfer_fee": "200",
+                "recorded_cost": value, "payment_method": "到付", "cod_amount": "300",
+            })
+            self.assertEqual("", row["opening_cost"])
+            self.assertEqual("", row["pickup_payment_amount"])
+
+    def test_verified_zero_cost_is_preserved(self):
+        repository = DocumentRepository.__new__(DocumentRepository)
+        row = repository._row_to_waybill({"source": "ronghui", "recorded_cost": 0})
+        self.assertEqual("0.00", row["opening_cost"])
 
     def test_row_to_waybill_adds_scan_status_abbreviation(self):
         repository = DocumentRepository.__new__(DocumentRepository)

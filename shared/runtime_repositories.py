@@ -25,6 +25,7 @@ WAYBILL_FIELDS = (
     "receiver_phone",
     "sender_name",
     "sender_phone",
+    "sender_address",
     "goods_name_lines",
     "package_type_lines",
     "quantity_lines",
@@ -37,6 +38,10 @@ WAYBILL_FIELDS = (
     "payment_method",
     "insurance_amount",
     "cod_amount",
+    "recorded_cost",
+    "to_pay_amount",
+    "receipt_required",
+    "receipt_number",
     "remark",
     "scan_status",
     "status",
@@ -418,7 +423,10 @@ class WaybillRepository:
     def _normalized_record(record: dict[str, Any]) -> dict[str, str] | None:
         if not isinstance(record, dict):
             return None
-        payload = {field: str(record.get(field, "") or "").strip() for field in WAYBILL_FIELDS}
+        payload = {
+            field: "" if record.get(field) is None else str(record.get(field, "")).strip()
+            for field in WAYBILL_FIELDS
+        }
         if not payload["waybill_no"]:
             return None
         payload["status"] = WaybillRepository.normalize_status(payload.get("status"))
@@ -523,6 +531,10 @@ class WaybillRepository:
             raise ValueError("an explicit waybill source is required")
         table = waybill_table(source_text)
         date_text = str(target_date or "").strip()
+        fields = WAYBILL_FIELDS if source_text in {"ronghui", "yunda"} else tuple(
+            field for field in WAYBILL_FIELDS
+            if field not in {"pickup_fee", "delivery_fee", "recorded_cost", "to_pay_amount", "receipt_number"}
+        )
         normalized_by_waybill: dict[str, dict[str, str]] = {}
         for record in records:
             normalized = self._normalized_record(record)
@@ -551,7 +563,7 @@ class WaybillRepository:
                         raise ValueError("legacy waybill identity is ambiguous; source reconciliation required")
                     existing = matches[0] if matches else None
                     if existing and existing.get("id"):
-                        updatable = [field for field in WAYBILL_FIELDS if field != "status"]
+                        updatable = [field for field in fields if field != "status"]
                         assignments = ", ".join(f"{field} = %s" for field in updatable)
                         cursor.execute(
                             f"""
@@ -570,12 +582,12 @@ class WaybillRepository:
                         )
                         updates += 1
                     else:
-                        columns = ["document_id", *WAYBILL_FIELDS, "writer_id", "source", "created_at", "updated_at"]
+                        columns = ["document_id", *fields, "writer_id", "source", "created_at", "updated_at"]
                         value_columns = columns[:-2]
                         placeholders = ", ".join("%s" for _ in value_columns)
                         cursor.execute(
                             f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}, NOW(), NOW())",
-                            [None, *[row[field] for field in WAYBILL_FIELDS], str(writer_id or ""), source_text],
+                            [None, *[row[field] for field in fields], str(writer_id or ""), source_text],
                         )
                         creates += 1
 

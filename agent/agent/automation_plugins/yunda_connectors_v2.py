@@ -42,13 +42,14 @@ def build_yunda_connectors(reviewed):
                 source_ops.append(op(name,"browser.invoke",action,Effect.READ,obj(inputs,["bill_code"]),obj({"record":source_record_schema(depth=3)})))
         result.append(ConnectorDescriptor(service=source_service,title=prefix,binding_kind=Kind.ACCOUNT,
             account_role=role,allowed_systems=("yunda",),operations=tuple(source_ops)))
-        sink_input = obj({"records":arr(record(fields)),"target_date":DATE,"ensure_fields":BOOL},["records","target_date"])
+        sink_fields = (*fields, "scan_status", "status") if prefix == "yunda_send" else fields
+        sink_input = obj({"records":arr(record(sink_fields, optional=("scan_status",))),"target_date":DATE,"ensure_fields":BOOL},["records","target_date"])
         common_result = {"target_date":DATE,"record_count":COUNT,"committed":BOOL,"verified":BOOL,"readback_count":COUNT,"readback_sha256":TEXT}
         for resource_role,(kind,action) in resources.items():
             service = f"connector.boyi.{resource_role}@1"
             resource = ConnectorRequirementContract(service=service,binding_kind=Kind.RESOURCE,resource_role=resource_role,
                 allowed_resource_kinds=(kind,),required=True)
-            optional = {key:COUNT for key in ("written","deleted","created_fields","skipped")}
+            optional = {key:COUNT for key in ("written","deleted","created_fields","skipped","retained_unmatched")}
             optional[VERIFIED_WRITE_NOOP_FIELD] = BOOL
             operation = op("commit","network.request",action,Effect.EXTERNAL_WRITE,sink_input,
                 obj({**common_result,**optional},list(common_result)),source_role=resource_role,resource=resource)

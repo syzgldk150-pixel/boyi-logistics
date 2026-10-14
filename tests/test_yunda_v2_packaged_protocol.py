@@ -12,14 +12,30 @@ from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tests.test_automation_plugin_connector_runtime_v2 import _AccountResolver
 
 
-def _host(tmp_path,plugin,*,empty=False):
+def _host(tmp_path,plugin,*,empty=False,special_flags=()):
     writes=[]
     normal = {"Logistics_Id":"YD-1","Buyer_Destination_Dot_Name":"目的网点","Buyer_Area_Name":"区县",
         "Shipping_Methods":"不上楼","Item_Total_Number":2,"Gross_Weight":"12.5","Settlement_Total_Number":"13",
-        "Volume":"0.125","Special_Freight":"115.00","Payment_Type":"到付","Created_Dot_Code":"ISOLATED"}
+        "Volume":"0.125","Sign_State":"已签收","Mail_Date":"2026-09-11 09:00:00","Freight":"115.00","Payment_Type":"到付","Created_Dot_Code":"ISOLATED"}
     dispatch = {"ship_id":"YD-1","unit_cnt":"2","scan_cnt":1,"frgt_wgt":"12.50","frgt_vol":"0.125",
         "pkg_lod_typ":"纸箱","fld_tm":"2026-09-11 01:00:00","plan_tlns":"24","rcv_cust_addr":"测试地址",
         "est_arv_tm":"2026-09-11 08:00:00","due_delv_dt":"2026-09-11 12:00:00","新增字段":"可由插件更新读取"}
+    special = []
+    flags_by_bill = {}
+    for index, flags in enumerate(special_flags):
+        bill = f"YD-SPECIAL-{index}"
+        row = {**normal, "Logistics_Id": bill, "Total_Cost_Money": "42.50"}
+        row.pop("Sign_State")
+        special.append(row)
+        flags_by_bill[bill] = flags
+
+    def tracking_detail(_account, bill):
+        record = {"Logistics_Id":bill,"Item_Name":"配件","Packing_Type":"纸箱","Extend_Field1":"200","COD":"115.00"}
+        flags = flags_by_bill.get(bill)
+        if flags is not None:
+            record["Scan_Flag_Keys"] = flags
+        return record
+
     def page(rows):
         return lambda *_:{"items":deepcopy(rows),"returned":len(rows),"total":len(rows)}
     def write(resource,records,day,ensure):
@@ -31,10 +47,10 @@ def _host(tmp_path,plugin,*,empty=False):
         result=write("projection",records,day,False)
         return {**result,"upserted":len(records),"deleted_stale":0}
     ports = FirstPartyCoreHandlerPorts(describe_account=lambda account:{"account_id":account,"system":"yunda","session_profile":"isolated"},
-        yunda_dispatch_read_page=page([] if empty else [dispatch]),yunda_send_read_page=page([normal]),yunda_special_line_read_page=page([]),
-        yunda_tracking_detail_read=lambda _,bill:{"Logistics_Id":bill,"Item_Name":"配件","Packing_Type":"纸箱","Extend_Field1":"200","COD":"115.00"},
+        yunda_dispatch_read_page=page([] if empty else [dispatch]),yunda_send_read_page=page([normal]),yunda_special_line_read_page=page(special),
+        yunda_tracking_detail_read=tracking_detail,
         yunda_original_data_read=lambda _,bill:{"Sender_Name":"寄件人","Sender_Phone":"07310000000","Buyer_Name":"收货人","Buyer_Mobile":"13800000000","Buyer_Address":"测试地址"},
-        yunda_renderer_detail_read=lambda *_:{"price":{"Total":"81.85"}},append_yunda_dispatch_bitable=write,
+        yunda_renderer_detail_read=lambda _account,bill,_dot:{"Logistics_Id":bill,"price":{"Total":"81.85"}},append_yunda_dispatch_bitable=write,
         replace_yunda_send_bitable=write,replace_yunda_send_sheet=write,replace_yunda_waybill_projection=projection)
     registry=ConnectorRegistry(build_yunda_connectors(build_first_party_core_handler_map(ports)))
     dispatch_plugin=plugin=="sync_yunda_dispatch_forecast_v2"
@@ -67,4 +83,25 @@ def test_yunda_send_zip_reads_two_sources_and_preserves_amounts_in_three_outputs
     result=host.execute({"target_date":"2026-09-11","sync_sql":True,"sync_sheet":True},operation="run")
     assert result["status"]=="SUCCESS",result
     assert len(writes)==3 and len(host.receipts)==3
-    assert all(item[1][0]["提付"]=="115.00" and item[1][0]["中转运费"]=="81.85" for item in writes)
+    assert all(item[1][0]["status"] == "signed" for item in writes)
+    assert all(item[1][0]["提付"]=="115.00" and item[1][0]["录单运费"]=="81.85" for item in writes)
+
+
+def test_yunda_send_zip_preserves_three_signed_and_one_sent_special_line_status(tmp_path):
+    host, writes = _host(tmp_path, "sync_yunda_send_waybills_v2", special_flags=(
+        ["send", "signed"], ["transfer", "signed"], ["deliver", "problem", "signed"], ["send"],
+    ))
+    result = host.execute({"target_date": "2026-09-11", "sync_sql": True, "sync_sheet": True}, operation="run")
+    assert result["status"] == "SUCCESS", result
+    assert len(writes) == 3
+    for _resource, records, _day in writes:
+        assert [record["status"] for record in records[1:]] == ["signed", "signed", "signed", "in_transit"]
+        assert all(record["录单运费"] == "42.50" for record in records[1:])
+
+
+@pytest.mark.parametrize("flags", [None, [], ["problem"]])
+def test_yunda_send_zip_does_not_publish_unknown_special_line_status(tmp_path, flags):
+    host, writes = _host(tmp_path, "sync_yunda_send_waybills_v2", special_flags=(flags,))
+    result = host.execute({"target_date": "2026-09-11", "sync_sql": True, "sync_sheet": True}, operation="run")
+    assert result["status"] == "FAILED", result
+    assert writes == []

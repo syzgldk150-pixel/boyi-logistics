@@ -79,7 +79,7 @@ def test_yunda_missing_or_ambiguous_creator_mode_is_not_silently_defaulted():
 
 def test_native_send_date_is_register_date_not_database_insertion_time():
     row = Send_order.normalize_record({"BILL_CODE": "fixture", "REGISTER_DATE": "2026-09-08 12:00:00",
-                                      "INSERT_DATE": "2026-09-09 03:00:00"})
+                                      "INSERT_DATE": "2026-09-09 03:00:00", "GUEST_FREIGHT": "12.50"})
     assert row["发件日期"] == "2026-09-08 12:00:00"
 
 

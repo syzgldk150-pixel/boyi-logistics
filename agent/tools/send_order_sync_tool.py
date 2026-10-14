@@ -7,7 +7,6 @@ import os
 import re
 import sys
 from contextlib import contextmanager
-from decimal import Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -17,6 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from agent.workflow_resource_store import get_workflow_resource
+from agent.tms_runtime.scripts.Send_order import _coerce_number, normalize_receipt_required
 from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import is_receipt_like_tracking, sync_console_waybills
 from tools.phase7_sync_common import (
@@ -155,19 +155,13 @@ def _date_from_value(value: Any) -> str:
         return ""
 
 
-def _to_number(value: Any) -> int | float | None:
-    if value in (None, "", "null"):
-        return None
-    text = str(value).replace(",", "").strip()
-    if not text:
-        return None
-    try:
-        number = Decimal(text)
-    except (InvalidOperation, ValueError):
-        return None
-    if number == number.to_integral_value():
-        return int(number)
-    return float(number)
+def _to_number(value: Any) -> int | str | None:
+    return _coerce_number(value)
+
+
+def _number_text(value: Any) -> str:
+    number = _to_number(value)
+    return "" if number is None else str(number)
 
 
 def _resolve_bitable_target(params: dict) -> tuple[str, str]:
@@ -192,6 +186,7 @@ def _record_fields(row: dict, *, target_date: dt.date) -> dict:
         "收件地址": row.get("收件地址", ""),
         "寄件人": row.get("寄件人", ""),
         "寄件手机": row.get("寄件手机", ""),
+        "寄件地址": row.get("寄件地址", ""),
         "收货人": row.get("收货人", ""),
         "收货电话": row.get("收货电话", ""),
         "货物名称": row.get("货物名称", ""),
@@ -199,10 +194,15 @@ def _record_fields(row: dict, *, target_date: dt.date) -> dict:
         "派送方式": row.get("派送方式", ""),
         "支付类型": row.get("支付类型", ""),
         "回单号": row.get("回单号", ""),
+        "需要回单": {"1": "是", "0": "否", "": ""}[normalize_receipt_required(row.get("需要回单"))],
         "备注": row.get("备注", ""),
         "件数": _to_number(row.get("件数")),
         "实际重量": _to_number(row.get("实际重量")),
-        "录单金额": _to_number(row.get("录单金额")),
+        "计费重量": _to_number(row.get("计费重量")),
+        "录单运费": _to_number(row.get("录单运费")),
+        "运费": _to_number(row.get("运费")),
+        "代收货款": _to_number(row.get("代收货款")),
+        "保价金额": _to_number(row.get("保价金额")),
         "体积重量": _to_number(row.get("体积重量")),
         "体积": _to_number(row.get("体积")),
         "结算重量": _to_number(row.get("结算重量")),
@@ -243,11 +243,12 @@ def _weight_volume_text(row: dict[str, Any]) -> str:
     parts: list[str] = []
     for label, field_name in (
         ("实际重量", "实际重量"),
+        ("计费重量", "计费重量"),
         ("体积", "体积"),
         ("结算重量", "结算重量"),
         ("体积重", "体积重量"),
     ):
-        value = _text_from_field_value(row.get(field_name))
+        value = _number_text(row.get(field_name))
         if value:
             parts.append(f"{label} {value}")
     return " / ".join(parts)
@@ -279,10 +280,14 @@ def _scan_status_text(row: dict[str, Any]) -> str:
 
 def _console_waybill_records(rows: list[dict[str, Any]], *, target_date: dt.date) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    identities: set[str] = set()
     for row in rows:
         waybill_no = _normalize_waybill(row.get(INDEX_FIELD_NAME))
         if not waybill_no:
-            continue
+            raise ValueError("Ronghui send-order row has no waybill identity")
+        if waybill_no in identities:
+            raise ValueError("Ronghui send-order identity is duplicated")
+        identities.add(waybill_no)
         records.append(
             {
                 "waybill_no": waybill_no,
@@ -293,18 +298,23 @@ def _console_waybill_records(rows: list[dict[str, Any]], *, target_date: dt.date
                 "receiver_phone": row.get("收货电话", ""),
                 "sender_name": row.get("寄件人", ""),
                 "sender_phone": row.get("寄件手机", ""),
+                "sender_address": row.get("寄件地址", ""),
                 "goods_name_lines": row.get("货物名称", ""),
                 "package_type_lines": row.get("包装类型", ""),
-                "quantity_lines": row.get("件数", ""),
+                "quantity_lines": _number_text(row.get("件数")),
                 "weight_volume": _weight_volume_text(row),
                 "delivery_method": row.get("派送方式", ""),
-                "freight_fee": row.get("录单金额", ""),
+                "recorded_cost": _number_text(row.get("录单运费")),
+                "freight_fee": _number_text(row.get("运费")),
                 "pickup_fee": "",
                 "delivery_fee": "",
                 "transfer_fee": "",
                 "payment_method": row.get("支付类型", ""),
-                "insurance_amount": "",
-                "cod_amount": row.get("到付款", ""),
+                "insurance_amount": _number_text(row.get("保价金额")),
+                "cod_amount": _number_text(row.get("代收货款")),
+                "to_pay_amount": _number_text(row.get("到付款")),
+                "receipt_required": normalize_receipt_required(row.get("需要回单")),
+                "receipt_number": _text_from_field_value(row.get("回单号")),
                 "remark": row.get("备注", ""),
                 "scan_status": _scan_status_text(row),
                 "status": _console_status_from_sign_status(row.get("签收状态")),

@@ -45,19 +45,25 @@ _FIELD_MAP = (
     ("BILL_CODE", _WAYBILL_FIELD),
     ("REGISTER_DATE", _DATE_FIELD),
     ("BL_SIGNS_MARKING_TEXT", "签收状态"),
-    ("DESTINATION", "目的网点"),
+    ("DISPATCH_UNDERLING_SITE", "目的网点"),
     ("ACCEPT_COUNTY", "收件区/县"),
     ("ACCEPT_MAN_ADDRESS", "收件地址"),
     ("SEND_MAN", "寄件人"),
     ("SEND_MAN_PHONE", "寄件手机"),
+    ("SEND_MAN_ADDRESS", "寄件地址"),
     ("ACCEPT_MAN", "收货人"),
     ("ACCEPT_MAN_PHONE", "收货电话"),
     ("GOODS_NAME", "货物名称"),
     ("PACK_TYPE", "包装类型"),
     ("DISPATCH_MODE", "派送方式"),
     ("PIECE_NUMBER", "件数"),
-    ("FEE_WEIGHT", "实际重量"),
-    ("GUEST_FREIGHT", "录单金额"),
+    ("BILL_WEIGHT", "实际重量"),
+    ("FEE_WEIGHT", "计费重量"),
+    ("GUEST_FREIGHT", "录单运费"),
+    ("FREIGHT", "运费"),
+    ("GOODS_PAYMENT", "代收货款"),
+    ("INSURANCE", "保价金额"),
+    ("BL_INDENTURE", "需要回单"),
     ("R_BILLCODE", "回单号"),
     ("REMARK", "备注"),
     ("PAYMENT_TYPE", "支付类型"),
@@ -71,7 +77,11 @@ _NUMERIC_FIELDS = frozenset(
     {
         "件数",
         "实际重量",
-        "录单金额",
+        "计费重量",
+        "录单运费",
+        "运费",
+        "代收货款",
+        "保价金额",
         "体积重量",
         "体积",
         "结算重量",
@@ -208,6 +218,8 @@ def _number(value: object) -> int | str | None:
     if isinstance(value, bool):
         raise ValueError("send-order numeric field is invalid")
     text_value = str(value).replace(",", "").strip()
+    if not text_value:
+        return None
     try:
         number = Decimal(text_value)
     except (InvalidOperation, ValueError) as exc:
@@ -222,6 +234,21 @@ def _number(value: object) -> int | str | None:
 def _number_text(value: object) -> str:
     number = _number(value)
     return "" if number is None else str(number)
+
+
+def _receipt_required(value: object) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        raise ValueError("Ronghui receipt requirement is invalid")
+    text_value = str(value).strip()
+    if text_value in {"1", "是"}:
+        return "1"
+    if text_value in {"0", "否"}:
+        return "0"
+    if not text_value:
+        return ""
+    raise ValueError("Ronghui receipt requirement is invalid")
 
 
 def _timestamp_ms(value: object, *, target_date: date) -> int:
@@ -340,7 +367,8 @@ def _scan_status(row: Mapping[str, object]) -> str:
 def _weight_volume(row: Mapping[str, object]) -> str:
     parts: list[str] = []
     for label, source in (
-        ("实际重量", "FEE_WEIGHT"),
+        ("实际重量", "BILL_WEIGHT"),
+        ("计费重量", "FEE_WEIGHT"),
         ("体积", "VOLUME"),
         ("结算重量", "SETTLEMENT_WEIGHT"),
         ("体积重", "VOLUME_WEIGHT"),
@@ -370,31 +398,42 @@ def _normalize_source_row(
             fields[destination] = _timestamp_ms(raw, target_date=target)
         elif destination in _NUMERIC_FIELDS:
             fields[destination] = _number(raw)
+            if source == "GUEST_FREIGHT" and fields[destination] is None:
+                raise ValueError("Ronghui recorded cost GUEST_FREIGHT is missing")
+        elif source == "BL_INDENTURE":
+            fields[destination] = {"1": "是", "0": "否", "": ""}[_receipt_required(raw)]
         else:
             fields[destination] = _text(raw)
     waybill_no = _waybill(row.get("BILL_CODE"))
+    if not waybill_no:
+        raise ValueError("Ronghui send-order row has no waybill identity")
     fields[_WAYBILL_FIELD] = waybill_no
     projection = {
         "waybill_no": waybill_no,
-        "destination_site": _text(row.get("DESTINATION")),
+        "destination_site": _text(row.get("DISPATCH_UNDERLING_SITE")),
         "open_date": source_date or target_date,
         "receiver_address": _text(row.get("ACCEPT_MAN_ADDRESS")),
         "receiver_name": _text(row.get("ACCEPT_MAN")),
         "receiver_phone": _text(row.get("ACCEPT_MAN_PHONE")),
         "sender_name": _text(row.get("SEND_MAN")),
         "sender_phone": _text(row.get("SEND_MAN_PHONE")),
+        "sender_address": _text(row.get("SEND_MAN_ADDRESS")),
         "goods_name_lines": _text(row.get("GOODS_NAME")),
         "package_type_lines": _text(row.get("PACK_TYPE")),
         "quantity_lines": _number_text(row.get("PIECE_NUMBER")),
         "weight_volume": _weight_volume(row),
         "delivery_method": _text(row.get("DISPATCH_MODE")),
-        "freight_fee": _number_text(row.get("GUEST_FREIGHT")),
+        "recorded_cost": _number_text(row.get("GUEST_FREIGHT")),
+        "freight_fee": _number_text(row.get("FREIGHT")),
         "pickup_fee": "",
         "delivery_fee": "",
         "transfer_fee": "",
         "payment_method": _text(row.get("PAYMENT_TYPE")),
-        "insurance_amount": "",
-        "cod_amount": _number_text(row.get("TOPAYMENT")),
+        "insurance_amount": _number_text(row.get("INSURANCE")),
+        "cod_amount": _number_text(row.get("GOODS_PAYMENT")),
+        "to_pay_amount": _number_text(row.get("TOPAYMENT")),
+        "receipt_required": _receipt_required(row.get("BL_INDENTURE")),
+        "receipt_number": _text(row.get("R_BILLCODE")),
         "remark": _text(row.get("REMARK")),
         "scan_status": _scan_status(row),
         "status": _status(row.get("BL_SIGNS_MARKING_TEXT")),
@@ -463,14 +502,12 @@ def _prepare_records(
     for row in rows:
         waybill_no = _waybill(row.get("BILL_CODE"))
         if not waybill_no:
-            skipped_missing_waybill += 1
-            continue
+            raise ValueError("Ronghui send-order row has no waybill identity")
         if waybill_no.upper().startswith("H"):
             skipped_receipt_like += 1
             continue
         if waybill_no in seen_waybills:
-            source_duplicates += 1
-            continue
+            raise ValueError("Ronghui send-order identity is duplicated")
         seen_waybills.add(waybill_no)
         fields, projection = _normalize_source_row(row, target_date=target_date)
         bitable_records.append({"fields": fields})
@@ -540,6 +577,7 @@ def _verify_bitable_snapshot(
     expected: list[dict[str, object]],
     *,
     target_date: str,
+    preserved_waybills: set[str] | None = None,
 ) -> None:
     actual_by_waybill: dict[str, dict[str, object]] = {}
     for record in records:
@@ -548,6 +586,8 @@ def _verify_bitable_snapshot(
         if not record_date:
             raise ValueError("send-order Bitable record has an invalid send date")
         if record_date != target_date:
+            continue
+        if _waybill(raw_fields.get(_WAYBILL_FIELD)) in (preserved_waybills or set()):
             continue
         fields = _canonical_bitable_fields(
             raw_fields,
@@ -594,6 +634,39 @@ def _target_record_refs(
         else:
             seen_waybills.add(waybill_no)
     return all_refs, duplicate_refs
+
+
+def _existing_waybill_records(
+    records: list[dict[str, object]],
+    expected_waybills: set[str],
+    *,
+    target_date: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Match only unique identities; preserve unmatched rows without deleting them."""
+    matched: dict[str, str] = {}
+    unmatched: dict[str, str] = {}
+    seen: set[str] = set()
+    for record in records:
+        fields = _object(record.get("fields"), "send-order Bitable fields")
+        record_date = _date_text(fields.get(_DATE_FIELD))
+        if not record_date:
+            raise ValueError("send-order Bitable record has an invalid send date")
+        waybill_no = _waybill(fields.get(_WAYBILL_FIELD))
+        if not waybill_no:
+            if record_date == target_date:
+                raise ValueError("send-order Bitable record has no waybill identity")
+            continue
+        if record_date != target_date and waybill_no not in expected_waybills:
+            continue
+        if waybill_no in seen:
+            raise ValueError("send-order Bitable waybill identity is duplicated")
+        seen.add(waybill_no)
+        record_ref = _text(record.get("record_ref"))
+        if waybill_no in expected_waybills:
+            matched[waybill_no] = record_ref
+        else:
+            unmatched[waybill_no] = record_ref
+    return matched, unmatched
 
 
 def _committed(value: object, label: str) -> dict[str, object]:
@@ -717,6 +790,8 @@ def _sync_date(
         "written": 0,
         "deleted": 0,
         "dedup_deleted": 0,
+        "unmatched_existing": 0,
+        "unmatched_waybill_numbers": [],
         "sql_upserted": 0,
         "sql_updates": 0,
         "sql_creates": 0,
@@ -765,53 +840,36 @@ def _sync_date(
     )
     evidence_refs.extend(refs)
     summary["bitable_pages"] = pages
-    stale_refs, _existing_duplicates = _target_record_refs(
+    matched_refs, unmatched_refs = _existing_waybill_records(
         existing,
+        {str(record["fields"][_WAYBILL_FIELD]) for record in bitable_records},
         target_date=target_date,
     )
+    desired_records = [
+        {**record, **({"record_ref": matched_refs[str(record["fields"][_WAYBILL_FIELD])]}
+                     if str(record["fields"][_WAYBILL_FIELD]) in matched_refs else {})}
+        for record in bitable_records
+    ]
+    summary["updates"] = len(matched_refs)
+    summary["creates"] = len(bitable_records) - len(matched_refs)
+    summary["unmatched_existing"] = len(unmatched_refs)
+    summary["unmatched_waybill_numbers"] = sorted(unmatched_refs)
     if dry_run:
         summary.update(
             {
                 "planned": len(bitable_records),
-                "planned_updates": 0,
-                "planned_creates": len(bitable_records),
-                "planned_deletes": len(stale_refs),
+                "planned_updates": len(matched_refs),
+                "planned_creates": len(bitable_records) - len(matched_refs),
+                "planned_deletes": 0,
                 "planned_sql_upserts": len(projection_records),
-                "planned_sql_deletes": len(stale_refs),
+                "planned_sql_deletes": 0,
             }
         )
         return summary, evidence_refs
 
-    deleted, refs = _delete_records(
-        stale_refs,
-        broker=broker,
-        label="send-order target-date delete",
-    )
-    evidence_refs.extend(refs)
-    summary["deleted"] = deleted
-    written, refs = _write_records(bitable_records, broker=broker)
+    written, refs = _write_records(desired_records, broker=broker)
     evidence_refs.extend(refs)
     summary["written"] = written
-
-    rescanned, refs, pages = _list_bitable_records(
-        page_size=list_limit,
-        max_pages=list_max_pages,
-        fields=_BITABLE_FIELDS,
-        broker=broker,
-    )
-    evidence_refs.extend(refs)
-    summary["bitable_pages"] = int(summary["bitable_pages"]) + pages
-    _current_refs, duplicate_refs = _target_record_refs(
-        rescanned,
-        target_date=target_date,
-    )
-    dedup_deleted, refs = _delete_records(
-        duplicate_refs,
-        broker=broker,
-        label="send-order duplicate cleanup",
-    )
-    evidence_refs.extend(refs)
-    summary["dedup_deleted"] = dedup_deleted
 
     verified_snapshot, refs, pages = _list_bitable_records(
         page_size=list_limit,
@@ -821,10 +879,15 @@ def _sync_date(
     )
     evidence_refs.extend(refs)
     summary["bitable_pages"] = int(summary["bitable_pages"]) + pages
+    if not {str(record["record_ref"]) for record in existing} <= {
+        str(record["record_ref"]) for record in verified_snapshot
+    }:
+        raise ValueError("send-order Bitable update removed an existing record")
     _verify_bitable_snapshot(
         verified_snapshot,
         bitable_records,
         target_date=target_date,
+        preserved_waybills=set(unmatched_refs),
     )
 
     if sync_sql:
@@ -962,6 +1025,7 @@ def run_action(
         "written",
         "deleted",
         "dedup_deleted",
+        "unmatched_existing",
         "sql_upserted",
         "sql_updates",
         "sql_creates",
@@ -979,6 +1043,7 @@ def run_action(
             "sql_only": sql_only,
             "sync_sql": sync_sql,
             "per_date": per_date,
+            "requires_reconciliation": bool(data["unmatched_existing"]),
         }
     )
     if len(dates) == 1:
@@ -994,7 +1059,9 @@ def run_action(
         ):
             data[key] = sum(int(summary.get(key) or 0) for summary in per_date)
     observed_at = datetime.now(_TIMEZONE).isoformat()
-    if not dry_run and int(data["fetched"]) == 0 and (not sql_only or sync_sql):
+    if not dry_run and int(data["fetched"]) == 0 and int(data["unmatched_existing"]):
+        execution_result = "no_data_preserved_unmatched"
+    elif not dry_run and int(data["fetched"]) == 0 and (not sql_only or sync_sql):
         execution_result = "no_data_cleared"
     elif dry_run:
         execution_result = "dry_run_complete"

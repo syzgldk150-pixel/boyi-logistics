@@ -47,6 +47,16 @@ class _Connection:
 
 
 class RuntimeRepositoryTests(unittest.TestCase):
+    def test_waybill_projection_preserves_numeric_zero_and_missing_values(self):
+        row = WaybillRepository._normalized_record({
+            "waybill_no": "TEST-1", "recorded_cost": 0, "receipt_required": 0,
+            "to_pay_amount": None, "cod_amount": "10.15",
+        })
+        self.assertEqual("0", row["recorded_cost"])
+        self.assertEqual("0", row["receipt_required"])
+        self.assertEqual("", row["to_pay_amount"])
+        self.assertEqual("10.15", row["cod_amount"])
+
     def test_waybill_list_by_numbers_uses_bounded_binary_exact_read(self):
         cursor = _Cursor(
             rows=[
@@ -330,6 +340,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "057",
                 "058",
                 "059",
+                "060",
             ],
             [version for version, _ in migrations],
         )

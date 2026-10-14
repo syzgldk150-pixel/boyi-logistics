@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import pymysql
 from shared.mysql_connection import mysql_tls_options
-from shared.runtime_repositories import WaybillRepository
+from shared.runtime_repositories import WAYBILL_FIELDS as RUNTIME_WAYBILL_FIELDS, WaybillRepository
 from shared.scan_snapshot_recovery import (
     SNAPSHOT_INITIAL_SEEN_COUNT as _SCAN_CODES_SNAPSHOT_INITIAL_SEEN_COUNT,
     SNAPSHOT_UPSERT_SQL as _SCAN_CODES_SNAPSHOT_UPSERT_SQL,
@@ -26,31 +26,7 @@ _R_CHILD_TRACKING_RE = re.compile(r"^(?:R\d{11}|RC\d{10})\d{4}$")
 _RONGHUI_NUMERIC_CHILD_TRACKING_RE = re.compile(r"^200\d{11}$")
 _MASK_ONLY_RE = re.compile(r"^[*＊Xx]+$")
 
-CONSOLE_WAYBILL_FIELDS = [
-    "waybill_no",
-    "destination_site",
-    "open_date",
-    "receiver_address",
-    "receiver_name",
-    "receiver_phone",
-    "sender_name",
-    "sender_phone",
-    "goods_name_lines",
-    "package_type_lines",
-    "quantity_lines",
-    "weight_volume",
-    "delivery_method",
-    "freight_fee",
-    "pickup_fee",
-    "delivery_fee",
-    "transfer_fee",
-    "payment_method",
-    "insurance_amount",
-    "cod_amount",
-    "remark",
-    "scan_status",
-    "status",
-]
+CONSOLE_WAYBILL_FIELDS = list(RUNTIME_WAYBILL_FIELDS)
 
 CONSOLE_WAYBILL_STATUS_VALUES = {"pending", "in_transit", "signed", "cancelled"}
 

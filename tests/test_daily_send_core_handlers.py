@@ -24,6 +24,7 @@ _FIELDS = {
     "收件地址": "测试地址",
     "寄件人": "寄件人",
     "寄件手机": "13000000000",
+    "寄件地址": "测试寄件地址",
     "收货人": "收货人",
     "收货电话": "13100000000",
     "货物名称": "配件",
@@ -31,7 +32,12 @@ _FIELDS = {
     "派送方式": "送货",
     "件数": 2,
     "实际重量": "10.50",
-    "录单金额": "12.50",
+    "计费重量": "11",
+    "录单运费": "12.50",
+    "运费": "8.25",
+    "代收货款": "7.50",
+    "保价金额": 100,
+    "需要回单": "是",
     "回单号": "",
     "备注": "测试",
     "支付类型": "现付",
@@ -49,18 +55,23 @@ _PROJECTION = {
     "receiver_phone": "13100000000",
     "sender_name": "寄件人",
     "sender_phone": "13000000000",
+    "sender_address": "测试寄件地址",
     "goods_name_lines": "配件",
     "package_type_lines": "纸箱",
     "quantity_lines": "2",
     "weight_volume": "实际重量 10.50",
     "delivery_method": "送货",
-    "freight_fee": "12.50",
+    "recorded_cost": "12.50",
+    "freight_fee": "8.25",
     "pickup_fee": "",
     "delivery_fee": "",
     "transfer_fee": "",
     "payment_method": "现付",
-    "insurance_amount": "",
-    "cod_amount": "3.40",
+    "insurance_amount": "100",
+    "cod_amount": "7.50",
+    "to_pay_amount": "3.40",
+    "receipt_required": "1",
+    "receipt_number": "",
     "remark": "测试",
     "scan_status": "签收扫描",
     "status": "signed",
@@ -90,7 +101,10 @@ def _ports(**overrides):
             "session_profile": "profile",
         },
         "source_page": lambda _descriptor, _date, _index, _size: {
-            "items": [{"BILL_CODE": "R001", "COOKIE": "must-not-cross"}],
+            "items": [{"BILL_CODE": "R001", "BILL_WEIGHT": "7.25", "FEE_WEIGHT": "10.50",
+                       "FREIGHT": "8.25", "GUEST_FREIGHT": "12.50", "GOODS_PAYMENT": "7.50",
+                       "TOPAYMENT": "3.40", "INSURANCE": "100", "BL_INDENTURE": "1",
+                       "SEND_MAN_ADDRESS": "测试寄件地址", "SCAN_TYPE": "签收扫描", "COOKIE": "must-not-cross"}],
             "total": 1,
         },
         "bitable_list": lambda _resource, _offset, _size, fields: [
@@ -137,7 +151,10 @@ def test_handler_map_is_exact_and_source_projects_only_signed_fields():
         _context("browser.invoke", "ronghui.send_order.read_page", "account_id"),
         {"target_date": "2026-05-12", "page_index": 0, "page_size": 100},
     )
-    assert result["items"] == [{"BILL_CODE": "R001"}]
+    assert result["items"] == [{"BILL_CODE": "R001", "BILL_WEIGHT": "7.25", "FEE_WEIGHT": "10.50",
+                                "FREIGHT": "8.25", "GUEST_FREIGHT": "12.50", "GOODS_PAYMENT": "7.50",
+                                "TOPAYMENT": "3.40", "INSURANCE": "100", "BL_INDENTURE": "1",
+                                "SEND_MAN_ADDRESS": "测试寄件地址", "SCAN_TYPE": "签收扫描"}]
     assert "COOKIE" not in repr(result)
 
 
@@ -205,6 +222,28 @@ def test_record_references_are_opaque_and_delete_requires_fresh_verification():
             {"record_refs": [record_ref]},
         )
     assert unknown.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_update_uses_only_a_fresh_account_bound_opaque_record_reference():
+    captured = []
+
+    def write(_resource, records):
+        captured.extend(records)
+        return {"ok": True, "verified": True, "written": len(records)}
+
+    handlers = build_daily_send_handler_map(_ports(bitable_write=write), cursor_secret=_SECRET)
+    context = _context("network.request", "feishu.bitable.list_records", "send_order_bitable")
+    listed = handlers[(context.operation, context.action)](
+        context, {"offset": 0, "page_size": 200, "fields": ["运单编号", "发件日期"]})
+    write_context = replace(context, action="feishu.bitable.write_records")
+    result = handlers[(write_context.operation, write_context.action)](
+        write_context, {"records": [{"record_ref": listed["items"][0]["record_ref"], "fields": dict(_FIELDS)}]})
+    assert result["written"] == 1
+    assert captured == [{"record_id": "external-record-1", "fields": _FIELDS}]
+    with pytest.raises(PluginExecutionError):
+        handlers[(write_context.operation, write_context.action)](
+            write_context, {"records": [{"record_ref": "external-record-1", "fields": dict(_FIELDS)}]})
+    assert len(captured) == 1
 
 
 def test_write_and_projection_require_independent_verified_postconditions():

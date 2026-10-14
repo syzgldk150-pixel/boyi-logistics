@@ -18,6 +18,9 @@ def _load_action(plugin_id: str):
     result_spec = importlib.util.spec_from_file_location("boyi_plugin_result", result_source)
     assert result_spec is not None and result_spec.loader is not None
     result_module = importlib.util.module_from_spec(result_spec)
+    from service_v2_plugins.sync_yunda_send_waybills_v2.payload import yunda_send_fields
+    previous_fields = sys.modules.get("yunda_send_fields")
+    sys.modules["yunda_send_fields"] = yunda_send_fields
     previous = sys.modules.get("boyi_plugin_result")
     sys.modules["boyi_plugin_result"] = result_module
     result_spec.loader.exec_module(result_module)
@@ -28,6 +31,10 @@ def _load_action(plugin_id: str):
     try:
         spec.loader.exec_module(module)
     finally:
+        if previous_fields is None:
+            sys.modules.pop("yunda_send_fields", None)
+        else:
+            sys.modules["yunda_send_fields"] = previous_fields
         if previous is None:
             sys.modules.pop("boyi_plugin_result", None)
         else:
@@ -136,6 +143,9 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
 
     normal = {
         "Logistics_Id": "YD-1",
+        "Mail_Date": "2026-08-15 09:00:00",
+        "Sign_State": "未签收",
+        "Freight": "115.00",
         "Buyer_Destination_Dot_Name": "长沙网点",
         "Buyer_Area_Name": "岳麓区",
         "Shipping_Methods": "231",
@@ -149,6 +159,8 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
     }
     special = {
         "Logistics_Id": "YD-2",
+        "Mail_Date": "2026-08-15 09:00:00",
+        "Sign_State": "未签收",
         "Buyer_Destination_Dot_Name": "昆明网点",
         "Buyer_Area": "官渡区",
         "Shipping_Methods": "不上楼",
@@ -185,6 +197,7 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
             return {
                 "record": {
                     "Logistics_Id": bill,
+                    "Scan_Flag_Keys": ["send"],
                     "Item_Name": "配件",
                     "Packing_Type": "纸箱",
                     "Extend_Field1": "200",
@@ -210,16 +223,16 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
                 "created_dot_code": "56739382",
             }
             return {
-                "record": {"price": {"Total": "81.85"}},
+                "record": {"Logistics_Id": "YD-1", "price": {"Total": "81.85"}},
                 "evidence_ref": evidence_ref,
             }
         if action == "feishu.bitable.replace_yunda_send_waybills_date":
             records = arguments["records"]
-            assert [record["5.14编号"] for record in records] == ["YD-1", "YD-2"]
+            assert [record["运单编号"] for record in records] == ["YD-1", "YD-2"]
             assert records[0]["提付"] == "115.00"
-            assert records[0]["中转运费"] == "81.85"
+            assert records[0]["录单运费"] == "81.85"
             assert records[1]["现付"] == "349.00"
-            assert records[1]["中转运费"] == "1037.25"
+            assert records[1]["录单运费"] == "1037.25"
             return {
                 "committed": True,
                 "record_count": 2,
@@ -326,7 +339,7 @@ def test_yunda_send_empty_source_clears_every_requested_snapshot() -> None:
 
     assert result["status"] == "SUCCESS"
     assert result["meta"]["record_count"] == 0
-    assert result["data"]["evidence"]["execution_result"] == "no_data_cleared"
+    assert result["data"]["evidence"]["execution_result"] == "no_data_existing_rows_retained"
     assert calls == [
         "yunda.send_waybill.list_page",
         "yunda.special_line.list_page",

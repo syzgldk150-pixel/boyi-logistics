@@ -40,9 +40,12 @@ def _normalize_money_text(value: Any) -> str:
     if not cleaned:
         return ""
     try:
-        return f"{Decimal(str(cleaned)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
+        amount = Decimal(str(cleaned))
+        if not amount.is_finite():
+            raise ValueError("YUNDA_AMOUNT_INVALID")
+        return f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
     except (InvalidOperation, ValueError):
-        return text
+        raise ValueError("YUNDA_AMOUNT_INVALID") from None
 
 
 def _normalize_date_text(value: Any, *, target_date: dt.date | str | None = None) -> str:
@@ -76,7 +79,7 @@ def _build_weight_volume(row: dict[str, Any]) -> str:
         ("实际重量", ("GrossWeight", "actual_weight", "实际重量")),
         ("体积", ("Volume", "volume", "体积")),
         ("结算重量", ("SettlementTotalNumber", "settlement_weight", "结算重量")),
-        ("体积重", ("Tfr", "volumetric_weight", "体积重")),
+        ("体积重", ("Tfr", "volumetric_weight", "体积重量")),
     ):
         value = _first_text(row, *keys)
         if value:
@@ -132,6 +135,8 @@ def _normalize_delivery_method_text(value: Any) -> str:
         return "派送"
     if "送货" in text or "配送" in text:
         return text
+    if text == "不上楼":
+        return text
     return ""
 
 
@@ -150,6 +155,7 @@ def _first_scan_status(row: dict[str, Any]) -> str:
         "current_scan_status",
         "scan_type",
         "SCAN_TYPE",
+        "Scan_Description",
         "当前扫描状态",
         "最新扫描状态",
         "扫描状态",
@@ -166,14 +172,14 @@ def build_console_waybill_from_yunda_data(
     if not isinstance(row, dict):
         return None
     waybill_no = _normalize_waybill_no(
-        _first_text(row, "LogisticsId", "tracking_number", "waybill_no", "5.14编号", "运单号")
+        _first_text(row, "LogisticsId", "tracking_number", "waybill_no", "运单编号", "运单号")
         or remote_waybill_no
     )
     if not waybill_no:
         return None
     payment_method = _first_text(row, "PaymentType", "payment_method", "支付类型")
     freight_fee = _normalize_money_text(
-        _first_text(row, "Freight", "shipping_fee", "现付", "月结", "提付")
+        _first_text(row, "Freight", "shipping_fee", "运费")
     )
     return {
         "waybill_no": waybill_no,
@@ -186,7 +192,7 @@ def build_console_waybill_from_yunda_data(
             "目的站点",
         ),
         "open_date": _normalize_date_text(
-            _first_text(row, "OpenDate", "open_date", "日期"),
+            _first_text(row, "OpenDate", "open_date", "发件日期"),
             target_date=target_date,
         ),
         "receiver_address": _first_text(
@@ -221,6 +227,7 @@ def build_console_waybill_from_yunda_data(
             "sender_phone",
             "寄件手机",
         ),
+        "sender_address": _first_text(row, "SenderAddress", "sender_address", "寄件地址"),
         "goods_name_lines": _first_text(
             row,
             "ItemName",
@@ -234,17 +241,42 @@ def build_console_waybill_from_yunda_data(
         "freight_fee": freight_fee,
         "pickup_fee": _normalize_money_text(_first_text(row, "PickupFee", "pickup_fee")),
         "delivery_fee": _normalize_money_text(_first_text(row, "DeliveryFee", "delivery_fee")),
-        "transfer_fee": _normalize_money_text(
-            _first_text(row, "TransferFee", "transfer_fee", "中转运费")
-        ),
+        "transfer_fee": "",
+        "recorded_cost": _normalize_money_text(_first_text(row, "recorded_cost", "录单运费")),
         "payment_method": payment_method,
         "insurance_amount": _normalize_money_text(
             _first_text(row, "InsuredAmount", "InsuranceAmount", "保价金额", "申明价值")
         ),
         "cod_amount": _normalize_money_text(
-            _first_text(row, "COD", "CollectionMoney", "cod_amount", "到付款")
+            _first_text(row, "CollectionMoney", "cod_amount", "代收货款")
         ),
+        "to_pay_amount": _normalize_money_text(_first_text(row, "COD", "to_pay_amount", "到付款")),
+        "receipt_required": _receipt_required(row),
+        "receipt_number": _first_text(row, "ReturnLogisticsId", "receipt_number", "回单号"),
         "remark": _first_text(row, "Remarks", "remark", "备注"),
         "scan_status": _first_scan_status(row),
-        "status": "in_transit",
+        "status": _waybill_status(row),
     }
+
+
+def _receipt_required(row: dict[str, Any]) -> str:
+    value = _first_text(row, "receipt_required", "需要回单", "DeliversReturn")
+    if value in ("1", "是"):
+        return "1"
+    if value in ("0", "否"):
+        return "0"
+    if not value:
+        return ""
+    raise ValueError("YUNDA_RECEIPT_FLAG_INVALID")
+
+
+def _waybill_status(row: dict[str, Any]) -> str:
+    if "status" in row:
+        status = _clean_text(row["status"])
+        if status not in {"pending", "in_transit", "signed", "cancelled"}:
+            raise ValueError("YUNDA_WAYBILL_STATUS_INVALID")
+        return status
+    if "运单编号" in row:
+        raise ValueError("YUNDA_WAYBILL_STATUS_MISSING")
+    # The entry DTO describes a newly created waybill, rather than a history sync.
+    return "in_transit"

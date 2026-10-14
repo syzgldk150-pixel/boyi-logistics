@@ -24,10 +24,10 @@ YUNDA_MANAGED_RESOURCES = {
         "business_purpose": "韵达寄件结果表",
         "sheet_header_constraints": {
             "A": ["5.14编号", "运单编号", "运单号"],
-            "Y": ["日期"],
+            "Y": ["发件日期", "日期"],
         },
         "sheet_range": "Sheet1!A2:A2",
-        "clear_range": "Sheet1!A2:Y5000",
+        "clear_range": "Sheet1!A2:AD5000",
     },
 }
 
@@ -292,7 +292,7 @@ def test_reviewed_metadata_sync_adds_yunda_sheet_recovery_identity() -> None:
             "business_purpose": "韵达寄件结果表",
             "sheet_header_constraints": {
                 "A": ["5.14编号", "运单编号", "运单号"],
-                "Y": ["日期"],
+                "Y": ["发件日期", "日期"],
             },
             "sheet_range": "stale-sheet-id!A2:A2",
             "clear_range": "stale-sheet-id!A2:Y5000",

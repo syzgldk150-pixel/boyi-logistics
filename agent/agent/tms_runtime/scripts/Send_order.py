@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
@@ -63,19 +64,25 @@ FIELD_MAP = {
     "BILL_CODE": "运单编号",
     "REGISTER_DATE": "发件日期",
     "BL_SIGNS_MARKING_TEXT": "签收状态",
-    "DESTINATION": "目的网点",
+    "DISPATCH_UNDERLING_SITE": "目的网点",
     "ACCEPT_COUNTY": "收件区/县",
     "ACCEPT_MAN_ADDRESS": "收件地址",
     "SEND_MAN": "寄件人",
     "SEND_MAN_PHONE": "寄件手机",
+    "SEND_MAN_ADDRESS": "寄件地址",
     "ACCEPT_MAN": "收货人",
     "ACCEPT_MAN_PHONE": "收货电话",
     "GOODS_NAME": "货物名称",
     "PACK_TYPE": "包装类型",
     "DISPATCH_MODE": "派送方式",
     "PIECE_NUMBER": "件数",
-    "FEE_WEIGHT": "实际重量",
-    "GUEST_FREIGHT": "录单金额",
+    "BILL_WEIGHT": "实际重量",
+    "FEE_WEIGHT": "计费重量",
+    "GUEST_FREIGHT": "录单运费",
+    "FREIGHT": "运费",
+    "GOODS_PAYMENT": "代收货款",
+    "INSURANCE": "保价金额",
+    "BL_INDENTURE": "需要回单",
     "R_BILLCODE": "回单号",
     "REMARK": "备注",
     "PAYMENT_TYPE": "支付类型",
@@ -88,7 +95,11 @@ FIELD_MAP = {
 NUMERIC_FIELDS = {
     "件数",
     "实际重量",
-    "录单金额",
+    "计费重量",
+    "录单运费",
+    "运费",
+    "代收货款",
+    "保价金额",
     "体积",
     "体积重量",
     "结算重量",
@@ -214,17 +225,37 @@ def fetch_send_orders(
     return resp.json()
 
 
-def _coerce_number(value: Any) -> Optional[float]:
-    if value is None:
+def _coerce_number(value: Any) -> int | str | None:
+    if value in (None, "", "null"):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str) and value.strip() == "":
+    if isinstance(value, bool):
+        raise ValueError("Ronghui send-order numeric field is invalid")
+    text = str(value).replace(",", "").strip()
+    if not text:
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+        number = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("Ronghui send-order numeric field is invalid") from exc
+    if not number.is_finite():
+        raise ValueError("Ronghui send-order numeric field is invalid")
+    return int(number) if number == number.to_integral_value() else format(number, "f")
+
+
+def normalize_receipt_required(value: Any) -> str:
+    """Preserve the source's explicit yes/no value and leave missing unknown."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        raise ValueError("Ronghui receipt requirement is invalid")
+    text = str(value).strip()
+    if text in {"1", "是"}:
+        return "1"
+    if text in {"0", "否"}:
+        return "0"
+    if not text:
+        return ""
+    raise ValueError("Ronghui receipt requirement is invalid")
 
 
 def normalize_record(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -233,16 +264,45 @@ def normalize_record(item: Dict[str, Any]) -> Dict[str, Any]:
         value = item.get(source_key)
         if target_key in NUMERIC_FIELDS:
             normalized[target_key] = _coerce_number(value)
+            if source_key == "GUEST_FREIGHT" and normalized[target_key] is None:
+                raise ValueError("Ronghui recorded cost GUEST_FREIGHT is missing")
+        elif source_key == "BL_INDENTURE":
+            normalized[target_key] = {"1": "是", "0": "否", "": ""}[normalize_receipt_required(value)]
         else:
             normalized[target_key] = value if value is not None else ""
+    for key in ("当前扫描状态", "最新扫描状态", "扫描状态", "最新扫描类型",
+                "scan_status", "current_scan_status", "scan_type", "SCAN_TYPE"):
+        if key in item:
+            normalized[key] = item[key]
     return normalized
 
 
 def normalize_records(raw_json: Dict[str, Any]) -> List[Dict[str, Any]]:
-    data = raw_json.get("data") or []
+    data = raw_json.get("data")
     if not isinstance(data, list):
-        return []
-    return [normalize_record(item) for item in data if isinstance(item, dict)]
+        raise ValueError("Ronghui send-order rows are invalid")
+    records: List[Dict[str, Any]] = []
+    identities: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("Ronghui send-order row is invalid")
+        raw_identity = item.get("BILL_CODE")
+        if isinstance(raw_identity, bool) or not isinstance(raw_identity, (str, int)):
+            raise ValueError("Ronghui send-order row has an invalid identity")
+        identity = str(raw_identity).strip().removeprefix("=").strip()
+        if len(identity) >= 2 and identity[0] == identity[-1] and identity[0] in {"'", '"'}:
+            identity = identity[1:-1].strip()
+        identity = "".join(identity.split())
+        if not identity or identity in identities:
+            raise ValueError("Ronghui send-order identity is missing or duplicated")
+        identities.add(identity)
+        # H/HR are receipt documents; their absent order cost is not an error.
+        # Validate identities before filtering, then apply strict cost parsing
+        # only to the actual send-order rows.
+        if identity.upper().startswith("H"):
+            continue
+        records.append(normalize_record(item))
+    return records
 
 
 def iter_pages(
@@ -309,7 +369,7 @@ def run_once(params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
             total_from=lambda payload: payload.get("total"), identity="BILL_CODE",
             first_page=0, page_size=page_size, max_pages=max_pages,
         )
-        return [normalize_record(row) for row in rows]
+        return normalize_records({"data": rows})
 
     raw = fetch_send_orders(
         session,

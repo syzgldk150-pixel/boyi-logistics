@@ -30,7 +30,9 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
     records = [{'record_id':'old-target','fields':{'运单编号':'R-OLD','发件日期':1778515200000}},
                {'record_id':'keep-other-day','fields':{'运单编号':'R-KEEP','发件日期':1778601600000}}]
     row = {'BILL_CODE':'R001','REGISTER_DATE':'2026-05-12 14:37:16','PIECE_NUMBER':'2','GUEST_FREIGHT':'12.50',
-        'BL_SIGNS_MARKING_TEXT':'已签收','GOODS_NAME':'配件','SCAN_TYPE':'签收扫描'}
+        'BL_SIGNS_MARKING_TEXT':'已签收','GOODS_NAME':'配件','SCAN_TYPE':'签收扫描',
+        'BILL_WEIGHT':'7.25','FEE_WEIGHT':'10.50','FREIGHT':'8.25','GOODS_PAYMENT':'7.50',
+        'TOPAYMENT':'0','INSURANCE':'100','BL_INDENTURE':'0','SEND_MAN_ADDRESS':'测试寄件地址','R_BILLCODE':'HR001'}
     projections=[]
     deleted=[]
     def remove(resource, ids):
@@ -38,8 +40,12 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
         records[:] = [record for record in records if record['record_id'] not in ids]
         return {'ok':True,'verified':True,'deleted':len(ids)}
     def write(resource, incoming):
-        records.extend({'record_id':'new-'+str(index),'fields':dict(deepcopy(record['fields']), **{'发件日期':1778544000000})}
-                       for index,record in enumerate(incoming))
+        for record in incoming:
+            fields = dict(deepcopy(record['fields']), **{'发件日期':1778544000000})
+            if record.get('record_id'):
+                next(row for row in records if row['record_id']==record['record_id'])['fields'].update(fields)
+            else:
+                records.append({'record_id':'new-'+str(len(records)), 'fields':fields})
         return {'ok':True,'verified':True,'written':len(incoming)}
     def project(incoming, day, descriptor):
         projections.extend(incoming)
@@ -52,13 +58,26 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
     host=_host(tmp_path,'sync_daily_send_orders_v2',registry,'daily_send','send_order_bitable')
     result=host.execute({'target_date':'2026-05-12'},operation='run')
     assert result['status']=='SUCCESS',result
-    assert deleted==['old-target']
-    assert {item['fields']['运单编号'] for item in records}=={'R001','R-KEEP'}
+    assert deleted==[]
+    assert result['data']['unmatched_existing']==1
+    assert {item['fields']['运单编号'] for item in records}=={'R001','R-KEEP','R-OLD'}
     assert len(projections)==1 and projections[0]['quantity_lines']=='2'
-    assert projections[0]['freight_fee']=='12.50'
+    assert projections[0]['recorded_cost']=='12.50'
+    assert projections[0]['freight_fee']=='8.25'
+    assert projections[0]['cod_amount']=='7.50'
+    assert projections[0]['to_pay_amount']=='0'
+    assert projections[0]['receipt_required']=='0'
+    assert projections[0]['receipt_number']=='HR001'
+    assert projections[0]['sender_address']=='测试寄件地址'
+    assert projections[0]['weight_volume']=='实际重量 7.25 / 计费重量 10.50'
+    published = next(item['fields'] for item in records if item['fields']['运单编号']=='R001')
+    assert published['录单运费']=='12.50' and published['运费']=='8.25'
+    assert published['到付款']==0 and published['需要回单']=='否'
     # A completed invocation releases its own synchronization scope.
     again=host.execute({'target_date':'2026-05-12'},operation='run')
     assert again['status']=='SUCCESS',again
+    assert again['data']['updates']==1 and again['data']['creates']==0
+    assert len(records)==3
 
 
 def test_cancelled_daily_send_zip_releases_scope_after_its_host_call_finishes(tmp_path):
@@ -69,7 +88,7 @@ def test_cancelled_daily_send_zip_releases_scope_after_its_host_call_finishes(tm
         source_calls.append(True)
         started.set()
         assert finish.wait(5), "isolated source was not released"
-        return {"items": [{"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12 08:00:00", "PIECE_NUMBER": "2"}], "total": 1}
+        return {"items": [{"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12 08:00:00", "PIECE_NUMBER": "2", "GUEST_FREIGHT": "12.50"}], "total": 1}
     def write(_resource, rows):
         records.extend({"record_id": "new-" + str(index), "fields": deepcopy(row["fields"])} for index, row in enumerate(rows))
         return {"ok": True, "verified": True, "written": len(rows)}
@@ -98,6 +117,26 @@ def test_cancelled_daily_send_zip_releases_scope_after_its_host_call_finishes(tm
     result = host.execute({"target_date": "2026-05-12"}, operation="run")
     assert result["status"] == "SUCCESS", result
     assert len(source_calls) == 2
+
+
+@pytest.mark.parametrize("cost", [None, " ", "***"])
+def test_daily_send_zip_rejects_missing_or_masked_cost_before_writing(tmp_path, cost):
+    def forbidden(*_):
+        pytest.fail("invalid recorded cost must block all destination operations")
+    rows = [
+        {"BILL_CODE": "R-valid", "REGISTER_DATE": "2026-05-12", "GUEST_FREIGHT": 0},
+        {"BILL_CODE": "R-invalid", "REGISTER_DATE": "2026-05-12", "GUEST_FREIGHT": cost},
+    ]
+    ports = DailySendHandlerPorts(
+        describe_account=lambda account: {"account_id": account, "system": "ronghui", "session_profile": "isolated"},
+        source_page=lambda *_: {"items": rows, "total": len(rows)},
+        bitable_list=forbidden, bitable_delete=forbidden, bitable_write=forbidden,
+        projection_replace=forbidden,
+    )
+    registry = ConnectorRegistry(build_daily_send_connectors(build_daily_send_handler_map(ports, cursor_secret=b"m" * 32)))
+    host = _host(tmp_path, "sync_daily_send_orders_v2", registry, "daily_send", "send_order_bitable")
+    result = host.execute({"target_date": "2026-05-12"}, operation="run")
+    assert result["status"] == "FAILED", result
 
 
 @pytest.mark.parametrize('preview',[False,True])
