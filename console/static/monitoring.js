@@ -5,12 +5,21 @@
   const pageFetch = window.ConsoleUI?.pageRequest ? window.ConsoleUI.pageRequest() : window.fetch.bind(window);
   const find = (name) => root.querySelector(`[data-monitoring-${name}]`);
   const els = {
-    total: find('total'), yunda: find('yunda'), ronghui: find('ronghui'), exception: find('exception'),
+    metrics: Array.from(root.querySelectorAll('[data-monitoring-metric]')),
     updated: find('updated'),
     systems: find('systems'), detailTitle: find('detail-title'), detailSubtitle: find('detail-subtitle'),
     items: find('items'), itemsStatus: find('items-status'), pagination: find('pagination'),
     pageLabel: find('page-label'), prev: find('prev'), next: find('next'), open: find('open'), reload: find('reload'),
     refresh: document.querySelector('[data-monitoring-refresh]'), agentStatus: find('agent-status')
+  };
+  // Each card reads its own categories; only disjoint scopes are summed.
+  const metricDefs = {
+    'ronghui-work': { sum: ['ronghui:work_response', 'ronghui:work_processing'], tone: 'warning',
+      note: [['ronghui:work_response', '待响应'], ['ronghui:work_processing', '待处理']] },
+    'yunda-work': { sum: ['yunda:work_orders'], tone: 'warning', note: [['yunda:work_order_replies', '催单待回复']] },
+    announcements: { sum: ['yunda:announcements', 'ronghui:announcements'],
+      note: [['yunda:announcements', '韵达'], ['ronghui:announcements', '融辉']] },
+    'yunda-notifications': { sum: ['yunda:notifications'], note: [] }
   };
   const monitoringRequestTimeoutMs = 8000;
   const monitoringItemsTimeoutMs = 75000;
@@ -106,7 +115,7 @@
   function renderSummaryUnavailable() {
     if (disposed) return;
     latestSnapshotKey = '';
-    [els.total, els.yunda, els.ronghui, els.exception].forEach((node) => setText(node, '—'));
+    els.metrics.forEach((node) => setText(node.querySelector('[data-monitoring-metric-value]'), '—'));
     const lastUpdate = latestSnapshot?.updated_at ? `，上次同步 ${latestSnapshot.updated_at}` : '';
     setText(els.updated, `同步失败${lastUpdate}`);
     els.agentStatus.hidden = false;
@@ -166,7 +175,8 @@
     const text = element('span');
     text.append(element('span', 'monitor-category-title', item.title || '消息分类'));
     const status = [item.status_label, item.message].filter(Boolean).join(' · ');
-    const meta = element('span', 'monitor-category-meta', status || (item.items_supported ? '查看消息正文' : '暂未提供正文'));
+    const failed = item.status === 'error' || item.status === 'auth_required';
+    const meta = element('span', 'monitor-category-meta', (failed ? status : item.status_label) || (item.items_supported ? '查看消息正文' : '暂未提供正文'));
     meta.title = meta.textContent;
     text.append(meta);
     button.append(icon, text, element('span', 'monitor-category-count', fmt(item.count)));
@@ -183,6 +193,40 @@
     );
   }
 
+  function renderMetrics(categories) {
+    const byId = new Map(categories.map((item) => [item.category_id, item]));
+    els.metrics.forEach((node) => {
+      const def = metricDefs[node.dataset.monitoringMetric];
+      if (!def) return;
+      const counts = def.sum.map((id) => byId.get(id)?.count);
+      const known = counts.every((value) => typeof value === 'number');
+      const total = known ? counts.reduce((sum, value) => sum + value, 0) : null;
+      setText(node.querySelector('[data-monitoring-metric-value]'), fmt(total));
+      node.dataset.tone = def.tone && total > 0 ? def.tone : 'neutral';
+      if (def.note.length) {
+        setText(node.querySelector('[data-monitoring-metric-note]'),
+          def.note.map(([id, label]) => `${label} ${fmt(byId.get(id)?.count)}`).join(' · '));
+      }
+      const active = def.sum.includes(activeCategory?.category_id);
+      node.classList.toggle('is-active', active);
+      node.setAttribute('aria-pressed', String(active));
+    });
+  }
+
+  function selectCategory(item) {
+    if (!item) return;
+    if (categoryKey(item) !== categoryKey(activeCategory)) { clearItems(); currentPage = 1; }
+    activeCategory = item;
+    els.systems.querySelectorAll('[data-monitoring-category]').forEach((node) => {
+      const active = node.dataset.system === item.system && node.dataset.categoryId === item.category_id;
+      node.classList.toggle('is-active', active);
+      node.setAttribute('aria-pressed', String(active));
+      if (active) node.closest('details')?.setAttribute('open', '');
+    });
+    renderMetrics(allCategories(latestSnapshot));
+    fetchItems();
+  }
+
   function renderSnapshot(snapshot) {
     if (pageHidden()) return;
     if (snapshot?.ok === false) { renderSummaryUnavailable(); return; }
@@ -191,16 +235,12 @@
     latestSnapshotKey = key;
     latestSnapshot = snapshot;
     els.agentStatus.hidden = true;
-    const totals = snapshot.totals || {};
-    setText(els.total, fmt(totals.total_pending));
-    setText(els.yunda, fmt(totals.yunda_pending));
-    setText(els.ronghui, fmt(totals.ronghui_pending));
-    setText(els.exception, fmt(totals.exception_pending));
     const updated = snapshot.updated_at ? `最后同步 ${snapshot.updated_at}` : '等待同步';
     setText(els.updated, `${updated}${snapshot.stale ? ' · 缓存已过期' : ''}${snapshot.refreshing ? ' · 后台刷新中' : ''}`);
     const categories = allCategories(snapshot);
     const previousKey = categoryKey(activeCategory);
     activeCategory = categories.find((item) => categoryKey(item) === previousKey)
+      || categories.find((item) => item.items_supported && item.is_exception && item.count > 0)
       || categories.find((item) => item.items_supported && item.count > 0)
       || categories.find((item) => item.items_supported) || null;
     const panels = [];
@@ -216,22 +256,27 @@
       const note = panel.querySelector('[data-monitoring-source-note]');
       const noteParts = [system.message];
       if (system.stale || snapshot.stale) noteParts.push('缓存已过期');
-      if (system.updated_at) noteParts.push(`更新于 ${system.updated_at}`);
+      if (system.updated_at && system.updated_at !== snapshot.updated_at) noteParts.push(`更新于 ${system.updated_at}`);
       setText(note, noteParts.filter(Boolean).join(' · '));
       note.dataset.status = system.status || '';
       note.hidden = !note.textContent;
       const list = panel.querySelector('[data-monitoring-category-list]');
       const systemCategories = categories.filter((item) => item.system === system.system);
-      const contentCategories = systemCategories.filter((item) => item.items_supported);
+      // Work orders first: they are the actionable items on this page.
+      const contentCategories = systemCategories.filter((item) => item.items_supported)
+        .sort((a, b) => Number(Boolean(b.is_exception)) - Number(Boolean(a.is_exception)));
       const otherCategories = systemCategories.filter((item) => !item.items_supported);
       const keepOthersOpen = Boolean(list.querySelector('.monitor-other-categories')?.open);
       list.replaceChildren(...contentCategories.map(createCategoryButton));
       if (otherCategories.length) {
+        const pending = otherCategories.filter((item) => item.count !== 0);
+        const idle = otherCategories.length - pending.length;
         const other = element('details', 'monitor-other-categories');
         other.open = keepOthersOpen || otherCategories.some((item) => categoryKey(item) === categoryKey(activeCategory));
-        const summary = element('summary', '', `其他原系统待办（${otherCategories.length}类）`);
+        const summary = element('summary', '', `其他原系统分类（${pending.length} 类有待办）`);
         const otherList = element('div', 'monitor-category-list');
-        otherList.append(...otherCategories.map(createCategoryButton));
+        otherList.append(...pending.map(createCategoryButton));
+        if (idle) otherList.append(element('p', 'monitor-other-empty', `其余 ${idle} 类无待办`));
         other.append(summary, otherList);
         list.append(other);
       }
@@ -241,6 +286,7 @@
     systemNodes.forEach((_, id) => { if (!seen.has(id)) systemNodes.delete(id); });
     els.systems.replaceChildren(...panels);
     if (!panels.length) els.systems.append(element('p', 'monitor-empty', '当前没有可读取的消息来源。'));
+    renderMetrics(categories);
     if (window.feather) window.feather.replace();
     if (!activeCategory) {
       clearItems();
@@ -275,25 +321,40 @@
 
   function createMessageItem(item, expanded) {
     const row = element('li', 'monitor-item');
-    const details = element('details');
-    details.dataset.itemId = String(item.id || '');
-    details.open = expanded.has(String(item.id || ''));
-    const summary = element('summary', 'monitor-item-summary');
-    summary.append(element('span', 'monitor-item-title', item.title || '消息'));
-    const meta = element('span', 'monitor-item-meta');
-    [item.source_label || activeCategory.source_label, item.occurred_at || '时间未提供', item.status_label || '状态未确认',
-      item.waybill_no ? `运单 ${item.waybill_no}` : ''].filter(Boolean).forEach((text) => meta.append(element('span', '', text)));
-    const content = item.content || '原系统未提供消息正文。';
-    summary.append(meta, element('span', 'monitor-item-preview', content), element('span', 'monitor-item-hint', '展开查看完整正文'));
-    details.append(summary, element('p', 'monitor-item-content', content));
-    row.append(details);
+    const title = item.title || '消息';
+    const head = element('div', 'monitor-item-head');
+    head.append(element('span', 'monitor-item-title', title));
     const openUrl = safeOpenUrl(item.open_url);
     if (openUrl) {
       const link = element('a', 'monitor-item-link', '去原系统处理');
       link.href = openUrl;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
-      row.append(link);
+      head.append(link);
+    }
+    const meta = element('div', 'monitor-item-meta');
+    // Ronghui labels repeat the selected category; Yunda labels name the push channel.
+    const source = item.source_label && !item.source_label.endsWith(activeCategory.title) ? item.source_label : '';
+    [item.occurred_at || '时间未提供', item.waybill_no ? `运单 ${item.waybill_no}` : '', source]
+      .filter(Boolean).forEach((text) => meta.append(element('span', '', text)));
+    meta.append(element('span', 'is-status', item.status_label || '状态未确认'));
+    row.append(head, meta);
+    const content = String(item.content || '').trim();
+    if (!content) {
+      row.append(element('p', 'monitor-item-content is-empty', '原系统未提供消息正文。'));
+    } else if (content !== title) {
+      // Short bodies are shown in full; long ones collapse to two lines.
+      if (content.length <= 80 && !content.includes('\n')) {
+        row.append(element('p', 'monitor-item-content', content));
+      } else {
+        const details = element('details');
+        details.dataset.itemId = String(item.id || '');
+        details.open = expanded.has(String(item.id || ''));
+        const summary = element('summary', 'monitor-item-summary');
+        summary.append(element('span', 'monitor-item-preview', content), element('span', 'monitor-item-hint', '展开查看完整正文'));
+        details.append(summary, element('p', 'monitor-item-content', content));
+        row.append(details);
+      }
     }
     return row;
   }
@@ -404,17 +465,13 @@
   els.systems.addEventListener('click', (event) => {
     const button = event.target.closest('[data-monitoring-category]');
     if (!button || !els.systems.contains(button)) return;
-    const item = allCategories(latestSnapshot).find((candidate) => candidate.system === button.dataset.system && candidate.category_id === button.dataset.categoryId);
-    if (!item) return;
-    if (categoryKey(item) !== categoryKey(activeCategory)) { clearItems(); currentPage = 1; }
-    activeCategory = item;
-    els.systems.querySelectorAll('[data-monitoring-category]').forEach((node) => {
-      const active = node === button;
-      node.classList.toggle('is-active', active);
-      node.setAttribute('aria-pressed', String(active));
-    });
-    fetchItems();
+    selectCategory(allCategories(latestSnapshot).find((candidate) => candidate.system === button.dataset.system && candidate.category_id === button.dataset.categoryId));
   });
+  els.metrics.forEach((node) => node.addEventListener('click', () => {
+    const ids = metricDefs[node.dataset.monitoringMetric]?.sum || [];
+    const candidates = allCategories(latestSnapshot).filter((item) => ids.includes(item.category_id) && item.items_supported);
+    selectCategory(candidates.find((item) => item.count > 0) || candidates[0]);
+  }));
   els.refresh?.addEventListener('click', () => {
     if (refreshCooldown) return;
     refreshCooldown = true;

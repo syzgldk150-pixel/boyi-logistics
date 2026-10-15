@@ -126,7 +126,8 @@ def collect_categories(session) -> list[dict[str, Any]]:
             rows, total = _query(session, contexts[menu], state, 1, 1)
             if state and any(row.get("WORK_STATE") != STATE_LABELS[state] for row in rows):
                 raise RonghuiMonitoringError("融辉工单筛选状态不符，无法确认待办数量。")
-            category.update(count=total, status="ok", status_label="待处理" if total else "暂无待办", message="")
+            category.update(count=total, status="ok", message="",
+                            status_label=(STATE_LABELS[state] if state else "未读") if total else "暂无待办")
         except Exception as exc:
             category.update(count=None, status="auth_required" if isinstance(exc, TMSAuthStateError) else "error",
                             status_label="登录失效" if isinstance(exc, TMSAuthStateError) else "读取失败",

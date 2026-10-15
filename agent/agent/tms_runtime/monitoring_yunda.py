@@ -23,12 +23,15 @@ MESSAGE_API = f"{EXPORT_ORIGIN}/ydky_rabbit_web/actions/message"
 CSSP_ORIGIN = "https://cssp.yunda56.com"
 WORK_ORDER_PAGE = f"{CSSP_ORIGIN}/cssp/vue/index.html#/work-order/deal"
 _SOURCES = {
-    "yunda:notifications": ("通知待处理", "pending_notifications", MESSAGE_PAGE),
+    "yunda:notifications": ("消息中心提醒", "pending_notifications", MESSAGE_PAGE),
     "yunda:announcements": ("未读公告", "unread_announcements", MESSAGE_PAGE),
     "yunda:work_orders": ("收到的待处理工单", "work_orders", WORK_ORDER_PAGE),
     "yunda:work_order_replies": ("工单催单待回复", "work_order_replies", WORK_ORDER_PAGE),
 }
 ITEM_CATEGORY_IDS = frozenset(_SOURCES)
+# handleStatus=0 only means nobody clicked "processed" in the message center;
+# the client pushes one problem shipment to several channels (verified 2026-10-15).
+NOTIFICATION_SCOPE_NOTE = "原系统消息中心未点“已处理”的推送提醒，同一问题件可能重复推送；问题件请在客服工作台处理。"
 
 
 class SourceError(RuntimeError):
@@ -64,6 +67,23 @@ def _content(value: Any) -> str:
     parser = _PlainText()
     parser.feed(unescape(_text(value)))
     return "\n".join(part.strip() for part in "".join(parser.parts).splitlines() if part.strip())
+
+
+def _message_text(value: Any) -> str:
+    """Client push messages carry JSON whose readable text is data.text(.content)."""
+    raw = _text(value)
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw).get("data")
+        except (ValueError, AttributeError):
+            data = None
+        text = data.get("text") if isinstance(data, dict) else None
+        if isinstance(text, dict):
+            text = text.get("content")
+        if isinstance(text, str):
+            return _content(text)
+    # Unknown shapes stay visible as received rather than being guessed.
+    return _content(raw)
 
 
 def _count(value: Any, field: str) -> int:
@@ -141,13 +161,15 @@ def _export(session: Any, endpoint: str, action: str, data: dict[str, Any]) -> d
 
 def _category(category_id: str, count: int | None = None) -> dict[str, Any]:
     title, count_scope, open_url = _SOURCES[category_id]
+    notification = category_id == "yunda:notifications"
+    pending_label = "未标记处理" if notification else "待处理"
     return {
         "system": "yunda", "category_id": category_id, "title": title, "count": count,
-        "status": "pending" if count else "empty", "status_label": "待处理" if count else "无待办",
+        "status": "pending" if count else "empty", "status_label": pending_label if count else "无待办",
         "items_supported": True, "detail_supported": True, "open_url": open_url,
         "is_exception": category_id in {"yunda:work_orders", "yunda:work_order_replies"},
-        "tone": "warning" if count else "neutral", "count_scope": count_scope,
-        "include_in_total": False,
+        "tone": ("neutral" if notification else "warning") if count else "neutral", "count_scope": count_scope,
+        "include_in_total": False, **({"message": NOTIFICATION_SCOPE_NOTE} if notification else {}),
     }
 
 
@@ -287,11 +309,12 @@ def collect_categories(session: Any) -> list[dict[str, Any]]:
 def _message_item(row: dict, category_id: str) -> dict[str, Any]:
     if not _text(row.get("msgId")) or "msgContent" not in row:
         raise SourceError("韵达消息记录缺少 msgId 或 msgContent。")
+    type_name = _text(row.get("typeName"))
     return {
-        "id": _text(row["msgId"]), "title": _content(row.get("msgTitle")) or _SOURCES[category_id][0],
-        "content": _content(row["msgContent"]), "occurred_at": _text(row.get("createdTime")),
+        "id": _text(row["msgId"]), "title": _content(row.get("msgTitle")) or type_name or _SOURCES[category_id][0],
+        "content": _message_text(row["msgContent"]), "occurred_at": _text(row.get("createdTime")),
         "status_label": (_text(row.get("readStatus")) or "状态未确认") if category_id == "yunda:announcements" else ("待处理" if row.get("handleStatus") == "0" else "状态未确认"),
-        "waybill_no": _text(row.get("logisticsId")), "source_label": _text(row.get("typeName")) or "韵达消息中心",
+        "waybill_no": _text(row.get("logisticsId")), "source_label": type_name or "韵达消息中心",
         "open_url": MESSAGE_PAGE,
     }
 
@@ -339,7 +362,7 @@ def collect_items(session: Any, category_id: str, page: int, page_size: int = 20
     result = {
         "title": category["title"], "items": [], "total": None, "page": page,
         "page_size": page_size, "has_more": False, "open_url": category["open_url"],
-        "status": "ok", "status_label": "已连接", "message": "",
+        "status": "ok", "status_label": "已连接", "message": category.get("message", ""),
     }
     try:
         if category_id in {"yunda:notifications", "yunda:announcements"}:

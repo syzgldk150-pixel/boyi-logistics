@@ -2803,7 +2803,7 @@ body .monitor-category.is-active {
   box-shadow: 0 0 0 1px var(--text-strong);
   transform: none;
 }
-body .monitor-category-count { background: var(--primary); font-weight: 600; }
+body .monitor-category-count { font-weight: 600; }
 
 body .waybill-list-panel,
 body .receipt-list-panel,
@@ -2913,9 +2913,9 @@ body .waybill-select:focus {
 
 @media (max-width: 980px) {
   .breadcrumb-group { min-width: 160px; }
-  .monitor-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-  body .monitor-metric:nth-child(3) { border-right: 0; }
-  body .monitor-metric:nth-child(n + 4) { border-top: 1px solid var(--line); }
+  .monitor-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  body .monitor-metric:nth-child(even) { border-right: 0; }
+  body .monitor-metric:nth-child(n + 3) { border-top: 1px solid var(--line); }
 }
 
 @media (max-width: 767px) {

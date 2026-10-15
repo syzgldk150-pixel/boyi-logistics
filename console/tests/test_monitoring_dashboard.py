@@ -327,19 +327,26 @@ class MonitoringConsoleTests(unittest.TestCase):
         script = (CONSOLE_DIR / "static" / "monitoring.js").read_text(encoding="utf-8")
         requests = []
         summary_requests = []
+        ronghui_metric = "document.querySelector('[data-monitoring-metric=\"ronghui-work\"] [data-monitoring-metric-value]').textContent"
 
         def respond(route):
             url = route.request.url
             requests.append(url)
             if url == "https://console.test/":
-                route.fulfill(body=template, content_type="text/html")
+                route.fulfill(body=template, content_type="text/html; charset=utf-8")
             elif "/static/monitoring.js?" in url:
-                route.fulfill(body=script, content_type="application/javascript")
+                route.fulfill(body=script, content_type="application/javascript; charset=utf-8")
             elif "/monitoring/summary?" in url:
                 summary_requests.append(url)
                 route.fulfill(json={
-                    "ok": True, "systems": [],
-                    "totals": {"total_pending": len(summary_requests)},
+                    "ok": True, "updated_at": f"sync-{len(summary_requests)}", "systems": [{
+                        "system": "ronghui", "label": "融辉 TMS", "status": "ok", "categories": [
+                            {"category_id": "ronghui:work_response", "title": "收到工单 · 待响应", "count": len(summary_requests),
+                             "items_supported": False, "is_exception": True},
+                            {"category_id": "ronghui:work_processing", "title": "收到工单 · 待处理", "count": 2,
+                             "items_supported": False, "is_exception": True},
+                        ],
+                    }],
                 })
             else:
                 route.fulfill(status=404, json={"ok": False})
@@ -352,17 +359,19 @@ class MonitoringConsoleTests(unittest.TestCase):
                 page.route("**/*", respond)
                 page.add_init_script("window.EventSource = undefined;")
                 page.goto("https://console.test/")
-                page.wait_for_function("document.querySelector('[data-monitoring-total]').textContent === '1'")
+                page.wait_for_function(f"{ronghui_metric} === '3'")
+                self.assertEqual("待响应 1 · 待处理 2", page.locator('[data-monitoring-metric="ronghui-work"] [data-monitoring-metric-note]').text_content())
+                self.assertEqual("—", page.locator('[data-monitoring-metric="yunda-work"] [data-monitoring-metric-value]').text_content())
                 self.assertEqual(4, page.locator(".monitor-metric").count())
                 self.assertEqual(0, page.locator("[data-monitoring-daily-sign]").count())
 
                 page.locator("[data-monitoring-refresh]").click()
-                page.wait_for_function("document.querySelector('[data-monitoring-total]').textContent === '3'")
+                page.wait_for_function(f"{ronghui_metric} === '5'")
                 self.assertIn("force=1", summary_requests[1])
                 self.assertIn("prefer_cached=0", summary_requests[2])
 
                 page.evaluate("dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
-                page.wait_for_function("document.querySelector('[data-monitoring-total]').textContent === '4'")
+                page.wait_for_function(f"{ronghui_metric} === '6'")
                 self.assertFalse(any("/monitoring/daily-sign" in url for url in requests), requests)
 
 

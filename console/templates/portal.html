@@ -18,10 +18,16 @@
     gap: 20px;
     align-items: start;
   }
+  .monitor-sync {
+    margin: 0 0 10px;
+    color: var(--muted);
+    font-size: .8125rem;
+    font-variant-numeric: tabular-nums;
+  }
   .monitor-metrics {
     display: grid;
     grid-template-columns: repeat(4, minmax(150px, 1fr));
-    gap: 14px;
+    gap: 12px;
     margin-bottom: 18px;
   }
   .monitor-metric,
@@ -32,25 +38,36 @@
     border-radius: 8px;
   }
   .monitor-metric {
-    padding: 18px;
-    min-height: 126px;
+    padding: 14px 16px;
+    min-height: 104px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
+    gap: 6px;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease;
   }
+  .monitor-metric:hover { border-color: #94a3b8; }
+  .monitor-metric.is-active { border-color: var(--text-strong); background: var(--surface); }
+  .monitor-metric:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .monitor-metric span {
     color: var(--muted);
-    font-weight: 800;
-    font-size: .82rem;
+    font-weight: 700;
+    font-size: .8125rem;
   }
   .monitor-metric strong {
-    font-size: 2rem;
+    font-size: 1.75rem;
     color: var(--text-strong);
     line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
+  .monitor-metric[data-tone="warning"] strong { color: #b45309; }
   .monitor-metric small {
     color: var(--muted);
-    font-weight: 700;
+    font-size: .78rem;
+    font-variant-numeric: tabular-nums;
   }
   .monitor-grid {
     display: grid;
@@ -106,7 +123,7 @@
   .monitor-category-list {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
   .monitor-category {
     width: 100%;
@@ -117,8 +134,9 @@
     border: 1px solid #e5e7eb;
     background: #ffffff;
     border-radius: 8px;
-    padding: 12px;
+    padding: 10px 12px;
     cursor: pointer;
+    font: inherit;
     text-align: left;
     transition: border-color .15s ease, background .15s ease;
   }
@@ -144,6 +162,7 @@
     background: #fee2e2;
     color: #dc2626;
   }
+  .monitor-category[data-tone="neutral"] .monitor-category-icon,
   .monitor-category[data-tone="muted"] .monitor-category-icon {
     background: #f1f5f9;
     color: #64748b;
@@ -151,7 +170,7 @@
   .monitor-category-title {
     display: block;
     color: var(--text-strong);
-    font-weight: 900;
+    font-weight: 700;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -167,19 +186,26 @@
     white-space: nowrap;
   }
   .monitor-category-count {
-    min-width: 42px;
-    height: 34px;
-    border-radius: 8px;
-    background: var(--primary);
-    color: #fff;
+    min-width: 40px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: var(--radius-pill);
+    background: #f1f5f9;
+    color: #334155;
     display: grid;
     place-items: center;
-    font-weight: 900;
+    font-weight: 700;
+    font-size: .8125rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .monitor-category[data-tone="warning"] .monitor-category-count {
+    background: #fef3c7;
+    color: #92400e;
   }
   .monitor-category[data-count="0"] .monitor-category-count,
   .monitor-category[data-count="unknown"] .monitor-category-count {
-    background: #e5e7eb;
-    color: #64748b;
+    background: transparent;
+    color: var(--faint);
   }
   .monitor-empty {
     color: var(--muted);
@@ -233,9 +259,11 @@
     border-color: #2563eb;
     color: #2563eb;
   }
-  .monitor-source-note { margin: 0 0 12px; font-size: .8125rem; line-height: 1.5; color: #475569; overflow-wrap: anywhere; }
+  .monitor-source-note { margin: -6px 0 12px; font-size: .75rem; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
   .monitor-other-categories { margin-top: 4px; border-top: 1px solid var(--line); }
-  .monitor-other-categories > summary { min-height: 44px; padding: 12px 0; color: var(--text-strong); font-size: .8125rem; line-height: 20px; cursor: pointer; }
+  .monitor-other-categories > summary { min-height: 44px; padding: 12px 0; color: #475569; font-size: .8125rem; line-height: 20px; cursor: pointer; }
+  .monitor-other-categories .monitor-category-list { padding-bottom: 4px; }
+  .monitor-other-empty { margin: 4px 0 0; color: var(--faint); font-size: .75rem; }
   .monitor-other-categories > summary:focus-visible { outline: 2px solid var(--focus, #3b82f6); outline-offset: 3px; }
   .monitor-source-note[data-status="error"],
   .monitor-source-note[data-status="auth_required"] { color: #991b1b; }
@@ -243,16 +271,22 @@
   .monitor-items-status[data-status="error"] { color: #991b1b; background: #fef2f2; }
   .monitor-items-status[data-stale="true"] { color: #92400e; background: #fffbeb; }
   .monitor-items { margin: 0; padding: 0; list-style: none; }
-  .monitor-item { padding: 16px; border-top: 1px solid var(--line); }
-  .monitor-item-summary { cursor: pointer; min-height: 44px; }
+  .monitor-item { padding: 14px 16px; border-top: 1px solid var(--line); }
+  .monitor-items > .monitor-item:first-child { border-top: 0; }
+  .monitor-item-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
   .monitor-item-title { color: var(--text-strong); font-size: .9375rem; font-weight: 600; overflow-wrap: anywhere; }
-  .monitor-item-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: #475569; font-size: .8125rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .monitor-item-preview, .monitor-item-content { margin: 10px 0 0; max-width: 75ch; font-size: .875rem; line-height: 1.65; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .monitor-item-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; color: #475569; font-size: .8125rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .monitor-item-meta .is-status { color: #92400e; }
+  .monitor-item-summary { display: block; cursor: pointer; list-style: none; }
+  .monitor-item-summary::-webkit-details-marker { display: none; }
+  .monitor-item-preview, .monitor-item-content { margin: 8px 0 0; max-width: 75ch; font-size: .875rem; line-height: 1.65; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .monitor-item-content.is-empty { color: var(--faint); }
   .monitor-item-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .monitor-item details[open] .monitor-item-preview { display: none; }
-  .monitor-item-hint { display: block; margin-top: 8px; font-size: .75rem; color: #475569; }
+  .monitor-item-hint { display: inline-block; margin-top: 4px; font-size: .75rem; color: var(--accent); }
   .monitor-item details[open] .monitor-item-hint { display: none; }
-  .monitor-item-link { display: inline-flex; align-items: center; min-height: 44px; margin-top: 4px; font-size: .8125rem; color: var(--text-strong); text-decoration: underline; text-underline-offset: 3px; }
+  .monitor-item-link { flex: none; display: inline-flex; align-items: center; min-height: 32px; font-size: .8125rem; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+  .monitor-item-link:hover { color: var(--text-strong); }
   .monitor-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
   .monitor-pagination span { margin-right: auto; color: #475569; font-size: .8125rem; }
   .monitor-action-btn { min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; color: var(--text-strong); font: inherit; font-size: .8125rem; white-space: nowrap; cursor: pointer; }
@@ -326,27 +360,28 @@
       <span><strong>智能服务不可用。</strong>监控数据暂时无法获取，请稍后重试。</span>
     </div>
   </div>
+  <p class="monitor-sync" data-monitoring-updated>等待同步</p>
   <div class="monitor-metrics">
-    <div class="monitor-metric">
-      <span>未处理总数</span>
-      <strong data-monitoring-total>加载中</strong>
-      <small>仅显示已确认且可去重的总量</small>
-    </div>
-    <div class="monitor-metric">
-      <span>韵达待办</span>
-      <strong data-monitoring-yunda>加载中</strong>
-      <small>平台消息与收到工单</small>
-    </div>
-    <div class="monitor-metric">
-      <span>融辉待办</span>
-      <strong data-monitoring-ronghui>加载中</strong>
-      <small>平台消息与收到工单</small>
-    </div>
-    <div class="monitor-metric">
-      <span>异常/投诉类</span>
-      <strong data-monitoring-exception>加载中</strong>
-      <small data-monitoring-updated>等待同步</small>
-    </div>
+    <button class="monitor-metric" type="button" data-monitoring-metric="ronghui-work">
+      <span>融辉收到工单</span>
+      <strong data-monitoring-metric-value>加载中</strong>
+      <small data-monitoring-metric-note>待响应与待处理</small>
+    </button>
+    <button class="monitor-metric" type="button" data-monitoring-metric="yunda-work">
+      <span>韵达收到工单</span>
+      <strong data-monitoring-metric-value>加载中</strong>
+      <small data-monitoring-metric-note>待处理工单</small>
+    </button>
+    <button class="monitor-metric" type="button" data-monitoring-metric="announcements">
+      <span>未读公告</span>
+      <strong data-monitoring-metric-value>加载中</strong>
+      <small data-monitoring-metric-note>韵达与融辉</small>
+    </button>
+    <button class="monitor-metric" type="button" data-monitoring-metric="yunda-notifications">
+      <span>韵达消息中心提醒</span>
+      <strong data-monitoring-metric-value>加载中</strong>
+      <small data-monitoring-metric-note>原系统未标记处理，含重复推送</small>
+    </button>
   </div>
 
   <div class="monitor-shell">
@@ -376,5 +411,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/monitoring.js?v=20261015"></script>
+<script src="/static/monitoring.js?v=20261015b"></script>
 {% endblock %}

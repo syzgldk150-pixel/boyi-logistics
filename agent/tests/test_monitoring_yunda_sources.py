@@ -62,6 +62,31 @@ class YundaSourceTests(unittest.TestCase):
         self.assertNotIn("synthetic-session", str(result))
         self.assertNotIn("raw", result["items"][0])
 
+    def test_client_push_messages_show_readable_text(self):
+        push = {"data": {"msgid": "", "businesstype": "problemShipment", "type": "",
+                         "text": {"title": "问题件", "content": "您有一条虚构问题件", "orderId": ""}}}
+        receipt = {"data": {"msgId": "", "text": {"title": "消息提醒", "content": "虚构回单提醒"}, "type": "0"}}
+        rows = [
+            message_row(msgId="push", msgContent=json.dumps(push, ensure_ascii=False)),
+            message_row(msgId="receipt", msgContent=json.dumps(receipt, ensure_ascii=False)),
+            message_row(msgId="unknown", msgContent='{"other": 1}'),
+            message_row(msgId="untitled", msgTitle="", msgContent="", typeName="虚构问题件消息"),
+        ]
+        current = session()
+        current.get.return_value = Response({"code": 200, "details": {"username": "synthetic-user"}})
+        current.post.return_value = Response({"errorCode": 0, "rows": rows, "total": 4})
+
+        result = source.collect_items(current, "yunda:notifications", 1)
+
+        items = {item["id"]: item for item in result["items"]}
+        self.assertEqual("您有一条虚构问题件", items["push"]["content"])
+        self.assertEqual("虚构回单提醒", items["receipt"]["content"])
+        # Unrecognised shapes stay visible as received instead of being guessed.
+        self.assertEqual('{"other": 1}', items["unknown"]["content"])
+        self.assertEqual("虚构问题件消息", items["untitled"]["title"])
+        self.assertEqual("", items["untitled"]["content"])
+        self.assertEqual(source.NOTIFICATION_SCOPE_NOTE, result["message"])
+
     def test_announcements_are_unread_and_do_not_mark_read(self):
         current = session()
         current.get.return_value = Response({"code": 200, "details": {"username": "synthetic-user"}})
