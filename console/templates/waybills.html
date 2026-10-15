@@ -198,7 +198,11 @@
   {% set scan_short = row.scan_status_short | default('', true) %}
   {% set status_text = row.status_label | default('运输中', true) %}
   {% set display_text = scan_short or status_text %}
+  {% if row.linked_status_note %}
+  <span class="waybill-status-pill" data-tone="warning" title="绑定的平台运单没有可用的路由状态">{{ row.linked_status_note }}</span>
+  {%- else %}
   <span class="waybill-status-pill" data-tone="{{ 'info' if row.status == 'in_transit' else row.status_tone | default('info') }}"{% if scan_status %} title="{{ scan_status }}"{% endif %}>{{ display_text }}</span>
+  {%- endif %}
 {%- endmacro %}
 
 {% macro empty_dash(value) -%}

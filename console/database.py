@@ -254,6 +254,8 @@ MANUAL_WAYBILL_EDIT_FIELDS = tuple(MANUAL_WAYBILL_EDIT_LABELS)
 # Platform waybill a Boyi manual waybill may be linked to for tracking. Best
 # tracking is not connected yet; the link is still saved and shown.
 WAYBILL_LINK_PLATFORMS = {"ronghui": "融辉", "yunda": "韵达", "best": "百世"}
+# Linked platforms whose synced waybills carry a route status; Best has none.
+_LINKED_ROUTE_PLATFORMS = ("ronghui", "yunda")
 _WAYBILL_LINK_NUMBER = re.compile(r"^[A-Z0-9]{4,40}$")
 
 
@@ -966,18 +968,52 @@ class DocumentRepository:
     def _waybill_query_table(cls, source: str | None = None) -> str:
         if source and source != "all":
             return waybill_table(source)
-        columns = ", ".join([
+        columns = ", ".join(cls._waybill_union_columns())
+        platform_only = ", ".join(cls._PLATFORM_ONLY_FIELD_NAMES)
+        boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
+        boyi_columns, boyi_linked = cls._boyi_linked_route_columns()
+        return (
+            f"(SELECT {columns}, {platform_only}, receipt_required, sender_address, "
+            "NULL AS linked_platform, NULL AS linked_waybill_no, NULL AS linked_match_count, "
+            "NULL AS linked_platform_status FROM waybills UNION ALL "
+            f"SELECT {boyi_columns}, {boyi_absent}, receipt_required, sender_address, "
+            f"linked_platform, linked_waybill_no, {boyi_linked} "
+            "FROM boyi_waybills b WHERE source='manual') AS saved_waybills"
+        )
+
+    @classmethod
+    def _waybill_union_columns(cls) -> list[str]:
+        return [
             "id", "document_id", *cls._WAYBILL_FIELD_NAMES,
             "writer_id", "source", "status", "created_at", "updated_at",
             "source_scope", "source_record_id", "source_account_id", "source_permission_scope",
-        ])
-        platform_only = ", ".join(cls._PLATFORM_ONLY_FIELD_NAMES)
-        boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
+        ]
+
+    @classmethod
+    def _boyi_linked_route_columns(cls) -> tuple[str, str]:
+        """Boyi columns whose route status follows the linked platform waybill.
+
+        Only an exactly matched, uncancelled platform row replaces the Boyi
+        status and scan text; missing, ambiguous or cancelled matches keep the
+        Boyi values and are labelled by _row_to_waybill.
+        """
+        def linked(expr: str) -> str:
+            branches = " ".join(
+                f"WHEN '{platform}' THEN (SELECT {expr} FROM {waybill_table(platform)} p "
+                f"WHERE p.source = '{platform}' AND p.waybill_no = b.linked_waybill_no)"
+                for platform in _LINKED_ROUTE_PLATFORMS
+            )
+            return f"CASE b.linked_platform {branches} END"
+
+        count, status = linked("COUNT(*)"), linked("MAX(p.status)")
+        follows = f"b.status <> 'cancelled' AND {count} = 1 AND {status} <> 'cancelled'"
+        replaced = {
+            "status": f"CASE WHEN {follows} THEN {status} ELSE b.status END AS status",
+            "scan_status": f"CASE WHEN {follows} THEN {linked('MAX(p.scan_status)')} ELSE b.scan_status END AS scan_status",
+        }
         return (
-            f"(SELECT {columns}, {platform_only}, receipt_required, sender_address, "
-            "NULL AS linked_platform, NULL AS linked_waybill_no FROM waybills UNION ALL "
-            f"SELECT {columns}, {boyi_absent}, receipt_required, sender_address, linked_platform, linked_waybill_no "
-            "FROM boyi_waybills WHERE source='manual') AS saved_waybills"
+            ", ".join(replaced.get(name, f"b.{name}") for name in cls._waybill_union_columns()),
+            f"{count} AS linked_match_count, {status} AS linked_platform_status",
         )
 
     def _field_value(self, fields: dict[str, Any], field_name: str) -> str:
@@ -2150,11 +2186,30 @@ class DocumentRepository:
         linked_platform = str(data.get("linked_platform") or "")
         linked_no = str(data.get("linked_waybill_no") or "")
         data["linked_text"] = waybill_link_text(linked_platform, linked_no)
+        data["linked_status_note"] = self._linked_status_note(data, status)
         if linked_platform and linked_no:
             data["tracking_url"] = "/tracking?" + urlencode({"tracking_number": linked_no, "provider": linked_platform})
         else:
             data["tracking_url"] = f"/tracking?tracking_number={data.get('waybill_no', '')}"
         return data
+
+    @staticmethod
+    def _linked_status_note(data: dict[str, Any], status: str) -> str:
+        """Why a linked Boyi waybill does not show its platform route status."""
+        platform = str(data.get("linked_platform") or "")
+        if not platform or not data.get("linked_waybill_no") or status == "cancelled":
+            return ""
+        label = WAYBILL_LINK_PLATFORMS.get(platform, platform)
+        if platform not in _LINKED_ROUTE_PLATFORMS:
+            return f"{label}状态未接入"
+        count = int(data.get("linked_match_count") or 0)
+        if count == 0:
+            return f"{label}单未入库"
+        if count > 1:
+            return f"{label}单号重复"
+        if normalize_waybill_status(data.get("linked_platform_status")) == "cancelled":
+            return f"{label}单已作废"
+        return ""
 
     # ------------------------------------------------------------------
     # writers 表操作

@@ -106,3 +106,28 @@ def test_tracking_query_passes_linked_provider_and_stops_for_best():
         plain = JsonHandler({"tracking_number": "R12345678901", "provider": "unknown"})
         app._handle_tracking_query(plain)
         assert "provider" not in call.call_args.args[2]
+
+
+@pytest.mark.parametrize(("data", "note"), [
+    ({"linked_platform": "ronghui", "linked_match_count": 1, "linked_platform_status": "signed"}, ""),
+    ({"linked_platform": "ronghui", "linked_match_count": 0}, "融辉单未入库"),
+    ({"linked_platform": "yunda", "linked_match_count": 2, "linked_platform_status": "signed"}, "韵达单号重复"),
+    ({"linked_platform": "yunda", "linked_match_count": 1, "linked_platform_status": "cancelled"}, "韵达单已作废"),
+    ({"linked_platform": "best"}, "百世状态未接入"),
+    ({"linked_platform": "ronghui", "linked_match_count": 0, "status": "cancelled"}, ""),
+    ({}, ""),
+])
+def test_linked_row_explains_a_missing_platform_route_status(data, note):
+    repository = DocumentRepository.__new__(DocumentRepository)
+    row = {"id": 9, "source": "manual", "waybill_no": "BY00009", "status": "in_transit", **data}
+    if data.get("linked_platform"):
+        row["linked_waybill_no"] = "R0001"
+    assert repository._row_to_waybill(row)["linked_status_note"] == note
+
+
+def test_union_query_takes_route_status_only_from_one_uncancelled_platform_row():
+    sql = DocumentRepository._waybill_query_table("all")
+    assert "FROM boyi_waybills b WHERE source='manual'" in sql
+    assert "WHEN 'ronghui' THEN (SELECT COUNT(*) FROM ronghui_waybills p" in sql
+    assert "WHEN 'yunda' THEN (SELECT MAX(p.scan_status) FROM yunda_waybills p" in sql
+    assert "best" not in sql

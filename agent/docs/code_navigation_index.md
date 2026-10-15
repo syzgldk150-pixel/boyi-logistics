@@ -118,7 +118,7 @@ updated: 2026-10-15
 ### 数据库分域
 
 - 实体库与平台分表说明：`../../docs/database_domains.md`；唯一表名路由 `../../shared/logistics_tables.py`。
-- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。`migrations/056_drop_boyi_handling_fees.sql` 先备份再删除博益接货费、送货费，并由迁移器刷新视图。`migrations/057_boyi_waybill_edit_logs.sql` 在运单实体库新增修改记录并投影同名视图；Console 的 `services/documents.py` 与 `database.py` 将未作废博益单的指纹核验、幂等更新和留痕放在同一事务，`routes/waybills.py` 提供编辑数据、保存和历史入口。`migrations/059_boyi_waybill_platform_link.sql` 为博益运单增加平台运单绑定；`services/documents.py` 的 `_handle_manual_waybill_link` 与 `database.py` 的 `link_manual_waybill` 在同一事务保存绑定并写入修改记录，`services/waybills_receipts.py` 的轨迹查询按绑定平台传 `provider`（百世暂未接入并明确提示）。
+- 部署迁移：`migrations/055_domain_database_split.sql` 与 `scripts/migration_055_domain_databases.py`；运行库视图不存业务副本，后续结构与备份覆盖三个库。`migrations/056_drop_boyi_handling_fees.sql` 先备份再删除博益接货费、送货费，并由迁移器刷新视图。`migrations/057_boyi_waybill_edit_logs.sql` 在运单实体库新增修改记录并投影同名视图；Console 的 `services/documents.py` 与 `database.py` 将未作废博益单的指纹核验、幂等更新和留痕放在同一事务，`routes/waybills.py` 提供编辑数据、保存和历史入口。`migrations/059_boyi_waybill_platform_link.sql` 为博益运单增加平台运单绑定；`services/documents.py` 的 `_handle_manual_waybill_link` 与 `database.py` 的 `link_manual_waybill` 在同一事务保存绑定并写入修改记录，`services/waybills_receipts.py` 的轨迹查询按绑定平台传 `provider`（百世暂未接入并明确提示）；`database.py` 的 `_boyi_linked_route_columns` 让寄件运单查询中已绑定融辉/韵达的博益单按平台单显示和筛选路由状态。
 - 生产库是跨地域 RDS：写库代码的批量写入、连接复用约束及实测见 `../../docs/mysql_rds_migration.md` 的“跨地域访问的性能约束”；插件调用清单按 lease 缓存于 `agent/automation_plugins/capability_proxy_v2.py`。
 
 ### `shared/finance/`

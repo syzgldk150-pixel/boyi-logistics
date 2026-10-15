@@ -105,3 +105,63 @@ def test_migration_059_adds_columns_to_entity_table_and_runtime_view(split_datab
         for schema in (waybill, runtime):
             assert {"linked_platform", "linked_waybill_no"} <= set(migration.columns(cursor, schema, "boyi_waybills"))
         assert "linked_platform" not in migration.columns(cursor, runtime, "waybills")
+
+
+def platform_waybill(repo, source, number, status, scan_status=""):
+    values = {name: "" for name in repo._WAYBILL_FIELD_NAMES}
+    values.update(waybill_no=number, open_date="2026-10-13", scan_status=scan_status,
+                  status=status, source=source, writer_id="fixture")
+    with repo.connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            f"INSERT INTO waybills ({', '.join(values)}, created_at, updated_at) "
+            f"VALUES ({', '.join(['%s'] * len(values))}, NOW(), NOW())",
+            list(values.values()),
+        )
+
+
+def listed(repo, row, **filters):
+    return repo.search_waybills({"q": row["waybill_no"], "source": "all", **filters})["rows"]
+
+
+def test_linked_boyi_waybill_shows_and_filters_by_the_platform_route_status(repository):
+    row = seed(repository)
+    platform_waybill(repository, "ronghui", "R9000001", "signed")
+    link(repository, row, "ronghui", "R9000001")
+    [item] = listed(repository, row)
+    assert (item["status"], item["status_label"], item["linked_status_note"]) == ("signed", "已签收", "")
+    assert [item["id"] for item in listed(repository, row, status="signed")] == [row["id"]]
+    assert listed(repository, row, status="in_transit") == []
+    assert repository.get_waybill_by_no(row["waybill_no"])["status"] == "signed"
+
+    moving = seed(repository)
+    platform_waybill(repository, "yunda", "4300000001", "in_transit", "快件在长沙分拨已发出")
+    link(repository, moving, "yunda", "4300000001")
+    [item] = listed(repository, moving)
+    assert (item["status"], item["scan_status"], item["linked_status_note"]) == ("in_transit", "快件在长沙分拨已发出", "")
+
+
+@pytest.mark.parametrize(("platform", "number", "copies", "status", "note"), [
+    ("ronghui", "R9000002", 0, "signed", "融辉单未入库"),
+    ("yunda", "4300000002", 2, "signed", "韵达单号重复"),
+    ("ronghui", "R9000003", 1, "cancelled", "融辉单已作废"),
+    ("best", "BEST0002", 0, "signed", "百世状态未接入"),
+])
+def test_linked_boyi_waybill_keeps_its_own_status_without_one_usable_platform_row(
+        repository, platform, number, copies, status, note):
+    row = seed(repository)
+    for _ in range(copies):
+        platform_waybill(repository, platform, number, status, "平台扫描")
+    link(repository, row, platform, number)
+    [item] = listed(repository, row)
+    assert (item["status"], item["scan_status"], item["linked_status_note"]) == ("in_transit", "", note)
+    assert listed(repository, row, status="signed") == []
+
+
+def test_cancelled_boyi_waybill_stays_cancelled_after_its_platform_signs(repository):
+    row = seed(repository)
+    platform_waybill(repository, "ronghui", "R9000004", "signed")
+    link(repository, row, "ronghui", "R9000004")
+    with repository.connect() as connection, connection.cursor() as cursor:
+        cursor.execute("UPDATE boyi_waybills SET status='cancelled' WHERE id=%s", (row["id"],))
+    [item] = listed(repository, row)
+    assert (item["status"], item["linked_status_note"]) == ("cancelled", "")
