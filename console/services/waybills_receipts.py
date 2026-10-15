@@ -1487,7 +1487,9 @@ class WaybillsReceiptsServiceMixin:
                 "error": f"百世运单 {tracking_number} 的轨迹查询暂未接入，请先在百世系统中查询。",
             })
             return
-        params = {"tracking_number": tracking_number, "decrypt_masked": True}
+        # Ronghui decryption opens a browser (tens of seconds); the tracking page
+        # asks for routes first with `decrypt_masked: false`, then decrypts.
+        params = {"tracking_number": tracking_number, "decrypt_masked": body.get("decrypt_masked") is not False}
         if provider:
             params["provider"] = provider
 

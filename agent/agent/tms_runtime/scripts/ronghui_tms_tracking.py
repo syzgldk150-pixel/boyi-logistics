@@ -1115,7 +1115,13 @@ def _collect_api_tracking_rows(
     tracking_url: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     all_scan_rows = _post_form_rows(session, SCAN_ROWS_URL, {"BILL_CODE": bill_code}, tracking_url=tracking_url)
-    route_rows = fetch_main_route_rows(session, bill_code, tracking_url=tracking_url)
+    # The main-route call also returns every child waybill's scans; the original
+    # page lists only rows of the main code, so drop rows naming another code.
+    route_rows = [
+        row
+        for row in fetch_main_route_rows(session, bill_code, tracking_url=tracking_url)
+        if _normalize_bill_code(row.get("BILL_CODE")) in ("", bill_code)
+    ]
     if not route_rows:
         route_rows = [
             row
@@ -1375,6 +1381,8 @@ def query_ronghui_tms_tracking(params: dict[str, Any]) -> dict[str, Any]:
         detail_row=detail_row,
         child_rows=child_rows,
     )
+    # Lets a caller that skipped the slow browser decryption fetch it separately.
+    result["detail_masked"] = _needs_decrypted_detail(detail_row)
     return result
 
 

@@ -210,6 +210,42 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
         self.assertEqual("R000172654000001", child_rows[0]["BILL_CODE"])
         self.assertEqual("R00017265400", detail["tracking_number"])
 
+    def test_collect_api_tracking_rows_drops_child_rows_from_main_route(self):
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        scan_rows = [
+            {"BILL_CODE": "R00017265400", "SCAN_DATE": "2026-06-26 16:57:47", "SCAN_TYPE": "收件"},
+            {"BILL_CODE": "R000172654000001", "SCAN_DATE": "2026-06-26 17:02:11", "SCAN_TYPE": "装车"},
+            {"BILL_CODE": "R000172654000002", "SCAN_DATE": "2026-06-26 17:02:12", "SCAN_TYPE": "装车"},
+            {"BILL_CODE": "R00017265400", "SCAN_DATE": "2026-06-26 17:02:13", "SCAN_TYPE": "装车"},
+        ]
+
+        class Session:
+            def post(self, url, data=None, headers=None, timeout=None):
+                if "FIND_SACN_TRACK_BY_CODE" in url:
+                    return Response({"rows": scan_rows})
+                return Response({"rows": [{"BILL_CODE": "R00017265400", "GOODS_COUNT": 2}]})
+
+        route_rows, child_rows, _detail = ronghui_tms_tracking._collect_api_tracking_rows(
+            Session(),
+            "R00017265400",
+        )
+
+        self.assertEqual(["收件", "装车"], [row["SCAN_TYPE"] for row in route_rows])
+        self.assertEqual({"R00017265400"}, {row["BILL_CODE"] for row in route_rows})
+        self.assertEqual(
+            ["R000172654000001", "R000172654000002"],
+            [row["BILL_CODE"] for row in child_rows],
+        )
+
     def test_tracking_query_sends_widget_auth_headers_to_scan_api(self):
         class Response:
             def __init__(self, payload):
@@ -267,6 +303,8 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(1, result["counts"]["route_rows"])
+        # No customer fields came back and decryption was skipped.
+        self.assertTrue(result["detail_masked"])
 
     def test_normalizes_self_collection_tms_delivery_method(self):
         detail = ronghui_tms_tracking._normalize_api_detail_row(

@@ -174,6 +174,23 @@ class TrackingQueryTests(unittest.TestCase):
         self.assertEqual("/internal/v1/business/tracking_query", calls[0]["endpoint"])
         self.assertEqual({"tracking_number": "977808459", "decrypt_masked": True}, calls[0]["payload"]["params"])
 
+    def test_tracking_query_can_skip_customer_decryption(self):
+        app = self._build_app()
+        calls = []
+
+        def agent_request(self, method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append(payload)
+            return {"ok": True, "status": 200, "data": {"ok": True, "type": "ronghui_tms", "route_rows": []}}
+
+        app._agent_request = types.MethodType(agent_request, app)
+
+        for flag, expected in ((False, False), ("false", True), (None, True)):
+            with self.subTest(flag=flag):
+                calls.clear()
+                app._handle_tracking_query(_Handler({"tracking_number": "R00014513348", "decrypt_masked": flag}))
+                self.assertEqual(HTTPStatus.OK, app.sent_status)
+                self.assertIs(expected, calls[0]["params"]["decrypt_masked"])
+
     def test_tracking_rejects_missing_or_legacy_session_and_cross_origin_before_transport(self):
         for rejected in ("missing", "legacy", "cross_origin"):
             with self.subTest(rejected=rejected):

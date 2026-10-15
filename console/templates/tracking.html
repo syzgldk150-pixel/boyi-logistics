@@ -142,7 +142,81 @@
     right: 14px;
     z-index: 2;
   }
+
+  .tracking-recent {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    max-width: 760px;
+    margin: 14px auto 0;
+  }
+  .tracking-recent-label { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+  .tracking-recent-chip {
+    min-height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    transition: border-color var(--fast), background var(--fast);
+  }
+  .tracking-recent-chip:hover { border-color: #d1d5db; background: #f9fafb; }
+  .tracking-recent-chip:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+  .tracking-loading-hint { font-size: 0.8rem !important; color: var(--faint); }
+
   .tracking-result-panel--shipment .shipment-tabs { margin-right: 52px; }
+
+  .shipment-decrypt-note {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #f9fafb;
+    color: var(--text);
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+  .shipment-decrypt-note--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+  .shipment-decrypt-note .tracking-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(0,0,0,0.08);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: tracking-spin 800ms linear infinite;
+    flex-shrink: 0;
+  }
+  .shipment-decrypt-note .ghost-btn { min-height: 32px; padding: 0 10px; font-size: 0.8rem; }
+  .shipment-tab-busy { color: var(--muted); font-weight: 600; }
+
+  .tracking-table tr.is-latest td { background: #f8fafc; color: var(--text-strong); font-weight: 600; }
+  .route-latest-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: var(--radius-pill);
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-family: var(--font-ui, inherit);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1.6;
+    vertical-align: 1px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tracking-spinner { animation-duration: 2400ms !important; }
+    .tracking-result-panel { animation: none; }
+  }
 
   .r7-summary-strip {
     display: grid;
@@ -655,6 +729,7 @@
     .tracking-search-box { padding: 20px 16px; }
     .tracking-search-desc { margin-bottom: 14px; font-size: 0.84rem; line-height: 1.5; text-wrap: pretty; }
     .tracking-input-row { gap: 8px; }
+    .tracking-recent-chip { min-height: 44px; }
     .tracking-input-wrap { height: 44px; padding: 0 12px; }
     .tracking-search-btn { width: auto; min-width: 88px; height: 44px; padding: 0 12px; gap: 6px; font-size: 0.88rem; }
     .tracking-search-btn .feather { width: 16px; height: 16px; }
@@ -718,6 +793,7 @@
         查询
       </button>
     </div>
+    <div class="tracking-recent" id="recentSearches" hidden></div>
   </div>
 
   <div id="resultArea">
@@ -728,7 +804,8 @@
 
     <div class="tracking-state tracking-state--loading" id="stateLoading" hidden>
       <div class="tracking-spinner"></div>
-      <p>正在查询物流信息...</p>
+      <p id="loadingMsg" role="status">正在查询物流信息...</p>
+      <p class="tracking-loading-hint" id="loadingHint" hidden></p>
     </div>
 
     <div class="tracking-state tracking-state--error" id="stateError" hidden>
@@ -821,6 +898,9 @@
   }
 
   function resetUI() {
+    searchToken += 1;
+    stopLoadingTimer();
+    searchBtn.removeAttribute('disabled');
     showSection(stateEmpty);
     input.value = '';
     badge.hidden = true;
@@ -868,6 +948,104 @@
     return provider && trackingNumber === (input.getAttribute('data-linked-number') || '') ? provider : '';
   }
 
+  // Each search bumps the token so late responses of an older search are dropped.
+  var searchToken = 0;
+  var loadingTimer = null;
+  var loadingMsg = document.getElementById('loadingMsg');
+  var loadingHint = document.getElementById('loadingHint');
+
+  function startLoadingTimer() {
+    var startedAt = Date.now();
+    loadingMsg.textContent = '正在查询物流信息...';
+    loadingHint.hidden = true;
+    stopLoadingTimer();
+    loadingTimer = window.setInterval(function() {
+      var seconds = Math.floor((Date.now() - startedAt) / 1000);
+      loadingMsg.textContent = '正在查询物流信息... 已等待 ' + seconds + ' 秒';
+      if (seconds >= 10) {
+        loadingHint.textContent = '平台响应较慢，可继续等待或稍后重新查询。';
+        loadingHint.hidden = false;
+      }
+    }, 1000);
+  }
+
+  function stopLoadingTimer() {
+    if (loadingTimer) window.clearInterval(loadingTimer);
+    loadingTimer = null;
+  }
+
+  function postTrackingQuery(trackingNumber, provider, decryptMasked) {
+    var body = { tracking_number: trackingNumber };
+    if (provider) body.provider = provider;
+    if (!decryptMasked) body.decrypt_masked = false;
+    return fetch('/tracking/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    .then(function(resp) {
+      return resp.json().then(function(data) {
+        return { ok: resp.ok, data: data || {} };
+      });
+    });
+  }
+
+  function syncLocation(trackingNumber, provider) {
+    try {
+      var query = '?tracking_number=' + encodeURIComponent(trackingNumber) +
+        (provider ? '&provider=' + encodeURIComponent(provider) : '');
+      window.history.replaceState(null, '', window.location.pathname + query);
+    } catch (e) {}
+  }
+
+  var RECENT_KEY = 'boyi.tracking.recent';
+  var recentBox = document.getElementById('recentSearches');
+
+  function readRecent() {
+    try {
+      var items = JSON.parse(window.localStorage.getItem(RECENT_KEY) || '[]');
+      return Array.isArray(items) ? items.filter(function(item) {
+        return item && typeof item.number === 'string' && item.number;
+      }).slice(0, 6) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function rememberRecent(trackingNumber, provider) {
+    var items = readRecent().filter(function(item) { return item.number !== trackingNumber; });
+    items.unshift({ number: trackingNumber, provider: provider || '' });
+    try {
+      window.localStorage.setItem(RECENT_KEY, JSON.stringify(items.slice(0, 6)));
+    } catch (e) {}
+    renderRecent();
+  }
+
+  function renderRecent() {
+    var items = readRecent();
+    recentBox.hidden = !items.length;
+    if (!items.length) {
+      recentBox.innerHTML = '';
+      return;
+    }
+    recentBox.innerHTML = '<span class="tracking-recent-label">最近查询</span>' + items.map(function(item, index) {
+      return '<button class="tracking-recent-chip" type="button" data-recent-index="' + index + '">' +
+        escapeHtml(item.number) + '</button>';
+    }).join('');
+  }
+
+  recentBox.addEventListener('click', function(event) {
+    var chip = event.target.closest('[data-recent-index]');
+    if (!chip) return;
+    var item = readRecent()[Number(chip.getAttribute('data-recent-index'))];
+    if (!item) return;
+    input.value = item.number;
+    input.setAttribute('data-linked-provider', item.provider || '');
+    input.setAttribute('data-linked-number', item.provider ? item.number : '');
+    input.dispatchEvent(new Event('input'));
+    doSearch();
+  });
+
   function doSearch() {
     var trackingNumber = input.value.trim();
     if (!trackingNumber) {
@@ -885,20 +1063,17 @@
       return;
     }
 
+    var token = ++searchToken;
     showSection(stateLoading);
+    startLoadingTimer();
     searchBtn.setAttribute('disabled', 'disabled');
 
-    fetch('/tracking/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(provider ? { tracking_number: trackingNumber, provider: provider } : { tracking_number: trackingNumber })
-    })
-    .then(function(resp) {
-      return resp.json().then(function(data) {
-        return { ok: resp.ok, data: data };
-      });
-    })
+    // Ronghui customer decryption runs a browser; show routes first, decrypt after.
+    var deferDecrypt = type === 'ronghui';
+    postTrackingQuery(trackingNumber, provider, !deferDecrypt)
     .then(function(result) {
+      if (token !== searchToken) return;
+      stopLoadingTimer();
       searchBtn.removeAttribute('disabled');
       if (!result.ok || result.data.error) {
         showSection(stateError);
@@ -908,11 +1083,16 @@
         return;
       }
 
+      syncLocation(trackingNumber, provider);
+      rememberRecent(trackingNumber, provider);
       if (result.data.type === 'ronghui_tms' || result.data.type === 'ronghui') {
         renderShipmentResult(result.data, {
           label: '融辉单号',
           badgeClass: 'tracking-type-badge tracking-type-badge--rh'
         });
+        if (deferDecrypt && result.data.detail_masked === true) {
+          loadDecryptedDetails(token, trackingNumber, provider, result.data);
+        }
       } else if (result.data.type === 'yunda') {
         renderShipmentResult(result.data, {
           label: '韵达单号',
@@ -923,6 +1103,8 @@
       }
     })
     .catch(function() {
+      if (token !== searchToken) return;
+      stopLoadingTimer();
       searchBtn.removeAttribute('disabled');
       showSection(stateError);
       document.getElementById('errorMsg').textContent = '网络请求失败，请检查网络连接';
@@ -930,7 +1112,40 @@
     });
   }
 
-  function renderTable(container, columns, rows, emptyText) {
+  function loadDecryptedDetails(token, trackingNumber, provider, maskedData) {
+    renderShipmentDetails(maskedData, { state: 'loading' });
+    feather.replace();
+    postTrackingQuery(trackingNumber, provider, true)
+    .then(function(result) {
+      if (token !== searchToken) return;
+      var data = result.data || {};
+      if (!result.ok || data.error || !(data.type === 'ronghui_tms' || data.type === 'ronghui')) {
+        renderDecryptFailure(token, trackingNumber, provider, maskedData, data.error || '查询失败，请稍后重试');
+        return;
+      }
+      renderShipmentDetails(data);
+      renderShipmentChildren(data);
+      feather.replace();
+    })
+    .catch(function() {
+      if (token !== searchToken) return;
+      renderDecryptFailure(token, trackingNumber, provider, maskedData, '网络请求失败，请检查网络连接');
+    });
+  }
+
+  function renderDecryptFailure(token, trackingNumber, provider, maskedData, message) {
+    renderShipmentDetails(maskedData, { state: 'error', message: message });
+    var retry = document.getElementById('decryptRetryBtn');
+    if (retry) {
+      retry.addEventListener('click', function() {
+        loadDecryptedDetails(token, trackingNumber, provider, maskedData);
+      });
+    }
+    feather.replace();
+  }
+
+  function renderTable(container, columns, rows, emptyText, options) {
+    options = options || {};
     rows = rows || [];
     if (!rows.length) {
       container.innerHTML = '<div class="tracking-empty">' + escapeHtml(emptyText || '暂无数据') + '</div>';
@@ -941,14 +1156,18 @@
       html += '<th>' + escapeHtml(col.label) + '</th>';
     });
     html += '</tr></thead><tbody>';
-    rows.forEach(function(row) {
-      html += '<tr>';
+    rows.forEach(function(row, rowIndex) {
+      var isLatest = rowIndex === options.latestIndex;
+      html += isLatest ? '<tr class="is-latest">' : '<tr>';
       columns.forEach(function(col) {
         var cls = col.mono ? ' class="mono"' : (col.wide ? ' class="wide"' : '');
         var value = typeof col.value === 'function' ? col.value(row) : row[col.key];
         var renderedValue = escapeHtml(displayValue(value));
         if (col.multiline) {
           renderedValue = renderedValue.replace(/\n/g, '<br>');
+        }
+        if (isLatest && col.key === 'scan_time') {
+          renderedValue += '<span class="route-latest-tag">最新</span>';
         }
         html += '<td' + cls + '>' + renderedValue + '</td>';
       });
@@ -1310,16 +1529,32 @@
     stats.innerHTML = '';
   }
 
-  function renderShipmentDetails(data) {
+  function decryptNoteHtml(decrypt) {
+    if (!decrypt) return '';
+    if (decrypt.state === 'loading') {
+      return '<div class="shipment-decrypt-note" role="status"><span class="tracking-spinner" aria-hidden="true"></span>' +
+        '正在获取完整的收发货人姓名和电话，通常需要 20–40 秒，下方暂显示脱敏信息。</div>';
+    }
+    return '<div class="shipment-decrypt-note shipment-decrypt-note--error" role="alert">' +
+      '<span>完整收发货人信息获取失败：' + escapeHtml(decrypt.message || '未知原因') + '</span>' +
+      '<button class="ghost-btn" type="button" id="decryptRetryBtn"><i data-feather="rotate-ccw" style="width:14px;"></i> 重试</button>' +
+    '</div>';
+  }
+
+  function renderShipmentDetails(data, decrypt) {
     var model = buildShipmentDetailSections(data);
     var detailsTab = document.getElementById('shipmentDetailsTab');
     var details = document.getElementById('shipmentDetails');
     detailsTab.textContent = '运单详情(' + (model ? '1' : '0') + ')';
+    if (decrypt && decrypt.state === 'loading') {
+      detailsTab.insertAdjacentHTML('beforeend', '<span class="shipment-tab-busy"> · 加载中</span>');
+    }
+    var note = decryptNoteHtml(decrypt);
     if (!model) {
-      details.innerHTML = '<div class="tracking-empty">暂无运单详情</div>';
+      details.innerHTML = note + '<div class="tracking-empty">暂无运单详情</div>';
       return null;
     }
-    details.innerHTML = '<div class="shipment-details">' +
+    details.innerHTML = note + '<div class="shipment-details">' +
       renderShipmentDetailLayout(model) +
     '</div>';
     return model;
@@ -1365,9 +1600,26 @@
     feather.replace();
   }
 
+  // Index of the newest scan; times are "YYYY-MM-DD HH:MM:SS" and compare as text.
+  function latestRouteIndex(rows) {
+    var latest = -1;
+    var latestTime = '';
+    (rows || []).forEach(function(row, index) {
+      var time = String((row && row.scan_time) || '');
+      if (time && time >= latestTime) {
+        latest = index;
+        latestTime = time;
+      }
+    });
+    return latest;
+  }
+
   function renderShipmentResult(data, options) {
     options = options || {};
-    renderTable(document.getElementById('shipmentRoutes'), routeColumnsForShipment(data), data.route_rows || [], '暂无路由信息');
+    var routeRows = data.route_rows || [];
+    renderTable(document.getElementById('shipmentRoutes'), routeColumnsForShipment(data), routeRows, '暂无路由信息', {
+      latestIndex: routeRows.length > 1 ? latestRouteIndex(routeRows) : -1
+    });
     var model = renderShipmentDetails(data);
     renderShipmentChildren(data);
     renderHeroStats(model);
@@ -1447,6 +1699,7 @@
     });
   });
 
+  renderRecent();
   if (input.value.trim()) {
     input.dispatchEvent(new Event('input'));
     window.setTimeout(doSearch, 0);
