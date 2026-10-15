@@ -2,7 +2,7 @@
 module: 到货统计
 type: 插件维护说明
 status: active
-updated: 2026-10-08
+updated: 2026-10-15
 ---
 
 # 到货统计插件
@@ -14,3 +14,5 @@ updated: 2026-10-08
 测试和升级入口见[上级维护说明](../README.md)。`tests/test_sync_arrival_stats_service_v2_package.py` 核验 ZIP 与当前源码一致；`tests/test_plugin_business_boundary.py` 覆盖冻结 Host 后仅改变包内分类，以及空结果清理。历史 V1/V2 对比仅用于离线迁移回归，不加载或恢复旧 V1 业务。
 
 2026-10-08 已安装 2.1.0，恢复实例启用，保留原有定时关闭状态；该次没有触发统计写表。安装与验证范围见[上线记录](../../../docs/plugin_business_boundary_20261008.md)。后续版本和状态以实际实例为准。
+
+2.1.1（2026-10-15）：同一扫描码只有目的站不同时（货物改派），以当天扫描为准覆盖历史快照，不再整次失败；回归见 `tests/test_arrival_stats_scan_reroute.py`。

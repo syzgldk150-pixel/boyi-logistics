@@ -321,7 +321,11 @@ def _normalized_scan_snapshot(rows: list[Mapping[str, object]]) -> list[dict[str
         }
         previous = output.get(code)
         if previous is not None and previous != normalized:
-            raise ValueError("scan code has inconsistent normalized data")
+            changed = {key for key in normalized if previous[key] != normalized[key]}
+            # A re-routed parcel changes only its destination. Rows are passed
+            # persisted-first, so the target-day scan (later row) wins.
+            if changed != {"destination"}:
+                raise ValueError("scan code has inconsistent normalized data")
         output[code] = normalized
     return [output[key] for key in sorted(output)]
 
