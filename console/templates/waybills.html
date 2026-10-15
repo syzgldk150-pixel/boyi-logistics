@@ -656,8 +656,11 @@
           if (day.getMonth() !== month) button.classList.add("is-outside");
           if (isSameDay(day, today)) button.classList.add("is-today");
           if (isBetweenDays(day, state.draftStart, state.draftEnd)) button.classList.add("is-in-range");
-          if (isSameDay(day, state.draftStart)) button.classList.add("is-range-start");
-          if (isSameDay(day, state.draftEnd)) button.classList.add("is-range-end");
+          const isStart = isSameDay(day, state.draftStart);
+          const isEnd = isSameDay(day, state.draftEnd);
+          button.classList.toggle("is-start", isStart);
+          button.classList.toggle("is-end", isEnd);
+          button.setAttribute("aria-pressed", String(isStart || isEnd));
           grid.appendChild(button);
         }
       }

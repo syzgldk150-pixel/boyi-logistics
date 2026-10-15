@@ -239,6 +239,14 @@ class WaybillQueryTemplateTests(unittest.TestCase):
             **_waybill_template_defaults(),
         )
 
+    def test_calendar_selected_days_use_the_styled_class_names(self):
+        source = (Path(__file__).resolve().parents[1] / "templates" / "waybills.html").read_text(encoding="utf-8")
+        # The script and stylesheet must agree, otherwise picked days show no selection.
+        self.assertIn(".waybill-calendar-day.is-start, .waybill-calendar-day.is-end", source)
+        self.assertIn('button.classList.toggle("is-start", isStart)', source)
+        self.assertIn('button.classList.toggle("is-end", isEnd)', source)
+        self.assertNotIn("is-range-start", source)
+
     def test_template_renders_search_summary_and_table(self):
         html = self._render_page(self._sample_row())
 
