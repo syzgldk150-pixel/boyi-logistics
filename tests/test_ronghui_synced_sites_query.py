@@ -82,3 +82,20 @@ def test_sync_accounts_come_from_enabled_send_order_instances():
     broken = SimpleNamespace(list=lambda include_disabled: [entry("sync_daily_send_orders_v2", "")])
     with pytest.raises(ValueError, match="WAYBILL_ACCOUNT_BINDING_UNAVAILABLE"):
         waybill_query.ronghui_send_sync_accounts(broken)
+
+
+def test_business_composition_reads_accounts_from_the_plugin_catalog(monkeypatch):
+    # Production regression: the tool registry has no plugin instance list().
+    import business_composition
+    seen = {}
+    monkeypatch.setattr(business_composition, "prepare_waybill_sources",
+                        lambda providers, *, catalog: seen.setdefault("catalog", catalog) and ([], None))
+    captured = {}
+    monkeypatch.setattr(business_composition, "build_direct_waybill_query_service",
+                        lambda **kwargs: captured.update(kwargs) or (lambda *_a: None))
+    plugin_catalog = SimpleNamespace(list=lambda include_disabled: [])
+    business_composition.build_business_service(
+        catalog=SimpleNamespace(), plugin_catalog=plugin_catalog,
+        invocations=SimpleNamespace(call_read=None))
+    captured["prepare_sources"](["ronghui"])
+    assert seen["catalog"] is plugin_catalog

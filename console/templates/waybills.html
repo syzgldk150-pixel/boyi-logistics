@@ -1137,8 +1137,20 @@
       detail.setAttribute("aria-hidden", "true");
       document.body.classList.remove("has-modal");
     });
+    // Close only when the press both starts and ends on the backdrop. A drag
+    // that begins in an input and is released past the card targets the
+    // dialog too, and unsaved edits are never discarded by a backdrop click.
+    let backdropPress = false;
+    const onBackdrop = (event) => {
+      const rect = detail.getBoundingClientRect();
+      return event.target === detail && (event.clientX < rect.left || event.clientX > rect.right
+        || event.clientY < rect.top || event.clientY > rect.bottom);
+    };
+    detail?.addEventListener("pointerdown", (event) => { backdropPress = onBackdrop(event); });
     detail?.addEventListener("click", (event) => {
-      if (event.target === detail) closeWaybillDetail(scope);
+      const pressed = backdropPress;
+      backdropPress = false;
+      if (pressed && onBackdrop(event) && !detail.querySelector("[data-waybill-edit-form]")) closeWaybillDetail(scope);
     });
     detail?.addEventListener("click", async (event) => {
       const button = event.target instanceof Element ? event.target.closest("[data-waybill-print]") : null;
@@ -1216,6 +1228,10 @@
   let loadInProgress = false;
   let pendingRefresh = false;
 
+  function detailOpen(scope = panel()) {
+    return Boolean(scope?.classList.contains("is-detail-open") || scope?.querySelector("[data-waybill-edit-form]"));
+  }
+
   function refreshPlan(scope = panel()) {
     try { return JSON.parse(scope?.dataset.waybillSourceRefresh || "null"); }
     catch { return null; }
@@ -1282,8 +1298,9 @@
         kind: data.complete ? "success" : "warning",
       };
       if (key !== refreshKey(refreshPlan())) return;
-      // Preserve an in-progress query or unsaved edit while providers finish.
-      if (loadInProgress || panel()?.querySelector("[data-waybill-edit-form]")) {
+      // Preserve an in-progress query or an open detail while providers finish;
+      // closing the detail applies the deferred refresh.
+      if (loadInProgress || detailOpen()) {
         pendingRefresh = true;
         restoreRefreshNotice();
         return;
@@ -1325,7 +1342,7 @@
       if (sequence === loadNumber) {
         loadInProgress = false;
         setBusy(false);
-        if (pendingRefresh && !panel()?.querySelector("[data-waybill-edit-form]")) {
+        if (pendingRefresh && !detailOpen()) {
           pendingRefresh = false;
           loadWaybills(new URL(window.location.href), { pushState: false });
         }

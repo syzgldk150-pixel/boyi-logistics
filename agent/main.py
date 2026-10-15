@@ -1220,7 +1220,8 @@ async def lifespan(app: FastAPI):
         direct_invocations.begin_credentials_change,
         schedule_policy_service.begin_credentials_change,
     ))
-    business_service = build_business_service(catalog=core_catalog, invocations=direct_invocations)
+    business_service = build_business_service(
+        catalog=core_catalog, plugin_catalog=plugin_runtime.catalog, invocations=direct_invocations)
     bind_direct_business_service(business_service)
     project_policy_service = AutomationProjectPolicyService(
         repository,
