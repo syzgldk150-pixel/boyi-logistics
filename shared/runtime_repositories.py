@@ -47,6 +47,17 @@ WAYBILL_FIELDS = (
     "status",
 )
 WAYBILL_STATUSES = frozenset({"pending", "in_transit", "signed", "cancelled"})
+# A source list without route data publishes an empty scan_status; keep the
+# route text a separate refresher already stored instead of erasing it.
+PRESERVED_WHEN_EMPTY_FIELDS = frozenset({"scan_status"})
+_PRESERVE_EMPTY_SQL = {
+    field: f"{field} = CASE WHEN %s = '' THEN {field} ELSE %s END"
+    for field in PRESERVED_WHEN_EMPTY_FIELDS
+}
+
+
+def _update_values(field: str, value: str) -> tuple[str, ...]:
+    return (value, value) if field in PRESERVED_WHEN_EMPTY_FIELDS else (value,)
 
 
 @contextmanager
@@ -516,6 +527,103 @@ class WaybillRepository:
                     if (converted := self._row_to_dict(row)) is not None
                 ]
 
+    def list_unsigned_route_candidates(self, *, source: str, limit: int) -> list[dict[str, str]]:
+        """Read active, unsigned rows whose route text a refresher may update."""
+
+        table = waybill_table(str(source or "").strip())
+        if type(limit) is not int or not 1 <= limit <= 5_000:
+            raise ValueError("route candidate limit is invalid")
+        with _connection(self._connection_factory) as connection:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT waybill_no, scan_status FROM {table}
+                    WHERE source=%s AND status NOT IN ('signed', 'cancelled') AND waybill_no <> ''
+                    ORDER BY id LIMIT %s
+                    """,
+                    (source, limit),
+                )
+                rows = cursor.fetchall() or []
+        candidates: dict[str, str] = {}
+        for row in rows:
+            identity = str(row.get("waybill_no") or "").strip()
+            # Duplicate legacy/scoped rows share one route; keep one identity.
+            candidates.setdefault(identity, str(row.get("scan_status") or ""))
+        return [{"waybill_no": key, "scan_status": value} for key, value in candidates.items()]
+
+    def update_route_statuses(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        source: str,
+        mark_write_started: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Set route text (and optional signed) on unsigned rows, then read back."""
+
+        table = waybill_table(str(source or "").strip())
+        normalized: dict[str, tuple[str, bool]] = {}
+        for item in items:
+            identity = str(item.get("waybill_no") or "").strip()
+            text = str(item.get("scan_status") or "").strip()
+            signed = item.get("signed")
+            if not identity or not text or len(text) > 128 or type(signed) is not bool or identity in normalized:
+                raise ValueError("route status item is invalid")
+            normalized[identity] = (text, signed)
+        if not normalized:
+            return {"ok": True, "verified": True, "updated": 0, "record_count": 0}
+        with _connection(self._connection_factory) as connection:
+            begin = getattr(connection, "begin", None)
+            if callable(begin):
+                begin()
+            try:
+                with _cursor(connection, self._cursor_factory) as cursor:
+                    if mark_write_started is not None:
+                        mark_write_started()
+                    updated = 0
+                    for identity, (text, signed) in normalized.items():
+                        cursor.execute(
+                            f"""
+                            UPDATE {table} SET scan_status=%s,
+                                status=CASE WHEN %s THEN 'signed' ELSE status END
+                            WHERE BINARY waybill_no=%s AND source=%s
+                              AND status NOT IN ('signed', 'cancelled')
+                            """,
+                            (text, signed, identity, source),
+                        )
+                        updated += int(cursor.rowcount or 0)
+                if callable(begin):
+                    connection.commit()
+            except Exception:
+                if callable(begin):
+                    connection.rollback()
+                raise
+        placeholders = ", ".join("%s" for _ in normalized)
+        with _connection(self._connection_factory) as connection:
+            with _cursor(connection, self._cursor_factory) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT waybill_no, scan_status, status FROM {table}
+                    WHERE BINARY waybill_no IN ({placeholders}) AND source=%s
+                    """,
+                    [*normalized, source],
+                )
+                rows = cursor.fetchall() or []
+        # A row signed or cancelled concurrently keeps its own state; every
+        # still-active row must now carry exactly the requested route.
+        verified = all(
+            row.get("status") in {"signed", "cancelled"}
+            or str(row.get("scan_status") or "") == normalized[str(row.get("waybill_no") or "").strip()][0]
+            for row in rows
+        ) and all(
+            not signed or any(
+                str(row.get("waybill_no") or "").strip() == identity and row.get("status") in {"signed", "cancelled"}
+                for row in rows
+            )
+            for identity, (_text, signed) in normalized.items()
+            if any(str(row.get("waybill_no") or "").strip() == identity for row in rows)
+        )
+        return {"ok": True, "verified": verified, "updated": updated, "record_count": len(normalized)}
+
     def sync_records(
         self,
         records: list[dict[str, Any]],
@@ -564,7 +672,10 @@ class WaybillRepository:
                     existing = matches[0] if matches else None
                     if existing and existing.get("id"):
                         updatable = [field for field in fields if field != "status"]
-                        assignments = ", ".join(f"{field} = %s" for field in updatable)
+                        assignments = ", ".join(
+                            _PRESERVE_EMPTY_SQL[field] if field in _PRESERVE_EMPTY_SQL else f"{field} = %s"
+                            for field in updatable
+                        )
                         cursor.execute(
                             f"""
                             UPDATE {table} SET {assignments},
@@ -573,7 +684,7 @@ class WaybillRepository:
                             WHERE id = %s
                             """,
                             [
-                                *[row[field] for field in updatable],
+                                *[value for field in updatable for value in _update_values(field, row[field])],
                                 row["status"],
                                 str(writer_id or ""),
                                 source_text,

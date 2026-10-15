@@ -24,6 +24,14 @@
 
 飞书历史字段按已有字段 ID 原位改名、按唯一运单编号更新托管字段，保留记录 ID、附件、关联和人工列。普通日期、编号、体积重量同义字段统一；旧名称与新名称同时存在等歧义不能任选其一。源列表未返回的既有飞书记录保留并报告，不能据此删除；缺单号的业务行也不能猜测匹配。韵达普通 Sheet 保持现有当日快照语义，历史全集位于对应 Bitable 和运单数据库。
 
+## 融辉在途轨迹（2026-10-15）
+
+融辉寄件列表（`FIND_BILL_SEND`）只返回签收状态，不含扫描或轨迹字段，因此同步写入的 `scan_status` 为空，状态列只显示“运输中”；韵达同步逐单读取原站扫描描述，所以有到站信息。
+
+独立 V2 插件 `sync_ronghui_route_status_v2` 在后台补齐融辉进度：读取后台所有未签收、未作废的融辉单（`waybill_db.ronghui_waybills`，每轮最多 2000 单），按 5 单一批、逗号分隔单号调用融辉快件跟踪接口 `FIND_SACN_TRACK_BY_CODE_MAIN`（2026-10-15 在生产账号只读核实：2 单一次返回 190 行，含子单），取主单及其子单中最新一条扫描，写成“快件已到达长沙分拨”“快件在长沙分拨已发出，发往天津分拨”等短文本；主单出现签收扫描时同时改为 `signed`，之后不再刷新。单批响应超过传输上限时改为逐单查询。只写有变化的行，宿主更新后立即回读核对。定时在项目设置中配置（建议每小时一次），查询页只读数据库，不增加打开页面时的原站请求。
+
+宿主接口 `connector.boyi.ronghui_route_projection@1`（`list_pending`/`update_routes`）只做列表和写回，实现见 `agent/agent/automation_plugins/route_status_handlers.py` 与 `agent/plugin_core_adapters/route_status.py`；措辞、子单和签收判断在插件 `payload/action.py`。寄件同步与页面补查发布的 `scan_status` 为空时保留已有值（`shared/runtime_repositories.py` 的 `PRESERVED_WHEN_EMPTY_FIELDS`），非空时仍以来源为准；发布回读核验对空值同样不要求覆盖。回归见 `tests/test_ronghui_route_status_v2.py` 与 `tests/test_waybill_source_coverage_mysql.py`。
+
 ## 已实现的路径
 
 - 发货计费吨位复用 `waybill_query.collect_ronghui_day` 完整分页，在 `shipment_source.py` 中按宿主唯一用途账号、真实站点与开单日期构建本次快照，不新增账本或复用旧展示重量。每次按需刷新，因此能排除已从原查询消失的作废单；详细来源合同与验收边界见 [发货吨位与飞书知识](shipment_knowledge_queries.md)。

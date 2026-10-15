@@ -42,6 +42,7 @@ _PROJECTION_TABLES = {
     "split_pending.snapshot.refresh": ("split_pending_problem_items",),
     "waybill.delivery_status.update": ("waybills",),
     "waybill.yunda.replace_date": ("waybills",),
+    "waybill.ronghui.route_status.update": ("waybills",),
 }
 
 

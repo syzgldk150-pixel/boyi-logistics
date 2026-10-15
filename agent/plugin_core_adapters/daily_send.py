@@ -14,6 +14,7 @@ from agent.automation_plugins.daily_send_handlers import (
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
 from agent.tms_runtime.errors import TMSAuthStateError
+from shared.runtime_repositories import PRESERVED_WHEN_EMPTY_FIELDS
 
 
 ResourceLoader = Callable[[str], Mapping[str, Any] | None]
@@ -436,6 +437,8 @@ def _verify_projection(
         observed_row = rows[0]
         for field in _PROJECTION_FIELDS:
             if field == "status" and observed_row[field] == "cancelled":
+                continue
+            if field in PRESERVED_WHEN_EMPTY_FIELDS and wanted[field] == "":
                 continue
             if observed_row[field] != wanted[field]:
                 return False

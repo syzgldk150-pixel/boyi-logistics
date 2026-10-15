@@ -12,7 +12,10 @@ from datetime import date, datetime, time, timezone
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from shared.runtime_repositories import WAYBILL_FIELDS, WaybillRepository, _connection, _cursor
+from shared.runtime_repositories import (
+    PRESERVED_WHEN_EMPTY_FIELDS, WAYBILL_FIELDS, WaybillRepository, _PRESERVE_EMPTY_SQL, _connection, _cursor,
+    _update_values,
+)
 from shared.logistics_tables import waybill_table
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -140,7 +143,9 @@ def _publication_unchanged(existing: Mapping[str, Any], row: Mapping[str, str], 
     def text(value: Any) -> str:
         return "" if value is None else str(value)
     status = existing["status"] if existing["status"] == "cancelled" else row["status"]
-    return (all(text(existing.get(field)) == row[field] for field in WAYBILL_FIELDS if field != "status")
+    return (all(text(existing.get(field)) == row[field]
+                or (field in PRESERVED_WHEN_EMPTY_FIELDS and row[field] == "")
+                for field in WAYBILL_FIELDS if field != "status")
             and existing["status"] == status
             and existing["source_scope"] == scope.source_scope
             and existing["source_record_id"] == identity
@@ -307,12 +312,14 @@ class WaybillSourceRepository:
                     unchanged += 1
                 elif existing:
                     fields = [field for field in WAYBILL_FIELDS if field != "status"]
-                    cursor.execute(f"""UPDATE {table} SET {', '.join(field+'=%s' for field in fields)},
+                    assignments = ", ".join(_PRESERVE_EMPTY_SQL.get(field, field + "=%s") for field in fields)
+                    cursor.execute(f"""UPDATE {table} SET {assignments},
                         status=CASE WHEN status='cancelled' THEN status ELSE %s END,
                         source_scope=%s,source_record_id=%s,source_account_id=%s,
                         source_permission_scope=CASE WHEN %s THEN %s ELSE source_permission_scope END,
                         updated_at=UTC_TIMESTAMP(6) WHERE id=%s""",
-                        [*[row[field] for field in fields], row["status"], scope.source_scope, identity, scope.account_id, complete,
+                        [*[value for field in fields for value in _update_values(field, row[field])],
+                         row["status"], scope.source_scope, identity, scope.account_id, complete,
                          scope.permission_scope, existing["id"]])
                     updated += 1
                 else:

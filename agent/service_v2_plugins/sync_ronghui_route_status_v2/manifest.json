@@ -1,0 +1,114 @@
+{
+  "account_roles": [
+    {
+      "role": "route_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json"
+      ],
+      "account_role": "route_source",
+      "resource_role": null
+    },
+    {
+      "name": "service.invoke",
+      "operations": [
+        "list_pending",
+        "update_routes"
+      ],
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "config_schema": {
+    "additionalProperties": false,
+    "properties": {},
+    "required": [],
+    "type": "object"
+  },
+  "contributes": {
+    "console": [
+      {
+        "id": "run",
+        "title": "刷新融辉在途轨迹",
+        "service": "plugin.sync_ronghui_route_status_v2.refresh@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "hourly_run",
+        "title": "融辉在途轨迹定时刷新",
+        "service": "plugin.sync_ronghui_route_status_v2.refresh@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "feishu": [],
+    "harness": [],
+    "webhook": [],
+    "events": []
+  },
+  "description": "读取后台所有未签收的融辉寄件运单，按单号批量查询融辉快件跟踪的最新扫描，写回寄件运单查询的状态列；签收后不再刷新。使用实例选择的融辉账号登录态，定时在项目中配置。",
+  "host_api": {
+    "maximum_exclusive": "3.0.0",
+    "minimum": "2.0.0"
+  },
+  "name": "融辉在途轨迹刷新",
+  "plugin_id": "sync_ronghui_route_status_v2",
+  "provides": [
+    {
+      "service": "plugin.sync_ronghui_route_status_v2.refresh@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "internal_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.ronghui_route_projection@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "resource_roles": [],
+  "runtime": {
+    "entrypoint": "payload/main.py",
+    "kind": "python_subprocess",
+    "mode": "on_demand",
+    "python": "3.10",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "runtime_model": "service_v2",
+  "schema_version": 2,
+  "storage": {
+    "collections": [],
+    "kv": false
+  },
+  "version": "1.0.0",
+  "http_requests": [
+    {
+      "name": "track_rows",
+      "account_role": "route_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findAllByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_SACN_TRACK_BY_CODE_MAIN"
+      }
+    }
+  ]
+}

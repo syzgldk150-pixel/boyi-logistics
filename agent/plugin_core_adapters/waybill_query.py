@@ -144,7 +144,7 @@ def publish_verified_waybills(records, *, source, target_date, account_id,
                               scope_resolver=None, connection_factory=None):
     """Publish a complete signed collector result and verify scoped SQL fields."""
     from agent.automation_plugins.errors import PluginExecutionError
-    from shared.runtime_repositories import WaybillRepository
+    from shared.runtime_repositories import PRESERVED_WHEN_EMPTY_FIELDS, WaybillRepository
     from shared.automation_project_authorization import canonical_sha256
     resolver = scope_resolver or resolve_source_scope
     scope = resolver(source, account_id)
@@ -189,6 +189,7 @@ def publish_verified_waybills(records, *, source, target_date, account_id,
             valid = False
             continue
         valid = valid and all(observed[key] == value or (key == "status" and observed[key] == "cancelled")
+                              or (key in PRESERVED_WHEN_EMPTY_FIELDS and value == "")
                               for key, value in wanted.items())
     if not valid:
         raise PluginExecutionError("projection fresh readback mismatch", code="WRITE_OUTCOME_UNKNOWN")

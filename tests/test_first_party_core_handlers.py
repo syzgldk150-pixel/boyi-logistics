@@ -240,6 +240,8 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
         ("projection.invoke", "waybill.delivery_status.update"),
         ("projection.invoke", "waybill.delivery_status.lookup"),
         ("projection.invoke", "waybill.ronghui.replace_date"),
+        ("projection.invoke", "waybill.ronghui.route_status.pending"),
+        ("projection.invoke", "waybill.ronghui.route_status.update"),
         ("network.request", "feishu.bitable.delete_records"),
     }
     assert all(

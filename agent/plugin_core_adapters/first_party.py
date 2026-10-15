@@ -40,6 +40,7 @@ from plugin_core_adapters.capability_session import (
     authorize_target_capability,
 )
 from plugin_core_adapters.daily_send import build_production_daily_send_handler_map
+from plugin_core_adapters.route_status import build_production_route_status_handler_map
 from plugin_core_adapters.daily_sign import run_daily_sign_with_bound_resources
 from plugin_core_adapters.delivery_site import (
     build_production_delivery_site_handler_map,
@@ -2664,6 +2665,11 @@ def build_production_first_party_core_handler_map(
                 account_manager=manager,
                 capability_authorizer=authorize_capability,
             ),
+            frozenset(),
+        ),
+        (
+            "sync_ronghui_route_status",
+            build_production_route_status_handler_map(cursor_secret=cursor_secret),
             frozenset(),
         ),
         (

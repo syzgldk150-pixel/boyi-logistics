@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-12
+updated: 2026-10-15
 ---
 
 # 当前插件维护入口
@@ -48,6 +48,8 @@ updated: 2026-10-12
 融辉/韵达寄件 2.1.0 统一“录单运费”字段，并向宿主提交独立的录单成本、客户运费、代收货款、到付款、地址与回单字段。两包与核心/迁移 060 协同升级，先暂停对应实例并排空调用，更新核心和 ZIP 后恢复原账号、资源、启用状态与定时。飞书按原记录 ID 更新，保留非托管列及附件；字段来源、历史回填和原页枚举见[寄件字段与金额](../../docs/direct_waybill_query.md#寄件字段与金额2026-10-14)。
 
 三平台报价 `quote_prices_v2` 使用通用账号 HTTP 与最小账号业务上下文；地址解析、产品选择和金额计算只在 ZIP 内。飞书与 Console 共享实例，系统工具报价入口已退役。使用及安装说明见[三平台报价](../docs/three_platform_quote.md)。
+
+融辉在途轨迹 `sync_ronghui_route_status_v2` 用实例选择的融辉账号经通用 `http.request` 批量读取快件跟踪，经宿主 `connector.boyi.ronghui_route_projection@1` 写回未签收单的状态文本；需配套含该 Connector 的核心版本。规则与验证见[寄件数据查询](../../docs/direct_waybill_query.md#融辉在途轨迹2026-10-15)。打包与 R7 相同，使用 `scripts.service_v2_plugin package`。
 
 ## 测试与升级
 

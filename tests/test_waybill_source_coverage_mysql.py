@@ -243,6 +243,39 @@ def test_partial_refresh_preserves_other_rows_and_never_claims_complete_day(data
     assert after["record_count"] == before["record_count"]
 
 
+def test_route_refresh_survives_publications_without_route_and_stops_after_signing(database):
+    repository = WaybillSourceRepository(database)
+    waybills = WaybillRepository(database)
+    later = CAPTURED.replace(hour=1)
+    repository.publish([record("one"), record("two"), {**record("done"), "status": "signed"}], scope=SCOPE,
+                       business_date=DAY, captured_at=CAPTURED, complete=True, expected_total=3)
+    assert [item["waybill_no"] for item in waybills.list_unsigned_route_candidates(source="ronghui", limit=10)] == [
+        "one", "two"]
+    result = waybills.update_route_statuses([
+        {"waybill_no": "one", "scan_status": "快件已到达长沙分拨", "signed": False},
+        {"waybill_no": "two", "scan_status": "快件已在邵阳签收", "signed": True},
+    ], source="ronghui")
+    assert result == {"ok": True, "verified": True, "updated": 2, "record_count": 2}
+    assert [item["waybill_no"] for item in waybills.list_unsigned_route_candidates(source="ronghui", limit=10)] == [
+        "one"]
+    # The Ronghui list carries no route: an empty value keeps the refreshed text.
+    repository.publish([record("one", piece="2")], scope=SCOPE, business_date=DAY,
+                       captured_at=later, complete=False)
+    by_number = {row["waybill_no"]: row for row in rows(database)}
+    assert by_number["one"]["scan_status"] == "快件已到达长沙分拨" and by_number["one"]["quantity_lines"] == "2"
+    # The legacy unscoped writer keeps it too.
+    waybills.sync_records([record("legacy")], source="ronghui")
+    waybills.update_route_statuses([{"waybill_no": "legacy", "scan_status": "快件在长沙派送中", "signed": False}],
+                                   source="ronghui")
+    waybills.sync_records([{**record("legacy"), "quantity_lines": "3"}], source="ronghui")
+    legacy = {row["waybill_no"]: row for row in rows(database)}["legacy"]
+    assert legacy["scan_status"] == "快件在长沙派送中" and legacy["quantity_lines"] == "3"
+    # A provider that does report a route still overwrites it.
+    repository.publish([{**record("one"), "scan_status": "签收扫描"}], scope=SCOPE, business_date=DAY,
+                       captured_at=later.replace(hour=2), complete=False)
+    assert {row["waybill_no"]: row for row in rows(database)}["one"]["scan_status"] == "签收扫描"
+
+
 def test_account_rebinding_reuses_entity_but_different_sources_never_merge(database):
     repository = WaybillSourceRepository(database)
     for scope in [SCOPE, replace(SCOPE, account_id="account-b"), replace(SCOPE, source_scope="other-site/send")]:
