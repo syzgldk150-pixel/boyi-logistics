@@ -1068,7 +1068,7 @@
     startLoadingTimer();
     searchBtn.setAttribute('disabled', 'disabled');
 
-    // Ronghui customer decryption runs a browser; show routes first, decrypt after.
+    // Routes show even when the separate customer decryption is refused or fails.
     var deferDecrypt = type === 'ronghui';
     postTrackingQuery(trackingNumber, provider, !deferDecrypt)
     .then(function(result) {
@@ -1533,7 +1533,7 @@
     if (!decrypt) return '';
     if (decrypt.state === 'loading') {
       return '<div class="shipment-decrypt-note" role="status"><span class="tracking-spinner" aria-hidden="true"></span>' +
-        '正在获取完整的收发货人姓名和电话，通常需要 20–40 秒，下方暂显示脱敏信息。</div>';
+        '正在获取完整的收发货人姓名和电话，下方暂显示脱敏信息。</div>';
     }
     return '<div class="shipment-decrypt-note shipment-decrypt-note--error" role="alert">' +
       '<span>完整收发货人信息获取失败：' + escapeHtml(decrypt.message || '未知原因') + '</span>' +

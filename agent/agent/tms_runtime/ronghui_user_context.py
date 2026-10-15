@@ -120,12 +120,50 @@ def normalize_ronghui_user_info_storage_state(
     return changed, "ready"
 
 
+class RonghuiUserContextError(ValueError):
+    """Saved session lacks one unambiguous login identity; ``code`` is structural."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def unique_ronghui_public_context(cookies: Any, *, host: str = "tms.ronghuiwl.com") -> dict[str, str]:
+    """Return the public login fields of the one root-scoped ``userInfo`` cookie.
+
+    ``cookies`` is a requests cookie jar. Ambiguous or incomplete saved
+    identities must not silently select an arbitrary employee or site.
+    """
+
+    projections: set[tuple[Any, ...]] = set()
+    for cookie in cookies:
+        if cookie.name != RONGHUI_USER_INFO_COOKIE:
+            continue
+        domain = str(cookie.domain or "").lower().lstrip(".")
+        if not domain or not (host == domain or host.endswith("." + domain)):
+            continue
+        if cookie.path != "/" or cookie.is_expired(time.time()):
+            raise RonghuiUserContextError("CONTEXT_DATA_MISSING")
+        payload = parse_ronghui_user_info_cookie(cookie.value)
+        values = tuple(payload.get(field) for field in RONGHUI_PUBLIC_CONTEXT_FIELDS)
+        if any(not isinstance(value, str) or not value.strip() or len(value) > 191 for value in values):
+            raise RonghuiUserContextError("CONTEXT_DATA_MISSING")
+        projections.add(values)
+    if not projections:
+        raise RonghuiUserContextError("CONTEXT_DATA_MISSING")
+    if len(projections) != 1:
+        raise RonghuiUserContextError("CONTEXT_DATA_AMBIGUOUS")
+    return dict(zip(RONGHUI_PUBLIC_CONTEXT_FIELDS, next(iter(projections))))
+
+
 __all__ = [
     "RONGHUI_PUBLIC_CONTEXT_FIELDS",
     "RONGHUI_USER_CONTEXT_FIELDS",
     "RONGHUI_USER_INFO_COOKIE",
+    "RonghuiUserContextError",
     "decode_js_cookie_value",
     "normalize_ronghui_user_info_storage_state",
     "parse_ronghui_user_info_cookie",
     "ronghui_user_context_signature",
+    "unique_ronghui_public_context",
 ]

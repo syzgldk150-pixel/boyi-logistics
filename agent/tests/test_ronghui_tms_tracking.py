@@ -1,7 +1,10 @@
+import json
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import requests
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "agent" / "tms_runtime" / "scripts"
@@ -9,7 +12,6 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import tracking_query  # noqa: E402
-from agent.tms_runtime.scripts import query_waybill_detail  # noqa: E402
 from agent.tms_runtime.scripts import ronghui_tms_tracking  # noqa: E402
 
 
@@ -513,21 +515,53 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
 
         self.assertNotIn("arrival_progress", result)
 
-    def test_tracking_query_overlays_decrypted_ronghui_party_fields(self):
+    def _decrypt_session(self, *, is_flag=1, site_code="73901"):
+        jar = requests.cookies.RequestsCookieJar()
+        user_info = json.dumps({
+            "loginEmpName": "测试员", "loginEmpCode": "E1", "loginSiteName": "测试网点", "loginSiteCode": site_code,
+        })
+        jar.set("userInfo", user_info, domain="tms.ronghuiwl.com", path="/")
+        calls = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        class Session:
+            cookies = jar
+
+            def post(self, url, data=None, headers=None, timeout=None):
+                calls.append((url, dict(data or {})))
+                if "FIND_SITE_IS_SCAN" in url:
+                    return Response([{"IS_FLAG": is_flag}])
+                if (data or {}).get("isView") == "true":
+                    return Response({"result": {"data": [{
+                        "BILL_CODE": "R0000000001",
+                        "SEND_MAN": "完整发货人",
+                        "SEND_MAN_PHONE": "13800000000",
+                        "ACCEPT_MAN": "完整收货人",
+                        "ACCEPT_MAN_PHONE": "13900000000",
+                        "ACCEPT_MAN_ADDRESS": "湖南省邵阳市测试地址1号",
+                    }]}})
+                raise AssertionError(f"unexpected request {url}")
+
+        return Session(), calls
+
+    def _query_with_masked_detail(self, session):
         class FakeAuth:
             def __init__(self, profile="default"):
                 self.profile = profile
 
             def login_and_get_session(self):
-                return object()
+                return session
 
-        route_rows = [
-            {
-                "SCAN_SITE": "邵阳操作场",
-                "SCAN_DATE": "2026-06-22 11:30:27",
-                "SCAN_TYPE": "发件",
-            }
-        ]
+        route_rows = [{"SCAN_SITE": "邵阳操作场", "SCAN_DATE": "2026-06-22 11:30:27", "SCAN_TYPE": "发件"}]
         masked_detail = {
             "tracking_number": "R0000000001",
             "sender_name": "张*",
@@ -536,14 +570,6 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
             "recipient_phone": "139****0000",
             "recipient_address": "湖南省邵阳市测试地址",
         }
-        decrypted_detail = {
-            "tracking_number": "R0000000001",
-            "sender_name": "完整发货人",
-            "sender_phone": "13800000000",
-            "recipient_name": "完整收货人",
-            "recipient_phone": "13900000000",
-        }
-
         with (
             patch.object(ronghui_tms_tracking, "TMSAuth", FakeAuth),
             patch.object(ronghui_tms_tracking, "_resolve_widget_menu_url", return_value="https://tms.ronghuiwl.com/widget/home"),
@@ -552,16 +578,31 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
                 "_collect_api_tracking_rows",
                 return_value=(route_rows, [], masked_detail),
             ),
-            patch.object(query_waybill_detail, "query_waybill_details", return_value=[decrypted_detail]),
         ):
-            result = tracking_query.query_tracking({"tracking_number": "R0000000001", "decrypt_masked": True})
+            return tracking_query.query_tracking({"tracking_number": "R0000000001", "decrypt_masked": True})
+
+    def test_tracking_query_decrypts_party_fields_through_view_api(self):
+        session, calls = self._decrypt_session()
+
+        result = self._query_with_masked_detail(session)
 
         stub = result["waybill_stub"]
         self.assertEqual("完整发货人", stub["sender_name"])
         self.assertEqual("13800000000", stub["sender_phone"])
         self.assertEqual("完整收货人", stub["recipient_name"])
         self.assertEqual("13900000000", stub["recipient_phone"])
+        self.assertFalse(result["detail_masked"])
+        self.assertEqual({"BILL_CODE": "R0000000001", "CURR_SCAN_SITE_CODE": "73901"}, calls[0][1])
+        self.assertEqual({"billCode": "R0000000001", "isView": "true"}, calls[1][1])
 
+    def test_tracking_query_fails_when_site_check_rejects_decryption(self):
+        session, calls = self._decrypt_session(is_flag=0)
+
+        result = self._query_with_masked_detail(session)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("网点校验未通过", result["error"])
+        self.assertEqual(1, len(calls))
 
 if __name__ == "__main__":
     unittest.main()

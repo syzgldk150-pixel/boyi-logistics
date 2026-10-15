@@ -195,7 +195,7 @@ def test_tracking_port_accepts_real_scans_when_customer_detail_is_masked(monkeyp
     # detail reader in a scan-only request is the regression being exercised.
     monkeypatch.setattr(tracking, "_needs_decrypted_detail", lambda _: True)
     private_reader = Mock(side_effect=AssertionError("scan verification must not decrypt customer details"))
-    monkeypatch.setattr(tracking, "query_waybill_detail", private_reader)
+    monkeypatch.setattr(tracking, "_post_form_rows", private_reader)
     accounts = SimpleNamespace(require_active_binding_descriptor=lambda _: {"system":"ronghui"})
     handlers = build_daily_sign_port_handlers(account_manager=accounts,
         tms=lambda _endpoint, request: tracking.query_ronghui_tms_tracking(request["params"]))

@@ -8,8 +8,8 @@ import time
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlparse
 
-from agent.tms_runtime.scripts import query_waybill_detail
 from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
+from agent.tms_runtime.ronghui_user_context import RonghuiUserContextError, unique_ronghui_public_context
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 
 
@@ -19,6 +19,7 @@ MENU_URL = f"{BASE_URL}/menuTreeExtend/loadMenu"
 SCAN_ROWS_URL = f"{BASE_URL}/dataQuery/findAllByCallId?id=FIND_SACN_TRACK_BY_CODE"
 SCAN_MAIN_ROWS_URL = f"{BASE_URL}/dataQuery/findAllByCallId?id=FIND_SACN_TRACK_BY_CODE_MAIN"
 BILL_DETAIL_URL = f"{BASE_URL}/billEntity/getBillByCode"
+SITE_IS_SCAN_URL = f"{BASE_URL}/dataQuery/findAllByCallId?id=FIND_SITE_IS_SCAN"
 TRACKING_MENU_TEXT = "快件跟踪"
 DEFAULT_TIMEOUT_MS = 60_000
 ARRIVAL_SCAN_TYPES = frozenset({"到件", "到达", "卸车"})
@@ -458,13 +459,6 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _coerce_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _value_with_unit(value: Any, unit: str) -> str:
     text = _clean_str(value)
     if not text:
@@ -518,26 +512,6 @@ def _needs_decrypted_detail(row: dict[str, Any] | None) -> bool:
     return False
 
 
-def _matching_detail_overlay(rows: list[dict[str, Any]], bill_code: str) -> dict[str, Any] | None:
-    normalized_code = _normalize_bill_code(bill_code)
-    matches: list[dict[str, Any]] = []
-    for row in rows:
-        candidates = (
-            row.get("tracking_number"),
-            row.get("requested_bill_code"),
-            row.get("bill_code"),
-            row.get("billCode"),
-            row.get("waybill_no"),
-        )
-        if any(_normalize_bill_code(candidate) == normalized_code for candidate in candidates):
-            matches.append(row)
-    if len(matches) == 1:
-        return matches[0]
-    if not matches and len(rows) == 1:
-        return rows[0]
-    return None
-
-
 def _prefer_decrypted_value(current: Any, overlay: Any, *, address: bool = False) -> str:
     current_text = _clean_str(current)
     overlay_text = _clean_str(overlay)
@@ -577,30 +551,49 @@ def _merge_decrypted_detail(
 
 
 def _overlay_decrypted_detail(
+    session: Any,
     *,
     params: dict[str, Any],
     bill_code: str,
     detail_row: dict[str, Any] | None,
+    tracking_url: str = "",
 ) -> dict[str, Any]:
+    """Decrypt customer fields the way the page's "解密客户信息" button does.
+
+    The page first checks FIND_SITE_IS_SCAN for the login site, then re-reads
+    the bill detail with ``isView=true``, which returns the plain fields.
+    """
     if not _coerce_bool(params.get("decrypt_masked"), default=True):
         return detail_row or {}
     if not _needs_decrypted_detail(detail_row):
         return detail_row or {}
 
-    rows = query_waybill_detail.query_waybill_details(
-        bill_codes=[bill_code],
-        max_workers=1,
-        decrypt_masked=True,
-        browser_headless=_coerce_bool(params.get("browser_headless"), default=True),
-        browser_timeout_ms=_coerce_int(params.get("browser_timeout_ms"), 30_000),
-        browser_batch_size=1,
-        browser_max_workers=1,
+    try:
+        site_code = unique_ronghui_public_context(session.cookies)["loginSiteCode"]
+    except RonghuiUserContextError as exc:
+        raise RonghuiTmsTrackingError(f"融辉登录态缺少唯一的当前网点信息（{exc.code}），无法解密客户信息") from exc
+    flags = _post_form_rows(
+        session,
+        SITE_IS_SCAN_URL,
+        {"BILL_CODE": bill_code, "CURR_SCAN_SITE_CODE": site_code},
+        tracking_url=tracking_url,
     )
-    overlay_row = _matching_detail_overlay([row for row in rows if isinstance(row, dict)], bill_code)
-    if not overlay_row:
-        raise RonghuiTmsTrackingError(f"融辉详情解密未返回匹配单号：{bill_code}")
+    if [str(row.get("IS_FLAG")) for row in flags] != ["1"]:
+        raise RonghuiTmsTrackingError(f"融辉解密前的网点校验未通过，未取得完整客户信息：{bill_code}")
+    rows = [
+        row
+        for row in _post_form_rows(
+            session,
+            BILL_DETAIL_URL,
+            {"billCode": bill_code, "isView": "true"},
+            tracking_url=tracking_url,
+        )
+        if _normalize_bill_code(row.get("BILL_CODE")) == bill_code
+    ]
+    if len(rows) != 1:
+        raise RonghuiTmsTrackingError(f"融辉详情解密未返回唯一匹配单号：{bill_code}")
 
-    merged = _merge_decrypted_detail(detail_row, overlay_row, bill_code)
+    merged = _merge_decrypted_detail(detail_row, _normalize_api_detail_row(rows[0], bill_code), bill_code)
     if _needs_decrypted_detail(merged):
         raise RonghuiTmsTrackingError(f"融辉详情仍为脱敏字段，未拿到解密客户信息：{bill_code}")
     return merged
@@ -1371,7 +1364,13 @@ def query_ronghui_tms_tracking(params: dict[str, Any]) -> dict[str, Any]:
         route_rows, child_rows, detail_row = _collect_api_tracking_rows(session, bill_code, tracking_url=tracking_url)
         if not route_rows:
             raise RonghuiTmsTrackingError("融辉 TMS 快件跟踪未返回扫描记录")
-        detail_row = _overlay_decrypted_detail(params=params, bill_code=bill_code, detail_row=detail_row)
+        detail_row = _overlay_decrypted_detail(
+            session,
+            params=params,
+            bill_code=bill_code,
+            detail_row=detail_row,
+            tracking_url=tracking_url,
+        )
     except Exception as exc:
         return {"ok": False, "type": "ronghui_tms", "tracking_number": bill_code, "error": str(exc)}
 
