@@ -7,14 +7,24 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from agent.tms_runtime.scripts.login_manager import TMSAuth
-from agent.tms_runtime.scripts.waybill_tracking import run_once as run_waybill_tracking_once
 
 
 DETAIL_URL = "https://tms.ronghuiwl.com/billEntity/getBillByCode"
+CUSTOMER_FIELDS = (
+    "sender_name",
+    "sender_phone",
+    "sender_address",
+    "recipient_name",
+    "recipient_phone",
+    "recipient_address",
+)
+
+logger = logging.getLogger(__name__)
 
 DETAIL_FIELD_MAP = {
     "tracking_number": "BILL_CODE",
@@ -39,43 +49,6 @@ DETAIL_FIELD_MAP = {
     "payment_type": "PAYMENT_TYPE",
     "pay_on_arrival": "TOPAYMENT",
 }
-
-TRACKING_FIELD_MAP = {
-    "运单编号": "tracking_number",
-    "货物名称": "goods_name",
-    "包装类型": "package_type",
-    "派送方式": "delivery_method",
-    "件数": "quantity",
-    "回单号": "receipt_number",
-    "实际重量": "actual_weight",
-    "体积": "volume",
-    "备注": "remarks",
-    "目的站点": "destination_station",
-    "发货人": "sender_name",
-    "寄件人": "sender_name",
-    "发货电话": "sender_phone",
-    "寄件电话": "sender_phone",
-    "发货地址": "sender_address",
-    "寄件地址": "sender_address",
-    "收件人": "recipient_name",
-    "收件电话": "recipient_phone",
-    "收件地址": "recipient_address",
-    "结算重量": "settlement_weight",
-    "体积重": "volumetric_weight",
-    "运费": "shipping_fee",
-    "支付类型": "payment_type",
-    "到付款": "pay_on_arrival",
-}
-
-OVERLAY_OVERRIDE_FIELDS = {
-    "recipient_name",
-    "recipient_phone",
-    "recipient_address",
-    "sender_name",
-    "sender_phone",
-    "sender_address",
-}
-
 
 def _normalize_bill_code(value: Any) -> str:
     text = str(value or "").strip()
@@ -260,134 +233,19 @@ def _compose_address(
     return "".join(prefixes + ([detail] if detail else []))
 
 
-def _prefer_address(base_value: Any, overlay_value: Any) -> str:
-    base_text = str(base_value or "").strip()
-    overlay_text = str(overlay_value or "").strip()
-    if not overlay_text:
-        return base_text
-    if not base_text:
-        return overlay_text
-    base_score = _address_quality_score(base_text)
-    overlay_score = _address_quality_score(overlay_text)
-    if overlay_score > base_score:
-        return overlay_text
-    return base_text
+def _has_masked_customer(row: dict[str, Any]) -> bool:
+    return any(_is_masked(row.get(key)) for key in CUSTOMER_FIELDS)
 
 
-def _address_quality_score(value: Any) -> int:
-    text = str(value or "").strip()
-    if not text:
-        return 0
-    score = len(_compact_text(text))
-    if any(token in text for token in ("省", "市", "区", "县", "镇", "街道", "大道", "路", "号")):
-        score += 20
-    if "|" in text:
-        score -= 5
-    return score
-
-
-def _needs_browser_overlay(row: dict[str, Any] | None) -> bool:
-    if not row:
-        return True
-    if _is_masked(row.get("recipient_name")) or _is_masked(row.get("recipient_phone")):
-        return True
-    required_keys = ("goods_name", "recipient_name", "recipient_phone", "recipient_address", "destination_station")
-    return any(not _has_value(row.get(key)) for key in required_keys)
-
-
-def _map_tracking_row(row: dict[str, Any], requested_code: str) -> dict[str, Any]:
-    mapped: dict[str, Any] = {
-        "requested_bill_code": requested_code,
-        "tracking_number": _normalize_bill_code(row.get("运单编号")) or requested_code,
-    }
-    for source_key, target_key in TRACKING_FIELD_MAP.items():
-        value = row.get(source_key)
-        if value not in (None, ""):
-            mapped[target_key] = value
-    return mapped
-
-
-def _merge_rows(base_row: dict[str, Any] | None, overlay_row: dict[str, Any] | None, requested_code: str) -> dict[str, Any]:
+def _merge_rows(base_row: dict[str, Any], requested_code: str) -> dict[str, Any]:
     merged: dict[str, Any] = {
         "requested_bill_code": requested_code,
         "tracking_number": requested_code,
     }
-    if isinstance(base_row, dict):
-        merged.update({key: value for key, value in base_row.items() if value not in (None, "")})
-    if isinstance(overlay_row, dict):
-        for key, value in overlay_row.items():
-            if value in (None, ""):
-                continue
-            if key == "recipient_address":
-                merged[key] = _prefer_address(merged.get(key), value)
-                continue
-            if key in OVERLAY_OVERRIDE_FIELDS or merged.get(key) in (None, ""):
-                merged[key] = value
+    merged.update({key: value for key, value in base_row.items() if value not in (None, "")})
     if not merged.get("tracking_number"):
         merged["tracking_number"] = requested_code
     return merged
-
-
-def _extract_tracking_result_code(row: dict[str, Any]) -> str:
-    tracking_label = next(
-        (source_key for source_key, target_key in TRACKING_FIELD_MAP.items() if target_key == "tracking_number"),
-        "",
-    )
-    candidates = (
-        row.get("requested_bill_code"),
-        row.get("tracking_number"),
-        row.get(tracking_label) if tracking_label else None,
-        row.get("bill_code"),
-        row.get("billCode"),
-    )
-    for candidate in candidates:
-        code = _normalize_bill_code(candidate)
-        if code:
-            return code
-    return ""
-
-
-def _overlay_with_browser(
-    *,
-    bill_codes: list[str],
-    headless: bool,
-    timeout_ms: int,
-    batch_size: int,
-    max_workers: int,
-) -> dict[str, dict[str, Any]]:
-    if not bill_codes:
-        return {}
-    overlays: dict[str, dict[str, Any]] = {}
-
-    # Delegate batching to waybill_tracking.py so one browser session can
-    # decrypt multiple waybills instead of paying bootstrap cost per code.
-    result = run_waybill_tracking_once(
-        {
-            "items": [{"bill_code": code} for code in bill_codes],
-            "headless": headless,
-            "timeout_ms": timeout_ms,
-            "batch_size": max(1, batch_size),
-            "max_workers": max(1, min(int(max_workers or 1), len(bill_codes))),
-            "action_delay_sec": 0.2,
-        }
-    )
-    if not isinstance(result, list):
-        return overlays
-
-    for row in result:
-        if not isinstance(row, dict):
-            continue
-        code = _extract_tracking_result_code(row)
-        if not code:
-            continue
-        mapped = _map_tracking_row(row, code)
-        if any(
-            value not in (None, "")
-            for key, value in mapped.items()
-            if key not in {"requested_bill_code", "tracking_number"}
-        ):
-            overlays[code] = mapped
-    return overlays
 
 
 def _query_one(
@@ -432,13 +290,35 @@ def _unique_codes(codes: Iterable[str]) -> list[str]:
     return ordered
 
 
-def _run_single_session(codes: list[str], *, include_sign_status: bool = False) -> list[dict[str, Any]]:
+def _decrypt_masked_row(session, row: dict[str, Any], code: str, tracking_url: str) -> dict[str, Any]:
+    """Re-read a masked row through the original page's decrypt request.
+
+    A refused or failed decryption keeps the masked row, as callers already
+    treat masked values as missing detail.
+    """
+    from agent.tms_runtime.scripts import ronghui_tms_tracking
+
+    try:
+        raw = ronghui_tms_tracking.fetch_view_detail_row(session, code, tracking_url=tracking_url)
+    except ronghui_tms_tracking.RonghuiTmsTrackingError as exc:
+        logger.warning("ronghui detail decryption unavailable bill=%s reason=%s", code, exc)
+        return row
+    decrypted = _map_row(raw, code)
+    return {**row, **{key: decrypted.get(key) for key in CUSTOMER_FIELDS if _has_value(decrypted.get(key))}}
+
+
+def _run_single_session(
+    codes: list[str],
+    *,
+    include_sign_status: bool = False,
+    decrypt_masked: bool = True,
+) -> list[dict[str, Any]]:
+    from agent.tms_runtime.scripts import ronghui_tms_tracking
+
     auth = TMSAuth()
     session = auth.login_and_get_session()
     tracking_url = ""
     if include_sign_status:
-        from agent.tms_runtime.scripts import ronghui_tms_tracking
-
         tracking_url = ronghui_tms_tracking.resolve_tracking_page_url(session)
     results: list[dict[str, Any]] = []
     for code in codes:
@@ -448,6 +328,9 @@ def _run_single_session(codes: list[str], *, include_sign_status: bool = False) 
             include_sign_status=include_sign_status,
             tracking_url=tracking_url,
         )
+        if row and decrypt_masked and _has_masked_customer(row):
+            tracking_url = tracking_url or ronghui_tms_tracking.resolve_tracking_page_url(session)
+            row = _decrypt_masked_row(session, row, code, tracking_url)
         if row:
             results.append(row)
     return results
@@ -464,59 +347,41 @@ def query_waybill_details(
     browser_max_workers: int = 1,
     include_sign_status: bool = False,
 ) -> list[dict[str, Any]]:
+    # browser_* stay accepted for existing callers; decryption calls the page's
+    # own decrypt request and no longer opens a browser.
+    del browser_headless, browser_timeout_ms, browser_batch_size, browser_max_workers
     codes = _unique_codes(_normalize_bill_code(code) for code in bill_codes if _normalize_bill_code(code))
     if not codes:
         return []
 
     worker_count = max(1, min(int(max_workers or 1), len(codes)))
     ordered_map: dict[str, dict[str, Any]] = {}
-    if worker_count == 1 or len(codes) == 1:
-        for row in _run_single_session(codes, include_sign_status=include_sign_status):
-            tracking = _normalize_bill_code(row.get("tracking_number"))
-            if tracking:
-                ordered_map[tracking] = row
+    if worker_count == 1:
+        rows = _run_single_session(codes, include_sign_status=include_sign_status, decrypt_masked=decrypt_masked)
     else:
         chunks: list[list[str]] = [[] for _ in range(worker_count)]
         for index, code in enumerate(codes):
             chunks[index % worker_count].append(code)
-
+        rows = []
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [
-                executor.submit(_run_single_session, chunk, include_sign_status=include_sign_status)
+                executor.submit(
+                    _run_single_session,
+                    chunk,
+                    include_sign_status=include_sign_status,
+                    decrypt_masked=decrypt_masked,
+                )
                 for chunk in chunks
                 if chunk
             ]
             for future in as_completed(futures):
-                for row in future.result():
-                    tracking = _normalize_bill_code(row.get("tracking_number"))
-                    if tracking:
-                        ordered_map[tracking] = row
+                rows.extend(future.result())
+    for row in rows:
+        tracking = _normalize_bill_code(row.get("tracking_number"))
+        if tracking:
+            ordered_map[tracking] = row
 
-    browser_overlays: dict[str, dict[str, Any]] = {}
-    if decrypt_masked:
-        # 地址字段在接口里经常只有缩略值，浏览器详情页才是最终完整值。
-        # 这里统一走浏览器补齐，再由合并逻辑覆盖姓名/电话/地址三项。
-        overlay_codes = [
-            code
-            for code in codes
-            if _needs_browser_overlay(ordered_map.get(code))
-        ]
-        browser_overlays = _overlay_with_browser(
-            bill_codes=overlay_codes,
-            headless=browser_headless,
-            timeout_ms=max(5_000, int(browser_timeout_ms or 30_000)),
-            batch_size=max(0, int(browser_batch_size or 0)),
-            max_workers=max(1, int(browser_max_workers or 1)),
-        )
-
-    merged_rows: list[dict[str, Any]] = []
-    for code in codes:
-        base_row = ordered_map.get(code)
-        overlay_row = browser_overlays.get(code)
-        if base_row is None and overlay_row is None:
-            continue
-        merged_rows.append(_merge_rows(base_row, overlay_row, code))
-    return merged_rows
+    return [_merge_rows(ordered_map[code], code) for code in codes if code in ordered_map]
 
 
 def run_once(params: Dict[str, Any]) -> Any:

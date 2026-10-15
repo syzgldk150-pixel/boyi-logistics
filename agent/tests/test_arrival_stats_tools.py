@@ -1155,34 +1155,77 @@ class ArrivalStatsToolTests(unittest.TestCase):
         self.assertTrue(status["sign_status_checked"])
         self.assertFalse(status["is_signed"])
 
-    def test_query_waybill_detail_skips_browser_when_api_row_is_complete(self):
-        api_row = {
-            "requested_bill_code": "R0001",
-            "tracking_number": "R0001",
-            "goods_name": "配件",
-            "recipient_name": "张三",
-            "recipient_phone": "13800000000",
-            "recipient_address": "湖南省邵阳市大祥区测试路1号",
-            "destination_station": "邵阳大祥S站",
-        }
+    def _detail_decrypt_session(self, *, is_flag=1):
+        import requests
 
+        jar = requests.cookies.RequestsCookieJar()
+        jar.set("userInfo", json.dumps({
+            "loginEmpName": "测试员", "loginEmpCode": "E1", "loginSiteName": "测试网点", "loginSiteCode": "73901",
+        }), domain="tms.ronghuiwl.com", path="/")
+        calls = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        def detail(name, phone):
+            return {"result": {"data": [{
+                "BILL_CODE": "R0001", "GOODS_NAME": "配件", "SEND_MAN": name, "SEND_MAN_PHONE": phone,
+                "ACCEPT_MAN": name, "ACCEPT_MAN_PHONE": phone, "ACCEPT_MAN_ADDRESS": "测试路1号",
+            }]}}
+
+        class Session:
+            cookies = jar
+
+            def post(self, url, data=None, headers=None, timeout=None, allow_redirects=True):
+                calls.append(url)
+                if "FIND_SITE_IS_SCAN" in url:
+                    return Response([{"IS_FLAG": is_flag}])
+                if "pageId" in (headers or {}):
+                    return Response(detail("完整姓名", "13800000000"))
+                return Response(detail("张*", "138****0000"))
+
+        return Session(), calls
+
+    def _query_masked_detail(self, session):
+        from agent.tms_runtime.scripts import ronghui_tms_tracking
+
+        auth = Mock()
+        auth.return_value.login_and_get_session.return_value = session
         with (
-            patch("query_waybill_detail._run_single_session", return_value=[api_row]),
-            patch("query_waybill_detail._overlay_with_browser", return_value={}) as overlay,
+            patch.object(tms_query_waybill_detail, "TMSAuth", auth),
+            patch.object(
+                ronghui_tms_tracking,
+                "resolve_tracking_page_url",
+                return_value="https://tms.ronghuiwl.com/widget/home?authenticationKey=k&pageId=p",
+            ),
         ):
-            rows = tms_query_waybill_detail.query_waybill_details(
-                bill_codes=["R0001"],
-                decrypt_masked=True,
-            )
+            return tms_query_waybill_detail.query_waybill_details(bill_codes=["R0001"], decrypt_masked=True)
 
-        self.assertEqual("R0001", rows[0]["tracking_number"])
-        overlay.assert_called_once_with(
-            bill_codes=[],
-            headless=True,
-            timeout_ms=30_000,
-            batch_size=1,
-            max_workers=1,
-        )
+    def test_query_waybill_detail_decrypts_masked_row_through_view_api(self):
+        session, calls = self._detail_decrypt_session()
+
+        rows = self._query_masked_detail(session)
+
+        self.assertEqual("完整姓名", rows[0]["recipient_name"])
+        self.assertEqual("13800000000", rows[0]["sender_phone"])
+        self.assertEqual("配件", rows[0]["goods_name"])
+        self.assertEqual(3, len(calls))
+        self.assertIn("FIND_SITE_IS_SCAN", calls[1])
+
+    def test_query_waybill_detail_keeps_masked_row_when_site_check_refuses(self):
+        session, calls = self._detail_decrypt_session(is_flag=0)
+
+        rows = self._query_masked_detail(session)
+
+        self.assertEqual("张*", rows[0]["recipient_name"])
+        self.assertEqual(2, len(calls))
 
     def test_waybill_tracking_click_decrypt_uses_miniui_component(self):
         class Frame:

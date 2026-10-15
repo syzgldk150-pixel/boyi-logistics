@@ -550,24 +550,12 @@ def _merge_decrypted_detail(
     return merged
 
 
-def _overlay_decrypted_detail(
-    session: Any,
-    *,
-    params: dict[str, Any],
-    bill_code: str,
-    detail_row: dict[str, Any] | None,
-    tracking_url: str = "",
-) -> dict[str, Any]:
-    """Decrypt customer fields the way the page's "解密客户信息" button does.
+def fetch_view_detail_row(session: Any, bill_code: str, *, tracking_url: str = "") -> dict[str, Any]:
+    """Raw detail row with plain customer fields, as the "解密客户信息" button gets it.
 
     The page first checks FIND_SITE_IS_SCAN for the login site, then re-reads
     the bill detail with ``isView=true``, which returns the plain fields.
     """
-    if not _coerce_bool(params.get("decrypt_masked"), default=True):
-        return detail_row or {}
-    if not _needs_decrypted_detail(detail_row):
-        return detail_row or {}
-
     try:
         site_code = unique_ronghui_public_context(session.cookies)["loginSiteCode"]
     except RonghuiUserContextError as exc:
@@ -592,8 +580,24 @@ def _overlay_decrypted_detail(
     ]
     if len(rows) != 1:
         raise RonghuiTmsTrackingError(f"融辉详情解密未返回唯一匹配单号：{bill_code}")
+    return rows[0]
 
-    merged = _merge_decrypted_detail(detail_row, _normalize_api_detail_row(rows[0], bill_code), bill_code)
+
+def _overlay_decrypted_detail(
+    session: Any,
+    *,
+    params: dict[str, Any],
+    bill_code: str,
+    detail_row: dict[str, Any] | None,
+    tracking_url: str = "",
+) -> dict[str, Any]:
+    if not _coerce_bool(params.get("decrypt_masked"), default=True):
+        return detail_row or {}
+    if not _needs_decrypted_detail(detail_row):
+        return detail_row or {}
+
+    raw = fetch_view_detail_row(session, bill_code, tracking_url=tracking_url)
+    merged = _merge_decrypted_detail(detail_row, _normalize_api_detail_row(raw, bill_code), bill_code)
     if _needs_decrypted_detail(merged):
         raise RonghuiTmsTrackingError(f"融辉详情仍为脱敏字段，未拿到解密客户信息：{bill_code}")
     return merged
