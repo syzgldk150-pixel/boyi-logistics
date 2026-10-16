@@ -14,13 +14,13 @@
     text-align: center;
     border: 1px solid var(--line);
     border-radius: var(--radius-xl);
-    background: #fff;
+    background: var(--canvas);
     box-shadow: var(--shadow);
   }
   .tracking-search-desc {
-    margin: 0 0 22px;
+    margin: 0 0 24px;
     color: var(--muted);
-    font-size: 0.9rem;
+    font-size: 0.875rem;
     font-weight: 500;
   }
   .tracking-input-row { display: flex; gap: 12px; align-items: center; max-width: 760px; margin: 0 auto; }
@@ -29,15 +29,15 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
-    padding: 0 14px;
+    background: var(--canvas);
+    padding: 0 16px;
     height: 48px;
     transition: border-color var(--fast), box-shadow var(--fast);
   }
-  .tracking-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+  .tracking-input-wrap:focus-within { border-color: var(--accent); outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .tracking-input-wrap .feather { color: var(--muted); width: 18px; flex-shrink: 0; }
   .tracking-input {
     flex: 1;
@@ -45,24 +45,24 @@
     outline: none;
     background: transparent;
     color: var(--text-strong);
-    font-size: 0.95rem;
+    font-size: 1rem;
     font-weight: 500;
     min-width: 0;
   }
   .tracking-input::placeholder { color: var(--faint); }
 
   .tracking-type-badge {
-    padding: 3px 10px;
+    padding: 4px 12px;
     border-radius: var(--radius-pill);
-    font-size: 0.72rem;
-    font-weight: 700;
+    font-size: 0.8125rem;
+    font-weight: 600;
     white-space: nowrap;
     flex-shrink: 0;
     transition: opacity var(--fast);
   }
   .tracking-type-badge--rh { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
-  .tracking-type-badge--yd { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
-  .tracking-type-badge--zx { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+  .tracking-type-badge--yd { background: var(--success-soft); color: var(--success-ink); border: 1px solid var(--success-line); }
+  .tracking-type-badge--zx { background: var(--info-soft); color: var(--info-ink); border: 1px solid var(--info-line); }
 
   .tracking-search-btn { height: 48px; padding: 0 24px; flex-shrink: 0; }
 
@@ -76,7 +76,7 @@
     text-align: center;
   }
   .tracking-state .feather { width: 40px; height: 40px; stroke-width: 1.5; opacity: 0.6; }
-  .tracking-state p { margin: 0; font-size: 0.9rem; font-weight: 500; }
+  .tracking-state p { margin: 0; font-size: 0.875rem; font-weight: 500; }
   .tracking-state--error .feather { color: var(--danger); opacity: 1; }
   .tracking-state--loading .tracking-spinner {
     width: 28px;
@@ -92,9 +92,9 @@
     position: relative;
     border: 1px solid var(--line);
     border-radius: var(--radius-xl);
-    background: #fff;
+    background: var(--canvas);
     box-shadow: var(--shadow);
-    padding: 14px;
+    padding: 16px;
     animation: trackingFadeIn var(--slow);
   }
   @keyframes trackingFadeIn {
@@ -110,10 +110,10 @@
     border-bottom: 1px solid var(--line);
     margin-bottom: 8px;
   }
-  .tracking-result-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+  .tracking-result-header-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
   .tracking-result-header strong {
-    font-size: 1.05rem;
-    font-weight: 700;
+    font-size: 1rem;
+    font-weight: 600;
     color: var(--text-strong);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
@@ -123,19 +123,19 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     border-radius: var(--radius-md);
     border: 1px solid var(--line);
     color: var(--muted);
-    background: #fff;
+    background: var(--canvas);
     cursor: pointer;
     transition: color var(--fast), border-color var(--fast), background var(--fast);
     flex-shrink: 0;
   }
-  .tracking-result-close:hover { color: var(--text-strong); border-color: #d1d5db; background: #f9fafb; }
+  .tracking-result-close:hover { color: var(--text-strong); border-color: var(--line-strong); background: var(--surface); }
   .tracking-result-close:active { transform: scale(0.95); }
-  .tracking-result-close:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+  .tracking-result-close:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .tracking-result-panel--shipment .tracking-result-close {
     position: absolute;
     top: 14px;
@@ -150,43 +150,43 @@
     justify-content: center;
     gap: 8px;
     max-width: 760px;
-    margin: 14px auto 0;
+    margin: 16px auto 0;
   }
-  .tracking-recent-label { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+  .tracking-recent-label { color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
   .tracking-recent-chip {
     min-height: 32px;
     padding: 0 12px;
     border: 1px solid var(--line);
     border-radius: var(--radius-pill);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text);
     cursor: pointer;
     font-family: var(--font-mono);
-    font-size: 0.8rem;
+    font-size: 0.8125rem;
     font-variant-numeric: tabular-nums;
     transition: border-color var(--fast), background var(--fast);
   }
-  .tracking-recent-chip:hover { border-color: #d1d5db; background: #f9fafb; }
-  .tracking-recent-chip:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
-  .tracking-loading-hint { font-size: 0.8rem !important; color: var(--faint); }
+  .tracking-recent-chip:hover { border-color: var(--line-strong); background: var(--surface); }
+  .tracking-recent-chip:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
+  .tracking-loading-hint { font-size: 0.8125rem !important; color: var(--faint); }
 
   .tracking-result-panel--shipment .shipment-tabs { margin-right: 52px; }
 
   .shipment-decrypt-note {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     flex-wrap: wrap;
     margin-bottom: 12px;
-    padding: 10px 14px;
+    padding: 12px 16px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #f9fafb;
+    background: var(--surface);
     color: var(--text);
-    font-size: 0.84rem;
+    font-size: 0.8125rem;
     line-height: 1.5;
   }
-  .shipment-decrypt-note--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+  .shipment-decrypt-note--error { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
   .shipment-decrypt-note .tracking-spinner {
     width: 14px;
     height: 14px;
@@ -196,20 +196,20 @@
     animation: tracking-spin 800ms linear infinite;
     flex-shrink: 0;
   }
-  .shipment-decrypt-note .ghost-btn { min-height: 32px; padding: 0 10px; font-size: 0.8rem; }
+  .shipment-decrypt-note .ghost-btn { min-height: 40px; padding: 0 12px; font-size: 0.8125rem; }
   .shipment-tab-busy { color: var(--muted); font-weight: 600; }
 
-  .tracking-table tr.is-latest td { background: #f8fafc; color: var(--text-strong); font-weight: 600; }
+  .tracking-table tr.is-latest td { background: var(--surface); color: var(--text-strong); font-weight: 600; }
   .route-latest-tag {
     display: inline-block;
-    margin-left: 6px;
-    padding: 0 6px;
+    margin-left: 8px;
+    padding: 0 8px;
     border-radius: var(--radius-pill);
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: var(--info-soft);
+    color: var(--info-ink);
     font-family: var(--font-ui, inherit);
-    font-size: 0.7rem;
-    font-weight: 700;
+    font-size: 0.8125rem;
+    font-weight: 600;
     line-height: 1.6;
     vertical-align: 1px;
   }
@@ -222,53 +222,53 @@
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
-    margin-bottom: 18px;
+    margin-bottom: 16px;
   }
   .r7-summary-item {
     min-width: 0;
-    padding: 12px 14px;
+    padding: 12px 16px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #f9fafb;
+    background: var(--surface);
   }
   .r7-summary-label {
     margin-bottom: 4px;
     color: var(--muted);
-    font-size: 0.74rem;
-    font-weight: 700;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .r7-summary-value {
     color: var(--text-strong);
-    font-size: 0.9rem;
-    font-weight: 700;
+    font-size: 0.875rem;
+    font-weight: 600;
     line-height: 1.45;
     overflow-wrap: anywhere;
   }
   .r7-summary-value--mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
-  .r7-section { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
+  .r7-section { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
   .r7-section:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
   .r7-section-title {
     margin: 0 0 12px;
-    font-size: 0.95rem;
-    font-weight: 800;
+    font-size: 1rem;
+    font-weight: 600;
     color: var(--text-strong);
   }
   .r7-kv-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px 16px;
+    gap: 12px 16px;
   }
   .r7-kv-item { min-width: 0; }
   .r7-kv-label {
-    margin-bottom: 3px;
+    margin-bottom: 4px;
     color: var(--muted);
-    font-size: 0.74rem;
-    font-weight: 700;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .r7-kv-value {
     color: var(--text-strong);
-    font-size: 0.88rem;
+    font-size: 0.875rem;
     font-weight: 600;
     line-height: 1.5;
     overflow-wrap: anywhere;
@@ -276,11 +276,11 @@
 
   .r7-tabs {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     overflow-x: auto;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--line);
-    margin-top: 20px;
+    margin-top: 24px;
   }
   .r7-tab {
     border: 0;
@@ -288,43 +288,43 @@
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 0.84rem;
-    font-weight: 700;
-    padding: 9px 12px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    padding: 8px 12px;
     white-space: nowrap;
   }
-  .r7-tab:hover { color: var(--text-strong); background: #f9fafb; }
-  .r7-tab.is-active { color: var(--accent); background: #fff1f2; }
-  .r7-tab-panel { padding-top: 18px; }
+  .r7-tab:hover { color: var(--text-strong); background: var(--surface); }
+  .r7-tab.is-active { color: var(--accent); background: var(--danger-soft); }
+  .r7-tab-panel { padding-top: 16px; }
 
   .shipment-tabs {
     display: flex;
     gap: 0;
     overflow: visible;
-    border-bottom: 1px solid #bfd3ec;
-    margin: 16px 0 14px;
+    border-bottom: 1px solid var(--line-strong);
+    margin: 16px 0 16px;
   }
   .shipment-tab {
     min-width: 112px;
     border: 1px solid transparent;
     border-bottom: 0;
     border-radius: 0;
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
     cursor: pointer;
-    font-size: 0.9rem;
-    font-weight: 700;
+    font-size: 0.875rem;
+    font-weight: 600;
     line-height: 1.2;
-    padding: 12px 18px;
+    padding: 12px 16px;
     white-space: nowrap;
   }
-  .shipment-tab:hover { background: #f8fafc; color: var(--accent); }
+  .shipment-tab:hover { background: var(--surface); color: var(--accent); }
   .shipment-tab.is-active {
-    border-color: #bfd3ec;
-    background: #fff;
+    border-color: var(--line-strong);
+    background: var(--canvas);
     color: var(--accent);
     margin-bottom: -1px;
-    padding-bottom: 13px;
+    padding-bottom: 12px;
   }
   .shipment-tab-panel { padding-top: 0; }
   .shipment-hero-stats {
@@ -336,14 +336,14 @@
   .shipment-stat-card {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 16px;
     min-width: 0;
     min-height: 58px;
-    padding: 10px 16px;
+    padding: 12px 16px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
-    box-shadow: 0 4px 18px rgba(15,23,42,0.03);
+    background: var(--canvas);
+    box-shadow: none;
   }
   .shipment-stat-icon,
   .shipment-section-icon {
@@ -351,8 +351,8 @@
     place-items: center;
     flex-shrink: 0;
     border-radius: 999px;
-    background: #eff6ff;
-    color: #2563eb;
+    background: var(--info-soft);
+    color: var(--info-ink);
   }
   .shipment-stat-icon { width: 34px; height: 34px; }
   .shipment-stat-icon .feather { width: 18px; height: 18px; stroke-width: 2.4; }
@@ -364,15 +364,15 @@
   .shipment-stat-label,
   .shipment-metric-label {
     color: var(--muted);
-    font-size: 0.76rem;
-    font-weight: 800;
+    font-size: 0.8125rem;
+    font-weight: 600;
     line-height: 1.25;
   }
   .shipment-stat-value {
-    margin-top: 3px;
+    margin-top: 4px;
     color: var(--text-strong);
     font-size: 1rem;
-    font-weight: 850;
+    font-weight: 600;
     line-height: 1.2;
     overflow-wrap: anywhere;
   }
@@ -394,30 +394,30 @@
     min-width: 0;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     box-shadow: none;
     overflow: hidden;
   }
   .shipment-section--aside {
-    background: #fff;
+    background: var(--canvas);
   }
   .shipment-section-title {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     margin: 0;
-    padding: 13px 16px;
-    border-bottom: 1px solid #f1f5f9;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--surface-muted);
     color: var(--text-strong);
-    font-size: 0.88rem;
-    font-weight: 850;
+    font-size: 0.875rem;
+    font-weight: 600;
     line-height: 1.2;
   }
   .shipment-section-icon {
     width: 20px;
     height: 20px;
     background: transparent;
-    color: #94a3b8;
+    color: var(--faint);
   }
   .shipment-section-icon .feather { width: 14px; height: 14px; stroke-width: 2.5; }
   .shipment-party-grid {
@@ -438,9 +438,9 @@
   .shipment-metric-list--aside { grid-template-columns: 1fr; }
   .shipment-metric-item {
     min-width: 0;
-    padding: 10px 16px 11px;
+    padding: 12px 16px 12px;
     border: 0;
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid var(--surface-muted);
   }
   .shipment-metric-item:nth-last-child(-n + 3) { border-bottom-color: transparent; }
   .shipment-metric-list--two .shipment-metric-item:nth-last-child(-n + 2),
@@ -448,19 +448,19 @@
   .shipment-metric-list--aside .shipment-metric-item:last-child { border-bottom-color: transparent; }
   .shipment-metric-list--overview .shipment-metric-item {
     min-height: 60px;
-    background: #fbfdff;
-    border-right: 1px solid #f1f5f9;
+    background: var(--canvas);
+    border-right: 1px solid var(--surface-muted);
   }
   .shipment-metric-list--overview .shipment-metric-item:nth-child(3n) { border-right: 0; }
   .shipment-metric-row {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid var(--surface-muted);
   }
   .shipment-metric-row:last-child { border-bottom: 0; }
   .shipment-metric-row .shipment-metric-item {
     border-bottom: 0;
-    border-right: 1px solid #f1f5f9;
+    border-right: 1px solid var(--surface-muted);
   }
   .shipment-metric-row .shipment-metric-item:last-child { border-right: 0; }
   .shipment-metric-item--wide { grid-column: 1 / -1; }
@@ -470,39 +470,39 @@
     grid-column: 1 / -1;
     display: grid;
     grid-template-columns: 78px minmax(0, 1fr);
-    gap: 14px;
+    gap: 16px;
     align-items: start;
     padding: 12px 16px;
-    background: #fff;
+    background: var(--canvas);
   }
   .shipment-metric-list--ledger .shipment-metric-item--wide { border-right: 0; }
   .shipment-metric-list--ledger .shipment-metric-item--party { border-right: 0; }
   .shipment-party-row-title {
-    padding-top: 3px;
+    padding-top: 4px;
     color: var(--muted);
-    font-size: 0.78rem;
-    font-weight: 850;
+    font-size: 0.8125rem;
+    font-weight: 600;
     line-height: 1.3;
     white-space: nowrap;
   }
   .shipment-party-row-fields {
     display: grid;
     grid-template-columns: minmax(86px, 0.65fr) minmax(128px, 0.9fr) minmax(150px, 1fr) minmax(260px, 2fr);
-    gap: 10px 16px;
+    gap: 12px 16px;
     min-width: 0;
   }
   .shipment-party-field { min-width: 0; }
   .shipment-party-field-label {
     color: var(--muted);
-    font-size: 0.72rem;
-    font-weight: 800;
+    font-size: 0.8125rem;
+    font-weight: 600;
     line-height: 1.25;
   }
   .shipment-party-field-value {
-    margin-top: 3px;
+    margin-top: 4px;
     color: var(--text-strong);
-    font-size: 0.88rem;
-    font-weight: 760;
+    font-size: 0.875rem;
+    font-weight: 600;
     line-height: 1.38;
     overflow-wrap: anywhere;
   }
@@ -513,8 +513,8 @@
   .shipment-metric-value {
     margin-top: 4px;
     color: var(--text-strong);
-    font-size: 0.88rem;
-    font-weight: 750;
+    font-size: 0.875rem;
+    font-weight: 600;
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
@@ -531,12 +531,12 @@
     display: inline-flex;
     align-items: center;
     min-height: 24px;
-    padding: 0 10px;
+    padding: 0 12px;
     border-radius: var(--radius-md);
-    background: #fef2f2;
+    background: var(--danger-soft);
     color: var(--accent);
-    font-size: 0.82rem;
-    font-weight: 850;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
 
   .r7-route-list {
@@ -545,26 +545,26 @@
     gap: 12px;
   }
   .r7-route-node {
-    border-top: 3px solid #e5e7eb;
-    padding-top: 10px;
+    border-top: 3px solid var(--line);
+    padding-top: 12px;
     min-width: 0;
   }
   .r7-route-node.is-completed { border-color: var(--accent); }
   .r7-route-name {
     margin: 0 0 4px;
     color: var(--text-strong);
-    font-size: 0.9rem;
-    font-weight: 800;
+    font-size: 0.875rem;
+    font-weight: 600;
   }
   .r7-route-station {
     color: var(--accent);
-    font-size: 0.86rem;
-    font-weight: 700;
+    font-size: 0.875rem;
+    font-weight: 600;
     margin-bottom: 8px;
   }
   .r7-route-meta {
     color: var(--muted);
-    font-size: 0.78rem;
+    font-size: 0.8125rem;
     line-height: 1.5;
     overflow-wrap: anywhere;
   }
@@ -579,22 +579,22 @@
     width: 100%;
     border-collapse: collapse;
     min-width: 760px;
-    background: #fff;
+    background: var(--canvas);
   }
   .tracking-table th,
   .tracking-table td {
     border-bottom: 1px solid var(--line);
-    padding: 10px 12px;
+    padding: 12px 12px;
     text-align: left;
     vertical-align: top;
-    font-size: 0.82rem;
+    font-size: 0.8125rem;
     line-height: 1.55;
   }
   .tracking-table th {
-    background: #f9fafb;
+    background: var(--surface);
     color: var(--muted);
-    font-size: 0.75rem;
-    font-weight: 800;
+    font-size: 0.8125rem;
+    font-weight: 600;
     white-space: nowrap;
   }
   .tracking-table tr:last-child td { border-bottom: 0; }
@@ -604,7 +604,7 @@
     text-align: center;
     padding: 32px 24px;
     color: var(--muted);
-    font-size: 0.9rem;
+    font-size: 0.875rem;
     font-weight: 500;
   }
 
@@ -628,26 +628,26 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #fff;
+    background: var(--canvas);
     border: 2px solid var(--line);
     z-index: 1;
     transition: border-color var(--fast), background var(--fast), box-shadow var(--fast);
   }
-  .timeline-node:first-child .timeline-dot { border-color: var(--focus-strong); background: var(--focus-strong); box-shadow: 0 0 0 4px var(--focus); }
+  .timeline-node:first-child .timeline-dot { border-color: var(--focus-strong); background: var(--focus-strong); outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .timeline-node-time {
-    font-size: 0.78rem;
+    font-size: 0.8125rem;
     color: var(--muted);
     font-weight: 600;
     margin-bottom: 4px;
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
-  .timeline-node-desc { font-size: 0.9rem; color: var(--text-strong); font-weight: 500; line-height: 1.5; }
-  .timeline-node:first-child .timeline-node-desc { font-weight: 700; color: var(--text-strong); }
+  .timeline-node-desc { font-size: 0.875rem; color: var(--text-strong); font-weight: 500; line-height: 1.5; }
+  .timeline-node:first-child .timeline-node-desc { font-weight: 600; color: var(--text-strong); }
   .timeline-node-location {
-    font-size: 0.78rem;
+    font-size: 0.8125rem;
     color: var(--muted);
-    margin-top: 3px;
+    margin-top: 4px;
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -656,10 +656,10 @@
 
   .tracking-contact-card {
     display: flex;
-    gap: 20px;
+    gap: 16px;
     align-items: flex-start;
     padding: 24px;
-    background: #f9fafb;
+    background: var(--surface);
     border-radius: var(--radius-lg);
     border: 1px solid var(--line);
   }
@@ -667,41 +667,41 @@
     width: 52px;
     height: 52px;
     border-radius: var(--radius-lg);
-    background: #eff6ff;
-    color: #2563eb;
+    background: var(--info-soft);
+    color: var(--info-ink);
     display: grid;
     place-items: center;
     flex-shrink: 0;
   }
   .tracking-contact-icon .feather { width: 24px; height: 24px; }
   .tracking-contact-info { flex: 1; min-width: 0; }
-  .tracking-contact-info h3 { margin: 0 0 6px; font-size: 1.05rem; font-weight: 700; color: var(--text-strong); }
-  .tracking-contact-note { margin: 0 0 16px; font-size: 0.85rem; color: var(--muted); line-height: 1.6; font-weight: 500; }
+  .tracking-contact-info h3 { margin: 0 0 8px; font-size: 1rem; font-weight: 600; color: var(--text-strong); }
+  .tracking-contact-note { margin: 0 0 16px; font-size: 0.875rem; color: var(--muted); line-height: 1.6; font-weight: 500; }
   .tracking-contact-phone-row {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 12px 16px;
-    background: #fff;
+    background: var(--canvas);
     border-radius: var(--radius-md);
     border: 1px solid var(--line);
     transition: border-color var(--fast);
   }
-  .tracking-contact-phone-row:hover { border-color: #d1d5db; }
+  .tracking-contact-phone-row:hover { border-color: var(--line-strong); }
   .tracking-contact-phone-row .feather { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
   .tracking-contact-phone-number {
-    font-size: 1.1rem;
-    font-weight: 700;
+    font-size: 1.125rem;
+    font-weight: 600;
     color: var(--text-strong);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
   .tracking-contact-phone-number a { color: var(--accent); text-decoration: none; transition: color var(--fast); }
-  .tracking-contact-phone-number a:hover { color: #dc2626; text-decoration: underline; }
-  .tracking-contact-phone-number a:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); border-radius: 2px; }
-  .tracking-contact-hours { margin-left: auto; font-size: 0.78rem; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .tracking-contact-phone-number a:hover { color: var(--danger-ink); text-decoration: underline; }
+  .tracking-contact-phone-number a:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; border-radius: 4px; }
+  .tracking-contact-hours { margin-left: auto; font-size: 0.8125rem; color: var(--muted); font-weight: 600; white-space: nowrap; }
 
-  @media (max-width: 900px) {
+  @media (max-width: 1023px) {
     .r7-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .r7-kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .r7-route-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -718,22 +718,22 @@
     .shipment-metric-row .shipment-metric-item:nth-child(2n) { border-right: 0; }
     .shipment-metric-row .shipment-metric-item--span-2,
     .shipment-metric-row .shipment-metric-item--span-3 { grid-column: 1 / -1; }
-    .shipment-metric-list--overview .shipment-metric-item:nth-child(3n) { border-right: 1px solid #f1f5f9; }
+    .shipment-metric-list--overview .shipment-metric-item:nth-child(3n) { border-right: 1px solid var(--surface-muted); }
     .shipment-metric-list--overview .shipment-metric-item:nth-child(2n) { border-right: 0; }
     .shipment-metric-list--ledger .shipment-metric-item--party { border-right: 0; }
     .shipment-metric-list--ledger .shipment-metric-item--wide { border-right: 0; }
     .shipment-party-row-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
-  @media (max-width: 600px) {
+  @media (max-width: 639px) {
     .tracking-page { gap: 16px; }
-    .tracking-search-box { padding: 20px 16px; }
-    .tracking-search-desc { margin-bottom: 14px; font-size: 0.84rem; line-height: 1.5; text-wrap: pretty; }
+    .tracking-search-box { padding: 24px 16px; }
+    .tracking-search-desc { margin-bottom: 16px; font-size: 0.8125rem; line-height: 1.5; text-wrap: pretty; }
     .tracking-input-row { gap: 8px; }
     .tracking-recent-chip { min-height: 44px; }
     .tracking-input-wrap { height: 44px; padding: 0 12px; }
-    .tracking-search-btn { width: auto; min-width: 88px; height: 44px; padding: 0 12px; gap: 6px; font-size: 0.88rem; }
+    .tracking-search-btn { width: auto; min-width: 88px; height: 44px; padding: 0 12px; gap: 8px; font-size: 0.875rem; }
     .tracking-search-btn .feather { width: 16px; height: 16px; }
-    .tracking-result-panel { padding: 14px 10px; }
+    .tracking-result-panel { padding: 16px 12px; }
     .r7-summary-strip, .r7-kv-grid, .r7-route-list { grid-template-columns: 1fr; }
     .shipment-hero-stats,
     .shipment-party-grid,
@@ -743,7 +743,7 @@
     .shipment-metric-list--compact,
     .shipment-metric-list--ledger,
     .shipment-metric-list--aside { grid-template-columns: 1fr; }
-    .shipment-tab { min-width: 104px; padding: 10px 12px; }
+    .shipment-tab { min-width: 104px; padding: 12px 12px; }
     .shipment-stat-card { min-height: 54px; }
     .shipment-section { padding: 0; }
     .shipment-metric-list--overview .shipment-metric-item { border-right: 0 !important; }
@@ -762,7 +762,7 @@
     .shipment-metric-list--compact .shipment-metric-item:nth-last-child(-n + 4),
     .shipment-metric-list--ledger .shipment-metric-item:nth-last-child(-n + 4) { border-bottom-color: transparent; }
     .shipment-metric-list .shipment-metric-item:last-child { border-bottom-color: transparent; }
-    .tracking-contact-card { flex-direction: column; padding: 20px; }
+    .tracking-contact-card { flex-direction: column; padding: 24px; }
     .tracking-contact-phone-row { flex-wrap: wrap; }
     .tracking-contact-hours { margin-left: 0; width: 100%; margin-top: 4px; }
   }
@@ -811,8 +811,8 @@
     <div class="tracking-state tracking-state--error" id="stateError" hidden>
       <i data-feather="alert-circle"></i>
       <p id="errorMsg">查询失败</p>
-      <button class="ghost-btn" type="button" id="retryBtn" style="margin-top:12px;">
-        <i data-feather="rotate-ccw" style="width:14px;"></i> 重新查询
+      <button class="ghost-btn tracking-retry-btn" type="button" id="retryBtn">
+        <i data-feather="rotate-ccw"></i> 重新查询
       </button>
     </div>
 
@@ -1537,7 +1537,7 @@
     }
     return '<div class="shipment-decrypt-note shipment-decrypt-note--error" role="alert">' +
       '<span>完整收发货人信息获取失败：' + escapeHtml(decrypt.message || '未知原因') + '</span>' +
-      '<button class="ghost-btn" type="button" id="decryptRetryBtn"><i data-feather="rotate-ccw" style="width:14px;"></i> 重试</button>' +
+      '<button class="ghost-btn" type="button" id="decryptRetryBtn"><i data-feather="rotate-ccw"></i> 重试</button>' +
     '</div>';
   }
 

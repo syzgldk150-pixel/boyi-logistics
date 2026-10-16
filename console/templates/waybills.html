@@ -26,14 +26,14 @@
   .waybill-filter-form > .waybill-field { flex: 1 1 120px; }
   .waybill-filter-form > .waybill-field:first-of-type { flex: 2 1 240px; }
   .waybill-filter-form > .waybill-field:nth-of-type(2) { flex: 2 1 240px; }
-  .waybill-label { font-size: .8125rem; color: var(--text); font-weight: 500; }
+  .waybill-label { font-size: 0.8125rem; color: var(--text); font-weight: 500; }
   .waybill-search-shell, .waybill-date-trigger, .waybill-select, .waybill-edit-input { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--canvas); color: var(--text-strong); }
   .waybill-search-shell { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
-  .waybill-search-shell input { width: 100%; min-width: 0; min-height: 38px; border: 0; outline: none; background: transparent; }
+  .waybill-search-shell input { width: 100%; min-width: 0; min-height: 40px; border: 0; outline: none; background: transparent; }
   .waybill-search-shell:focus-within, .waybill-page :is(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .waybill-search-shell input:focus-visible { outline: none; }
   .waybill-page input::placeholder, .waybill-page textarea::placeholder { color: var(--muted); }
-  .waybill-select { padding: 0 12px; appearance: auto; font-size: .875rem; }
+  .waybill-select { padding: 0 12px; appearance: auto; font-size: 0.875rem; }
   .waybill-date-picker, .waybill-tool-wrap { position: relative; min-width: 0; }
   .waybill-date-trigger { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 0 12px; cursor: pointer; }
   .waybill-date-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -45,7 +45,7 @@
   .waybill-calendar-nav { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-md); cursor: pointer; color: var(--text); }
   .waybill-calendar-nav:hover, .waybill-calendar-day:hover { background: var(--surface-muted); }
   .waybill-calendar-weekdays, .waybill-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
-  .waybill-calendar-weekdays { font-size: .8125rem; color: var(--muted); }
+  .waybill-calendar-weekdays { font-size: 0.8125rem; color: var(--muted); }
   .waybill-calendar-day { min-height: 40px; padding: 4px; border-radius: var(--radius-sm); color: var(--text); cursor: pointer; }
   .waybill-calendar-day.is-outside { color: var(--muted); }
   .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px var(--line); }
@@ -57,7 +57,7 @@
   .waybill-filter-actions { margin-left: auto; }
   .waybill-filter-count { min-width: 24px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text-strong); text-align: center; }
   .waybill-popover { top: calc(100% + 8px); right: 0; width: 264px; max-width: calc(100vw - 32px); }
-  .waybill-popover-title { margin: 0 0 12px; font-size: .875rem; font-weight: 600; }
+  .waybill-popover-title { margin: 0 0 12px; font-size: 0.875rem; font-weight: 600; }
   .waybill-popover-grid { display: grid; gap: 12px; }
   .waybill-check { display: flex; align-items: center; gap: 8px; min-height: 40px; }
   .waybill-field.waybill-check { flex-direction: row; justify-content: flex-start; }
@@ -65,94 +65,94 @@
   .waybill-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
   .waybill-toolbar-actions { margin-left: auto; }
   .waybill-toolbar-actions > .waybill-select { width: auto; }
-  .waybill-meta-count { font-size: .8125rem; white-space: nowrap; }
-  .waybill-refresh-status { flex: 1 1 200px; margin: 0; padding: 8px 12px; font-size: .8125rem; }
+  .waybill-meta-count { font-size: 0.8125rem; white-space: nowrap; }
+  .waybill-refresh-status { flex: 1 1 200px; margin: 0; padding: 8px 12px; font-size: 0.8125rem; }
   .waybill-notice { margin: 0 16px 12px; }
   .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; border-top: 1px solid var(--line); }
-  .waybill-table { width: 100%; border-collapse: collapse; font-size: .8125rem; text-align: left; }
+  .waybill-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; text-align: left; }
   .waybill-table th { position: sticky; top: 0; background: var(--surface); color: var(--text); font-weight: 600; white-space: nowrap; }
   .waybill-table :is(th, td) { padding: 8px 12px; border-bottom: 1px solid var(--line); }
   .waybill-table tbody tr { height: 48px; cursor: pointer; }
   .waybill-table tbody tr:hover, .waybill-table tbody tr.is-selected { background: var(--surface); }
   .waybill-no-link { padding: 0; font-weight: 600; color: var(--text-strong); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .waybill-no-link:hover { text-decoration: underline; }
-  .waybill-source-label { display: inline-block; font-size: .75rem; color: var(--muted); }
+  .waybill-source-label { display: inline-block; font-size: 0.8125rem; color: var(--muted); }
   .waybill-cell-main, .waybill-cell-sub, .waybill-muted-line { line-height: 16px; white-space: nowrap; }
   .waybill-cell-main { color: var(--text-strong); }
-  .waybill-cell-sub, .waybill-muted-line { font-size: .75rem; }
+  .waybill-cell-sub, .waybill-muted-line { font-size: 0.8125rem; }
   .waybill-col-fee { text-align: right; }
   .waybill-fee { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-strong); }
   .waybill-row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-  .waybill-row-actions :is(button, a) { min-height: 32px; padding: 4px; color: var(--text); cursor: pointer; }
-  .waybill-status-pill { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text); font-size: .75rem; white-space: nowrap; }
-  .waybill-status-pill[data-tone="info"] { background: var(--accent-soft); color: #1d4ed8; }
-  .waybill-status-pill[data-tone="success"] { background: #ecfdf5; color: #047857; }
-  .waybill-status-pill[data-tone="warning"] { background: #fffbeb; color: #92400e; }
-  .waybill-status-pill[data-tone="danger"] { background: #fef2f2; color: #b91c1c; }
+  .waybill-row-actions :is(button, a) { min-height: 40px; padding: 4px; color: var(--text); cursor: pointer; }
+  .waybill-status-pill { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text); font-size: 0.8125rem; white-space: nowrap; }
+  .waybill-status-pill[data-tone="info"] { background: var(--accent-soft); color: var(--info-ink); }
+  .waybill-status-pill[data-tone="success"] { background: var(--success-soft); color: var(--success-ink); }
+  .waybill-status-pill[data-tone="warning"] { background: var(--warning-soft); color: var(--warning-ink); }
+  .waybill-status-pill[data-tone="danger"] { background: var(--danger-soft); color: var(--danger-ink); }
   .waybill-empty { display: grid; place-items: center; min-height: 240px; padding: 32px; text-align: center; color: var(--muted); }
   .waybill-empty .feather { margin: 0 auto 12px; }
   .waybill-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
   .waybill-page-size-control .waybill-select { width: auto; }
   .waybill-detail-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
   .waybill-detail-dialog:not([open]) { display: none; }
-  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; font-size: .875rem; }
-  .waybill-detail-head { align-items: center; padding: 14px 20px 12px; }
+  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; font-size: 0.875rem; }
+  .waybill-detail-head { align-items: center; padding: 16px 24px 12px; }
   .waybill-detail-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .waybill-detail-title-row .waybill-detail-title { font-size: 1.0625rem; font-weight: 600; overflow-wrap: anywhere; }
-  .waybill-detail-date { color: var(--muted); margin-top: 4px; font-size: .8125rem; }
-  .waybill-detail-body { overflow-y: auto; min-height: 0; padding: 0 20px; }
+  .waybill-detail-title-row .waybill-detail-title { font-size: 1.125rem; font-weight: 600; overflow-wrap: anywhere; }
+  .waybill-detail-date { color: var(--muted); margin-top: 4px; font-size: 0.8125rem; }
+  .waybill-detail-body { overflow-y: auto; min-height: 0; padding: 0 24px; }
   .waybill-detail-section { padding: 16px 0; border-bottom: 1px solid var(--line); }
   .waybill-detail-section:last-child { border-bottom: 0; }
-  .waybill-detail-section h3 { margin: 0 0 12px; font-size: .875rem; font-weight: 600; color: var(--text-strong); }
+  .waybill-detail-section h3 { margin: 0 0 12px; font-size: 0.875rem; font-weight: 600; color: var(--text-strong); }
   .waybill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
-  .waybill-parties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 14px 0 12px; }
-  .waybill-party { min-width: 0; padding: 10px 12px; border-radius: var(--radius-lg); background: var(--surface); }
-  .waybill-party-role { margin: 0 0 4px; color: var(--muted); font-size: .75rem; font-weight: 500; }
-  .waybill-party-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+  .waybill-parties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 16px 0 12px; }
+  .waybill-party { min-width: 0; padding: 12px 12px; border-radius: var(--radius-lg); background: var(--surface); }
+  .waybill-party-role { margin: 0 0 4px; color: var(--muted); font-size: 0.8125rem; font-weight: 500; }
+  .waybill-party-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
   .waybill-party-main strong { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
   .waybill-party-phone { color: var(--text); font-variant-numeric: tabular-nums; }
-  .waybill-party-address { margin: 4px 0 0; color: var(--text); font-size: .8125rem; line-height: 1.5; overflow-wrap: anywhere; }
+  .waybill-party-address { margin: 4px 0 0; color: var(--text); font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; }
   .waybill-detail-facts { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0 24px; padding: 4px 0 12px; border-bottom: 1px solid var(--line); }
   .waybill-facts-block { min-width: 0; }
-  .waybill-facts-block h3 { margin: 0; padding: 8px 0 4px; color: var(--muted); font-size: .75rem; font-weight: 500; }
+  .waybill-facts-block h3 { margin: 0; padding: 8px 0 4px; color: var(--muted); font-size: 0.8125rem; font-weight: 500; }
   .waybill-kv { margin: 0; }
   .waybill-kv-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 12px; padding: 4px 0; line-height: 1.5; }
-  .waybill-kv-row dt { color: var(--muted); font-size: .8125rem; }
+  .waybill-kv-row dt { color: var(--muted); font-size: 0.8125rem; }
   .waybill-kv-row dd { margin: 0; color: var(--text-strong); overflow-wrap: anywhere; white-space: pre-wrap; }
   .waybill-kv-row dd.is-money { text-align: right; font-variant-numeric: tabular-nums; }
   .waybill-kv--remark { padding: 8px 0; border-bottom: 1px solid var(--line); }
   .waybill-kv-empty { color: var(--muted); padding: 4px 0; }
   .waybill-link { padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
   .waybill-link-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-  .waybill-link-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: .8125rem; cursor: pointer; }
+  .waybill-link-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 0.8125rem; cursor: pointer; }
   .waybill-link-toggle:hover { text-decoration: underline; }
-  .waybill-link-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 4px 84px; }
+  .waybill-link-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 4px 84px; }
   .waybill-link-form[hidden] { display: none; }
   .waybill-link-platform { width: auto; min-width: 104px; }
   .waybill-link-no { flex: 1 1 160px; min-width: 0; }
-  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: .75rem; color: var(--muted); padding: 10px 0 12px; }
-  .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canvas); }
+  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8125rem; color: var(--muted); padding: 12px 0 12px; }
+  .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line); background: var(--canvas); }
   .waybill-detail-action-group { display: flex; gap: 8px; flex-wrap: wrap; }
   .waybill-detail-actions form { margin: 0; }
-  .waybill-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fef2f2; color: #b91c1c; cursor: pointer; }
-  .waybill-danger-btn:hover { background: #fee2e2; }
+  .waybill-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--danger-soft); color: var(--danger-ink); cursor: pointer; }
+  .waybill-danger-btn:hover { background: var(--danger-soft); }
   .waybill-danger-btn:disabled { opacity: .55; cursor: not-allowed; }
-  .waybill-detail-message, .waybill-print-status { margin: 12px 20px; }
+  .waybill-detail-message, .waybill-print-status { margin: 12px 24px; }
   .waybill-history.waybill-detail-section { padding: 4px 0; }
-  .waybill-history summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 8px; font-size: .8125rem; font-weight: 600; color: var(--text-strong); }
+  .waybill-history summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; color: var(--text-strong); }
   .waybill-history summary::before { content: "＋"; }
   .waybill-history[open] summary::before { content: "−"; }
-  .waybill-history-list { margin: 0; padding-left: 20px; }
+  .waybill-history-list { margin: 0; padding-left: 24px; }
   .waybill-history-list > li { padding: 12px 0; border-bottom: 1px solid var(--line); }
   .waybill-history-list p { margin: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-  .waybill-history-meta { color: var(--muted); font-size: .8125rem; }
+  .waybill-history-meta { color: var(--muted); font-size: 0.8125rem; }
   .waybill-edit-form { min-height: 0; display: flex; flex-direction: column; }
   .waybill-edit-input { padding: 8px 12px; }
   .waybill-edit-input:is(textarea) { min-height: 80px; resize: vertical; }
   .waybill-edit-wide { grid-column: 1 / -1; }
   .waybill-edit-loading { padding: 24px; color: var(--muted); }
-  @media (max-width: 1024px) { .waybill-filter-actions { width: 100%; justify-content: flex-end; } }
-  @media (max-width: 640px) {
+  @media (max-width: 1023px) { .waybill-filter-actions { width: 100%; justify-content: flex-end; } }
+  @media (max-width: 639px) {
     .waybill-filter-form { flex-direction: column; align-items: stretch; }
     .waybill-filter-form > .waybill-field, .waybill-filter-form > .waybill-field:first-of-type, .waybill-filter-form > .waybill-field:nth-of-type(2) { flex: none; }
     .waybill-filter-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
@@ -167,7 +167,7 @@
     .waybill-table thead { display: none; }
     .waybill-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; padding: 12px 16px; gap: 8px 12px; border-bottom: 1px solid var(--line); }
     .waybill-table td { display: block; padding: 0; border: 0; min-width: 0; }
-    .waybill-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: .75rem; }
+    .waybill-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 0.8125rem; }
     .waybill-table .waybill-col-no { grid-column: 1 / -1; }
     .waybill-table .waybill-col-status { grid-column: 2; grid-row: 2; text-align: right; }
     .waybill-table .waybill-col-actions { grid-column: 1 / -1; }

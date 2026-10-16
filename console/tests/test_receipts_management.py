@@ -1576,7 +1576,7 @@ class ReceiptTemplateTests(unittest.TestCase):
             ".receipt-col-updated { width: 16%; }",
             ".receipt-table .receipt-updated-cell",
             "text-overflow: clip;",
-            "font-size: .78rem;",
+            "font-size: 0.8125rem;",
             "<col class=\"receipt-col-updated\">",
             "class=\"receipt-updated-cell\" title=\"{{ row.updated_at }}\"",
             "class=\"receipt-updated-cell\" title=\"${escapeHtml(row.updated_at || \"\")}\"",

@@ -96,7 +96,7 @@ class ControlPlaneUiTests(unittest.TestCase):
 
     def test_styles_cover_keyboard_mobile_and_reduced_motion(self):
         self.assertIn(":focus-visible", self.styles)
-        self.assertIn("@media (max-width: 360px)", self.styles)
+        self.assertIn("@media (max-width: 639px)", self.styles)
         self.assertIn("@media (prefers-reduced-motion: reduce)", self.styles)
         self.assertNotIn("transition: all", self.styles)
         self.assertNotIn("linear-gradient", self.styles)

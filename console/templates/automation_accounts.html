@@ -236,7 +236,8 @@
                 <div data-account-qr-panel{% if not has_active_challenge or not account.is_active %} hidden{% endif %}>
                   <p>请使用绑定百世账号的微信扫码并确认。</p>
                   <img src="{{ status.captcha_image if has_active_challenge else '' }}" alt="百世快运微信登录二维码" width="220" height="220" data-account-qr-image>
-                  <select class="review-input compact-input" data-account-qr-choice{% if not status.account_choices %} hidden{% endif %}>
+                  <label class="auto-field-label" for="account-qr-choice-{{ account.account_id }}"{% if not status.account_choices %} hidden{% endif %}>百世账号</label>
+                  <select id="account-qr-choice-{{ account.account_id }}" class="review-input compact-input" data-account-qr-choice{% if not status.account_choices %} hidden{% endif %}>
                     <option value="">请选择百世账号</option>
                     {% for choice in status.account_choices or [] %}<option value="{{ choice.value }}">{{ choice.label }}</option>{% endfor %}
                   </select>
@@ -247,7 +248,8 @@
                 {% elif account.session_capable %}
                 <form class="automation-account-inline-code" action="/automation-accounts/{{ account.account_id }}/submit-code" method="post" data-account-code-form{% if not has_active_challenge %} hidden{% endif %}>
                   <div class="automation-account-inline-code-main">
-                    <input class="review-input compact-input automation-account-code-input" type="text" name="code" autocomplete="one-time-code" placeholder="{{ '输入图片验证码' if challenge_type == 'image' else '6 位验证码' }}" data-account-code-input>
+                    <label class="sr-only" for="account-code-{{ account.account_id }}">验证码</label>
+                    <input id="account-code-{{ account.account_id }}" class="review-input compact-input automation-account-code-input" type="text" name="code" autocomplete="one-time-code" placeholder="{{ '输入图片验证码' if challenge_type == 'image' else '6 位验证码' }}" data-account-code-input>
                     <button class="ghost-btn automation-account-code-submit" type="submit" data-account-code-submit>
                       <i data-feather="check"></i>
                       提交
@@ -328,6 +330,7 @@
       choices.forEach((item) => choice.add(new Option(String(item.label), String(item.value))));
       if (choices.some((item) => String(item.value) === selected)) choice.value = selected;
       choice.hidden = choices.length === 0;
+      choice.labels?.forEach((label) => { label.hidden = choice.hidden; });
     }
     const expiry = row.querySelector("[data-account-qr-expiry]");
     if (expiry) expiry.textContent = state.expires_at ? `有效期至 ${state.expires_at}` : "";

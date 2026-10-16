@@ -25,7 +25,8 @@
     <input type="hidden" name="page" value="1">
     <div class="line-haul-search-field">
       <i data-feather="search"></i>
-      <input type="search" name="q" value="{{ filters.q }}" placeholder="搜索公司、站点、地址、电话" data-line-haul-search-input>
+      <label class="sr-only" for="line-haul-search-input">搜索专线资料</label>
+      <input id="line-haul-search-input" type="search" name="q" value="{{ filters.q }}" placeholder="搜索公司、站点、地址、电话" data-line-haul-search-input>
     </div>
     <button class="primary-btn" type="submit">
       <i data-feather="search"></i>
@@ -37,8 +38,8 @@
   </form>
 </section>
 
-<div class="line-haul-modal-backdrop" data-line-haul-modal hidden>
-  <div class="line-haul-modal" role="dialog" aria-modal="true" aria-labelledby="line-haul-modal-title">
+<dialog class="line-haul-modal-backdrop native-modal" data-line-haul-modal aria-labelledby="line-haul-modal-title">
+  <div class="line-haul-modal">
     <div class="line-haul-modal-head">
       <h2 class="section-title" id="line-haul-modal-title">维护资料</h2>
       <button class="icon-btn line-haul-modal-close" type="button" title="关闭" aria-label="关闭" data-line-haul-close>
@@ -86,8 +87,8 @@
 
     <form class="line-haul-modal-panel" action="/line-haul-contacts/import-paste" method="post" data-ui-submit data-line-haul-panel="import" hidden>
       <input type="hidden" name="return_to" value="{{ return_to }}">
-      <p class="section-note line-haul-modal-note">复制三列：公司名称、分流站点/城市、地址电话原文。公司列为空时沿用上一行。</p>
-      <textarea class="review-input line-haul-paste-box" name="paste_text" placeholder="物流公司&#9;目的城市&#9;联系人及电话"></textarea>
+      <label class="section-note line-haul-modal-note" for="line-haul-paste-text">复制三列：公司名称、分流站点/城市、地址电话原文。公司列为空时沿用上一行。</label>
+      <textarea id="line-haul-paste-text" class="review-input line-haul-paste-box" name="paste_text" placeholder="物流公司&#9;目的城市&#9;联系人及电话"></textarea>
       <button class="primary-btn" type="submit">
         <i data-feather="clipboard"></i>
         <span>解析并导入</span>
@@ -129,7 +130,7 @@
       </button>
     </form>
   </div>
-</div>
+</dialog>
 
 {% if db_error %}
 <div class="notice notice--warning" data-notice>
@@ -270,14 +271,12 @@
     function openModal(name) {
       if (!modal) return;
       selectPanel(name || "create");
-      modal.hidden = false;
+      if (!modal.open) modal.showModal();
       document.body.classList.add("line-haul-modal-open");
     }
 
     function closeModal() {
-      if (!modal) return;
-      modal.hidden = true;
-      document.body.classList.remove("line-haul-modal-open");
+      if (modal?.open) modal.close();
     }
 
     function openEdit(payload) {
@@ -310,8 +309,8 @@
     tabs.forEach((tab) => {
       tab.addEventListener("click", () => selectPanel(tab.dataset.lineHaulTab || "create"));
     });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && modal && !modal.hidden) closeModal();
+    modal?.addEventListener("close", () => {
+      document.body.classList.remove("line-haul-modal-open");
     });
   })();
 </script>

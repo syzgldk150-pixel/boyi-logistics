@@ -16,56 +16,68 @@
   /* 悬浮小窗交互核心 */
 	  .map-drawer {
 	    position: absolute; top: calc(var(--header-h) + 16px); left: 22px; width: 356px; max-height: calc(100vh - var(--header-h) - 36px);
-    background: #fff; border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.09);
+    background: var(--canvas); border-radius: 8px; box-shadow: var(--shadow-overlay);
     display: flex; flex-direction: column; overflow: visible; border: 1px solid var(--line);
     z-index: 10;
   }
 
-  .drawer-search-box { padding: 16px; border-bottom: 1px solid var(--line); background: #fff; z-index: 2; position: relative; border-radius: 10px 10px 0 0; }
-  .drawer-scroll-area { flex: 1; overflow-y: auto; background: #f9f9fb; }
+  .drawer-search-box { padding: 16px; border-bottom: 1px solid var(--line); background: var(--canvas); z-index: 2; position: relative; border-radius: 8px 8px 0 0; }
+  .drawer-scroll-area { flex: 1; overflow-y: auto; background: var(--surface); }
   .drawer-scroll-area[hidden] { display: none; } /* 只有查询后才显示 */
 
-  .drawer-title { font-size: 1rem; font-weight: 700; color: var(--text-strong); margin: 0 0 12px; }
+  .drawer-title { font-size: 1rem; font-weight: 600; color: var(--text-strong); margin: 0 0 12px; }
 
   /* 搜索表单简化版 */
-  .route-field-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .route-field-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .route-icon { width: 22px; display: flex; justify-content: center; }
   .route-icon .feather { width: 18px; height: 18px; color: var(--accent); stroke-width: 2.4; }
   .route-icon.dest .feather { color: var(--success); }
   .route-swap-icon { width: 14px; height: 14px; margin-right: 4px; stroke-width: 2.5; }
   .route-field-main { position: relative; flex: 1; }
-  .route-input { width: 100%; height: 38px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.84rem; font-weight: 500; outline: none; background: #f9f9fb; }
-  .route-input:focus { border-color: var(--accent); background: #fff; }
-  .route-suggest-list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: min(320px, calc(100vh - 180px)); background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12); overflow-y: auto; overflow-x: hidden; z-index: 30; }
+  .route-input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.8125rem; font-weight: 500; outline: none; background: var(--surface); }
+  .route-input:focus { border-color: var(--focus-strong); background: var(--canvas); }
+  .route-input:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
+  .route-swap-row { padding-left: 32px; margin: -4px 0 4px; }
+  .route-swap-btn { padding: 0 8px; font-size: 0.8125rem; }
+  .route-advanced { margin-top: 12px; }
+  .route-advanced summary { min-height: 40px; display: flex; align-items: center; font-size: 0.8125rem; color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; }
+  .route-advanced summary:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; border-radius: var(--radius-sm); }
+  .route-advanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .route-advanced-field { display: grid; gap: 4px; font-size: 0.8125rem; color: var(--text); font-weight: 500; }
+  .distance-overview-title { display: block; margin-bottom: 4px; font-size: 0.8125rem; color: var(--text-strong); font-weight: 600; }
+  .distance-overview-meta { font-size: 0.8125rem; color: var(--muted); }
+  .platform-card--internal { border-color: var(--text-strong); }
+  .p-icon--primary { background: var(--text-strong); color: var(--canvas); }
+  .route-suggest-list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: min(320px, calc(100vh - 180px)); background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-overlay); overflow-y: auto; overflow-x: hidden; z-index: 30; }
   .route-suggest-list[hidden] { display: none; }
-  .route-suggest-item { width: 100%; border: 0; border-bottom: 1px solid #eef2f7; background: #fff; padding: 10px 12px; text-align: left; cursor: pointer; transition: background var(--fast); }
+  .route-suggest-item { width: 100%; border: 0; border-bottom: 1px solid var(--surface-muted); background: var(--canvas); padding: 12px 12px; text-align: left; cursor: pointer; transition: background var(--fast); }
   .route-suggest-item:last-child { border-bottom: 0; }
-  .route-suggest-item:hover { background: #f8fafc; }
-  .route-suggest-primary { font-size: 0.84rem; font-weight: 700; color: var(--text-strong); display: block; }
-  .route-suggest-secondary { font-size: 0.72rem; color: var(--muted); margin-top: 4px; display: block; line-height: 1.4; }
-  .route-suggest-empty { padding: 10px 12px; font-size: 0.78rem; color: var(--muted); background: #fff; }
+  .route-suggest-item:hover { background: var(--surface); }
+  .route-suggest-primary { font-size: 0.8125rem; font-weight: 600; color: var(--text-strong); display: block; }
+  .route-suggest-secondary { font-size: 0.8125rem; color: var(--muted); margin-top: 4px; display: block; line-height: 1.4; }
+  .route-suggest-empty { padding: 12px 12px; font-size: 0.8125rem; color: var(--muted); background: var(--canvas); }
 
-  .search-action-row { display: flex; gap: 10px; margin-top: 16px; }
-  .search-action-btn { flex: 1; height: 36px; min-height: 36px; border-radius: 6px; font-size: 0.84rem; }
+  .search-action-row { display: flex; gap: 12px; margin-top: 16px; }
+  .search-action-btn { flex: 1; height: 40px; min-height: 40px; border-radius: 6px; font-size: 0.8125rem; }
 
   /* 结果卡片 */
   .result-section { padding: 16px; }
-  .result-header { font-size: 0.76rem; font-weight: 800; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
+  .result-header { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
 
-  .distance-overview { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: none; }
-  .distance-val strong { font-size: 1.55rem; font-family: var(--font-display); font-weight: 600; color: var(--text-strong); }
-  .distance-val span { font-size: 0.78rem; color: var(--muted); font-weight: 600; margin-left: 4px; }
+  .distance-overview { background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: none; }
+  .distance-val strong { font-size: 1.375rem; font-family: var(--font-display); font-weight: 600; color: var(--text-strong); }
+  .distance-val span { font-size: 0.8125rem; color: var(--muted); font-weight: 600; margin-left: 4px; }
 
-  .platform-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; transition: background var(--fast), border-color var(--fast); box-shadow: none; }
-  .platform-card:hover { border-color: #d1d5db; background: var(--surface); }
+  .platform-card { background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 12px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; transition: background var(--fast), border-color var(--fast); box-shadow: none; }
+  .platform-card:hover { border-color: var(--line-strong); background: var(--surface); }
   .p-info { display: flex; align-items: center; gap: 12px; }
-  .p-icon { width: 30px; height: 30px; border-radius: 4px; background: #e5e7eb; display: grid; place-items: center; }
+  .p-icon { width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text); display: grid; place-items: center; }
   .p-icon .feather { width: 16px; height: 16px; color: currentColor; stroke-width: 2.4; }
-  .p-name { font-weight: 700; color: var(--text-strong); font-size: 0.84rem; margin-bottom: 2px; }
-  .p-meta { font-size: 0.7rem; color: var(--muted); }
+  .p-name { font-weight: 600; color: var(--text-strong); font-size: 0.8125rem; margin-bottom: 2px; }
+  .p-meta { font-size: 0.8125rem; color: var(--muted); }
   .p-price { text-align: right; }
-  .p-price-val { font-size: 1.12rem; font-family: var(--font-display); font-weight: 800; color: var(--text-strong); }
-  .p-price-status { font-size: 0.7rem; color: var(--warning); margin-top: 2px; white-space: nowrap; }
+  .p-price-val { font-size: 1.125rem; font-family: var(--font-display); font-weight: 600; color: var(--text-strong); }
+  .p-price-status { font-size: 0.8125rem; color: var(--warning); margin-top: 2px; white-space: nowrap; }
 
   @media (max-width: 767px) {
     .dispatch-page .top-header { display: none; }
@@ -84,9 +96,9 @@
       min-height: 0;
       overflow: hidden;
     }
-    .drawer-search-box { padding: 14px; }
+    .drawer-search-box { padding: 16px; }
     .drawer-scroll-area { min-height: 0; overscroll-behavior: contain; }
-    .route-input { min-height: 44px; font-size: 16px; }
+    .route-input { min-height: 44px; font-size: 1rem; }
     .search-action-btn { min-height: 44px; }
     .route-suggest-list { max-height: min(40dvh, 320px); }
   }
@@ -117,27 +129,33 @@
     <div class="route-field-row">
       <div class="route-icon"><i data-feather="map-pin"></i></div>
       <div class="route-field-main">
+        <label class="sr-only" for="dispatch-origin">发货地</label>
         <input type="text" id="dispatch-origin" class="route-input" placeholder="输入发货地" autocomplete="off">
         <div class="route-suggest-list" id="dispatch-origin-suggestions" hidden></div>
       </div>
     </div>
-    <div style="padding-left: 30px; margin: -5px 0 5px;">
-      <button type="button" class="ghost-btn" style="height: 22px; min-height: 22px; padding: 0 7px; font-size: 0.68rem;" onclick="swapRouteInputs()"><i data-feather="repeat" class="route-swap-icon"></i>切倒发收</button>
+    <div class="route-swap-row">
+      <button type="button" class="ghost-btn route-swap-btn" onclick="swapRouteInputs()"><i data-feather="repeat" class="route-swap-icon"></i>切倒发收</button>
     </div>
     <div class="route-field-row">
       <div class="route-icon dest"><i data-feather="flag"></i></div>
       <div class="route-field-main">
+        <label class="sr-only" for="dispatch-dest">目的地</label>
         <input type="text" id="dispatch-dest" class="route-input" placeholder="输入目的地" autocomplete="off">
         <div class="route-suggest-list" id="dispatch-dest-suggestions" hidden></div>
       </div>
     </div>
 
     <!-- 高级项默认折叠，通过交互触发 -->
-    <details style="margin-top: 10px;" id="adv-settings">
-      <summary style="font-size: 0.76rem; color: var(--muted); font-weight: 600; cursor: pointer; user-select: none;">可选估算条件</summary>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
-        <input type="number" id="dispatch-est-weight" class="route-input" placeholder="重量（千克）" style="height: 32px;">
-        <input type="number" id="dispatch-est-volume" class="route-input" placeholder="体积（立方米）" style="height: 32px;">
+    <details class="route-advanced" id="adv-settings">
+      <summary>可选估算条件</summary>
+      <div class="route-advanced-grid">
+        <label class="route-advanced-field" for="dispatch-est-weight"><span>重量（千克）</span>
+          <input type="number" id="dispatch-est-weight" class="route-input" placeholder="例如 500">
+        </label>
+        <label class="route-advanced-field" for="dispatch-est-volume"><span>体积（立方米）</span>
+          <input type="number" id="dispatch-est-volume" class="route-input" placeholder="例如 2.5">
+        </label>
       </div>
     </details>
 
@@ -153,8 +171,8 @@
       <div class="result-header">基础行程预估</div>
       <div class="distance-overview">
         <div>
-          <span style="font-size: 0.76rem; color: var(--text-strong); font-weight: 700; display: block; margin-bottom: 4px;">推荐路线</span>
-          <span style="font-size: 0.7rem; color: var(--muted);" id="route-duration-label">等待路线规划</span>
+          <span class="distance-overview-title">推荐路线</span>
+          <span class="distance-overview-meta" id="route-duration-label">等待路线规划</span>
         </div>
         <div class="distance-val" id="route-distance-label">
           <strong>--</strong><span>公里</span>
@@ -166,7 +184,7 @@
       <!-- 平台卡片 -->
       <div class="platform-card" id="card-huolala">
         <div class="p-info">
-          <div class="p-icon" style="background:#fef3c7; color:#d97706;"><i data-feather="truck"></i></div>
+          <div class="p-icon"><i data-feather="truck"></i></div>
           <div>
             <div class="p-name">货拉拉</div>
             <div class="p-meta" id="huolala-vehicle">推荐车型</div>
@@ -180,7 +198,7 @@
 
       <div class="platform-card" id="card-ymm">
         <div class="p-info">
-          <div class="p-icon" style="background:#dbeafe; color:#2563eb;"><i data-feather="navigation"></i></div>
+          <div class="p-icon"><i data-feather="navigation"></i></div>
           <div>
             <div class="p-name">运满满</div>
             <div class="p-meta" id="ymm-vehicle">推荐车型</div>
@@ -192,9 +210,9 @@
         </div>
       </div>
 
-      <div class="platform-card" id="card-internal" style="border-color: var(--text-strong);">
+      <div class="platform-card platform-card--internal" id="card-internal">
         <div class="p-info">
-          <div class="p-icon" style="background:var(--text-strong); color:#fff;"><i data-feather="award"></i></div>
+          <div class="p-icon p-icon--primary"><i data-feather="award"></i></div>
           <div>
             <div class="p-name">我们报价</div>
             <div class="p-meta">基于实时路线估算</div>

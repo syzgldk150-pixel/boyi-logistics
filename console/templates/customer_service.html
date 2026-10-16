@@ -168,8 +168,8 @@
     </div>
   </section>
 
-  <div class="customer-service-modal-backdrop customer-service-problem-backdrop" hidden data-cs-problem-modal>
-    <section class="customer-service-modal customer-service-problem-modal" role="dialog" aria-modal="true" aria-labelledby="customer-service-problem-title">
+  <dialog class="customer-service-modal-backdrop customer-service-problem-backdrop native-modal" data-cs-problem-modal aria-labelledby="customer-service-problem-title">
+    <section class="customer-service-modal customer-service-problem-modal">
       <div class="customer-service-modal-head customer-service-problem-head">
         <div>
           <span class="customer-service-drawer-kicker" data-cs-problem-platform>问题件</span>
@@ -222,12 +222,12 @@
         </div>
       </form>
     </section>
-  </div>
+  </dialog>
 
-  <div class="customer-service-modal-backdrop" hidden data-cs-publish-modal>
+  <dialog class="customer-service-modal-backdrop native-modal" data-cs-publish-modal aria-labelledby="customer-service-publish-title">
     <form class="customer-service-modal" data-cs-publish-form>
       <div class="customer-service-modal-head">
-        <h3>发布问题件</h3>
+        <h3 id="customer-service-publish-title">发布问题件</h3>
         <button class="customer-service-square-btn" type="button" title="关闭" aria-label="关闭" data-cs-publish-close>
           <i data-feather="x"></i>
         </button>
@@ -273,23 +273,23 @@
         <button class="ghost-btn" type="button" data-cs-publish-close>取消</button>
         <button class="primary-btn" type="submit">
           <i data-feather="send"></i>
-          <span>提交</span>
+          <span>发布问题件</span>
         </button>
       </div>
     </form>
-  </div>
+  </dialog>
 
-  <div class="customer-service-image-viewer" hidden data-cs-image-viewer role="dialog" aria-modal="true" aria-label="附件图片预览">
+  <dialog class="customer-service-image-viewer native-modal" data-cs-image-viewer aria-label="附件图片预览">
     <div class="customer-service-image-viewer-panel">
       <button class="customer-service-square-btn customer-service-image-close" type="button" title="关闭图片" aria-label="关闭图片" data-cs-image-close>
         <i data-feather="x"></i>
       </button>
       <img src="" alt="附件图片预览" data-cs-image-viewer-img>
     </div>
-  </div>
+  </dialog>
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/customer_service.js?v=v32"></script>
+<script src="/static/customer_service.js?v=20261016-dialog"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

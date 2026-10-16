@@ -13,7 +13,7 @@
     min-width: 0;
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
-    background: #fff;
+    background: var(--canvas);
     box-shadow: var(--shadow-soft);
   }
   .receipt-filter-panel { position: relative; z-index: 20; overflow: visible; }
@@ -21,48 +21,47 @@
   .receipt-filter-form {
     display: grid;
     grid-template-columns: minmax(260px, 1.45fr) repeat(3, minmax(128px, .72fr)) minmax(280px, 1.05fr) minmax(104px, 104px);
-    gap: 10px;
+    gap: 12px;
     align-items: end;
-    padding: 14px 16px 12px;
+    padding: 16px 16px 12px;
   }
-  .receipt-field { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+  .receipt-field { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
   .receipt-field label,
-  .receipt-field-label { color: var(--text-strong); font-size: .74rem; font-weight: 800; }
+  .receipt-field-label { color: var(--text-strong); font-size: 0.8125rem; font-weight: 600; }
   .receipt-field input,
   .receipt-field select {
     width: 100%;
-    min-height: 38px;
+    min-height: 40px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
-    padding: 0 11px;
-    font-size: .84rem;
-    font-weight: 650;
+    padding: 0 12px;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .receipt-field input:focus,
   .receipt-field select:focus {
     border-color: var(--text-strong);
-    outline: none;
-    box-shadow: 0 0 0 3px rgba(17, 24, 39, .08);
+    outline: 2px solid var(--focus-strong); outline-offset: 2px;
   }
-  .receipt-field--search input { font-weight: 700; }
+  .receipt-field--search input { font-weight: 600; }
   .receipt-date-field { position: relative; min-width: 280px; }
   .receipt-date-range-wrap { position: relative; }
   .receipt-date-range-control {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     width: 100%;
-    min-height: 38px;
+    min-height: 40px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
-    padding: 0 11px;
-    font-size: .84rem;
-    font-weight: 650;
+    padding: 0 12px;
+    font-size: 0.8125rem;
+    font-weight: 600;
     text-align: left;
     cursor: pointer;
   }
@@ -70,8 +69,7 @@
   .receipt-date-range-control:focus,
   .receipt-date-range-control[aria-expanded="true"] {
     border-color: var(--text-strong);
-    outline: none;
-    box-shadow: 0 0 0 3px rgba(17, 24, 39, .08);
+    outline: 2px solid var(--focus-strong); outline-offset: 2px;
   }
   .receipt-date-popover {
     position: absolute;
@@ -81,9 +79,9 @@
     width: min(352px, calc(100vw - 48px));
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
-    padding: 12px 12px 10px;
-    box-shadow: 0 18px 36px rgba(15, 23, 42, .14);
+    background: var(--canvas);
+    padding: 12px 12px 12px;
+    box-shadow: var(--shadow-overlay);
   }
   .receipt-date-popover[hidden] { display: none; }
   .receipt-calendar { display: grid; gap: 8px; }
@@ -96,8 +94,8 @@
   .receipt-calendar-title {
     text-align: center;
     color: var(--text-strong);
-    font-size: .96rem;
-    font-weight: 850;
+    font-size: 1rem;
+    font-weight: 600;
   }
   .receipt-calendar-nav {
     display: grid;
@@ -106,11 +104,11 @@
     height: 32px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
     cursor: pointer;
   }
-  .receipt-calendar-nav:hover { background: #f9fafb; }
+  .receipt-calendar-nav:hover { background: var(--surface); }
   .receipt-calendar-nav i { width: 16px; height: 16px; }
   .receipt-calendar-weekdays,
   .receipt-calendar-grid {
@@ -122,8 +120,8 @@
     place-items: center;
     min-height: 28px;
     color: var(--text-strong);
-    font-size: .78rem;
-    font-weight: 850;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .receipt-calendar-grid { overflow: hidden; border-radius: var(--radius-md); }
   .receipt-calendar-day {
@@ -131,65 +129,65 @@
     place-items: center;
     height: 34px;
     border: 0;
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
-    font-size: .86rem;
-    font-weight: 700;
+    font-size: 0.875rem;
+    font-weight: 600;
     cursor: pointer;
   }
-  .receipt-calendar-day:hover { background: #eef2ff; }
-  .receipt-calendar-day.is-outside { color: #9ca3af; font-weight: 650; }
-  .receipt-calendar-day.is-in-range { background: #eaf4fb; color: var(--text-strong); }
+  .receipt-calendar-day:hover { background: var(--info-soft); }
+  .receipt-calendar-day.is-outside { color: var(--faint); font-weight: 600; }
+  .receipt-calendar-day.is-in-range { background: var(--info-soft); color: var(--text-strong); }
   .receipt-calendar-day.is-start,
   .receipt-calendar-day.is-end {
-    border-radius: 7px;
-    background: #2f80c0;
-    color: #fff;
+    border-radius: 6px;
+    background: var(--focus-strong);
+    color: var(--canvas);
   }
   .receipt-calendar-day.is-start:hover,
-  .receipt-calendar-day.is-end:hover { background: #256da6; }
+  .receipt-calendar-day.is-end:hover { background: var(--info-ink); }
   .receipt-calendar-day:focus-visible {
     outline: 2px solid rgba(47, 128, 192, .38);
     outline-offset: -2px;
   }
-  .receipt-quick-ranges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+  .receipt-quick-ranges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
   .receipt-range-btn {
     min-height: 25px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #f9fafb;
+    background: var(--surface);
     color: var(--text);
     padding: 0 8px;
-    font-size: .72rem;
-    font-weight: 750;
+    font-size: 0.8125rem;
+    font-weight: 600;
     cursor: pointer;
   }
-  .receipt-range-btn:hover { border-color: #cbd5e1; background: #f3f4f6; }
+  .receipt-range-btn:hover { border-color: var(--line-strong); background: var(--surface-muted); }
   .receipt-query-btn {
     min-width: 104px;
-    min-height: 38px;
+    min-height: 40px;
     gap: 8px;
     justify-self: stretch;
-    padding: 0 14px;
-    box-shadow: 0 8px 18px rgba(17, 24, 39, .14);
+    padding: 0 16px;
+    box-shadow: none;
   }
   .receipt-query-btn[aria-busy="true"] { opacity: .82; cursor: wait; }
   .btn-spinner {
     width: 14px;
     height: 14px;
     border: 2px solid rgba(255,255,255,.45);
-    border-top-color: #fff;
+    border-top-color: var(--canvas);
     border-radius: 999px;
     animation: receipt-spin .8s linear infinite;
   }
   .btn-spinner[hidden] { display: none; }
   @keyframes receipt-spin { to { transform: rotate(360deg); } }
-  .receipt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
-  .receipt-toolbar strong { color: var(--text-strong); font-size: .98rem; font-weight: 850; }
-  .receipt-toolbar span { color: var(--muted); font-size: .82rem; font-weight: 650; }
+  .receipt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 16px; border-bottom: 1px solid var(--line); }
+  .receipt-toolbar strong { color: var(--text-strong); font-size: 1rem; font-weight: 600; }
+  .receipt-toolbar span { color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
   .receipt-toolbar-copy { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .receipt-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-  .receipt-count-muted { color: #9ca3af; font-size: .78rem; font-weight: 700; }
+  .receipt-count-muted { color: var(--faint); font-size: 0.8125rem; font-weight: 600; }
   .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); }
   .receipt-table { width: 100%; min-width: 0; table-layout: fixed; }
   .receipt-col-photo { width: 6%; }
@@ -201,20 +199,20 @@
   .receipt-col-signed { width: 10%; }
   .receipt-col-updated { width: 16%; }
   .receipt-col-action { width: 8%; }
-  .receipt-table th { position: sticky; top: 0; z-index: 1; background: #f9fafb; }
+  .receipt-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
   .receipt-table th,
   .receipt-table td { overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
-  .receipt-table th { padding: 12px 8px; font-size: .76rem; }
-  .receipt-table td { padding: 11px 8px; font-size: .84rem; }
+  .receipt-table th { padding: 12px 8px; font-size: 0.8125rem; }
+  .receipt-table td { padding: 12px 8px; font-size: 0.8125rem; }
   .receipt-table .receipt-updated-cell {
     overflow: visible;
     text-overflow: clip;
-    font-size: .78rem;
+    font-size: 0.8125rem;
     font-variant-numeric: tabular-nums;
   }
   .receipt-row { cursor: pointer; transition: background var(--base); }
   .receipt-row:hover,
-  .receipt-row.is-selected { background: #f9fafb; }
+  .receipt-row.is-selected { background: var(--surface); }
   .receipt-thumb-list { display: flex; align-items: center; gap: 8px; min-width: 72px; }
   .receipt-thumb {
     display: grid;
@@ -223,7 +221,7 @@
     height: 42px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #f9fafb;
+    background: var(--surface);
     overflow: hidden;
     color: var(--muted);
   }
@@ -236,8 +234,8 @@
     max-width: 100%;
     color: var(--text-strong);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: .78rem;
-    font-weight: 750;
+    font-size: 0.8125rem;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: middle;
@@ -248,21 +246,21 @@
     align-items: center;
     max-width: 100%;
     min-height: 24px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #f9fafb;
+    background: var(--surface);
     color: var(--text);
-    padding: 0 7px;
-    font-size: .72rem;
-    font-weight: 800;
+    padding: 0 8px;
+    font-size: 0.8125rem;
+    font-weight: 600;
     white-space: nowrap;
   }
-  .receipt-chip--yunda { border-color: #dbeafe; background: #eff6ff; color: #1d4ed8; }
-  .receipt-chip--ronghui { border-color: #dcfce7; background: #f0fdf4; color: #15803d; }
-  .receipt-chip--send { border-color: #fee2e2; background: #fef2f2; color: #b91c1c; }
-  .receipt-chip--receive { border-color: #e0e7ff; background: #eef2ff; color: #4338ca; }
-  .receipt-chip--ok { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
-  .receipt-chip--warn { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+  .receipt-chip--yunda { border-color: var(--info-soft); background: var(--info-soft); color: var(--info-ink); }
+  .receipt-chip--ronghui { border-color: var(--success-soft); background: var(--success-soft); color: var(--success-ink); }
+  .receipt-chip--send { border-color: var(--danger-soft); background: var(--danger-soft); color: var(--danger-ink); }
+  .receipt-chip--receive { border-color: var(--info-soft); background: var(--info-soft); color: var(--info-ink); }
+  .receipt-chip--ok { border-color: var(--success-line); background: var(--success-soft); color: var(--success-ink); }
+  .receipt-chip--warn { border-color: var(--warning-line); background: var(--warning-soft); color: var(--warning-ink); }
   .receipt-chip--muted { color: var(--muted); }
   .receipt-count-pill {
     display: inline-flex;
@@ -272,20 +270,20 @@
     min-height: 26px;
     border-radius: var(--radius-md);
     background: var(--primary);
-    color: #fff;
-    font-size: .78rem;
-    font-weight: 850;
+    color: var(--canvas);
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .receipt-close-btn,
   .receipt-icon-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text);
     cursor: pointer;
   }
@@ -301,6 +299,7 @@
   }
   .receipt-modal.is-open { display: grid; }
   .receipt-modal[hidden] { display: none; }
+  .receipt-modal.native-modal::backdrop { background: rgba(17, 17, 17, .72); }
   .receipt-modal-card {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -310,8 +309,8 @@
     max-height: calc(100dvh - 48px);
     border: 1px solid rgba(255,255,255,.14);
     border-radius: var(--radius-lg);
-    background: #fff;
-    box-shadow: 0 28px 80px rgba(15, 23, 42, .34);
+    background: var(--canvas);
+    box-shadow: var(--shadow-overlay);
     overflow: hidden;
   }
   .receipt-modal-card--preview { height: min(840px, calc(100vh - 48px)); height: min(840px, calc(100dvh - 48px)); }
@@ -321,13 +320,13 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 14px;
-    padding: 14px 16px;
+    gap: 16px;
+    padding: 16px 16px;
     border-bottom: 1px solid var(--line);
-    background: #fff;
+    background: var(--canvas);
   }
-  .receipt-modal-head h2 { margin: 0; color: var(--text-strong); font-size: 1.02rem; font-weight: 850; }
-  .receipt-modal-head p { margin: 3px 0 0; color: var(--muted); font-size: .82rem; }
+  .receipt-modal-head h2 { margin: 0; color: var(--text-strong); font-size: 1rem; font-weight: 600; }
+  .receipt-modal-head p { margin: 4px 0 0; color: var(--muted); font-size: 0.8125rem; }
   .receipt-modal-actions { display: flex; align-items: center; gap: 8px; }
   .receipt-review-status {
     display: flex;
@@ -337,31 +336,31 @@
     max-width: 100%;
     min-height: 34px;
     margin-top: 8px;
-    border: 1px solid #bbf7d0;
+    border: 1px solid var(--success-line);
     border-radius: var(--radius-md);
-    background: #f0fdf4;
-    color: #14532d;
-    padding: 6px 10px;
-    font-size: .82rem;
-    font-weight: 850;
+    background: var(--success-soft);
+    color: var(--success-ink);
+    padding: 8px 12px;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .receipt-review-status[hidden] { display: none; }
   .receipt-review-status i { width: 17px; height: 17px; flex: 0 0 auto; }
-  .receipt-review-status strong { color: #14532d; }
-  .receipt-review-status span { color: #166534; font-weight: 750; }
+  .receipt-review-status strong { color: var(--success-ink); }
+  .receipt-review-status span { color: var(--success-ink); font-weight: 600; }
   .receipt-review-status--failed {
-    border-color: #fecaca;
-    background: #fef2f2;
-    color: #991b1b;
+    border-color: var(--danger-line);
+    background: var(--danger-soft);
+    color: var(--danger-ink);
   }
-  .receipt-review-status--failed strong { color: #991b1b; }
-  .receipt-review-status--failed span { color: #b91c1c; }
+  .receipt-review-status--failed strong { color: var(--danger-ink); }
+  .receipt-review-status--failed span { color: var(--danger-ink); }
   .primary-btn.receipt-audit-pass--success,
   .primary-btn.receipt-audit-pass--success:hover {
-    border-color: #16a34a;
-    background: #16a34a;
-    color: #fff;
-    box-shadow: 0 8px 18px rgba(22, 163, 74, .22);
+    border-color: var(--success-ink);
+    background: var(--success-ink);
+    color: var(--canvas);
+    box-shadow: none;
     transform: none;
   }
   .ghost-btn.receipt-audit-fail--locked { opacity: .55; cursor: not-allowed; }
@@ -372,7 +371,7 @@
     gap: 12px;
     min-height: 0;
     padding: 16px;
-    background: #0f172a;
+    background: var(--text-strong);
     overflow: hidden;
   }
   .receipt-preview-stage {
@@ -390,13 +389,13 @@
   .receipt-preview-error {
     display: none;
     max-width: 360px;
-    padding: 12px 14px;
+    padding: 12px 16px;
     border: 1px solid rgba(255,255,255,.18);
     border-radius: var(--radius-md);
-    color: #e5e7eb;
+    color: var(--line);
     background: rgba(255,255,255,.08);
     text-align: center;
-    font-size: .86rem;
+    font-size: 0.875rem;
   }
   .receipt-preview-stage.is-broken img { display: none; }
   .receipt-preview-stage.is-broken .receipt-preview-error { display: block; }
@@ -409,7 +408,7 @@
     border: 1px solid rgba(255,255,255,.22);
     border-radius: var(--radius-md);
     background: rgba(255,255,255,.1);
-    color: #fff;
+    color: var(--canvas);
     cursor: pointer;
   }
   .receipt-preview-nav:disabled { opacity: .35; cursor: not-allowed; }
@@ -417,32 +416,32 @@
     display: grid;
     grid-template-rows: minmax(0, 1fr) auto;
     min-height: 0;
-    background: #0f172a;
+    background: var(--text-strong);
   }
   .receipt-review-summary-wrap {
     display: grid;
     min-height: 96px;
     max-height: 108px;
-    padding: 10px 14px 12px;
+    padding: 12px 16px 12px;
     border-top: 1px solid var(--line);
-    background: #fff;
+    background: var(--canvas);
     overflow: hidden;
   }
   .receipt-review-summary {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 5px 18px;
+    gap: 4px 16px;
     min-height: 0;
   }
   .receipt-review-field { min-width: 0; }
   .receipt-review-field--recipient_address { grid-column: span 2; }
-  .receipt-review-field span { display: block; color: var(--muted); font-size: .68rem; font-weight: 800; }
+  .receipt-review-field span { display: block; color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
   .receipt-review-field strong {
     display: block;
     margin-top: 1px;
     color: var(--text-strong);
-    font-size: .8rem;
-    font-weight: 850;
+    font-size: 0.8125rem;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -457,9 +456,9 @@
   .receipt-review-main {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 96px;
-    gap: 10px;
+    gap: 12px;
     min-height: 0;
-    padding: 10px 14px 8px;
+    padding: 12px 16px 8px;
   }
   .receipt-review-image-area {
     position: relative;
@@ -468,16 +467,15 @@
   }
   .receipt-review-image-overlay,
   .receipt-review-rotate-tools,
-  .receipt-review-record-tools { display: inline-flex; align-items: center; gap: 6px; }
+  .receipt-review-record-tools { display: inline-flex; align-items: center; gap: 8px; }
   .receipt-review-image-overlay {
     position: absolute;
     z-index: 2;
     top: 10px;
     border: 1px solid rgba(255,255,255,.16);
     border-radius: var(--radius-md);
-    background: rgba(15, 23, 42, .78);
+    background: rgba(17, 17, 17, .82);
     padding: 4px;
-    backdrop-filter: blur(10px);
   }
   .receipt-review-image-overlay { left: 10px; }
   .receipt-review-rotate-tools {
@@ -487,39 +485,38 @@
     right: 10px;
     border: 1px solid rgba(255,255,255,.16);
     border-radius: var(--radius-md);
-    background: rgba(15, 23, 42, .78);
+    background: rgba(17, 17, 17, .82);
     padding: 4px;
-    backdrop-filter: blur(10px);
   }
   .receipt-review-tool-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 32px;
-    height: 32px;
+    min-width: 40px;
+    height: 40px;
     border: 1px solid rgba(255,255,255,.18);
     border-radius: var(--radius-md);
     background: rgba(255,255,255,.1);
-    color: #fff;
+    color: var(--canvas);
     cursor: pointer;
   }
   .receipt-review-tool-btn:hover { background: rgba(255,255,255,.16); }
   .receipt-review-tool-btn i { width: 15px; height: 15px; }
   .receipt-review-tool-btn--text {
     min-width: 42px;
-    padding: 0 9px;
-    font-size: .76rem;
-    font-weight: 850;
+    padding: 0 8px;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
   .receipt-review-rotation {
     min-width: 38px;
-    color: #e5e7eb;
-    font-size: .76rem;
-    font-weight: 850;
+    color: var(--line);
+    font-size: 0.8125rem;
+    font-weight: 600;
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
-  .receipt-review-counter { color: #e5e7eb; font-size: .82rem; font-weight: 800; }
+  .receipt-review-counter { color: var(--line); font-size: 0.8125rem; font-weight: 600; }
   .receipt-review-stage {
     position: relative;
     display: flex;
@@ -548,13 +545,13 @@
   .receipt-review-error {
     display: none;
     max-width: 360px;
-    padding: 12px 14px;
+    padding: 12px 16px;
     border: 1px solid rgba(255,255,255,.18);
     border-radius: var(--radius-md);
-    color: #e5e7eb;
+    color: var(--line);
     background: rgba(255,255,255,.08);
     text-align: center;
-    font-size: .86rem;
+    font-size: 0.875rem;
   }
   .receipt-review-stage.is-broken img { display: none; }
   .receipt-review-stage.is-broken .receipt-review-error { display: block; }
@@ -570,12 +567,12 @@
     height: 72px;
     border: 2px solid transparent;
     border-radius: var(--radius-md);
-    background: #1f2937;
+    background: var(--text-strong);
     padding: 0;
     overflow: hidden;
     cursor: pointer;
   }
-  .receipt-review-thumb.is-active { border-color: #fff; }
+  .receipt-review-thumb.is-active { border-color: var(--canvas); }
   .receipt-review-thumb img { width: 100%; height: 100%; object-fit: cover; }
   .receipt-review-reason {
     position: absolute;
@@ -587,44 +584,44 @@
     width: min(420px, calc(100% - 32px));
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
-    padding: 10px 12px 12px;
-    font-size: .78rem;
-    font-weight: 800;
-    box-shadow: 0 18px 36px rgba(15, 23, 42, .18);
+    padding: 12px 12px 12px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    box-shadow: var(--shadow-overlay);
   }
   .receipt-review-reason[hidden] { display: none; }
   .receipt-review-reason-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 12px;
   }
   .receipt-review-reason-close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 40px;
+    height: 40px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--muted);
     cursor: pointer;
   }
-  .receipt-review-reason-close:hover { background: #f9fafb; color: var(--text-strong); }
+  .receipt-review-reason-close:hover { background: var(--surface); color: var(--text-strong); }
   .receipt-review-reason-close i { width: 15px; height: 15px; }
   .receipt-review-reason textarea {
     min-height: 72px;
     resize: vertical;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #f9fafb;
+    background: var(--surface);
     color: var(--text-strong);
-    padding: 8px 10px;
+    padding: 8px 12px;
     font: inherit;
-    font-weight: 650;
+    font-weight: 600;
   }
   .receipt-review-reason-actions {
     display: flex;
@@ -633,12 +630,12 @@
   }
   .receipt-review-reason-actions .ghost-btn,
   .receipt-review-reason-actions .primary-btn {
-    min-height: 34px;
+    min-height: 40px;
     padding: 0 12px;
-    font-size: .78rem;
-    font-weight: 850;
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
-  .receipt-audit-body { min-height: 0; background: #fff; }
+  .receipt-audit-body { min-height: 0; background: var(--canvas); }
   .receipt-modal-card--confirm {
     grid-template-rows: auto auto;
     width: min(440px, calc(100vw - 32px));
@@ -649,23 +646,23 @@
     gap: 16px;
     padding: 16px;
     color: var(--text);
-    font-size: .88rem;
+    font-size: 0.875rem;
     line-height: 1.55;
   }
-  .receipt-confirm-body strong { color: var(--text-strong); font-weight: 850; }
+  .receipt-confirm-body strong { color: var(--text-strong); font-weight: 600; }
   .receipt-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .receipt-empty { padding: 24px; color: var(--muted); text-align: center; }
   .receipt-empty-state {
     display: grid;
     justify-items: center;
     gap: 8px;
-    padding: 30px 16px;
+    padding: 32px 16px;
     color: var(--muted);
     text-align: center;
   }
-  .receipt-empty-state i { color: #cbd5e1; }
-  .receipt-empty-state strong { color: var(--text-strong); font-size: .92rem; font-weight: 850; }
-  .receipt-empty-state span { max-width: 420px; font-size: .84rem; line-height: 1.6; }
+  .receipt-empty-state i { color: var(--line-strong); }
+  .receipt-empty-state strong { color: var(--text-strong); font-size: 0.875rem; font-weight: 600; }
+  .receipt-empty-state span { max-width: 420px; font-size: 0.8125rem; line-height: 1.6; }
   .receipt-sync-status {
     display: flex;
     align-items: center;
@@ -674,22 +671,22 @@
     padding: 12px 16px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: #fff;
+    background: var(--canvas);
     color: var(--text-strong);
-    font-size: .86rem;
-    font-weight: 700;
+    font-size: 0.875rem;
+    font-weight: 600;
     box-shadow: var(--shadow-soft);
   }
   .receipt-sync-status[hidden] { display: none; }
-  .receipt-sync-status.is-warning { border-color: #fbbf24; background: #fffbeb; }
-  .receipt-sync-status.is-error { border-color: #fca5a5; background: #fef2f2; }
+  .receipt-sync-status.is-warning { border-color: var(--warning); background: var(--warning-soft); }
+  .receipt-sync-status.is-error { border-color: var(--danger-line); background: var(--danger-soft); }
   .receipt-sync-status-text { min-width: 0; flex: 1; }
   .receipt-sync-status-close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 40px;
+    height: 40px;
     border: 1px solid transparent;
     border-radius: var(--radius-md);
     background: transparent;
@@ -699,20 +696,20 @@
   }
   .receipt-sync-status-close:hover { border-color: var(--line); background: rgba(255, 255, 255, .72); color: var(--text-strong); }
   .receipt-sync-status-close i { width: 15px; height: 15px; }
-  @media (max-width: 1380px) {
+  @media (max-width: 1439px) {
     .receipt-filter-form { grid-template-columns: minmax(220px, 1.3fr) repeat(2, minmax(0, 1fr)) minmax(104px, 104px); }
     .receipt-date-field { grid-column: span 2; min-width: 0; }
   }
-  @media (max-width: 1180px) {
+  @media (max-width: 1279px) {
     .receipt-filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .receipt-date-field { grid-column: span 2; }
     .receipt-query-btn { width: 100%; }
   }
-  @media (max-width: 720px) {
+  @media (max-width: 767px) {
     .receipt-filter-form { grid-template-columns: 1fr; }
     .receipt-date-field { grid-column: auto; min-width: 0; }
     .receipt-date-popover { left: 0; right: auto; width: min(100%, calc(100vw - 32px)); }
-    .receipt-modal { padding: 10px; }
+    .receipt-modal { padding: 12px; }
     .receipt-modal-card--preview,
     .receipt-modal-card--review,
     .receipt-modal-card--audit { width: 100%; height: calc(100dvh - 20px - env(safe-area-inset-bottom)); max-height: calc(100dvh - 20px - env(safe-area-inset-bottom)); }
@@ -908,8 +905,8 @@
     </div>
   </div>
 
-  <div class="receipt-modal receipt-review" data-receipt-review-modal hidden>
-    <div class="receipt-modal-card receipt-modal-card--review" role="dialog" aria-modal="true" aria-labelledby="receipt-review-title">
+  <dialog class="receipt-modal receipt-review native-modal" data-receipt-review-modal aria-labelledby="receipt-review-title">
+    <div class="receipt-modal-card receipt-modal-card--review">
       <div class="receipt-modal-head">
         <div>
           <h2 id="receipt-review-title" data-receipt-review-title>回单审核</h2>
@@ -927,10 +924,10 @@
       </div>
       <div class="receipt-review-reason receipt-review-reason-popover" data-receipt-fail-reason-panel hidden>
         <div class="receipt-review-reason-head">
-          <span>不通过原因</span>
+          <label for="receipt-audit-reason">不通过原因</label>
           <button class="receipt-review-reason-close" type="button" data-receipt-fail-reason-close aria-label="收起不通过原因"><i data-feather="x"></i></button>
         </div>
-        <textarea data-receipt-audit-reason placeholder="可选，审核不通过时填写原因"></textarea>
+        <textarea id="receipt-audit-reason" data-receipt-audit-reason placeholder="可选，审核不通过时填写原因"></textarea>
         <div class="receipt-review-reason-actions">
           <button class="ghost-btn" type="button" data-receipt-fail-reason-cancel>取消</button>
           <button class="primary-btn" type="button" data-receipt-fail-reason-submit><i data-feather="x-circle"></i> 提交不通过</button>
@@ -962,10 +959,10 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 
-  <div class="receipt-modal receipt-preview" data-receipt-preview hidden>
-    <div class="receipt-modal-card receipt-modal-card--preview" role="dialog" aria-modal="true" aria-labelledby="receipt-preview-title">
+  <dialog class="receipt-modal receipt-preview native-modal" data-receipt-preview aria-labelledby="receipt-preview-title">
+    <div class="receipt-modal-card receipt-modal-card--preview">
       <div class="receipt-modal-head">
         <div>
           <h2 id="receipt-preview-title" data-receipt-preview-title>回单照片</h2>
@@ -985,10 +982,10 @@
         <button class="receipt-preview-nav" type="button" data-receipt-preview-next aria-label="下一张"><i data-feather="chevron-right"></i></button>
       </div>
     </div>
-  </div>
+  </dialog>
 
-  <div class="receipt-modal" data-receipt-audit-modal hidden>
-    <div class="receipt-modal-card receipt-modal-card--audit" role="dialog" aria-modal="true" aria-labelledby="receipt-audit-title">
+  <dialog class="receipt-modal native-modal" data-receipt-audit-modal aria-labelledby="receipt-audit-title">
+    <div class="receipt-modal-card receipt-modal-card--audit">
       <div class="receipt-modal-head">
         <div>
           <h2 id="receipt-audit-title" data-receipt-audit-title>回单审核</h2>
@@ -1002,10 +999,10 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 
-  <div class="receipt-modal" data-receipt-audit-confirm hidden>
-    <div class="receipt-modal-card receipt-modal-card--confirm" role="dialog" aria-modal="true" aria-labelledby="receipt-audit-confirm-title">
+  <dialog class="receipt-modal native-modal" data-receipt-audit-confirm aria-labelledby="receipt-audit-confirm-title">
+    <div class="receipt-modal-card receipt-modal-card--confirm">
       <div class="receipt-modal-head">
         <div>
           <h2 id="receipt-audit-confirm-title" data-receipt-audit-confirm-title>确认执行审核</h2>
@@ -1020,7 +1017,7 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 </section>
 {% endblock %}
 
@@ -1151,8 +1148,8 @@
 
   const openModal = (modal) => {
     if (!modal) return;
-    modal.hidden = false;
     modal.classList.add("is-open");
+    if (!modal.open) modal.showModal();
   };
 
   const cleanAuditValue = (value) => String(value || "").trim();
@@ -1768,7 +1765,7 @@
 
   const closePreview = () => {
     preview?.classList.remove("is-open");
-    if (preview) preview.hidden = true;
+    if (preview?.open) preview.close();
     previewImage?.removeAttribute("src");
     if (previewDownload) previewDownload.href = "#";
     previewAttachments = [];
@@ -1779,7 +1776,7 @@
     stopAuditAutoQuery();
     setReviewAuditBusy(false);
     auditModal?.classList.remove("is-open");
-    if (auditModal) auditModal.hidden = true;
+    if (auditModal?.open) auditModal.close();
     table?.querySelectorAll("[data-receipt-id]").forEach((row) => row.classList.remove("is-selected"));
   };
 
@@ -2012,7 +2009,7 @@
 
   const closeReview = () => {
     reviewModal?.classList.remove("is-open");
-    if (reviewModal) reviewModal.hidden = true;
+    if (reviewModal?.open) reviewModal.close();
     reviewReceiptId = "";
     reviewAttachments = [];
     reviewImageIndex = 0;
@@ -2118,7 +2115,7 @@
 
   const closeReceiptAuditConfirmation = (clearPending = true) => {
     auditConfirmModal?.classList.remove("is-open");
-    if (auditConfirmModal) auditConfirmModal.hidden = true;
+    if (auditConfirmModal?.open) auditConfirmModal.close();
     if (clearPending) pendingReceiptAudit = null;
   };
 
@@ -2367,19 +2364,17 @@
       closeDatePopover();
       return;
     }
-    if (preview?.classList.contains("is-open")) {
-      closePreview();
-      return;
-    }
-    if (auditConfirmModal?.classList.contains("is-open")) {
-      closeReceiptAuditConfirmation();
-      return;
-    }
-    if (reviewModal?.classList.contains("is-open")) {
-      closeReview();
-      return;
-    }
-    if (auditModal?.classList.contains("is-open")) closeAudit();
+  });
+  [
+    [preview, closePreview],
+    [auditConfirmModal, () => closeReceiptAuditConfirmation()],
+    [reviewModal, closeReview],
+    [auditModal, closeAudit],
+  ].forEach(([dialog, close]) => {
+    dialog?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      close();
+    });
   });
 
   const markBrokenThumbnail = (image) => {

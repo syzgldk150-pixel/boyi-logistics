@@ -16,7 +16,8 @@
       "canvas": { "role": "neutral", "displayName": "画布", "canonical": "oklch(100% 0 0)", "tonalRamp": ["#FFFFFF", "#F8F9FA", "#F5F5F5"] },
       "ink": { "role": "neutral", "displayName": "近黑主操作", "canonical": "oklch(17.8% 0 0)", "tonalRamp": ["#374151", "#242424", "#111111"] },
       "focus": { "role": "focus", "displayName": "焦点蓝", "canonical": "oklch(62.3% 0.214 259.8)", "tonalRamp": ["#EFF6FF", "#3B82F6", "#1D4ED8"] },
-      "danger": { "role": "danger", "displayName": "异常红", "canonical": "oklch(63.7% 0.208 25.3)", "tonalRamp": ["#FEF2F2", "#EF4444", "#B91C1C"] }
+      "danger": { "role": "danger", "displayName": "异常红", "canonical": "oklch(63.7% 0.208 25.3)", "tonalRamp": ["#FEF2F2", "#EF4444", "#B91C1C"] },
+      "statusTints": { "role": "status", "displayName": "状态浅底/边线/深字", "tokens": { "success": ["#ECFDF5", "#BBF7D0", "#047857"], "warning": ["#FFFBEB", "#FDE68A", "#92400E"], "danger": ["#FEF2F2", "#FECACA", "#B91C1C"], "info": ["#EFF6FF", "#BFDBFE", "#1D4ED8"] }, "purpose": "徽标、提示与状态文字；深字在浅底上满足 4.5:1。" }
     },
     "typographyMeta": {
       "pageTitle": { "displayName": "页面标题", "purpose": "定位当前工作区，不使用营销式超大标题。" },
@@ -52,7 +53,14 @@
     "breakpoints": [
       { "name": "compact", "value": "640px" },
       { "name": "mobile-shell", "value": "767px" },
-      { "name": "desktop-shell", "value": "1024px" }
+      { "name": "desktop-shell", "value": "1024px" },
+      { "name": "desktop-wide", "value": "1280px" },
+      { "name": "desktop-aside", "value": "1440px" }
+    ],
+    "nativeDialog": { "class": "native-modal", "open": "showModal()", "backdrop": "::backdrop rgba(17, 17, 17, 0.4)", "escape": "cancel event runs page cleanup" },
+    "touchTargets": { "rule": "@media (pointer: coarse) controls at least 44 x 44px", "source": "console/static/style.css" },
+    "densityExceptions": [
+      { "scope": "/ocr/boyi/frame manual entry", "desktopControlHeight": "32-34px", "touchControlHeight": "44px", "reason": "常见桌面视口一屏完成录入" }
     ]
   },
   "components": [

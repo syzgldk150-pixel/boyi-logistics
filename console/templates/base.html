@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="preload" href="/static/assets/fonts/InterVariable-Latin.woff2?v=4f95b56c" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/assets/fonts/SourceHanSansCN-UI.woff2?v=27533854" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=20261015-monitor-overview">
+  <link rel="stylesheet" href="/static/style.css?v=20261016-design-audit">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -93,7 +93,8 @@
           <div class="top-header-search">
             <form class="nav-search nav-search--global" action="/tracking" method="get" role="search" aria-label="全局单号查询" data-global-tracking-search>
               <button class="nav-search-submit" type="submit" aria-label="查询单号"><i data-feather="search"></i></button>
-              <input type="search" name="tracking_number" placeholder="搜索运单号，回车查询" autocomplete="off" data-global-tracking-input>
+              <label class="sr-only" for="global-tracking-input">运单号</label>
+              <input id="global-tracking-input" type="search" name="tracking_number" placeholder="搜索运单号，回车查询" autocomplete="off" data-global-tracking-input>
             </form>
           </div>
           <div class="top-header-actions top-header-actions--page">{{ page_actions_content | safe }}</div>

@@ -6,10 +6,10 @@
 {% block subtitle %}脚本、定时任务与运行状态{% endblock %}
 {% block head %}
 <style>
-[data-invocation-history] { gap: 8px; color: #d4d4d4; }
-[data-invocation-history] label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; font-size: .8rem; }
-[data-invocation-select] { min-width: 0; max-width: 100%; flex: 1; background: #252525; color: #ededed; border: 1px solid #666; border-radius: 4px; padding: 6px; }
-[data-invocation-refresh] { color: #d4d4d4; min-width: 44px; min-height: 44px; }
+[data-invocation-history] { gap: 8px; color: var(--line-strong); }
+[data-invocation-history] label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; font-size: 0.8125rem; }
+[data-invocation-select] { min-width: 0; max-width: 100%; flex: 1; background: var(--text-strong); color: var(--line); border: 1px solid var(--muted); border-radius: 4px; padding: 8px; }
+[data-invocation-refresh] { color: var(--line-strong); min-width: 44px; min-height: 44px; }
 </style>
 {% endblock %}
 
@@ -526,7 +526,7 @@
             <div class="auto-settings-label">
               <i data-feather="link" class="auto-settings-icon"></i>
               外部调用地址
-              <span style="color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 4px;">复制到飞书自动化的请求地址</span>
+              <span class="auto-settings-label-hint">复制到飞书自动化的请求地址</span>
             </div>
             <div class="auto-webhook-url-wrap">
               <code
@@ -569,10 +569,10 @@
               </div>
             </div>
             <div class="auto-webhook-body-section">
-              <div class="auto-settings-label" style="margin-top: 10px;">
+              <div class="auto-settings-label auto-settings-label--spaced">
                 <i data-feather="send" class="auto-settings-icon"></i>
                 请求内容
-                <span style="color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 4px;">填入飞书请求体</span>
+                <span class="auto-settings-label-hint">填入飞书请求体</span>
               </div>
               <div class="auto-webhook-url-wrap">
                 <pre class="auto-webhook-body" data-webhook-body>{{ task.webhook_body_json }}</pre>
@@ -744,7 +744,7 @@
             <div class="auto-schedule-stack" data-schedule-stack {% if task.plugin %}data-plugin-schedule-max="{{ task.plugin_schedule_max_daily_times }}"{% endif %} {% if task.plugin and task.plugin_schedule_kind != 'daily_times' %}hidden{% endif %}>
               {% for schedule_time in task.schedule_time_values | default([], true) %}
               <div class="auto-schedule-row" data-schedule-row>
-                <input class="review-input compact-input auto-time-input" type="time" value="{{ schedule_time }}" data-schedule-time>
+                <input class="review-input compact-input auto-time-input" type="time" value="{{ schedule_time }}" aria-label="执行时间" data-schedule-time>
                 <button class="ghost-btn auto-icon-btn" type="button" data-remove-schedule-time title="删除">
                   <i data-feather="x"></i>
                 </button>
@@ -2479,7 +2479,7 @@
         const row = document.createElement("div");
         row.className = "auto-schedule-row";
         row.setAttribute("data-schedule-row", "");
-        row.innerHTML = '<input class="review-input compact-input auto-time-input" type="time" value="" data-schedule-time><button class="ghost-btn auto-icon-btn" type="button" data-remove-schedule-time title="删除"><i data-feather="x"></i></button>';
+        row.innerHTML = '<input class="review-input compact-input auto-time-input" type="time" value="" aria-label="执行时间" data-schedule-time><button class="ghost-btn auto-icon-btn" type="button" data-remove-schedule-time title="删除"><i data-feather="x"></i></button>';
         stack.appendChild(row);
         feather.replace();
         syncScheduleUI(form);

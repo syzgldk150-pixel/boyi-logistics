@@ -233,7 +233,7 @@ class LineHaulRouteTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, handler.status)
         self.assertIn("专线分流维护", html)
         self.assertIn('action="/line-haul-contacts/create"', html)
-        self.assertIn('data-line-haul-modal hidden', html)
+        self.assertIn('<dialog class="line-haul-modal-backdrop native-modal" data-line-haul-modal', html)
         self.assertIn('data-line-haul-open="create"', html)
         self.assertIn('placeholder="搜索公司、站点、地址、电话"', html)
         self.assertIn("data-line-haul-filter-form", html)

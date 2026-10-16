@@ -896,21 +896,28 @@
     }
 
     function closeProblemModal() {
-      if (!problemModal) return;
-      problemModal.hidden = true;
+      if (problemModal?.open) problemModal.close();
+    }
+
+    function openPublishModal() {
+      if (publishModal && !publishModal.open) publishModal.showModal();
+    }
+
+    function closePublishModal() {
+      if (publishModal?.open) publishModal.close();
     }
 
     function openImageViewer(href, label) {
       if (!imageViewer || !imageViewerImg || !href) return;
       imageViewerImg.src = href;
       imageViewerImg.alt = label || "附件图片预览";
-      imageViewer.hidden = false;
+      if (!imageViewer.open) imageViewer.showModal();
       if (window.feather) window.feather.replace();
     }
 
     function closeImageViewer() {
       if (!imageViewer || !imageViewerImg) return;
-      imageViewer.hidden = true;
+      if (imageViewer.open) imageViewer.close();
       imageViewerImg.src = "";
     }
 
@@ -934,7 +941,7 @@
       if (!row) return;
       state.selected = row;
       state.selectedDetails = [];
-      if (problemModal) problemModal.hidden = false;
+      if (problemModal && !problemModal.open) problemModal.showModal();
       const replyTextNode = $("[data-cs-reply-text]");
       const replyStatusNode = $("[data-cs-reply-status]");
       if (replyTextNode) replyTextNode.value = "";
@@ -1051,7 +1058,7 @@
           { command: true },
         );
         assertActionSucceeded(data, "发布失败");
-        publishModal.hidden = true;
+        closePublishModal();
         setStatus(
           data.message || "问题件发布完成。",
           "success",
@@ -1109,7 +1116,7 @@
         errorToggle?.setAttribute("aria-expanded", String(willOpen));
       }
       if (event.target.closest("[data-cs-problem-close]")) closeProblemModal();
-      if (event.target.closest("[data-cs-publish-close]")) publishModal.hidden = true;
+      if (event.target.closest("[data-cs-publish-close]")) closePublishModal();
     });
     root.addEventListener("dblclick", handleProblemRowOpen);
     problemModal?.addEventListener("click", (event) => {
@@ -1118,12 +1125,9 @@
     imageViewer?.addEventListener("click", (event) => {
       if (event.target === imageViewer) closeImageViewer();
     });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && imageViewer && !imageViewer.hidden) {
-        closeImageViewer();
-        return;
-      }
-      if (event.key === "Escape" && problemModal && !problemModal.hidden) closeProblemModal();
+    imageViewer?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeImageViewer();
     });
     document.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
@@ -1142,7 +1146,7 @@
       if (target.closest("[data-cs-publish-open]")) {
         event.preventDefault();
         updatePublishAccounts();
-        publishModal.hidden = false;
+        openPublishModal();
       }
     });
     $("[data-cs-filter-form]")?.addEventListener("submit", (event) => {

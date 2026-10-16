@@ -266,11 +266,11 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('event.key === "Home"', script)
         self.assertIn("prefers-reduced-motion: reduce", css)
         self.assertIn("{% block body_class %}finance-page{% endblock %}", template)
-        self.assertIn("@media (max-width: 900px)", css)
+        self.assertIn("@media (max-width: 1023px)", css)
         self.assertIn("body.finance-page .app-shell", css)
         self.assertIn("grid-template-columns: minmax(0, 1fr)", css)
         self.assertIn("body.finance-page .sidebar .nav-menu", css)
-        self.assertIn("@media (max-width: 760px)", css)
+        self.assertIn("@media (max-width: 767px)", css)
         self.assertIn("finance-table--responsive", css)
 
     def test_frontend_uses_server_plot_values_not_money_arithmetic(self):
