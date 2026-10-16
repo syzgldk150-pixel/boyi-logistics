@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from threading import RLock
@@ -38,6 +39,7 @@ from agent.harness_application import (
 from agent.harness_online import OnlineHarnessSidecar, visible_descriptors
 from agent.llm_client import LLMClient
 from agent.orchestration.models import Actor, ActorType
+from shared.connection_reuse import reuse_transaction_connections
 
 
 _MODEL_TIMEOUT_SECONDS = 5
@@ -534,9 +536,28 @@ class HarnessRuntime:
             tool_allowed=adapter.visible_tool_filter(),
         )
 
+    @contextmanager
+    def _catalog_snapshot(self):
+        """Build one tool list from one catalog snapshot over few connections.
+
+        Without this every tool handle reloads its plugin instance and opens
+        a fresh cross-region RDS connection (~0.27 s each), which pushed
+        session creation past the Console's 30 s timeout.  The catalog scope
+        holds one read transaction, so the per-project policy transactions
+        reuse a second connection opened inside it.
+        """
+
+        reader = getattr(getattr(self._policy_service, "_plugin_catalog", None), "read_scope", None)
+        with reader() if callable(reader) else nullcontext(), reuse_transaction_connections():
+            yield
+
     def public_tools(self, actor: Actor, request_id: str) -> list[dict[str, str]]:
         if self.status().status != "READY":
             return []
+        with self._catalog_snapshot():
+            return self._public_tools(actor, request_id)
+
+    def _public_tools(self, actor: Actor, request_id: str) -> list[dict[str, str]]:
         catalog = self._catalog(actor, request_id)
         result = [
             {
@@ -556,12 +577,13 @@ class HarnessRuntime:
 
     def sidecar_factory(self, actor: Actor, request_id: str) -> OnlineHarnessSidecar:
         self._require_ready()
-        return OnlineHarnessSidecar(
-            catalog=self._catalog(actor, request_id),
-            llm=self._llm,
-            plugin_turn=(self._plugin_conversations.turn(actor=actor, source=self._source(actor), request_id=request_id)
-                         if self._plugin_conversations is not None else None),
-        )
+        with self._catalog_snapshot():
+            return OnlineHarnessSidecar(
+                catalog=self._catalog(actor, request_id),
+                llm=self._llm,
+                plugin_turn=(self._plugin_conversations.turn(actor=actor, source=self._source(actor), request_id=request_id)
+                             if self._plugin_conversations is not None else None),
+            )
 
     @staticmethod
     def _source(actor: Actor) -> str:

@@ -363,11 +363,25 @@ class AgentApiServiceMixin:
                 "data": response_data,
             }
         except URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                return {
+                    "ok": False,
+                    "status": None,
+                    "error": "智能服务响应超时，请稍后重试。",
+                    "error_code": "agent_timeout",
+                }
             return {
                 "ok": False,
                 "status": None,
                 "error": redact_text(exc.reason),
                 "error_code": "agent_unreachable",
+            }
+        except TimeoutError:
+            return {
+                "ok": False,
+                "status": None,
+                "error": "智能服务响应超时，请稍后重试。",
+                "error_code": "agent_timeout",
             }
         except Exception as exc:
             return {

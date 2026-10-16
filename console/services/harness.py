@@ -108,6 +108,12 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _harness_turn_timeout(settings: Any) -> int:
+    """Outwait the Agent's own 30 s model bound so its Chinese timeout reaches the page."""
+
+    return max(60, int(getattr(settings, "agent_timeout_seconds", 30)))
+
+
 def _canonical_uuid(value: object, *, field_name: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a canonical UUID")
@@ -335,7 +341,7 @@ class HarnessServiceMixin:
                 "session_id": session_id,
                 "message": message,
             },
-            timeout=getattr(self.settings, "agent_timeout_seconds", 30),
+            timeout=_harness_turn_timeout(self.settings),
             console_principal=context["_console_principal"],
         )
         self._forward_harness_result(handler, result, required_fields=("session_id",))
@@ -368,7 +374,7 @@ class HarnessServiceMixin:
             self._harness_error(handler, HTTPStatus.BAD_REQUEST, "INVALID_HARNESS_REQUEST", str(exc))
             return
         result = self._agent_request("POST", "/internal/v1/harness/plugin-actions", payload=values,
-            timeout=getattr(self.settings, "agent_timeout_seconds", 30), console_principal=context["_console_principal"])
+            timeout=_harness_turn_timeout(self.settings), console_principal=context["_console_principal"])
         self._forward_harness_result(handler, result, required_fields=("session_id", "plugin_invocations"))
 
     def _forward_harness_result(
