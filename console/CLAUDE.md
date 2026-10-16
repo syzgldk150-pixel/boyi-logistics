@@ -163,7 +163,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `routes/waybills.py`
   - `services/waybills_receipts.py`
   - 统一通过 `_agent_request()` 代理 Agent `/internal/v1/tms/tracking_query`，按融辉 TMS、韵达、专线分发展示；融辉 TMS 展示“扫描轨迹 / 运单详情 / 子单详情”三个页签，韵达在原页接口返回明确子单数据时展示子单详情；韵达的 `data_source`、`device_no` 只保留在接口数据中不展示
-  - 融辉轨迹先以 `decrypt_masked: false` 查询并立即展示（主单轨迹只保留主单号自身扫描，子单扫描归入子单详情）；Agent 返回 `detail_masked=true` 时页面在后台再查一次解密收发货人（Agent 按原页“解密客户信息”的接口顺序：`FIND_SITE_IS_SCAN` 校验当前登录网点 `IS_FLAG=1` 后以 `isView=true` 重读 `getBillByCode`，不再启动浏览器），期间运单详情显示脱敏值与加载提示，失败显示原因与重试，不影响已显示的轨迹。浏览器本地只记最近 6 个查询单号，查询成功后同步地址栏单号
+  - 融辉轨迹先以 `decrypt_masked: false` 查询并立即展示（主单轨迹只保留主单号自身扫描，子单扫描归入子单详情）；Agent 返回 `detail_masked=true` 时页面在后台再查一次解密收发货人（Agent 按原页“解密客户信息”的接口顺序：以快件跟踪页内运单轨迹子页面的 `authenticationKey/pageId` 调 `FIND_SITE_IS_SCAN` 校验当前登录网点 `IS_FLAG=1`（外层页 pageId 会被拒为“非法的请求”）后以 `isView=true` 重读 `getBillByCode`，不再启动浏览器），期间运单详情显示脱敏值与加载提示，失败显示原因与重试，不影响已显示的轨迹。浏览器本地只记最近 6 个查询单号，查询成功后同步地址栏单号
 - 改专线分流公司维护页：
   - `templates/line_haul_contacts.html`
   - `line_haul_contacts.py`

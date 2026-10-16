@@ -1180,12 +1180,23 @@ class ArrivalStatsToolTests(unittest.TestCase):
                 "ACCEPT_MAN": name, "ACCEPT_MAN_PHONE": phone, "ACCEPT_MAN_ADDRESS": "测试路1号",
             }]}}
 
+        class Page:
+            text = 'iframe.attr("data-src", "/widget/home?authenticationKey=fk&pageId=framePage&BILL_CODE=" + code);'
+
+            def raise_for_status(self):
+                return None
+
         class Session:
             cookies = jar
+
+            def get(self, url, timeout=None):
+                return Page()
 
             def post(self, url, data=None, headers=None, timeout=None, allow_redirects=True):
                 calls.append(url)
                 if "FIND_SITE_IS_SCAN" in url:
+                    if (headers or {}).get("pageId") != "framePage":
+                        return Response({"success": False, "message": "非法的请求"})
                     return Response([{"IS_FLAG": is_flag}])
                 if "pageId" in (headers or {}):
                     return Response(detail("完整姓名", "13800000000"))

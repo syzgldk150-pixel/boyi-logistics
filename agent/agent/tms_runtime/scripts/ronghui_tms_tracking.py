@@ -46,6 +46,10 @@ CHILD_TAB_XPATHS = (
 )
 
 _SPLIT_RE = re.compile(r"[,\s;]+")
+# The per-bill track iframe is its own widget page; Ronghui rejects
+# FIND_SITE_IS_SCAN ("非法的请求") unless sent with that page's key and id.
+_TRACK_FRAME_PATH_RE = re.compile(r"(/widget/home\?authenticationKey=[0-9A-Za-z]+&pageId=[0-9A-Za-z]+)&BILL_CODE=")
+_track_frame_paths: dict[str, str] = {}
 _DECRYPT_DETAIL_FIELDS = (
     "sender_name",
     "sender_phone",
@@ -550,11 +554,25 @@ def _merge_decrypted_detail(
     return merged
 
 
+def _track_frame_url(session: Any, tracking_url: str, bill_code: str) -> str:
+    """URL of the per-bill track iframe that hosts the "解密客户信息" button."""
+    tracking_url = tracking_url or resolve_tracking_page_url(session)
+    path = _track_frame_paths.get(tracking_url)
+    if not path:
+        response = session.get(tracking_url, timeout=20)
+        response.raise_for_status()
+        match = _TRACK_FRAME_PATH_RE.search(response.text or "")
+        if not match:
+            raise RonghuiTmsTrackingError("融辉快件跟踪页未找到运单轨迹子页面，无法解密客户信息")
+        path = _track_frame_paths[tracking_url] = match.group(1)
+    return f"{BASE_URL}{path}&BILL_CODE={bill_code}"
+
+
 def fetch_view_detail_row(session: Any, bill_code: str, *, tracking_url: str = "") -> dict[str, Any]:
     """Raw detail row with plain customer fields, as the "解密客户信息" button gets it.
 
-    The page first checks FIND_SITE_IS_SCAN for the login site, then re-reads
-    the bill detail with ``isView=true``, which returns the plain fields.
+    The track iframe first checks FIND_SITE_IS_SCAN for the login site, then
+    re-reads the bill detail with ``isView=true``, which returns the plain fields.
     """
     try:
         site_code = unique_ronghui_public_context(session.cookies)["loginSiteCode"]
@@ -564,7 +582,7 @@ def fetch_view_detail_row(session: Any, bill_code: str, *, tracking_url: str = "
         session,
         SITE_IS_SCAN_URL,
         {"BILL_CODE": bill_code, "CURR_SCAN_SITE_CODE": site_code},
-        tracking_url=tracking_url,
+        tracking_url=_track_frame_url(session, tracking_url, bill_code),
     )
     if [str(row.get("IS_FLAG")) for row in flags] != ["1"]:
         raise RonghuiTmsTrackingError(f"融辉解密前的网点校验未通过，未取得完整客户信息：{bill_code}")
@@ -1073,7 +1091,11 @@ def _post_form_rows(
         timeout=30,
     )
     response.raise_for_status()
-    return _rows_from_tms_payload(_safe_json(response))
+    payload = _safe_json(response)
+    if isinstance(payload, dict) and payload.get("success") is False:
+        message = _clean_str(payload.get("message")) or "未返回原因"
+        raise RonghuiTmsTrackingError(f"融辉接口拒绝请求：{message}")
+    return _rows_from_tms_payload(payload)
 
 
 def fetch_main_route_rows(

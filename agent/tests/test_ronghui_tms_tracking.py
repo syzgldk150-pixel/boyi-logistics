@@ -515,7 +515,10 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
 
         self.assertNotIn("arrival_progress", result)
 
-    def _decrypt_session(self, *, is_flag=1, site_code="73901"):
+    def setUp(self):
+        ronghui_tms_tracking._track_frame_paths.clear()
+
+    def _decrypt_session(self, *, is_flag=1, site_code="73901", site_check=None):
         jar = requests.cookies.RequestsCookieJar()
         user_info = json.dumps({
             "loginEmpName": "测试员", "loginEmpCode": "E1", "loginSiteName": "测试网点", "loginSiteCode": site_code,
@@ -533,13 +536,22 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
             def json(self):
                 return self.payload
 
+            text = (
+                'iframe.attr("data-src", "/widget/home?authenticationKey=fk&pageId=framePage&BILL_CODE=" + code);'
+            )
+
         class Session:
             cookies = jar
+
+            def get(self, url, timeout=None):
+                return Response(None)
 
             def post(self, url, data=None, headers=None, timeout=None):
                 calls.append((url, dict(data or {})))
                 if "FIND_SITE_IS_SCAN" in url:
-                    return Response([{"IS_FLAG": is_flag}])
+                    if (headers or {}).get("pageId") != "framePage":
+                        return Response({"success": False, "message": "非法的请求\r\n"})
+                    return Response(site_check if site_check is not None else [{"IS_FLAG": is_flag}])
                 if (data or {}).get("isView") == "true":
                     return Response({"result": {"data": [{
                         "BILL_CODE": "R0000000001",
@@ -602,6 +614,15 @@ class RonghuiTmsTrackingTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("网点校验未通过", result["error"])
+        self.assertEqual(1, len(calls))
+
+    def test_tracking_query_reports_ronghui_rejection_instead_of_failed_site_check(self):
+        session, calls = self._decrypt_session(site_check={"success": False, "message": "非法的请求\r\n"})
+
+        result = self._query_with_masked_detail(session)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("融辉接口拒绝请求：非法的请求", result["error"])
         self.assertEqual(1, len(calls))
 
 if __name__ == "__main__":
