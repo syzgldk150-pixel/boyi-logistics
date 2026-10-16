@@ -845,3 +845,27 @@ def test_scan_next_authoritative_readback_fails_unknown_for_non_exact_rows(case)
             )
 
     assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+def test_scan_next_submit_logs_page_failure_reason(caplog):
+    from agent.tms_runtime.scripts import scan_next
+    from plugin_core_adapters import first_party as first_party_adapter
+
+    failed = {
+        "ok": False,
+        "stage": "input_bill_code",
+        "message": "RuntimeError: 录入单号后出现未预期提示: 测试提示",
+        "detail": {"bill_code": "R0000000001", "stations": []},
+    }
+    with (
+        patch.object(scan_next, "run_flow", return_value=failed),
+        patch.object(first_party_adapter, "_required_profile", return_value="default"),
+        caplog.at_level("WARNING", logger=first_party_adapter.__name__),
+    ):
+        raw = first_party_adapter._scan_next_submit({}, [{"bill_code": "R0000000001", "station_name": "测试站"}])
+
+    assert raw["ok"] is False
+    assert "stage=input_bill_code" in caplog.text
+    assert "bill_code=R0000000001" in caplog.text
+    assert "uploaded_stations=0" in caplog.text
+    assert "录入单号后出现未预期提示: 测试提示" in caplog.text

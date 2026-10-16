@@ -527,6 +527,17 @@ def _scan_next_submit(
     write_finished_at = datetime.now(timezone.utc).isoformat()
     if not isinstance(raw, Mapping):
         return raw
+    if raw.get("ok") is not True:
+        # The broker reports every failed batch as WRITE_OUTCOME_UNKNOWN;
+        # keep the page's own stage and message so the cause is traceable.
+        detail = raw.get("detail") if isinstance(raw.get("detail"), Mapping) else {}
+        logger.warning(
+            "scan_next failed stage=%s bill_code=%s uploaded_stations=%s message=%s",
+            raw.get("stage"),
+            detail.get("bill_code"),
+            len(detail.get("stations") or []),
+            str(raw.get("message") or "")[:300],
+        )
     return {
         **raw,
         "write_started_at": write_started_at,
