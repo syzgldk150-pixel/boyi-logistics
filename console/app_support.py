@@ -183,6 +183,10 @@ MONEY_FIELD_NAMES = {
     "cod_amount",
 }
 
+# Template-required fields that the manual (Boyi) form may leave blank;
+# OCR review still treats them as required.
+MANUAL_OPTIONAL_FIELD_NAMES = {"freight_fee"}
+
 MANUAL_EXTRA_FIELD_LABELS = {
     "sender_address": "发货地址",
     "insurance_amount": "保价金额",
@@ -2009,7 +2013,7 @@ class DocumentService:
             except ValueError as exc:
                 return None, f"{field.get('label', field_name)}：{exc}"
             fields[field_name] = manual_value
-            if field.get("required", False) and not manual_value:
+            if field.get("required", False) and field_name not in MANUAL_OPTIONAL_FIELD_NAMES and not manual_value:
                 missing_labels.append(str(field.get("label") or field_name))
 
         for field_name, label in MANUAL_EXTRA_FIELD_LABELS.items():

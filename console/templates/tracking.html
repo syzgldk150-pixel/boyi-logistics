@@ -1699,6 +1699,19 @@
     });
   });
 
+  // Opening another waybill's 轨迹 while this tab is open only switches tabs, so re-query here.
+  input.closest('.main-content')?.addEventListener('console:querychange', function(event) {
+    var params = new URL(event.detail.url).searchParams;
+    var trackingNumber = (params.get('tracking_number') || '').trim();
+    if (!trackingNumber) return;
+    var provider = params.get('provider') || '';
+    input.value = trackingNumber;
+    input.setAttribute('data-linked-provider', provider);
+    input.setAttribute('data-linked-number', provider ? trackingNumber : '');
+    input.dispatchEvent(new Event('input'));
+    doSearch();
+  });
+
   renderRecent();
   if (input.value.trim()) {
     input.dispatchEvent(new Event('input'));

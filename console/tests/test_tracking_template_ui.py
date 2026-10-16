@@ -21,6 +21,13 @@ class TrackingTemplateUITests(unittest.TestCase):
         self.assertIn("扫描轨迹", template)
         self.assertIn("运单详情", template)
 
+    def test_tracking_requeries_when_reopened_from_waybill_list(self):
+        template = read_tracking_template()
+        waybills = (CONSOLE_DIR / "templates" / "waybills.html").read_text(encoding="utf-8")
+
+        self.assertIn("console:querychange", template)
+        self.assertEqual(2, waybills.count('href="{{ row.tracking_url }}" data-console-navigate'))
+
     def test_tracking_details_use_reference_card_layout(self):
         template = read_tracking_template()
 

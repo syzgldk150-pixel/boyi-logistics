@@ -129,6 +129,14 @@ class ManualWaybillServiceTests(unittest.TestCase):
         self.assertEqual("", fields["insurance_amount"])
         self.assertEqual("", fields["cod_amount"])
 
+    def test_manual_waybill_allows_blank_freight_fee_although_template_requires_it(self):
+        repository = _Repository()
+
+        result = self._service(repository).apply_manual_waybill(_valid_form(field_freight_fee=""))
+
+        self.assertTrue(result.ok)
+        self.assertEqual("", repository.created[0]["fields"]["freight_fee"])
+
     def test_manual_waybill_accepts_native_date_input_value(self):
         repository = _Repository()
         service = self._service(repository)
