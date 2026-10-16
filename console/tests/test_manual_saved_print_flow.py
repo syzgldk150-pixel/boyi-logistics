@@ -32,7 +32,7 @@ SAVED_ROW = {
     "goods_name_lines": "合成货物",
     "package_type_lines": "纸箱",
     "quantity_lines": "2",
-    "weight_volume": "10kg/0.1m³",
+    "weight_volume": "10kg / 0.1m³",
     "delivery_method": "送货",
     "freight_fee": "12.30",
     "payment_method": "寄付",
@@ -71,6 +71,7 @@ def app():
         console_navigation=(),
     )
     instance._send_html = Mock()
+    instance._redirect = Mock()
     instance._redirect_with_message = Mock()
     instance.service = SimpleNamespace(apply_manual_waybill=Mock(return_value=ActionResult(
         ok=True, message="合成运单已保存", waybill_id=41, waybill_no="BY00041",
@@ -92,11 +93,12 @@ def test_save_and_print_redirects_to_entry_frame(app, return_to):
     app._handle_manual_waybill(handler)
 
     app.service.apply_manual_waybill.assert_called_once_with(values)
-    args = app._redirect_with_message.call_args.args
-    target = urlparse(args[1])
+    # The locked frame reports the save itself; no separate page notice.
+    app._redirect_with_message.assert_not_called()
+    target = urlparse(app._redirect.call_args.args[1])
     assert target.path == FRAME_PATH
     assert parse_qs(target.query)["saved_waybill_id"] == ["41"]
-    assert args[3] == "success"
+    assert "message" not in parse_qs(target.query)
     if "tab=" in return_to:
         assert parse_qs(target.query)["tab"] == ["fixture"]
 
@@ -169,6 +171,7 @@ def browser_page(app, browser):
         page = context.new_page()
         page.set_default_timeout(5000)
         requests = []
+        updates = []
         page_errors = []
         page.on("pageerror", lambda error: page_errors.append(str(error)))
 
@@ -190,13 +193,31 @@ def browser_page(app, browser):
                 app._parse_urlencoded_form = Mock(return_value={
                     key: values[0] for key, values in parse_qs(request.post_data or "").items()
                 })
+                app._redirect.reset_mock()
+                app._redirect_with_message.reset_mock()
                 app._handle_manual_waybill(object())
-                target = app._redirect_with_message.call_args.args[1]
+                redirect = app._redirect.call_args or app._redirect_with_message.call_args
+                target = redirect.args[1]
                 # Playwright does not re-route an intercepted redirect chain.
                 # Exercise the server-selected target without any real network.
                 route.fulfill(content_type="text/html", body=(
                     f"<script>location.replace({json.dumps(target)})</script>"
                 ))
+            elif parsed.path == "/waybills/41/edit-data":
+                json_reply(route, lambda: app._handle_manual_waybill_edit_data(object(), 41, parse_qs(parsed.query)))
+            elif parsed.path == "/waybills/41/print-data":
+                json_reply(route, lambda: app._handle_waybill_print_data(object(), 41, parse_qs(parsed.query)))
+            elif parsed.path == "/waybills/41/manual-update":
+                body = json.loads(request.post_data or "{}")
+                updates.append({"headers": request.headers, "body": body})
+                changed = {**SAVED_ROW, **{
+                    name.removeprefix("field_"): value for name, value in body["fields"].items()
+                    if name not in {"field_weight_kg", "field_volume_m3"}
+                }}
+                app.repository.get_waybill.return_value = changed
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "outcome": "UPDATED", "changes": [], "message": "运单已修改",
+                }))
             elif parsed.path in {
                 "/static/js/clodop_loader.js", "/static/js/waybill_label_lodop.js",
                 "/static/js/waybill_label_html.js",
@@ -211,8 +232,14 @@ def browser_page(app, browser):
             else:
                 route.abort()
 
+        def json_reply(route, call):
+            app._send_json = Mock()
+            call()
+            status, payload = app._send_json.call_args.args[1:3]
+            route.fulfill(status=int(status), content_type="application/json", body=json.dumps(payload))
+
         context.route("**/*", serve)
-        yield SimpleNamespace(page=page, requests=requests, errors=page_errors)
+        yield SimpleNamespace(page=page, requests=requests, errors=page_errors, updates=updates)
 
 
 def open_frame(page, source=FRAME_PATH):
@@ -251,8 +278,17 @@ def test_save_opens_native_preview_once_and_refresh_keeps_new_draft(app, browser
     assert len(page.frames) == 2
     assert frame.locator("[data-boyi-frame-root]").count() == 1
     assert frame.locator("[data-entry-tabs-root]").count() == 0
-    assert frame.locator("#field_waybill_no").input_value() == "BY00042"
-    assert frame.locator("#field_receiver_name").input_value() == ""
+    # The saved waybill stays on screen, locked, with 修改 / 新增 instead of 保存.
+    frame.wait_for_selector("[data-manual-form].is-locked")
+    assert frame.locator("#field_waybill_no").input_value() == "BY00041"
+    assert frame.locator("#field_receiver_name").input_value() == SAVED_ROW["receiver_name"]
+    assert frame.locator("#field_receiver_name").is_disabled()
+    assert frame.locator("#field_receipt_required").is_checked()
+    assert frame.locator("[data-manual-edit]").is_visible()
+    assert frame.locator("[data-manual-new]").is_visible()
+    assert not frame.locator("[data-manual-save]").is_visible()
+    assert frame.locator("[data-manual-state-chip]").inner_text() == "已保存"
+    assert "合成运单已保存" not in frame.locator("body").inner_text()
     payload = page.evaluate("window.__printPayloads[0]")
     assert payload["waybill_no"] == "BY00041"
     assert payload["sender_address"] == SAVED_ROW["sender_address"]
@@ -265,6 +301,9 @@ def test_save_opens_native_preview_once_and_refresh_keeps_new_draft(app, browser
 
     frame.goto(frame.url)
     assert frame.locator("[data-saved-manual-preview]").count() == 0
+    assert frame.locator("#field_waybill_no").input_value() == "BY00042"
+    assert frame.locator("#field_receiver_name").input_value() == ""
+    assert not frame.locator("[data-manual-form]").evaluate("form => form.classList.contains('is-locked')")
     assert page.evaluate("window.__printEvents") == ["preview"]
     app.service.apply_manual_waybill.assert_called_once()
     assert browser_page.requests.count(("POST", "/waybills/manual")) == 1
@@ -280,13 +319,13 @@ def test_failed_preview_can_retry_saved_snapshot_without_saving_again(app, brows
     frame.wait_for_function("document.querySelector('[data-manual-feedback]')?.textContent.includes('勿重复保存')")
     assert "已保存" in feedback.inner_text()
     assert page.evaluate("window.__printEvents") == []
-    frame.locator("#field_receiver_name").fill("下一单尚未保存")
+    frame.wait_for_selector("[data-manual-form].is-locked")
     page.evaluate("window.__failPrint = false")
     frame.locator("[data-saved-manual-preview]").click()
     page.wait_for_function("window.__printEvents.length === 1")
     assert page.evaluate("window.__printEvents") == ["preview"]
     assert page.evaluate("window.__printPayloads[0].receiver_name") == SAVED_ROW["receiver_name"]
-    assert frame.locator("#field_receiver_name").input_value() == "下一单尚未保存"
+    assert frame.locator("#field_receiver_name").input_value() == SAVED_ROW["receiver_name"]
     app.service.apply_manual_waybill.assert_called_once()
     assert browser_page.requests.count(("POST", "/waybills/manual")) == 1
     assert not browser_page.errors
@@ -311,4 +350,66 @@ def test_failed_saved_read_stops_print_and_retains_entry(app, browser_page, fail
         app.repository.get_waybill.assert_not_called()
     else:
         app.repository.get_waybill.assert_called_once_with(41, source="manual")
+    assert not browser_page.errors
+
+
+def save_and_wait_locked(page, frame):
+    save_synthetic_waybill(frame)
+    page.wait_for_function("window.__printEvents.length === 1")
+    frame.wait_for_selector("[data-manual-form].is-locked")
+
+
+def test_edit_after_save_updates_same_waybill_and_reprints(app, browser_page):
+    page = browser_page.page
+    frame = open_frame(page)
+    save_and_wait_locked(page, frame)
+
+    frame.locator("[data-manual-edit]").click()
+    assert not frame.locator("#field_receiver_name").is_disabled()
+    assert frame.locator("[data-manual-save-label]").inner_text() == "保存修改"
+    assert frame.locator("[data-manual-state-chip]").inner_text() == "修改中"
+    frame.locator("#field_receiver_name").fill("修改后收件人")
+    frame.locator("[data-manual-save]").click()
+    page.wait_for_function("window.__printEvents.length === 2")
+    frame.wait_for_selector("[data-manual-form].is-locked")
+
+    assert len(browser_page.updates) == 1
+    update = browser_page.updates[0]
+    body = update["body"]
+    assert set(body) == {"request_id", "fingerprint", "fields"}
+    assert update["headers"]["x-browser-request-uuid"] == body["request_id"]
+    assert set(body["fields"]) == app._MANUAL_EDIT_FORM_FIELDS
+    assert body["fields"]["field_receiver_name"] == "修改后收件人"
+    assert body["fields"]["field_receipt_required"] == "1"
+    assert body["fields"]["field_weight_kg"] == "10"
+    assert page.evaluate("window.__printPayloads[1].receiver_name") == "修改后收件人"
+    assert page.evaluate("window.__printPayloads[1].waybill_no") == "BY00041"
+    assert frame.locator("#field_receiver_name").input_value() == "修改后收件人"
+    assert frame.locator("#field_receiver_name").is_disabled()
+    assert "已修改" in frame.locator("[data-manual-feedback]").inner_text()
+    app.service.apply_manual_waybill.assert_called_once()
+    assert browser_page.requests.count(("POST", "/waybills/manual")) == 1
+    assert not browser_page.errors
+
+
+def test_cancel_edit_restores_saved_values_and_new_opens_fresh_draft(app, browser_page):
+    page = browser_page.page
+    frame = open_frame(page)
+    save_and_wait_locked(page, frame)
+
+    frame.locator("[data-manual-edit]").click()
+    frame.locator("#field_receiver_name").fill("未保存的改动")
+    frame.locator("[data-manual-cancel-edit]").click()
+    assert frame.locator("#field_receiver_name").input_value() == SAVED_ROW["receiver_name"]
+    assert frame.locator("#field_receiver_name").is_disabled()
+    assert not browser_page.updates
+
+    frame.locator("[data-manual-new]").click()
+    frame.wait_for_function("document.getElementById('field_waybill_no')?.value === 'BY00042'")
+    assert frame.locator("#field_receiver_name").input_value() == ""
+    assert not frame.locator("#field_receiver_name").is_disabled()
+    assert frame.locator("[data-manual-save]").is_visible()
+    assert not frame.locator("[data-manual-new]").is_visible()
+    assert page.evaluate("window.__printEvents") == ["preview"]
+    assert browser_page.requests.count(("POST", "/waybills/manual")) == 1
     assert not browser_page.errors

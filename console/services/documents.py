@@ -67,6 +67,7 @@ class DocumentServiceMixin:
         manual_preview_waybill_no = ""
         manual_preview_error = ""
         saved_manual_waybill = None
+        saved_manual_waybill_id = None
         saved_manual_print_error = ""
         waybill_entry_extensions = self._empty_waybill_entry_extensions()
         if document is None:
@@ -86,6 +87,7 @@ class DocumentServiceMixin:
                     if not saved_waybill:
                         raise ValueError("Saved waybill not found")
                     saved_manual_waybill = build_waybill_print_data(saved_waybill)
+                    saved_manual_waybill_id = waybill_id
                 except Exception:
                     saved_manual_print_error = (
                         "未能读取已保存运单，已停止打印。请到寄件运单查询核对并重新打开打印预览，勿重复保存。"
@@ -154,6 +156,7 @@ class DocumentServiceMixin:
             manual_preview_waybill_no=manual_preview_waybill_no,
             manual_preview_error=manual_preview_error,
             saved_manual_waybill=saved_manual_waybill,
+            saved_manual_waybill_id=saved_manual_waybill_id,
             saved_manual_print_error=saved_manual_print_error,
             manual_payment_methods=MANUAL_PAYMENT_METHODS,
             waybill_entry_extension_fields=WAYBILL_ENTRY_DRAFT_FIELDS,
@@ -1038,12 +1041,9 @@ class DocumentServiceMixin:
             print_return = urlparse("/ocr/boyi/frame")
         print_query = parse_qs(print_return.query, keep_blank_values=True)
         print_query["saved_waybill_id"] = [str(result.waybill_id)]
-        self._redirect_with_message(
-            handler,
-            print_return._replace(query=urlencode(print_query, doseq=True)).geturl(),
-            result.message,
-            "success",
-        )
+        # The frame locks the saved form and shows its own status line, so the
+        # redirect carries no separate page notice.
+        self._redirect(handler, print_return._replace(query=urlencode(print_query, doseq=True)).geturl())
 
     def _handle_review(self, handler: BaseHTTPRequestHandler, document_id: int) -> None:
         try:

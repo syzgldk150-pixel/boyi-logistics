@@ -182,6 +182,15 @@
     flex: 0 0 auto;
   }
   .manual-action-group { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+  .manual-action-group [hidden] { display: none; }
+  .manual-form.is-locked .manual-scroll { background: var(--surface); }
+  .manual-form.is-locked :is(.manual-input, .manual-select):disabled,
+  .manual-form.is-locked .manual-toggle input:disabled { cursor: not-allowed; }
+  .manual-form.is-locked :is(.manual-input, .manual-select):disabled {
+    border-color: var(--line); background: var(--surface-muted); color: var(--text-strong); -webkit-text-fill-color: var(--text-strong); opacity: 1;
+  }
+  .manual-form.is-locked .manual-input:disabled::placeholder { color: transparent; -webkit-text-fill-color: transparent; }
+  .manual-form.is-editing :is(.manual-input, .manual-select):not([readonly]) { border-color: var(--line-strong); }
   .action-btn { height: 40px; min-height: 40px; padding: 0 16px; font-size: 0.875rem; border-radius: 6px; }
 
   .manual-side { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 2px; }
@@ -625,7 +634,7 @@
     <div class="manual-head">
       <div class="manual-title">
         <h3>手工录单</h3>
-        <span class="manual-chip">新建草稿</span>
+        <span class="manual-chip" data-manual-state-chip>新建草稿</span>
       </div>
       <div class="manual-head-tools">
         <div class="printer-popover-wrap" data-printer-popover>
@@ -842,7 +851,10 @@
         {% endif %}
         <div class="manual-action-group">
           <label class="manual-toggle"><input type="checkbox" name="auto_print" checked data-printer-setting> 保存后打印</label>
-          <button class="primary-btn action-btn" type="submit" name="action" value="confirm"{% if manual_preview_error|default('') %} disabled{% endif %}><i data-feather="check"></i> 保存</button>
+          <button class="ghost-btn action-btn" type="button" data-manual-edit hidden><i data-feather="edit-3"></i> 修改</button>
+          <button class="ghost-btn action-btn" type="button" data-manual-cancel-edit hidden>取消修改</button>
+          <button class="primary-btn action-btn" type="submit" data-manual-save name="action" value="confirm"{% if manual_preview_error|default('') %} disabled{% endif %}><i data-feather="check"></i> <span data-manual-save-label>保存</span></button>
+          <button class="primary-btn action-btn" type="button" data-manual-new hidden><i data-feather="plus"></i> 新增</button>
         </div>
       </div>
     </form>
@@ -1064,6 +1076,10 @@
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     const savedManualWaybill = {{ saved_manual_waybill | default(none) | tojson }};
+    const savedManualWaybillId = {{ saved_manual_waybill_id | default(none) | tojson }};
+    // "new" is the normal create form; a waybill saved with print is shown
+    // "locked" and becomes "editing" after 修改 until it is saved or cancelled.
+    let savedEntryMode = "new";
     if ({{ boyi_frame_mode | default(false) | tojson }}) {
       const currentUrl = new URL(window.location.href);
       if (currentUrl.searchParams.has("saved_waybill_id")) {
@@ -1668,6 +1684,12 @@
     let manualSubmitting = false;
     let manualSubmitButtons = [];
     manualForm?.addEventListener("submit", (event) => {
+      if (savedEntryMode !== "new") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (savedEntryMode === "editing") submitSavedManualEdit();
+        return;
+      }
       if (manualSubmitting) {
         event.preventDefault();
         event.stopPropagation();
@@ -1878,14 +1900,16 @@
     };
     document.querySelector("[data-manual-preview]")?.addEventListener("click", previewManualWaybill);
     const savedManualPreviewButton = document.querySelector("[data-saved-manual-preview]");
-    const previewSavedManualWaybill = async () => {
-      if (!savedManualWaybill || savedManualPreviewButton?.disabled) return;
+    let savedPrintWaybill = savedManualWaybill;
+    const LOCKED_HINT = "表单已锁定，点击“修改”可更正，点击“新增”录入下一单。";
+    const previewSavedManualWaybill = async (verb = "已保存") => {
+      if (!savedPrintWaybill || savedManualPreviewButton?.disabled) return;
       if (savedManualPreviewButton) savedManualPreviewButton.disabled = true;
-      const savedMessage = `运单 ${savedManualWaybill.waybill_no} 已保存`;
+      const savedMessage = `运单 ${savedPrintWaybill.waybill_no} ${verb}`;
       setManualFeedback(`${savedMessage}，正在打开打印预览…`, "info");
       try {
-        await previewWaybillSnapshot(savedManualWaybill);
-        setManualFeedback(`${savedMessage}，已调用 C-Lodop 打印预览，可继续录入下一单。`, "success");
+        await previewWaybillSnapshot(savedPrintWaybill);
+        setManualFeedback(`${savedMessage}，已调用 C-Lodop 打印预览。${LOCKED_HINT}`, "success");
       } catch (error) {
         console.error("Saved waybill preview failed", error);
         setManualFeedback(`${savedMessage}。${formatManualPrintError(error)} 请点击“重新打开已保存单预览”重试，勿重复保存。`, "error");
@@ -1893,8 +1917,191 @@
         if (savedManualPreviewButton) savedManualPreviewButton.disabled = false;
       }
     };
-    savedManualPreviewButton?.addEventListener("click", previewSavedManualWaybill);
-    if (savedManualWaybill) previewSavedManualWaybill();
+    savedManualPreviewButton?.addEventListener("click", () => previewSavedManualWaybill());
+
+    // Saved-and-printed waybill: lock the form, then 修改 / 新增.
+    const manualStateChip = document.querySelector("[data-manual-state-chip]");
+    const manualSaveButton = manualForm?.querySelector("[data-manual-save]");
+    const manualSaveLabel = manualForm?.querySelector("[data-manual-save-label]");
+    const manualEditButton = manualForm?.querySelector("[data-manual-edit]");
+    const manualCancelEditButton = manualForm?.querySelector("[data-manual-cancel-edit]");
+    const manualNewButton = manualForm?.querySelector("[data-manual-new]");
+    const manualAutoPrint = manualForm?.querySelector('[name="auto_print"]');
+    let savedEntry = null;
+    let savedEntryBusy = false;
+    let savedEditSignature = "";
+    let savedEditRequestId = "";
+    const requestManualJSON = async (url, options = {}, timeoutMs = 30000) => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          credentials: "same-origin", ...options, signal: controller.signal,
+          headers: { Accept: "application/json", ...(options.headers || {}) },
+        });
+        let data = null;
+        try { data = await response.json(); } catch { data = null; }
+        if (!response.ok || !data || data.ok === false) {
+          throw new Error(data?.message || data?.error?.message || `请求失败（${response.status}）`);
+        }
+        return data;
+      } catch (error) {
+        if (error?.name === "AbortError") throw new Error("请求超时，请稍后重试。");
+        throw error;
+      } finally {
+        window.clearTimeout(timer);
+      }
+    };
+    const savedEntryControls = () => Array.from(manualForm?.querySelectorAll("input, select, textarea") || [])
+      .filter((field) => field.type !== "hidden" && field.name !== "auto_print" && field.id !== "field_waybill_no");
+    const setSavedEntryMode = (mode) => {
+      savedEntryMode = mode;
+      const locked = mode === "locked";
+      manualForm?.classList.toggle("is-locked", locked);
+      manualForm?.classList.toggle("is-editing", mode === "editing");
+      savedEntryControls().forEach((field) => { field.disabled = locked; });
+      if (addressParserTrigger) addressParserTrigger.disabled = locked;
+      if (manualSaveButton) manualSaveButton.hidden = locked;
+      if (manualSaveLabel) manualSaveLabel.textContent = mode === "editing" ? "保存修改" : "保存";
+      if (manualEditButton) manualEditButton.hidden = !locked;
+      if (manualCancelEditButton) manualCancelEditButton.hidden = mode !== "editing";
+      if (manualNewButton) {
+        manualNewButton.hidden = mode === "new";
+        // One primary action at a time: 保存修改 while editing, otherwise 新增.
+        manualNewButton.classList.toggle("primary-btn", mode !== "editing");
+        manualNewButton.classList.toggle("ghost-btn", mode === "editing");
+      }
+      if (manualStateChip) manualStateChip.textContent = { locked: "已保存", editing: "修改中" }[mode] || "新建草稿";
+    };
+    const fillSavedEntry = () => {
+      if (!manualForm || !savedEntry) return;
+      Object.entries(savedEntry.values).forEach(([name, value]) => {
+        const field = manualForm.elements.namedItem(name);
+        if (!field) return;
+        if (field.type === "checkbox") field.checked = ["1", "true"].includes(String(value).toLowerCase());
+        else field.value = field.type === "date" ? String(value || "").replace(/\//g, "-") : String(value ?? "");
+      });
+      const waybillNoInput = document.getElementById("field_waybill_no");
+      if (waybillNoInput) waybillNoInput.value = savedEntry.waybill_no;
+      syncWeightVolumeField();
+      clearManualInvalidFields();
+    };
+    const loadSavedEntry = async () => {
+      const data = await requestManualJSON(`/waybills/${encodeURIComponent(savedManualWaybillId)}/edit-data?source=manual`);
+      savedEntry = {
+        waybill_no: String(data.waybill_no || ""),
+        values: data.values || {},
+        fingerprint: String(data.fingerprint || ""),
+        editable: Boolean(data.editable),
+        reason: String(data.reason || ""),
+        unparsed: String(data.weight_volume_unparsed || ""),
+      };
+      fillSavedEntry();
+      setSavedEntryMode("locked");
+      if (manualEditButton) {
+        manualEditButton.disabled = !savedEntry.editable;
+        manualEditButton.title = savedEntry.reason;
+      }
+    };
+    const lockSavedManualWaybill = async () => {
+      setSavedEntryMode("locked");
+      if (manualEditButton) manualEditButton.disabled = true;
+      try {
+        await loadSavedEntry();
+      } catch (error) {
+        console.error("Saved waybill read failed", error);
+        setManualFeedback(`运单已保存，但读取保存内容失败（${error.message}），暂不能修改。请点击“新增”继续，或到寄件运单查询核对。`, "error");
+      }
+    };
+    const submitSavedManualEdit = async () => {
+      if (!savedEntry || savedEntryBusy || !manualForm) return;
+      syncWeightVolumeField();
+      if (!validateManualRequiredFields("保存修改前请先填写")) return;
+      const fields = {};
+      Object.keys(savedEntry.values).forEach((name) => {
+        const field = manualForm.elements.namedItem(name);
+        fields[name] = field?.type === "checkbox" ? (field.checked ? "1" : "0") : String(field?.value ?? "");
+      });
+      if (savedEntry.unparsed && !String(fields.field_weight_kg || "").trim() && !String(fields.field_volume_m3 || "").trim()) {
+        setManualFeedback(`原重量 / 体积为“${savedEntry.unparsed}”，无法自动拆分，请填写重量或体积后保存。`, "error");
+        document.getElementById("field_weight_kg")?.focus();
+        return;
+      }
+      const signature = JSON.stringify(fields);
+      if (signature !== savedEditSignature) {
+        savedEditSignature = signature;
+        savedEditRequestId = crypto.randomUUID();
+      }
+      savedEntryBusy = true;
+      manualForm.setAttribute("aria-busy", "true");
+      [manualSaveButton, manualCancelEditButton, manualNewButton].forEach((button) => { if (button) button.disabled = true; });
+      if (manualSaveLabel) manualSaveLabel.textContent = "正在保存…";
+      setManualFeedback(`正在保存运单 ${savedEntry.waybill_no} 的修改…`, "info");
+      let outcome = null;
+      try {
+        outcome = await requestManualJSON(`/waybills/${encodeURIComponent(savedManualWaybillId)}/manual-update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Browser-Request-UUID": savedEditRequestId },
+          body: JSON.stringify({ request_id: savedEditRequestId, fingerprint: savedEntry.fingerprint, fields }),
+        }, 95000);
+      } catch (error) {
+        setManualFeedback(`修改未保存：${error.message}`, "error");
+      } finally {
+        savedEntryBusy = false;
+        manualForm.removeAttribute("aria-busy");
+        [manualSaveButton, manualCancelEditButton, manualNewButton].forEach((button) => { if (button) button.disabled = false; });
+        if (manualSaveLabel && savedEntryMode === "editing") manualSaveLabel.textContent = "保存修改";
+      }
+      if (!outcome) return;
+      savedEditSignature = "";
+      try {
+        await loadSavedEntry();
+      } catch (error) {
+        setSavedEntryMode("locked");
+        if (manualEditButton) manualEditButton.disabled = true;
+        setManualFeedback(`运单 ${savedEntry.waybill_no} 已修改，但重新读取失败（${error.message}）。请到寄件运单查询核对。`, "error");
+        return;
+      }
+      if (outcome.outcome === "UNCHANGED") {
+        setManualFeedback(`未修改任何内容。${LOCKED_HINT}`, "success");
+        return;
+      }
+      if (!manualAutoPrint?.checked) {
+        setManualFeedback(`运单 ${savedEntry.waybill_no} 已修改；如已打印面单，请重新打印。${LOCKED_HINT}`, "success");
+        return;
+      }
+      try {
+        const printData = await requestManualJSON(`/waybills/${encodeURIComponent(savedManualWaybillId)}/print-data?source=manual`);
+        savedPrintWaybill = printData.waybill;
+      } catch (error) {
+        setManualFeedback(`运单 ${savedEntry.waybill_no} 已修改，但读取打印内容失败（${error.message}）。请点击“重新打开已保存单预览”重试，勿重复保存。`, "error");
+        return;
+      }
+      await previewSavedManualWaybill("已修改");
+    };
+    manualEditButton?.addEventListener("click", () => {
+      if (!savedEntry?.editable) return;
+      setSavedEntryMode("editing");
+      setManualFeedback(`正在修改运单 ${savedEntry.waybill_no}，改好后点击“保存修改”。`, "info");
+      document.getElementById("field_destination_site")?.focus();
+    });
+    manualCancelEditButton?.addEventListener("click", () => {
+      if (savedEntryBusy) return;
+      fillSavedEntry();
+      setSavedEntryMode("locked");
+      setManualFeedback(`已取消修改，恢复为运单 ${savedEntry?.waybill_no || ""} 已保存的内容。${LOCKED_HINT}`, "info");
+    });
+    manualNewButton?.addEventListener("click", () => {
+      if (savedEntryBusy) return;
+      if (savedEntryMode === "editing" && !window.confirm("当前修改尚未保存，确定放弃修改并新增下一单吗？")) return;
+      const next = new URL(window.location.href);
+      ["saved_waybill_id", "message", "kind"].forEach((key) => next.searchParams.delete(key));
+      window.location.assign(next.toString());
+    });
+    if (savedManualWaybill && savedManualWaybillId) {
+      lockSavedManualWaybill();
+      previewSavedManualWaybill();
+    }
     const previewCalibrationPage = async () => {
       persistPrinterSettings();
       const settings = readSavedPrinterSettings();
