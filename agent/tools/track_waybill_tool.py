@@ -466,6 +466,10 @@ def run_track_waybill(params: dict[str, Any]) -> dict[str, Any]:
 
     request_params = dict(params)
     request_params["tracking_number"] = tracking_number
+    # Routes must not depend on customer decryption, which Ronghui refuses when
+    # the login site has not scanned the bill; the masked recipient is filled
+    # afterwards from the cache or query_waybill_detail (kept masked if refused).
+    request_params.setdefault("decrypt_masked", False)
     if validation.provider and not request_params.get("provider"):
         request_params["provider"] = validation.provider
     request_body = {

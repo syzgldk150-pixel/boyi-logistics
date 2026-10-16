@@ -1999,9 +1999,12 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
 
     def test_track_waybill_tool_fetches_detail_when_stub_recipient_is_masked(self):
         calls: list[str] = []
+        tracking_params: list[dict] = []
 
         def _fake_call_http_service(endpoint, params):
             calls.append(endpoint)
+            if endpoint == "/tms/tracking_query":
+                tracking_params.append(params["params"])
             if endpoint == "/tms/tracking_query":
                 return {
                     "ok": True,
@@ -2040,6 +2043,7 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
             result = track_waybill_tool.run_track_waybill({"tracking_number": "R00014513348"})
 
         self.assertEqual(["/tms/tracking_query", "/query_waybill_detail"], calls)
+        self.assertIs(False, tracking_params[0]["decrypt_masked"])
         self.assertEqual("李四", result["waybill_stub"]["recipient_name"])
         self.assertEqual("13900000000", result["waybill_stub"]["recipient_phone"])
         self.assertEqual("湖南省邵阳市双清区建设南路1号", result["waybill_stub"]["recipient_address"])
