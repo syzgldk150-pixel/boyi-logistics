@@ -261,6 +261,53 @@ class ScanNextFailFastTests(unittest.TestCase):
         self.assertIn("录入单号后出现未预期提示: 系统繁忙", result["message"])
         self.assertEqual(calls["upload"], 0)
 
+    @staticmethod
+    def _scope_with_boxes(*texts):
+        boxes = []
+        for text in texts:
+            box = Mock()
+            box.is_visible.return_value = True
+            box.inner_text.return_value = text
+            boxes.append(box)
+        scope = Mock()
+        scope.query_selector_all.return_value = boxes
+        return scope
+
+    def test_work_order_reminder_is_ignored_without_clicking(self):
+        page = self._scope_with_boxes("工单处理:R00010001:2026-01-02 03:04:05")
+        frame = self._scope_with_boxes()
+
+        with patch.object(scan_next, "log"):
+            self.assertIsNone(scan_next._visible_messagebox_text(page, frame))  # noqa: SLF001
+
+    def test_several_work_order_reminders_in_one_box_are_ignored(self):
+        page = self._scope_with_boxes(
+            "工单处理:R00010001:2026-01-02 03:04:05\n工单处理:R00010002:2026-01-02 03:04:06"
+        )
+
+        with patch.object(scan_next, "log"):
+            self.assertIsNone(
+                scan_next._visible_messagebox_text(page, self._scope_with_boxes())  # noqa: SLF001
+            )
+
+    def test_real_message_next_to_work_order_reminder_still_fails(self):
+        page = self._scope_with_boxes("工单处理:R00010001:2026-01-02 03:04:05", "系统繁忙")
+
+        with patch.object(scan_next, "log"):
+            self.assertEqual(
+                scan_next._visible_messagebox_text(page, self._scope_with_boxes()),  # noqa: SLF001
+                "系统繁忙",
+            )
+
+    def test_work_order_text_with_other_content_is_not_ignored(self):
+        text = "工单处理:R00010001:2026-01-02 03:04:05 请先处理"
+        page = self._scope_with_boxes(text)
+
+        self.assertEqual(
+            scan_next._visible_messagebox_text(page, self._scope_with_boxes()),  # noqa: SLF001
+            text,
+        )
+
     def test_message_visible_before_upload_fails_without_uploading(self):
         result, calls = self._run_flow([{"ok": True}], messages=[None, "未处理提示"])
 

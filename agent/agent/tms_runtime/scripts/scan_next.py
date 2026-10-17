@@ -11,6 +11,7 @@ import contextvars
 import datetime as _dt
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -99,6 +100,10 @@ XPATH_CONFIRM_UPLOAD_MESSAGE = '//div[contains(@class, "mini-messagebox-content"
 XPATH_SUCCESS_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "数据保存成功")]'
 XPATH_ALREADY_SIGNED_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "已做过签收")]'
 XPATH_MESSAGEBOX_CONTENT = '//div[contains(@class, "mini-messagebox-content")]'
+_WORK_ORDER_REMINDER_ENTRY = r"工单处理:[A-Za-z0-9]+:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+WORK_ORDER_REMINDER_PATTERN = re.compile(
+    rf"{_WORK_ORDER_REMINDER_ENTRY}(?: {_WORK_ORDER_REMINDER_ENTRY})*"
+)
 XPATH_GRID_ROW_ANY = '//div[@id="datagrid"]//table//tr[contains(@class, "mini-grid-row")]'
 XPATH_GRID_ROW_UNSELECTED = (
     '//div[@id="datagrid"]//table//tr[@class="mini-grid-row mini-grid-newRow"]'
@@ -1040,10 +1045,17 @@ def _visible_messagebox_text(page, frame) -> Optional[str]:
             continue
         for box in boxes:
             try:
-                if box.is_visible():
-                    return " ".join(str(box.inner_text() or "").split())[:200]
+                if not box.is_visible():
+                    continue
+                text = " ".join(str(box.inner_text() or "").split())
             except Exception:
                 continue
+            # Ronghui pops a reminder for every open work order after login;
+            # it is unrelated to the scan and is left untouched.
+            if WORK_ORDER_REMINDER_PATTERN.fullmatch(text):
+                log(f"忽略融辉工单提醒: {text[:200]}")
+                continue
+            return text[:200]
     return None
 
 
