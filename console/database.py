@@ -966,19 +966,29 @@ class DocumentRepository:
 
     @classmethod
     def _waybill_query_table(cls, source: str | None = None) -> str:
+        # Boyi manual rows always carry the linked platform route columns, so
+        # the "博益开单" filter shows the same status as "全部来源".
+        boyi_manual = cls._boyi_manual_query_select()
+        if source == "manual":
+            return f"({boyi_manual}) AS saved_waybills"
         if source and source != "all":
             return waybill_table(source)
         columns = ", ".join(cls._waybill_union_columns())
         platform_only = ", ".join(cls._PLATFORM_ONLY_FIELD_NAMES)
-        boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
-        boyi_columns, boyi_linked = cls._boyi_linked_route_columns()
         return (
             f"(SELECT {columns}, {platform_only}, receipt_required, sender_address, "
             "NULL AS linked_platform, NULL AS linked_waybill_no, NULL AS linked_match_count, "
-            "NULL AS linked_platform_status FROM waybills UNION ALL "
+            f"NULL AS linked_platform_status FROM waybills UNION ALL {boyi_manual}) AS saved_waybills"
+        )
+
+    @classmethod
+    def _boyi_manual_query_select(cls) -> str:
+        boyi_absent = ", ".join(f"NULL AS {name}" for name in cls._PLATFORM_ONLY_FIELD_NAMES)
+        boyi_columns, boyi_linked = cls._boyi_linked_route_columns()
+        return (
             f"SELECT {boyi_columns}, {boyi_absent}, receipt_required, sender_address, "
             f"linked_platform, linked_waybill_no, {boyi_linked} "
-            "FROM boyi_waybills b WHERE source='manual') AS saved_waybills"
+            "FROM boyi_waybills b WHERE source='manual'"
         )
 
     @classmethod
@@ -2202,7 +2212,10 @@ class DocumentRepository:
         label = WAYBILL_LINK_PLATFORMS.get(platform, platform)
         if platform not in _LINKED_ROUTE_PLATFORMS:
             return f"{label}状态未接入"
-        count = int(data.get("linked_match_count") or 0)
+        if data.get("linked_match_count") is None:
+            # Platform rows were not looked up for this read (e.g. detail by ID).
+            return ""
+        count = int(data["linked_match_count"])
         if count == 0:
             return f"{label}单未入库"
         if count > 1:

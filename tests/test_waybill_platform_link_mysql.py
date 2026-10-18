@@ -132,6 +132,10 @@ def test_linked_boyi_waybill_shows_and_filters_by_the_platform_route_status(repo
     assert [item["id"] for item in listed(repository, row, status="signed")] == [row["id"]]
     assert listed(repository, row, status="in_transit") == []
     assert repository.get_waybill_by_no(row["waybill_no"])["status"] == "signed"
+    # The "博益开单" source filter follows the same platform route status.
+    [manual] = listed(repository, row, source="manual")
+    assert (manual["status"], manual["linked_status_note"]) == ("signed", "")
+    assert [item["id"] for item in listed(repository, row, source="manual", status="signed")] == [row["id"]]
 
     moving = seed(repository)
     platform_waybill(repository, "yunda", "4300000001", "in_transit", "快件在长沙分拨已发出")

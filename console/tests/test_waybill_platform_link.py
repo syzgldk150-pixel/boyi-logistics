@@ -115,6 +115,7 @@ def test_tracking_query_passes_linked_provider_and_stops_for_best():
     ({"linked_platform": "yunda", "linked_match_count": 1, "linked_platform_status": "cancelled"}, "韵达单已作废"),
     ({"linked_platform": "best"}, "百世状态未接入"),
     ({"linked_platform": "ronghui", "linked_match_count": 0, "status": "cancelled"}, ""),
+    ({"linked_platform": "ronghui"}, ""),
     ({}, ""),
 ])
 def test_linked_row_explains_a_missing_platform_route_status(data, note):
@@ -131,3 +132,11 @@ def test_union_query_takes_route_status_only_from_one_uncancelled_platform_row()
     assert "WHEN 'ronghui' THEN (SELECT COUNT(*) FROM ronghui_waybills p" in sql
     assert "WHEN 'yunda' THEN (SELECT MAX(p.scan_status) FROM yunda_waybills p" in sql
     assert "best" not in sql
+
+
+def test_manual_source_query_keeps_the_linked_route_columns():
+    sql = DocumentRepository._waybill_query_table("manual")
+    assert sql.startswith("(SELECT ") and sql.endswith(") AS saved_waybills")
+    assert "FROM waybills" not in sql and "FROM boyi_waybills b WHERE source='manual'" in sql
+    assert "AS linked_match_count" in sql
+    assert DocumentRepository._waybill_query_table("ocr") == "boyi_waybills"
