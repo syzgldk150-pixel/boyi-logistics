@@ -62,6 +62,20 @@ class ReceiptSyncTests(unittest.TestCase):
         self.assertEqual("7390004", payload["LOGIN_SITE_CODE"])
         self.assertEqual("FIND_SEND_RETURN_PROCESS", receipts_sync._ronghui_process_call_id("send"))
 
+    def test_all_receipt_status_is_not_sent_as_platform_status(self):
+        params = {"date_from": "2026-10-01", "date_to": "2026-10-19", "receipt_status": "all"}
+        ronghui = receipts_sync._ronghui_payload(params, direction="send", page_index=0, page_size=100)
+        yunda = receipts_sync._yunda_payload(params, page=1, rows=10)
+
+        self.assertEqual("", ronghui["RETURNBILL_STATUS"])
+        self.assertEqual("3", yunda["Return_Logistics_Status"])
+
+    def test_explicit_receipt_status_is_kept(self):
+        params = {"date_from": "2026-10-01", "date_to": "2026-10-19", "receipt_status": "已返单"}
+        payload = receipts_sync._ronghui_payload(params, direction="send", page_index=0, page_size=100)
+
+        self.assertEqual("已返单", payload["RETURNBILL_STATUS"])
+
     def test_ronghui_record_attachments_fetches_system_pic_scan_files(self):
         session = _FakeRonghuiAttachmentSession(
             [

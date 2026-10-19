@@ -57,6 +57,13 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _receipt_status_filter(params: dict[str, Any]) -> str:
+    # Console's "all" is a page filter value, not an original-site status code;
+    # sending it makes both platforms return zero rows.
+    status = _clean(params.get("receipt_status"))
+    return "" if status.lower() == "all" else status
+
+
 def _coerce_int(value: Any, default: int) -> int:
     try:
         number = int(value)
@@ -562,7 +569,7 @@ def _ronghui_payload(
         "searchOrderInput": _clean(params.get("q") or params.get("waybill_no") or params.get("receipt_no")),
         "searchDateType": _clean(params.get("date_type")) or "SEND_DATE",
         "SEARCH_DATE_RANGE": json.dumps(date_range, ensure_ascii=False),
-        "RETURNBILL_STATUS": _clean(params.get("receipt_status")),
+        "RETURNBILL_STATUS": _receipt_status_filter(params),
         "SEND_DATE": json.dumps(date_range, ensure_ascii=False),
         "LOGIN_SITE_CODE": login_site_code,
         "pageIndex": str(page_index),
@@ -751,7 +758,7 @@ def _yunda_payload(params: dict[str, Any], *, page: int, rows: int) -> dict[str,
         "start_time": _clean(params.get("start_time")) or "00:00:00",
         "end_date": end,
         "end_time": _clean(params.get("end_time")) or "23:59:59",
-        "Return_Logistics_Status": _clean(params.get("receipt_status")) or "3",
+        "Return_Logistics_Status": _receipt_status_filter(params) or "3",
         "Return_Adjunct_Addr": _clean(params.get("receipt_attachment_status")) or "all",
         "Return_Sign_Adjunct_Addr": _clean(params.get("signed_receipt_attachment_status")) or "all",
         "Is_Replace": _clean(params.get("replace_status")) or "all",
