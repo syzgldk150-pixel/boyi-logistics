@@ -378,6 +378,7 @@ def ensure_phase7_tables() -> None:
                 ("split_pending_problem_items", "complaint_processed_at"),
                 ("scan_codes", "main_tracking"),
                 ("scan_codes", "snapshot_date"),
+                ("scan_codes", "scanned_at"),
             }
             missing_columns = sorted(
                 f"{table}.{column}" for table, column in required_columns - columns
@@ -722,6 +723,7 @@ def replace_scan_codes_snapshot(
                             start_date.isoformat(),
                             start_date.isoformat(),
                             _SCAN_CODES_SNAPSHOT_INITIAL_SEEN_COUNT,
+                            row.get("scanned_at") or None,
                         )
                         for row in rows
                     ],
@@ -766,6 +768,7 @@ def _list_scan_codes_query(
     *,
     where_sql: str = "",
     params: tuple[Any, ...] = (),
+    include_scanned_at: bool = False,
 ) -> list[dict[str, str]]:
     ensure_phase7_tables()
     conn = _connect()
@@ -774,7 +777,8 @@ def _list_scan_codes_query(
             cur.execute(
                 f"""
                 SELECT scan_codes.raw_code, scan_codes.destination,
-                       scan_codes.code_type, scan_codes.main_tracking
+                       scan_codes.code_type, scan_codes.main_tracking,
+                       scan_codes.scanned_at
                 FROM scan_codes
                 {where_sql}
                 ORDER BY scan_codes.destination, scan_codes.raw_code
@@ -784,16 +788,25 @@ def _list_scan_codes_query(
             rows = cur.fetchall()
     finally:
         conn.close()
-    return [
-        {
+    output: list[dict[str, str]] = []
+    for row in rows:
+        if not row.get("raw_code"):
+            continue
+        item = {
             "raw_code": _clean_text(row.get("raw_code")),
             "destination": _clean_text(row.get("destination")),
             "code_type": _clean_text(row.get("code_type")),
             "main_tracking": _clean_text(row.get("main_tracking")),
         }
-        for row in rows
-        if row.get("raw_code")
-    ]
+        if include_scanned_at:
+            scanned_at = row.get("scanned_at")
+            item["scanned_at"] = (
+                scanned_at.strftime("%Y-%m-%d %H:%M:%S")
+                if isinstance(scanned_at, datetime)
+                else _clean_text(scanned_at)
+            )
+        output.append(item)
+    return output
 
 
 def list_scan_codes() -> list[dict[str, str]]:
@@ -810,11 +823,16 @@ def list_scan_codes() -> list[dict[str, str]]:
     )
 
 
-def list_scan_codes_for_date(target_date: str) -> list[dict[str, str]]:
+def list_scan_codes_for_date(
+    target_date: str,
+    *,
+    include_scanned_at: bool = False,
+) -> list[dict[str, str]]:
     start_date = date.fromisoformat(target_date)
     return _list_scan_codes_query(
         where_sql="WHERE snapshot_date = %s",
         params=(start_date.isoformat(),),
+        include_scanned_at=include_scanned_at,
     )
 
 

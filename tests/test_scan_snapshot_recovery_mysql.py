@@ -43,7 +43,7 @@ def test_original_scan_projection_restore_is_idempotent_and_rejects_newer_owner(
         replay = restore_owned_snapshot(cursor, payload, run_id=identity['orchestration_run_id'], lease_id=identity['lease_id'])
         assert first['restored'] is True and replay['restored'] is False
         cursor.execute('DELETE FROM scan_codes WHERE snapshot_date=%s', (target_date,))
-        cursor.execute(SNAPSHOT_UPSERT_SQL, tuple(newer.values()) + (target_date, target_date, SNAPSHOT_INITIAL_SEEN_COUNT))
+        cursor.execute(SNAPSHOT_UPSERT_SQL, tuple(newer.values()) + (target_date, target_date, SNAPSHOT_INITIAL_SEEN_COUNT, None))
         with scan_snapshot_write_identity({'orchestration_run_id': str(uuid4()), 'lease_id': str(uuid4())}):
             record_snapshot_head(cursor, target_date, [newer])
         with pytest.raises(ValueError, match='SCAN_PROJECTION_SUPERSEDED'):

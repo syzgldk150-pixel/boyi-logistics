@@ -15,12 +15,12 @@ SNAPSHOT_INITIAL_SEEN_COUNT = 1
 SNAPSHOT_UPSERT_SQL = """
     INSERT INTO scan_codes (
         raw_code, destination, code_type, main_tracking,
-        snapshot_date, last_seen_at, seen_count
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        snapshot_date, last_seen_at, seen_count, scanned_at
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     ON DUPLICATE KEY UPDATE
         destination = VALUES(destination), code_type = VALUES(code_type),
         main_tracking = VALUES(main_tracking), last_seen_at = VALUES(last_seen_at),
-        seen_count = seen_count + 1
+        seen_count = seen_count + 1, scanned_at = VALUES(scanned_at)
 """
 _WRITE_IDENTITY: ContextVar[Mapping[str, Any] | None] = ContextVar("scan_snapshot_write_identity", default=None)
 
@@ -90,7 +90,8 @@ def restore_owned_snapshot(cursor, payload, *, run_id, lease_id):
         raise ValueError("SCAN_PROJECTION_SUPERSEDED")
     cursor.execute("DELETE FROM scan_codes WHERE snapshot_date=%s", (target_date,))
     if expected:
-        cursor.executemany(SNAPSHOT_UPSERT_SQL, [tuple(row[field] for field in FIELDS) + (target_date, target_date, SNAPSHOT_INITIAL_SEEN_COUNT) for row in expected])
+        # Historical journals never captured a scan time; it stays unknown.
+        cursor.executemany(SNAPSHOT_UPSERT_SQL, [tuple(row[field] for field in FIELDS) + (target_date, target_date, SNAPSHOT_INITIAL_SEEN_COUNT, None) for row in expected])
     cursor.execute("SELECT raw_code,destination,code_type,main_tracking FROM scan_codes WHERE snapshot_date=%s ORDER BY raw_code", (target_date,))
     actual = cursor.fetchall()
     if actual and not isinstance(actual[0], Mapping):

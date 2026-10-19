@@ -71,6 +71,8 @@ from agent.automation_plugins.first_party_handler_support import (
     _SCAN_NEXT_FIELDS,
     _SCAN_READ_FIELDS,
     _SCAN_SNAPSHOT_FIELDS,
+    _SCAN_SNAPSHOT_TIME_FIELD,
+    _SCAN_SNAPSHOT_TIMED_FIELDS,
     _SCAN_SOURCE_FIELDS,
     _SCAN_TOOL,
     _SITE_FIELDS,
@@ -185,6 +187,18 @@ class FirstPartyCoreHandlerPorts:
     delivery_projection_update: DeliveryProjectionPort | None = None
     authorize_capability: CapabilityAuthorizationPort | None = None
 
+
+def _is_scan_time(value: object) -> bool:
+    """Persisted scan time is empty (unknown) or ``YYYY-MM-DD HH:MM:SS``."""
+
+    if value == "":
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d %H:%M:%S") == value
+    except ValueError:
+        return False
 
 class _FirstPartyCoreHandlers:
     def __init__(
@@ -1923,13 +1937,22 @@ class _FirstPartyCoreHandlers:
             raise _error("scan snapshot primitive is unavailable", "BROKER_ACTION_UNAVAILABLE")
         values = _strict_arguments(arguments, {"records", "target_date"})
         target_date = _business_date(values.get("target_date"))
+        raw_records = values.get("records")
+        timed = (
+            isinstance(raw_records, list)
+            and bool(raw_records)
+            and isinstance(raw_records[0], Mapping)
+            and _SCAN_SNAPSHOT_TIME_FIELD in raw_records[0]
+        )
         records = _strict_record_list(
-            values.get("records"),
-            fields=_SCAN_SNAPSHOT_FIELDS,
+            raw_records,
+            fields=_SCAN_SNAPSHOT_TIMED_FIELDS if timed else _SCAN_SNAPSHOT_FIELDS,
             label="scan snapshot",
         )
         seen: set[str] = set()
         for row in records:
+            if timed and not _is_scan_time(row[_SCAN_SNAPSHOT_TIME_FIELD]):
+                raise _error("scan snapshot scan time is invalid", "BROKER_ARGUMENT_INVALID")
             raw_code = _text(row.get("raw_code"), "raw_code", maximum=128)
             main = _text(row.get("main_tracking"), "main_tracking", maximum=128)
             code_type = str(row.get("code_type") or "")

@@ -73,6 +73,13 @@ _ALLOWED_ARGUMENTS = frozenset(
 _SOURCE_FIELDS = frozenset(
     {"bill_code", "destination", "scan_type", "scan_time", "scan_site"}
 )
+# Ronghui SCAN_DATE layouts accepted for the persisted unloading scan time.
+_SCAN_TIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y/%m/%d %H:%M:%S",
+)
 
 
 def _object(value: object, label: str) -> dict[str, object]:
@@ -295,6 +302,19 @@ def _normalize_source_row(raw: object) -> dict[str, str]:
     }
 
 
+def _scanned_at(value: str) -> str:
+    """Return the source scan time as ``YYYY-MM-DD HH:MM:SS``; empty stays unknown."""
+
+    if not value:
+        return ""
+    for layout in _SCAN_TIME_FORMATS:
+        try:
+            return datetime.strptime(value, layout).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+    raise ValueError("scan source row has an unrecognized scan_time")
+
+
 def _collect_source(
     target_date: str,
     broker: Callable[..., object],
@@ -327,13 +347,18 @@ def _collect_source(
             identity = row["bill_code"]
             previous = rows.get(identity)
             # Ronghui may return the same bill more than once when its scan
-            # timestamp/site metadata differs.  The persisted scan index owns
-            # only bill identity and destination, so equivalent destination
-            # duplicates are one business record; a destination conflict is
-            # still ambiguous and must fail closed.
+            # timestamp/site metadata differs.  Equivalent destination
+            # duplicates are one business record whose persisted scan time is
+            # the earliest one; a destination conflict is still ambiguous and
+            # must fail closed.
             if previous is not None and previous["destination"] != row["destination"]:
                 raise ValueError("scan source returned conflicting duplicate destinations")
+            row["scan_time"] = _scanned_at(row["scan_time"])
             if previous is not None:
+                if row["scan_time"] and (
+                    not previous["scan_time"] or row["scan_time"] < previous["scan_time"]
+                ):
+                    previous["scan_time"] = row["scan_time"]
                 continue
             rows[identity] = row
         if len(rows) > _MAX_ITEMS:
@@ -375,6 +400,7 @@ def _normalize_snapshot(source_rows: list[dict[str, str]]) -> list[dict[str, str
                 "destination": row["destination"],
                 "code_type": "child" if child else "main",
                 "main_tracking": raw_code[:-4] if child else raw_code,
+                "scanned_at": row["scan_time"],
             }
         )
     return records

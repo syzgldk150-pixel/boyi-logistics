@@ -44,16 +44,17 @@ def _load_action():
 def _formal_arguments(module, arguments, source_rows):
     values = {**arguments, "dry_run": False}
     target_date = module._target_date(values)
-    unique_source_rows = {}
-    for item in source_rows:
-        normalized = module._normalize_source_row(item)
-        previous = unique_source_rows.get(normalized["bill_code"])
-        if previous is not None and previous["destination"] != normalized["destination"]:
-            raise ValueError("test preview source contains conflicting destinations")
-        unique_source_rows.setdefault(normalized["bill_code"], normalized)
-    snapshot = module._normalize_snapshot(
-        [unique_source_rows[key] for key in sorted(unique_source_rows)]
-    )
+    def preview_source(*_args, **_kwargs):
+        return {
+            "items": [dict(item) for item in source_rows],
+            "pagination_complete": True,
+            "next_cursor": None,
+            "evidence_ref": "evidence:preview",
+        }
+
+    # The preview reuses the package's own source collapse, as production does.
+    unique_rows, _pages, _refs = module._collect_source(target_date, preview_source)
+    snapshot = module._normalize_snapshot(unique_rows)
     candidates = module._candidate_items(
         snapshot,
         skipped=module._skip_codes(values.get("skip_bill_codes")),
@@ -142,18 +143,21 @@ def test_scan_action_owns_classification_batching_verification_and_commit_order(
                     "destination": "总站",
                     "code_type": "main",
                     "main_tracking": "R12345678901",
+                    "scanned_at": "2026-08-15 08:00:00",
                 },
                 {
                     "raw_code": child_one,
                     "destination": "A站",
                     "code_type": "child",
                     "main_tracking": "R12345678901",
+                    "scanned_at": "2026-08-15 08:01:00",
                 },
                 {
                     "raw_code": child_two,
                     "destination": "B站",
                     "code_type": "child",
                     "main_tracking": "R12345678901",
+                    "scanned_at": "2026-08-15 08:02:00",
                 },
             ]
             return {
@@ -384,20 +388,21 @@ def test_empty_scan_source_commits_empty_snapshot_without_scan_batches():
 
 def test_scan_collapses_duplicate_events_with_the_same_business_destination():
     module = _load_action()
+    # The later event arrives first; the persisted scan time is the earliest.
     source = [
-        {
-            "bill_code": "R12345678901",
-            "destination": "总站",
-            "scan_type": "到货",
-            "scan_time": "2026-08-24 08:00:00",
-            "scan_site": "网点一",
-        },
         {
             "bill_code": "R12345678901",
             "destination": "总站",
             "scan_type": "到货",
             "scan_time": "2026-08-24 08:05:00",
             "scan_site": "网点二",
+        },
+        {
+            "bill_code": "R12345678901",
+            "destination": "总站",
+            "scan_type": "到货",
+            "scan_time": "2026-08-24 08:00:00",
+            "scan_site": "网点一",
         },
     ]
 
@@ -417,6 +422,7 @@ def test_scan_collapses_duplicate_events_with_the_same_business_destination():
                 "destination": "总站",
                 "code_type": "main",
                 "main_tracking": "R12345678901",
+                "scanned_at": "2026-08-24 08:00:00",
             }
         ]
         return {
@@ -676,3 +682,14 @@ def test_formal_scan_rejects_expired_preview_before_any_write():
         module.run_action(arguments, broker)
 
     assert calls == ["ronghui.scan.read_page"]
+
+
+def test_scan_time_layouts_are_normalized_and_unknown_layouts_fail_closed():
+    module = _load_action()
+    assert module._scanned_at("") == ""
+    assert module._scanned_at("2026-10-19 10:05:50") == "2026-10-19 10:05:50"
+    assert module._scanned_at("2026-10-19 10:05:50.0") == "2026-10-19 10:05:50"
+    assert module._scanned_at("2026-10-19T10:05:50") == "2026-10-19 10:05:50"
+    assert module._scanned_at("2026/10/19 10:05:50") == "2026-10-19 10:05:50"
+    with pytest.raises(ValueError, match="unrecognized scan_time"):
+        module._scanned_at("19/10/2026 10:05")

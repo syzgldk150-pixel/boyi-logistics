@@ -11,6 +11,8 @@ from agent.automation_plugins.manifest import canonical_json_bytes
 
 
 _FIELDS = ("raw_code", "destination", "code_type", "main_tracking")
+# Producers that capture the real scan time send it on every row.
+_TIMED_FIELDS = (*_FIELDS, "scanned_at")
 
 
 def _unknown(message: str, cause: BaseException | None = None) -> NoReturn:
@@ -20,13 +22,21 @@ def _unknown(message: str, cause: BaseException | None = None) -> NoReturn:
     raise error from cause
 
 
-def _normalized(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+def _row_fields(rows: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    return _TIMED_FIELDS if rows and "scanned_at" in rows[0] else _FIELDS
+
+
+def _normalized(
+    rows: Sequence[Mapping[str, Any]],
+    fields: tuple[str, ...] | None = None,
+) -> list[dict[str, str]]:
+    fields = fields or _row_fields(rows)
     output: list[dict[str, str]] = []
     seen: set[str] = set()
     for raw in rows:
-        if set(raw) != set(_FIELDS):
+        if set(raw) != set(fields):
             _unknown("scan snapshot readback schema changed")
-        row = {field: str(raw.get(field) or "").strip() for field in _FIELDS}
+        row = {field: str(raw.get(field) or "").strip() for field in fields}
         identity = row["raw_code"]
         if not identity or identity in seen:
             _unknown("scan snapshot readback found zero or multiple exact identities")
@@ -51,15 +61,21 @@ def replace_scan_snapshot_verified(
         replace_scan_codes_snapshot,
     )
 
-    expected = sorted(_normalized(records), key=lambda row: row["raw_code"])
+    fields = _row_fields(records)
+    expected = sorted(_normalized(records, fields), key=lambda row: row["raw_code"])
     write_error: BaseException | None = None
     try:
         replace_scan_codes_snapshot(records, target_date)
     except Exception as exc:
         write_error = exc
     try:
+        readback = (
+            list_scan_codes_for_date(target_date, include_scanned_at=True)
+            if fields == _TIMED_FIELDS
+            else list_scan_codes_for_date(target_date)
+        )
         observed = sorted(
-            _normalized(list_scan_codes_for_date(target_date)),
+            _normalized(readback, fields),
             key=lambda row: row["raw_code"],
         )
     except PluginExecutionError:

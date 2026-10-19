@@ -4,10 +4,12 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-10-13
+updated: 2026-10-19
 ---
 
 # 数据库迁移
+
+`061_scan_codes_scanned_at.sql` 给运行库 `agent_db.scan_codes` 新增可空 `scanned_at DATETIME` 及索引，保存扫描插件 2.0.3 起提交的融辉扫描来源真实扫描时间（`SCAN_DATE`）；`last_seen_at` 仍是快照时间。历史行保持 NULL，不回填或推算。`phase7_mysql_store.ensure_phase7_tables()` 要求该列存在，因此必须先迁移再重启 Agent；旧扫描插件与统计插件不提交该字段，写入保持 NULL。回退旧代码时该列闲置无害。
 
 `056_drop_boyi_handling_fees.sql` 删除博益运单实体表 `waybill_db.boyi_waybills` 的 `pickup_fee`、`delivery_fee`：博益主单、录单页、OCR 模板与录单扩展草稿已不含接货费、送货费；融辉/韵达平台表保留这两列。发布前须重新核对博益表的行数与费用列使用情况，并保留当次备份。迁移先将原行 ID 与两项费用原样保存在 `waybill_db._migration_056_boyi_handling_fees`，再删除实体列；备份表保留到业务验收完成。它是首个 055 之后的普通迁移，用 `{{waybill_db}}` 引用实体库，`run_migrations.py` 按运行库绑定名称并在执行后重建 `agent_db` 视图投影；须与不再读写这两列的 Console 代码协调发布；迁移后不得回退到仍读写这两列的旧版本。
 

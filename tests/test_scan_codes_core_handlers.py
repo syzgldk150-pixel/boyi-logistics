@@ -297,9 +297,11 @@ def test_scan_snapshot_store_atomically_deletes_before_insert(
             assert "snapshot_date" in statement
             assert "last_seen_at" in statement
             assert len(values) == len(rows)
+            assert "scanned_at" in statement
+            assert all(value[-4] == "2026-08-24" for value in values)
             assert all(value[-3] == "2026-08-24" for value in values)
-            assert all(value[-2] == "2026-08-24" for value in values)
-            assert all(value[-1] == SNAPSHOT_INITIAL_SEEN_COUNT for value in values)
+            assert all(value[-2] == SNAPSHOT_INITIAL_SEEN_COUNT for value in values)
+            assert all(value[-1] == (row.get("scanned_at") or None) for value, row in zip(values, rows))
             events.append("insert")
 
     class Connection:
@@ -427,6 +429,92 @@ def test_scan_snapshot_core_handler_rejects_ack_or_tampered_readback_proof() -> 
         assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
         assert calls == 1
 
+
+
+def _timed_snapshot_rows() -> list[dict[str, str]]:
+    times = ("2026-10-19 10:05:50", "")
+    return [{**row, "scanned_at": scanned_at} for row, scanned_at in zip(_snapshot_rows(), times)]
+
+
+def test_timed_scan_snapshot_is_written_and_proved_with_its_scan_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _timed_snapshot_rows()
+    written: list[list[dict[str, str]]] = []
+
+    def read(target_date, *, include_scanned_at=False):
+        assert target_date == "2026-10-19" and include_scanned_at is True
+        return [dict(row) for row in written[-1]]
+
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.replace_scan_codes_snapshot",
+        lambda records, _target_date: written.append(records),
+    )
+    monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes_for_date", read)
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(
+            describe_account=_descriptor,
+            replace_scan_snapshot=replace_scan_snapshot_verified,
+        ),
+        cursor_secret=_SECRET,
+    )
+
+    result = handlers[("projection.invoke", "scan.snapshot.replace")](
+        _snapshot_context(),
+        {"records": rows, "target_date": "2026-10-19"},
+    )
+
+    expected = sorted(rows, key=lambda row: row["raw_code"])
+    assert result["verified"] is True and result["record_count"] == 2
+    assert result["identities_sha256"] == hashlib.sha256(canonical_json_bytes(expected)).hexdigest()
+    assert written == [rows]
+
+
+def test_timed_scan_snapshot_readback_must_match_the_scan_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _timed_snapshot_rows()
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.replace_scan_codes_snapshot",
+        lambda records, _target_date: None,
+    )
+    monkeypatch.setattr(
+        "tools.phase7_mysql_store.list_scan_codes_for_date",
+        lambda _target_date, *, include_scanned_at=False: [{**row, "scanned_at": ""} for row in rows],
+    )
+
+    with pytest.raises(PluginExecutionError) as exc:
+        replace_scan_snapshot_verified(rows, "2026-10-19")
+
+    assert exc.value.code == "WRITE_OUTCOME_UNKNOWN"
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [{**_snapshot_rows()[0], "scanned_at": "2026/10/19 10:05:50"}],
+        [{**_snapshot_rows()[0], "scanned_at": "2026-10-19 10:05:50"}, _snapshot_rows()[1]],
+    ],
+    ids=["bad-time-layout", "mixed-row-shapes"],
+)
+def test_timed_scan_snapshot_rejects_invalid_time_before_writing(records) -> None:
+    calls = 0
+
+    def replace(_records, _target_date):
+        nonlocal calls
+        calls += 1
+
+    handlers = build_first_party_core_handler_map(
+        FirstPartyCoreHandlerPorts(describe_account=_descriptor, replace_scan_snapshot=replace),
+        cursor_secret=_SECRET,
+    )
+    with pytest.raises(PluginExecutionError) as exc:
+        handlers[("projection.invoke", "scan.snapshot.replace")](
+            _snapshot_context(),
+            {"records": records, "target_date": "2026-10-19"},
+        )
+    assert exc.value.code == "BROKER_ARGUMENT_INVALID"
+    assert calls == 0
 
 def test_scan_next_verify_requires_a_fresh_context_bound_server_read():
     items = [

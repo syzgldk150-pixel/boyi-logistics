@@ -90,6 +90,10 @@ _SCAN_SNAPSHOT_FIELDS = (
     "code_type",
     "main_tracking",
 )
+# Optional real unloading scan time; producers either send it on every row or
+# on none (arrival statistics keeps the four identity fields).
+_SCAN_SNAPSHOT_TIME_FIELD = "scanned_at"
+_SCAN_SNAPSHOT_TIMED_FIELDS = (*_SCAN_SNAPSHOT_FIELDS, _SCAN_SNAPSHOT_TIME_FIELD)
 _SCAN_NEXT_FIELDS = ("bill_code", "station_name")
 _SCAN_READ_FIELDS = (
     "raw_code",
@@ -239,6 +243,8 @@ __all__ = [
     "_SITE_FIELDS",
     "_SCAN_SOURCE_FIELDS",
     "_SCAN_SNAPSHOT_FIELDS",
+    "_SCAN_SNAPSHOT_TIME_FIELD",
+    "_SCAN_SNAPSHOT_TIMED_FIELDS",
     "_SCAN_NEXT_FIELDS",
     "_SCAN_READ_FIELDS",
     "_ARRIVAL_STATS_FIELDS",

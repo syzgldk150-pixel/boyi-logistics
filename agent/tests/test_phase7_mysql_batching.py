@@ -47,6 +47,7 @@ def _migrated_rows():
             {"TABLE_NAME": "split_pending_problem_items", "COLUMN_NAME": "complaint_processed_at"},
             {"TABLE_NAME": "scan_codes", "COLUMN_NAME": "main_tracking"},
             {"TABLE_NAME": "scan_codes", "COLUMN_NAME": "snapshot_date"},
+            {"TABLE_NAME": "scan_codes", "COLUMN_NAME": "scanned_at"},
         ],
     ]
 
@@ -55,7 +56,7 @@ class BatchedInsertSqlTests(unittest.TestCase):
     def test_snapshot_and_split_pending_upserts_are_sent_as_one_multi_row_insert(self):
         # A literal inside VALUES makes PyMySQL execute one statement per row.
         for sql, parameter_count in (
-            (SNAPSHOT_UPSERT_SQL, 7),
+            (SNAPSHOT_UPSERT_SQL, 8),
             (store._SPLIT_PENDING_UPSERT_SQL, 16),
         ):
             with self.subTest(sql=sql.split("(")[0].strip()):

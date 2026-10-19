@@ -6,7 +6,9 @@ from agent.automation_plugins.connector_registry import (
 from agent.automation_plugins.connector_schemas import (
     BOOL, COUNT, CURSOR, DATE, TEXT, array_schema as array, object_schema as obj,
 )
-from agent.automation_plugins.first_party_handler_support import _SCAN_SOURCE_FIELDS, _SCAN_SNAPSHOT_FIELDS
+from agent.automation_plugins.first_party_handler_support import (
+    _SCAN_SNAPSHOT_FIELDS, _SCAN_SNAPSHOT_TIME_FIELD, _SCAN_SOURCE_FIELDS,
+)
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
 
@@ -16,6 +18,7 @@ def build_scan_connectors(reviewed):
         binding_kind=Kind.ACCOUNT,account_role="scan_ronghui",allowed_systems=("ronghui",))
     code = {"type":"string","minLength":1,"maxLength":128}
     digest = {"type":"string","pattern":r"^[0-9a-f]{64}$"}
+    scan_time = {"type":"string","pattern":r"^(?:|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})$"}
     receipt = {"operation_id":{"type":"string","minLength":1,"maxLength":2048},
         "items_sha256":digest,"submitted":COUNT,"scanned":COUNT,"skipped_signed_codes":array(code,maximum=200)}
 
@@ -40,6 +43,7 @@ def build_scan_connectors(reviewed):
             )),
         ConnectorDescriptor(service="connector.boyi.scan_projection@1",title="扫描快照",binding_kind=Kind.HOST_INTERNAL,account_role=None,allowed_systems=(),
             operations=(operation("snapshot_replace","scan.snapshot.replace",Effect.INTERNAL_WRITE,
-                obj({"target_date":DATE,"records":array(obj({field:TEXT for field in _SCAN_SNAPSHOT_FIELDS}))}),
+                obj({"target_date":DATE,"records":array(obj({**{field:TEXT for field in _SCAN_SNAPSHOT_FIELDS},
+                    _SCAN_SNAPSHOT_TIME_FIELD:scan_time},list(_SCAN_SNAPSHOT_FIELDS)))}),
                 obj({"target_date":DATE,"record_count":COUNT,"committed":BOOL,"verified":BOOL,"identities_sha256":digest}),projection=True),)),
     )

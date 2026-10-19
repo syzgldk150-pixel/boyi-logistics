@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-10-08
+updated: 2026-10-19
 ---
 
 # 物流 Agent 项目总览
@@ -120,7 +120,7 @@ updated: 2026-10-08
 - `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
 - `sync_arrival_stats` 会将融辉纯数字子单归并到对应主单，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。
-- `scan_codes` 表按 `raw_code` 主键 UPSERT 累积；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
+- `scan_codes` 表按 `raw_code` 主键 UPSERT 累积，`scanned_at` 保存扫描插件 2.0.3 起提交的融辉扫描来源真实扫描时间（历史行为空）；`sync_arrival_stats` 的 `scan_window_days` 只允许 1，保证当天范围不被历史扫描污染。首次部署或历史回填必须单独运行 `sync_scan_codes`。
 - `sync_arrival_stats` 的「未齐货物」飞书清单是可选输出。迁移生成的签名插件实例默认使用 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不要求存在 `phase7.pending_arrivals_sheet`；只有先在 `workflow_resources` 配置并显式绑定该资源，再把开关改为 false 才会写入。清单仍由 MySQL 视图 `v_arrival_progress` 实时计算（已到件数 < 应到件数 的主单），齐货后自动剔除。
 - `sync_arrival_stats_v2` 在包内通过同源 `split_rules.py` 生成未齐快照和 19 列表格行，Host 原样保存、写表并核验；现行链路不使用旧 `tools/split_pending_snapshot.py` 重算分类。合法空结果或全部到齐时清除未齐快照和目标旧行、保留表头；来源失败不得冒充空结果，自动刷新不触发融辉问题件上报。
 - `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
