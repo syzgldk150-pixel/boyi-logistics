@@ -30,8 +30,9 @@ from shared.business_modules import (
 )
 
 
+# Modules added after migration 027 (Harness, warehouse monitor) never get a historical seed row.
 _LEGACY_LIFECYCLE_MODULES = tuple(
-    item for item in BUSINESS_MODULE_CATALOG if item.module_code != "harness"
+    item for item in BUSINESS_MODULE_CATALOG if item.module_code not in {"harness", "warehouse_monitor"}
 )
 _LEGACY_LIFECYCLE_MODULE_CODES = {
     item.module_code for item in _LEGACY_LIFECYCLE_MODULES
@@ -373,11 +374,11 @@ def _repository(connection: _Connection) -> BusinessModuleRepository:
     return BusinessModuleRepository(lambda: connection)
 
 
-def test_catalog_is_exact_immutable_15_menu_identity_set() -> None:
+def test_catalog_is_exact_immutable_16_menu_identity_set() -> None:
     codes = [item.module_code for item in BUSINESS_MODULE_CATALOG]
 
-    assert len(codes) == 15
-    assert len(set(codes)) == 15
+    assert len(codes) == 16
+    assert len(set(codes)) == 16
     assert {item.module_code for item in BUSINESS_MODULE_CATALOG if not item.disable_allowed} == CORE_MODULE_CODES
     assert all(item.code_registered and item.version == "1.0.0" for item in BUSINESS_MODULE_CATALOG)
 
@@ -428,6 +429,7 @@ def test_migration_seeds_the_exact_enabled_baseline() -> None:
     for item in _LEGACY_LIFECYCLE_MODULES:
         assert f"('{item.module_code}', '1.0.0', '1.0.0', 'ENABLED', 1" in sql
     assert "('harness'," not in sql
+    assert "('warehouse_monitor'," not in sql
     assert sql.count("'ENABLED', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)") == 14
     assert "idx_business_module_events_module_created (module_code, created_at, event_id)" in sql
     assert "ON DUPLICATE KEY UPDATE module_code = module_code" in sql

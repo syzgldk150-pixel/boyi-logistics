@@ -70,6 +70,7 @@ def test_feishu_custom_identity_reader_is_allowed_and_then_revoked():
     ("/original-pages/ronghui/launch", "GET", "waybill.write"),
     ("/finance/summary", "GET", "finance.read"), ("/finance/sync", "POST", "finance.manage"),
     ("/automations/tasks/run-now", "POST", "plugins.execute"),
+    ("/warehouse-monitor", "GET", "warehouse.monitor"), ("/warehouse-monitor/clip", "GET", "warehouse.monitor"),
     ("/settings/accounts/identities/save", "POST", "super_admin"),
     ("/extensions/install", "POST", "super_admin"), ("/unknown-new-endpoint", "GET", "super_admin"),
 ])

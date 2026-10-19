@@ -22,6 +22,7 @@ from . import (
     monitoring,
     ocr,
     receipts,
+    warehouse_monitor,
     waybills,
     waybill_entry_extensions,
 )
@@ -45,6 +46,7 @@ class ConsoleRouteDispatcher:
         ocr,
         waybill_entry_extensions,
         waybills,
+        warehouse_monitor,
     )
 
     def handle_get(

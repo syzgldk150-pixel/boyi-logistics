@@ -137,11 +137,12 @@ def _message_result() -> dict:
     }
 
 
-def test_harness_is_the_fifteenth_fixed_core_module_and_navigation_entry() -> None:
+def test_harness_is_a_fixed_core_module_after_the_warehouse_monitor_entry() -> None:
     menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
-    assert len(BUSINESS_MODULE_CATALOG) == 15
-    assert len(CONSOLE_MENU_REGISTRATIONS) == 15
-    assert menu_ids.index("harness") == menu_ids.index("automations") + 1
+    assert len(BUSINESS_MODULE_CATALOG) == 16
+    assert len(CONSOLE_MENU_REGISTRATIONS) == 16
+    assert menu_ids.index("warehouse_monitor") == menu_ids.index("automations") + 1
+    assert menu_ids.index("harness") == menu_ids.index("warehouse_monitor") + 1
     harness_item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/harness")
     assert harness_item["label"] == "AI 助手"
     assert harness_item["icon"] == "message-square"

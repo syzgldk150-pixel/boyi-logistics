@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}监控查询 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}监控查询{% endblock %}
+{% block subtitle %}按单号查看卸车录像与仓库位置{% endblock %}
+{% block main_class %}warehouse-monitor-main{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/warehouse_monitor.css?v=20261019-1">{% endblock %}
+
+{% block content %}
+<section class="panel wm-search-panel" aria-label="按单号查询">
+  <form class="wm-search-form" data-wm-form novalidate>
+    <div class="wm-search-field">
+      <i data-feather="search" aria-hidden="true"></i>
+      <label class="sr-only" for="wm-code">运单号</label>
+      <input id="wm-code" name="code" type="search" inputmode="text" autocomplete="off" maxlength="32"
+             placeholder="输入主单号或子单号" value="{{ initial_code }}" data-wm-code>
+    </div>
+    <button class="primary-btn" type="submit" data-wm-submit>
+      <i data-feather="search" aria-hidden="true"></i><span>查询</span>
+    </button>
+  </form>
+  <p class="wm-video-status" data-wm-video-status data-configured="{{ 'true' if video_configured else 'false' }}" role="status" aria-live="polite">
+    <span class="wm-dot" aria-hidden="true"></span><span data-wm-video-status-text>正在检查录像服务…</span>
+  </p>
+</section>
+
+<p class="wm-feedback" data-wm-feedback role="status" aria-live="polite" hidden></p>
+
+<section class="panel wm-result" data-wm-result hidden aria-label="查询结果">
+  <div data-wm-summary></div>
+  <div class="wm-location">
+    <h2 class="section-title"><i data-feather="map-pin" aria-hidden="true"></i>仓库位置</h2>
+    <p class="wm-location-text" data-wm-location>目的网点：—。库区对应关系尚未配置，暂不推定库区。</p>
+  </div>
+  <div class="wm-pieces">
+    <h2 class="section-title"><i data-feather="list" aria-hidden="true"></i>扫描记录</h2>
+    <div class="wm-table-wrap">
+      <table class="wm-table">
+        <thead><tr><th scope="col">条码</th><th scope="col">类型</th><th scope="col">目的网点</th><th scope="col">扫描日期</th><th scope="col">扫描时间</th><th scope="col"><span class="sr-only">录像</span></th></tr></thead>
+        <tbody data-wm-rows></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="panel wm-player" data-wm-player hidden aria-label="录像回放">
+  <div class="wm-player-head">
+    <h2 class="section-title"><i data-feather="video" aria-hidden="true"></i><span data-wm-player-title>录像</span></h2>
+    <div class="wm-channel-tabs" role="tablist" aria-label="摄像头" data-wm-channels>
+      {% for channel in channels %}
+      <button type="button" role="tab" class="wm-channel" data-wm-channel="{{ channel.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ channel.label }}</button>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="wm-player-controls">
+    <div class="wm-shift" role="group" aria-label="调整开始时间">
+      <button type="button" class="ghost-btn" data-wm-shift="-120">−2 分</button>
+      <button type="button" class="ghost-btn" data-wm-shift="-30">−30 秒</button>
+      <span class="wm-start" data-wm-start>—</span>
+      <button type="button" class="ghost-btn" data-wm-shift="30">+30 秒</button>
+      <button type="button" class="ghost-btn" data-wm-shift="120">+2 分</button>
+    </div>
+    <label class="wm-length">
+      <span>时长</span>
+      <select data-wm-seconds>
+        {% for seconds in clip_seconds %}<option value="{{ seconds }}"{% if seconds == 60 %} selected{% endif %}>{{ seconds // 60 if seconds >= 60 else seconds }}{{ ' 分钟' if seconds >= 60 else ' 秒' }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  <div class="wm-video-frame">
+    <video class="wm-video" data-wm-video controls playsinline preload="none"></video>
+    <p class="wm-video-message" data-wm-video-message hidden></p>
+  </div>
+  <p class="wm-hint" data-wm-hint>录像按北京时间读取，已自动修正录像机时钟偏差；画面时间以录像机水印为准。</p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/warehouse_monitor.js?v=20261019-1"></script>
+{% endblock %}

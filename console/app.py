@@ -18,6 +18,7 @@ from console.services.documents import DocumentServiceMixin
 from console.services.business_modules import BusinessModulesServiceMixin
 from console.services.extensions import ExtensionsServiceMixin
 from console.services.waybill_entry_extensions import WaybillEntryExtensionsServiceMixin
+from console.services.warehouse_monitor import WarehouseMonitorServiceMixin
 from console.navigation import (
     CONSOLE_NAVIGATION,
 )
@@ -55,6 +56,7 @@ class LocalDocFlowApp(
     DocumentServiceMixin,
     ExtensionsServiceMixin,
     BusinessModulesServiceMixin,
+    WarehouseMonitorServiceMixin,
 ):
     def __init__(self) -> None:
         self.settings = load_settings()

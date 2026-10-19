@@ -33,6 +33,8 @@ def console_permission(method: str, path: str) -> str:
         return "dispatch"
     if _under(path, "/line-haul-contacts"):
         return "line_haul"
+    if _under(path, "/warehouse-monitor"):
+        return "warehouse.monitor"
     if path in {"/automations", "/workspaces/automations", "/extensions"}:
         return "plugins.execute" if read else SUPER_ADMIN
     if path in {"/automations/tasks/run-now", "/automations/tasks/confirm-scan-preview", "/automations/tasks/selection-preview", "/automations/tasks/confirm-selection-preview", "/automations/tasks/cancel", "/automations/tasks/output"}:
@@ -48,6 +50,8 @@ def business_permission(operation: str) -> str:
     if operation in {"receipts-query", "receipt-feishu-detail", "send-waybills-query", "delivery_status",
                      "query_waybill_detail", "ronghui_tms_tracking", "tracking_query", "waybill_tracking", "yunda_waybill_tracking"}:
         return "business.query"
+    if operation == "warehouse-scan-times":
+        return "warehouse.monitor"
     return SUPER_ADMIN
 
 

@@ -262,7 +262,7 @@ docs/
 
 ## 固定模块与旧生命周期只读兼容
 
-- `shared/business_modules.py` 定义 15 个固定模块身份；固定模块的新调用 不再查询或锁定旧生命周期行，其可用性只受代码路由、调用方身份权限和各业务自身前置条件约束。`migrations/027_business_module_lifecycle.sql`、历史表和 Lite 审计继续保留且不得改写；历史迁移固定保留 14 行 seed，不得为 Harness 改写；`/internal/v1/admin/modules` 只保留签名管理员读取目录、详情和审计，生命周期 POST 已移除。迁移合同仍在 seed 前精确校验结构且只补齐历史缺行。
+- `shared/business_modules.py` 定义 16 个固定模块身份；固定模块的新调用 不再查询或锁定旧生命周期行，其可用性只受代码路由、调用方身份权限和各业务自身前置条件约束。`migrations/027_business_module_lifecycle.sql`、历史表和 Lite 审计继续保留且不得改写；历史迁移固定保留 14 行 seed，不得为 Harness 或监控查询改写；`/internal/v1/admin/modules` 只保留签名管理员读取目录、详情和审计，生命周期 POST 已移除。迁移合同仍在 seed 前精确校验结构且只补齐历史缺行。
 - `query_automation_operations` 的查询与 direct reader 接线位于 `agent/business_query.py` / `main.py`，只接受闭合中国业务日期，按同一只读快照聚合当前 Invocation 状态和新鲜度；未知写不计成功，旧 Command/Run 不混入当前记录。飞书“经营摘要/经营情况”在 `direct_tool_router.py` / `core.py`，复用财务日期与管理员绑定；金额、客户收入和异常历史均不得猜测。
 
 

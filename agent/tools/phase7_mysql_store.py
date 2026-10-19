@@ -836,6 +836,61 @@ def list_scan_codes_for_date(
     )
 
 
+_SCAN_LOOKUP_CODE_RE = re.compile(r"^[0-9A-Z]{6,32}$")
+SCAN_LOOKUP_MAX_DAYS = 60
+SCAN_LOOKUP_MAX_ROWS = 500
+
+
+def list_scan_times_for_tracking(code: str, *, days: int = SCAN_LOOKUP_MAX_DAYS) -> dict[str, Any]:
+    """Recent scan snapshot rows of one waybill (main or child code), with real scan times."""
+    text = _clean_text(code).upper()
+    if not _SCAN_LOOKUP_CODE_RE.fullmatch(text):
+        raise ValueError("单号格式无效")
+    if not 1 <= int(days) <= SCAN_LOOKUP_MAX_DAYS:
+        raise ValueError("查询天数超出范围")
+    main_tracking = main_tracking_from_scan_code(text) or text
+    ensure_phase7_tables()
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT snapshot_date, raw_code, code_type, main_tracking, destination, scanned_at
+                FROM scan_codes
+                WHERE (main_tracking = %s OR raw_code = %s)
+                  AND snapshot_date >= CURDATE() - INTERVAL %s DAY
+                ORDER BY snapshot_date, scanned_at, raw_code
+                LIMIT %s
+                """,
+                (main_tracking, text, int(days), SCAN_LOOKUP_MAX_ROWS + 1),
+            )
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+    if len(rows) > SCAN_LOOKUP_MAX_ROWS:
+        raise ValueError("该单号的扫描记录超过查询上限")
+    return {
+        "code": text,
+        "main_tracking": main_tracking,
+        "lookback_days": int(days),
+        "rows": [
+            {
+                "snapshot_date": str(row.get("snapshot_date") or ""),
+                "raw_code": _clean_text(row.get("raw_code")),
+                "code_type": _clean_text(row.get("code_type")),
+                "main_tracking": _clean_text(row.get("main_tracking")),
+                "destination": _clean_text(row.get("destination")),
+                "scanned_at": (
+                    row["scanned_at"].strftime("%Y-%m-%d %H:%M:%S")
+                    if isinstance(row.get("scanned_at"), datetime)
+                    else _clean_text(row.get("scanned_at"))
+                ),
+            }
+            for row in rows
+        ],
+    }
+
+
 def _waybill_row_tuple(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(row.get(field) for field in WAYBILL_FIELDS)
 

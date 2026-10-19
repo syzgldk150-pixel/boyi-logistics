@@ -164,6 +164,9 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `services/waybills_receipts.py`
   - 统一通过 `_agent_request()` 代理 Agent `/internal/v1/tms/tracking_query`，按融辉 TMS、韵达、专线分发展示；融辉 TMS 展示“扫描轨迹 / 运单详情 / 子单详情”三个页签，韵达在原页接口返回明确子单数据时展示子单详情；韵达的 `data_source`、`device_no` 只保留在接口数据中不展示
   - 融辉轨迹先以 `decrypt_masked: false` 查询并立即展示（主单轨迹只保留主单号自身扫描，子单扫描归入子单详情）；Agent 返回 `detail_masked=true` 时页面在后台再查一次解密收发货人（Agent 按原页“解密客户信息”的接口顺序：以快件跟踪页内运单轨迹子页面的 `authenticationKey/pageId` 调 `FIND_SITE_IS_SCAN` 校验当前登录网点 `IS_FLAG=1`（外层页 pageId 会被拒为“非法的请求”）后以 `isView=true` 重读 `getBillByCode`，不再启动浏览器），期间运单详情显示脱敏值与加载提示，失败显示原因与重试，不影响已显示的轨迹。浏览器本地只记最近 6 个查询单号，查询成功后同步地址栏单号
+- 改监控查询（按单号看卸车录像）：
+  - `services/warehouse_monitor.py`、`routes/warehouse_monitor.py`、`templates/warehouse_monitor.html`、`static/warehouse_monitor.js`、`static/warehouse_monitor.css`
+  - 扫描时间只经 Agent `warehouse-scan-times` 读取；录像由服务器端以 `WAREHOUSE_VIDEO_BASE_URL/WAREHOUSE_VIDEO_TOKEN` 访问仓库笔记本录像服务，令牌不进入浏览器，离线明确提示。权限 `warehouse.monitor`，详见 [监控查询](../docs/warehouse_monitor.md)
 - 改专线分流公司维护页：
   - `templates/line_haul_contacts.html`
   - `line_haul_contacts.py`
@@ -267,9 +270,9 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 移动端导航与视觉壳层
 
-- 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`，其中 `work_items` 只保留内部路由与权限身份并明确 `show_in_navigation=False`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；`system_status` 仍由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 唯一菜单注册目录：`navigation.py`。16 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`，其中 `work_items` 只保留内部路由与权限身份并明确 `show_in_navigation=False`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；`system_status` 仍由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
-- 模块代码注册状态目录：`module_status_registry.py`。它按 15 个固定模块顺序登记唯一 `code_registered`，不包含控制平面“系统状态”；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
+- 模块代码注册状态目录：`module_status_registry.py`。它按 16 个固定模块顺序登记唯一 `code_registered`，不包含控制平面“系统状态”；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
 - 系统区可见固定模块顺序为“智能模型 → 系统管理”，super_admin 再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。`/work-items` 只允许业务页或 Codex 按需深链，不进入导航候选。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
@@ -287,8 +290,8 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 固定业务模块与系统状态
 
-- 15 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新调用 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
-- 插件管理不是第 15 个固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
+- 16 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新调用 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
+- 插件管理不是固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
 - `/settings/modules` 只重定向到 `/settings/system-status`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。`/settings/system-status` 同样只对真实非 legacy `super_admin` 显示，且只投影 `/internal/v1/health` 白名单字段，Agent 不可达或字段缺失时明确显示“不可用”。
 
 - 插件专属设置页必须先安装宿主消息监听器，再给隔离 iframe 设置 `src`，防止缓存子页的首次配置请求丢失；时序回归见 `tests/test_plugin_settings_initialization.py`，真实保存／改绑／历史恢复验收见 `../tests/v32_acceptance/custom_settings.py`。
