@@ -234,7 +234,9 @@ from agent.scheduler import (
     emergency_withdraw_automation_project_jobs,
     init_scheduler,
     pause_scheduler_for_release,
+    release_missed_scheduled_task_ids,
     reload_scheduler,
+    run_scheduled_tasks_now,
     scheduler_release_hold_requested,
     scheduler_runtime_status,
     seed_phase7_schedule_tasks,
@@ -2700,6 +2702,18 @@ async def internal_activate_scheduler_after_release(request: Request):
                 except RuntimeError:
                     logger.exception("Scheduler could not be re-held after activation failure")
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if release_marker_present:
+        # Scheduled collection skipped by this release runs once now. A failure
+        # here must not undo an activation that has already been committed.
+        try:
+            missed = await asyncio.to_thread(
+                release_missed_scheduled_task_ids, _runtime().memory.connection_factory
+            )
+            caught_up = run_scheduled_tasks_now(missed)
+            if caught_up:
+                logger.info("Release catch-up started for %d scheduled task(s)", len(caught_up))
+        except Exception:
+            logger.exception("Release catch-up of missed scheduled tasks failed")
     status = {
         **scheduler_status,
         "workflow_runner": runner.runtime_status(),

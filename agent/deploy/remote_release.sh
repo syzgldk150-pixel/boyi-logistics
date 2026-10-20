@@ -67,6 +67,8 @@ PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
 PIP_TIMEOUT_SECONDS="${BOYI_PIP_TIMEOUT_SECONDS:-300}"
 MUTATION_STARTED=0
+PROTECTED_WRITE_WAIT_SECONDS=600
+PROTECTED_WRITE_POLL_SECONDS=15
 VENV_ACTIVATED=0
 SERVICES_QUIESCED=0
 RELEASE_STAGE="initialization"
@@ -677,21 +679,37 @@ preflight_automation_project_required_resources() {
 }
 
 preflight_running_protected_writes() {
-  local output
-  if output="$(run_staged_migration_runner --check-running-protected-writes 2>&1)"; then
-    if [[ "${output}" == "protected_write_quiesce=ok running_writes=0" ]]; then
-      echo "${output}"
-      return 0
+  local output waited=0
+  while true; do
+    if output="$(run_staged_migration_runner --check-running-protected-writes 2>&1)"; then
+      if [[ "${output}" == "protected_write_quiesce=ok running_writes=0" ]]; then
+        echo "${output}"
+        if (( waited > 0 )); then
+          # Waiting moved the release closer to the next write schedule.
+          preflight_scheduled_write_window || return 1
+        fi
+        return 0
+      fi
+      echo "protected_write_quiesce=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+      return 1
     fi
-    echo "protected_write_quiesce=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-  if [[ "${output}" =~ ^protected_write_quiesce=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
+    if [[ ! "${output}" =~ ^protected_write_quiesce=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
+      echo "protected_write_quiesce=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
+      return 1
+    fi
+    # Before shutdown, wait for a running plugin call (the 15-minute customer
+    # collector takes ~5 minutes) instead of failing the release. Once mutation
+    # has started the services are stopped and the check stays immediate.
+    if [[ "${MUTATION_STARTED}" != "1" && "${output}" == *" reason=PROTECTED_WRITE_RUNNING "* ]] \
+      && (( waited < PROTECTED_WRITE_WAIT_SECONDS )); then
+      echo "protected_write_quiesce=waiting waited_seconds=${waited}"
+      sleep "${PROTECTED_WRITE_POLL_SECONDS}"
+      waited=$(( waited + PROTECTED_WRITE_POLL_SECONDS ))
+      continue
+    fi
     echo "${output}" >&2
-  else
-    echo "protected_write_quiesce=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-  fi
-  return 1
+    return 1
+  done
 }
 
 check_control_plane_release_manifest() {

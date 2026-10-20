@@ -7,7 +7,7 @@ import copy
 import logging
 import os
 import stat
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Awaitable, Callable, Mapping
@@ -1385,6 +1385,70 @@ def consume_scheduler_release_hold(expected_release_sha: str) -> dict[str, Any]:
     except OSError as exc:
         raise RuntimeError("Scheduler release hold could not be consumed") from exc
     return scheduler_runtime_status()
+
+
+# A scheduled run of these plugins that fell inside a release (skipped by the
+# hold or lost with the restart) is run once right after activation.
+RELEASE_CATCHUP_PLUGIN_IDS = frozenset({"sync_customer_service_problems_v2"})
+# A release takes ~20-30 minutes; older misses are not release misses.
+RELEASE_CATCHUP_LOOKBACK = timedelta(hours=2)
+
+
+def release_missed_scheduled_task_ids(connection_factory, *, now: datetime | None = None) -> tuple[str, ...]:
+    """Return one task per catch-up project whose fire time passed since its last call.
+
+    The last Invocation start (UTC) is the reference, so a night release after
+    the day's final run finds nothing to catch up.
+    """
+
+    now = now or datetime.now(timezone.utc)
+    placeholders = ",".join(["%s"] * len(RELEASE_CATCHUP_PLUGIN_IDS))
+    connection = connection_factory()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""SELECT t.id, t.automation_id, t.cron_expression,
+                       (SELECT MAX(i.started_at) FROM automation_plugin_invocations i
+                        WHERE i.automation_id = t.automation_id) AS last_started
+                    FROM scheduled_tasks t
+                    JOIN automation_projects p ON p.automation_id = t.automation_id
+                    WHERE t.enabled = 1 AND p.enabled = 1 AND p.plugin_id IN ({placeholders})
+                    ORDER BY t.automation_id, t.id""",
+                tuple(sorted(RELEASE_CATCHUP_PLUGIN_IDS)),
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.close()
+    selected: dict[str, str] = {}
+    for row in rows:
+        task_id, automation_id, cron, last_started = (
+            (row["id"], row["automation_id"], row["cron_expression"], row["last_started"])
+            if isinstance(row, Mapping) else row
+        )
+        if automation_id in selected or not isinstance(last_started, datetime):
+            continue
+        since = max(last_started.replace(tzinfo=timezone.utc), now - RELEASE_CATCHUP_LOOKBACK)
+        trigger = CronTrigger.from_crontab(str(cron), timezone="Asia/Shanghai")
+        missed = trigger.get_next_fire_time(None, since + timedelta(seconds=1))
+        if missed is not None and missed <= now:
+            selected[str(automation_id)] = str(task_id)
+    return tuple(selected.values())
+
+
+def run_scheduled_tasks_now(task_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """Fire existing jobs once through their normal scheduled path."""
+
+    scheduler = _scheduler
+    if scheduler is None or scheduler.state != STATE_RUNNING:
+        return ()
+    started = []
+    for task_id in task_ids:
+        job = scheduler.get_job(task_id)
+        if job is None:
+            continue
+        job.modify(next_run_time=datetime.now(job.trigger.timezone))
+        started.append(task_id)
+    return tuple(started)
 
 
 def reload_scheduler(

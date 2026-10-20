@@ -671,6 +671,73 @@ class ReleaseBoundaryTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, completed.stdout)
 
+    def test_running_plugin_call_is_waited_for_before_shutdown_only(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            PROTECTED_WRITE_POLL_SECONDS=1
+            sleep() { :; }
+            counter="${stage_root}/quiesce_calls"
+            echo 0 >"${counter}"
+            run_staged_migration_runner() {
+              local calls=$(( $(cat "${counter}") + 1 ))
+              echo "${calls}" >"${counter}"
+              if (( calls < 3 )); then
+                echo "protected_write_quiesce=blocked reason=PROTECTED_WRITE_RUNNING count=1" >&2
+                return 1
+              fi
+              echo "protected_write_quiesce=ok running_writes=0"
+            }
+            preflight_scheduled_write_window() { echo "window_rechecked"; }
+            preflight_running_protected_writes || exit 9
+            echo "calls=$(cat "${counter}")"
+            MUTATION_STARTED=1
+            echo 0 >"${counter}"
+            run_staged_migration_runner() {
+              echo $(( $(cat "${counter}") + 1 )) >"${counter}"
+              echo "protected_write_quiesce=blocked reason=PROTECTED_WRITE_RUNNING count=1" >&2
+              return 1
+            }
+            if preflight_running_protected_writes; then echo "post_mutation=passed"; else echo "post_mutation=blocked calls=$(cat "${counter}")"; fi
+            """,
+            target_csv="agent",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("protected_write_quiesce=waiting waited_seconds=0", completed.stdout)
+        self.assertIn("protected_write_quiesce=waiting waited_seconds=1", completed.stdout)
+        self.assertIn("window_rechecked", completed.stdout)
+        self.assertIn("calls=3", completed.stdout)
+        self.assertIn("post_mutation=blocked calls=1", completed.stdout)
+
+    def test_unexpected_quiesce_failures_are_never_waited_for(self):
+        completed = _run_sourced_release_harness(
+            r"""
+            counter="${stage_root}/quiesce_calls"
+            echo 0 >"${counter}"
+            run_staged_migration_runner() {
+              echo $(( $(cat "${counter}") + 1 )) >"${counter}"
+              echo "protected_write_quiesce=blocked reason=QUIESCE_RUNTIME_ERROR count=1" >&2
+              return 1
+            }
+            if preflight_running_protected_writes; then echo passed; else echo "blocked calls=$(cat "${counter}")"; fi
+            PROTECTED_WRITE_WAIT_SECONDS=2
+            PROTECTED_WRITE_POLL_SECONDS=1
+            sleep() { :; }
+            echo 0 >"${counter}"
+            run_staged_migration_runner() {
+              echo $(( $(cat "${counter}") + 1 )) >"${counter}"
+              echo "protected_write_quiesce=blocked reason=PROTECTED_WRITE_RUNNING count=1" >&2
+              return 1
+            }
+            if preflight_running_protected_writes; then echo passed; else echo "bounded calls=$(cat "${counter}")"; fi
+            """,
+            target_csv="agent",
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("blocked calls=1", completed.stdout)
+        self.assertIn("bounded calls=3", completed.stdout)
+
     def test_agent_only_execution_keeps_agent_gates_but_skips_shared_mutations(self):
         completed = _run_sourced_release_harness(
             r"""
