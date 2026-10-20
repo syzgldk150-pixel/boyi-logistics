@@ -27,7 +27,7 @@
     nvr_unreachable: "录像服务在线，但连不上录像机",
     not_configured: "服务器未配置录像服务",
   };
-  const state = { start: null, channel: Number(channelButtons[0] && channelButtons[0].dataset.wmChannel), code: "", objectUrl: "", loadId: 0 };
+  const state = { start: null, channel: Number(channelButtons[0] && channelButtons[0].dataset.wmChannel), code: "", objectUrl: "", loadId: 0, controller: null };
 
   function requestJson(url) {
     return fetch(url, { headers: { Accept: "application/json", "X-Requested-With": "fetch" }, credentials: "same-origin" })
@@ -159,9 +159,35 @@
     videoMessage.hidden = !text;
   }
 
+  // 逐块读取并显示传输进度：ECS 出口带宽有限，整段下载完之前用户需要知道还在传。
+  function readClip(response, loadId) {
+    const total = Number(response.headers.get("Content-Length")) || 0;
+    if (!response.body || !total) return response.blob();
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+    function pump() {
+      return reader.read().then(function (step) {
+        if (step.done) return new Blob(chunks, { type: "video/mp4" });
+        chunks.push(step.value);
+        received += step.value.length;
+        if (loadId === state.loadId) {
+          showVideoMessage("正在传输录像… " + Math.floor(received * 100 / total) + "%（" +
+            (received / 1048576).toFixed(1) + " / " + (total / 1048576).toFixed(1) + " MB）");
+        }
+        return pump();
+      });
+    }
+    return pump();
+  }
+
   function loadClip() {
     if (!state.start) return;
     const loadId = ++state.loadId;
+    // 切换通道或时间时取消上一段，避免旧请求继续占用录像机和服务器带宽。
+    if (state.controller) state.controller.abort();
+    const controller = new AbortController();
+    state.controller = controller;
     startLabel.textContent = formatLocal(state.start, " ");
     channelButtons.forEach(function (button) {
       button.setAttribute("aria-selected", String(Number(button.dataset.wmChannel) === state.channel));
@@ -170,10 +196,10 @@
     video.load();
     showVideoMessage("正在从录像机取录像…");
     const params = new URLSearchParams({ channel: String(state.channel), start: formatLocal(state.start), seconds: secondsSelect.value });
-    fetch("/warehouse-monitor/clip?" + params.toString(), { headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" })
+    fetch("/warehouse-monitor/clip?" + params.toString(), { headers: { "X-Requested-With": "fetch" }, credentials: "same-origin", signal: controller.signal })
       .then(function (response) {
         const type = response.headers.get("Content-Type") || "";
-        if (response.ok && type.indexOf("video/mp4") === 0) return response.blob();
+        if (response.ok && type.indexOf("video/mp4") === 0) return readClip(response, loadId);
         return response.json().catch(function () { return {}; }).then(function (body) {
           throw new Error(body.message || "录像读取失败（" + response.status + "）");
         });
@@ -184,6 +210,7 @@
         state.objectUrl = URL.createObjectURL(blob);
         video.src = state.objectUrl;
         showVideoMessage("");
+        video.play().catch(function () {});
       })
       .catch(function (error) {
         if (loadId !== state.loadId) return;

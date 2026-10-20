@@ -268,6 +268,9 @@
   text-align: center;
 }
 
+/* display:flex 会覆盖 hidden 属性，遮罩不隐藏就会挡住播放器。 */
+.wm-video-message[hidden] { display: none; }
+
 .wm-hint {
   margin: 8px 0 0;
   color: var(--muted);
