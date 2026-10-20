@@ -131,3 +131,63 @@ def test_real_read_lifecycle_keeps_actual_provider_account_until_cancelled_threa
         assert lifecycle.active_read_count() == 0
         lifecycle.begin_credentials_change("bound-account")()
     asyncio.run(scenario())
+
+
+def test_direct_reads_do_not_queue_behind_a_saturated_default_executor():
+    from concurrent.futures import ThreadPoolExecutor
+    import contextvars
+    from agent.tms_runtime.direct_execution import call_blocking
+
+    marker = contextvars.ContextVar("marker", default="")
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        busy, release = threading.Event(), threading.Event()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+
+        def occupy():
+            busy.set()
+            release.wait(5)
+
+        blocker = loop.run_in_executor(None, occupy)
+        assert busy.wait(3)
+        marker.set("direct")
+        try:
+            # Plugin Host calls hold the shared pool; the page read still runs at once.
+            assert await call_blocking(marker.get, timeout_sec=2) == "direct"
+        finally:
+            release.set()
+            await blocker
+    asyncio.run(scenario())
+
+
+def test_waybill_source_preparation_runs_off_the_event_loop():
+    async def scenario():
+        loop_thread = threading.get_ident()
+        prepared_on = []
+        scope = observe_query_scope("ronghui", "bound-account", Session())
+
+        class Repository:
+            def read_cached(self, **kwargs):
+                return {"rows": [], "total": 0}
+            @contextmanager
+            def session(self):
+                yield self
+            def coverage_range(self, *args):
+                return {}
+            def publish(self, *args, **kwargs):
+                return {"complete": True}
+
+        source = WaybillQuerySource(scope, lambda day: ([], 0))
+
+        def prepare(_providers):
+            prepared_on.append(threading.get_ident())
+            return ("bound-account",), lambda _: source
+
+        lifecycle = DirectPluginInvocationService(object(), SimpleNamespace(), object(), release_hold_provider=lambda: False)
+        service = DirectWaybillQueryService(Repository(), lambda _: source,
+            prepare_sources=prepare, read_lifecycle=lifecycle)
+        result = await service({"source": "ronghui", "date_from": date.today().isoformat()}, 30)
+        assert result["complete"] is True
+        assert prepared_on and prepared_on[0] != loop_thread
+    asyncio.run(scenario())

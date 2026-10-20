@@ -49,11 +49,20 @@ def test_yunda_problem_title_punctuation_is_preserved():
     assert value["raw_fields"]["prob_title"] == "/"
 
 
+def test_yunda_detail_user_field_placeholder_is_preserved():
+    # Real Yunda problem details return udf013 == "/" for every record.
+    value = {"details": {"udf013": "/", "prob_status": "处理中"}}
+    check(value)
+    assert value["details"]["udf013"] == "/"
+
+
 @pytest.mark.parametrize("value", [
     {"prob_title": "/etc/passwd"},
     {"prob_title": "https://private.invalid/attachment"},
     {"prob_title": "/ password=fixture-secret"},
     {"other_field": "/"},
+    {"udf013": "/etc/passwd"},
+    {"udf13": "/"},
 ])
 def test_yunda_title_exception_does_not_allow_private_targets(value):
     with pytest.raises(ConnectorSensitiveDataDenied):

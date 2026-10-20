@@ -444,10 +444,12 @@ def _reject_sensitive_result(
             "receiver_phone", "sender_phone",
         } and re.fullmatch(r"[0-9]+(?:/+[0-9]+)+", value):
             checked = value.replace("/", " ")
-        # Yunda's native problem list uses a single slash as a title value.
-        # Preserve that exact punctuation; paths and all other fields still
-        # pass through the ordinary private-target checks below.
-        if business_field == "prob_title" and value == "/":
+        # Yunda uses a lone slash as an empty placeholder in the problem title
+        # and its numbered user-defined detail fields (udf013). Preserve that
+        # exact punctuation; paths and all other fields still pass through the
+        # ordinary private-target checks below.
+        if value == "/" and (business_field == "prob_title"
+                             or re.fullmatch(r"udf[0-9]{3}", str(business_field or ""))):
             checked = ""
         # Feishu conditional-format ranges are cell coordinates, not URI
         # schemes (A2:L29). Keep identity checks above and only accept a closed

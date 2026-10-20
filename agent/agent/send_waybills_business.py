@@ -38,7 +38,10 @@ class DirectWaybillQueryService:
             provider = params.get("source", "all")
             if provider not in {"all", "ronghui", "yunda"}:
                 raise ValueError("unsupported waybill query source")
-            accounts, resolver = self.prepare_sources(["ronghui", "yunda"] if provider == "all" else [provider])
+            # Catalog and account reads hit the cross-region database; keep them off the event loop.
+            providers = ["ronghui", "yunda"] if provider == "all" else [provider]
+            accounts, resolver = await call_blocking(lambda: self.prepare_sources(providers),
+                                                     timeout_sec=max(1, min(int(timeout_sec), 30)))
 
         async def work():
             return await call_blocking(lambda: self.query(dict(params), timeout_sec=timeout_sec,

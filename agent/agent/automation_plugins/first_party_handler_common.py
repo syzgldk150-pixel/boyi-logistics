@@ -437,8 +437,11 @@ def _scrub_customer_value(value: Any) -> Any:
     # Native Ronghui/Yunda attachment locators are not classification or
     # exact-status inputs. Yunda's prob_mark is also unused by classification
     # and can contain private locators. Keep these Host-private in both views.
+    # Detail attachments carry server paths: Ronghui path/SAVE_POS, Yunda
+    # attachment_path; returning them made every detail recheck fail.
     return _scrub_business_value(
-        value, private_fields=frozenset({"file_path", "sign_file_path", "bl_attachment", "prob_mark"})
+        value, private_fields=frozenset({"file_path", "sign_file_path", "bl_attachment", "prob_mark",
+                                         "path", "save_pos", "attachment_path"})
     )
 
 

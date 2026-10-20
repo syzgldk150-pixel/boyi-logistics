@@ -292,7 +292,10 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity(prob_
                 "account_id": params["account_id"],
                 "details": [{"status": "已关闭", "session_note": "must be removed", "prob_mark": prob_mark,
                     "bl_attachment": "/uploads/private/problem.jpg",
-                    "nested": {"FILE_PATH": "/private/file", "PROB_MARK": prob_mark}}],
+                    "nested": {"FILE_PATH": "/private/file", "PROB_MARK": prob_mark},
+                    "attachments": [{"name": "fixture.jpg", "path": "/private/upload/fixture.jpg",
+                                     "raw": {"SAVE_POS": "/private/upload/fixture.jpg"}}],
+                    "attachment": [{"attachment_path": "/private/yunda/fixture.jpg"}]}],
             }
         external = f"{params['platform']}-{params['direction']}"
         return {
@@ -380,7 +383,8 @@ def test_customer_handlers_own_bound_source_pagination_and_opaque_identity(prob_
         },
     )
     assert detail["dedupe_key"] == selected["dedupe_key"]
-    assert detail["details"] == [{"status": "已关闭", "nested": {}}]
+    assert detail["details"] == [{"status": "已关闭", "nested": {}, "attachments": [{"name": "fixture.jpg", "raw": {}}],
+                                  "attachment": [{}]}]
     _reject_sensitive_result({key: value for key, value in detail.items() if key != "evidence_ref"},
         sensitive_identifiers=("customer-rh", "customer-yd"),
         reject_wrapped_identifiers=False)
