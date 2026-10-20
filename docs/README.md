@@ -44,7 +44,7 @@ updated: 2026-10-08
 - [身份权限与统一对话](identity_and_unified_chat.md)：后台账号和飞书身份继承、共用 AI 服务、授权插件执行及当前应签规则。
 - [V3.2 维护边界](low_maintenance_v32.md)、[复现与发布回退](low_maintenance_v32_release.md)：所属模块入口、可选 AI、简单设置、局部维护与来源历史。
 - [寄件查询与范围覆盖](direct_waybill_query.md)：数据库优先、平台补查及完整来源边界。
-- [监控查询](warehouse_monitor.md)：按单号读取真实扫描时间并调出仓库录像，录像服务与位置推定边界。
+- [监控查询](warehouse_monitor.md)：按单号读取真实扫描时间并签发局域网回放链接，录像只在仓库局域网内播放，含位置推定边界。
 - [发货吨位与飞书知识读取](shipment_knowledge_queries.md)：类型化查询、追问、受限 Wiki CLI 与真实来源核实边界。
 - [代码定位索引](../agent/docs/code_navigation_index.md)、[项目总览](../agent/docs/project_overview.md)：代码、测试和模块入口。
 - [数据库迁移](../agent/docs/database_migrations.md)：部署期顺序迁移；运行时只做校验和读写。

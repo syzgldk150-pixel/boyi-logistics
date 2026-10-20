@@ -1,4 +1,4 @@
-"""Warehouse monitor routes: page, scan-time lookup, video status and clip proxy."""
+"""Warehouse monitor routes: page and scan-time lookup (video plays on the warehouse LAN)."""
 
 from __future__ import annotations
 
@@ -11,12 +11,6 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
         return True
     if path == "/warehouse-monitor/lookup":
         app._handle_warehouse_monitor_lookup(handler, query)
-        return True
-    if path == "/warehouse-monitor/video-status":
-        app._handle_warehouse_monitor_video_status(handler)
-        return True
-    if path == "/warehouse-monitor/clip":
-        app._handle_warehouse_monitor_clip(handler, query)
         return True
     return False
 

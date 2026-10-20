@@ -45,26 +45,13 @@
   outline-offset: 1px;
 }
 
-.wm-video-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.wm-video-note {
   margin: 0;
   color: var(--muted);
   font-size: 0.8125rem;
 }
 
-.wm-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--line-strong);
-}
-
-.wm-video-status[data-state="online"] .wm-dot { background: var(--success-ink); }
-.wm-video-status[data-state="offline"] .wm-dot,
-.wm-video-status[data-state="nvr_unreachable"] .wm-dot { background: var(--warning-ink); }
-.wm-video-status[data-state="not_configured"] .wm-dot { background: var(--danger-ink); }
+.wm-video-note[data-configured="false"] { color: var(--warning-ink); }
 
 .wm-feedback {
   margin: 12px 0 0;
@@ -81,8 +68,7 @@
   color: var(--danger-ink);
 }
 
-.wm-result,
-.wm-player {
+.wm-result {
   margin-top: 16px;
 }
 
@@ -111,8 +97,7 @@
   overflow-wrap: anywhere;
 }
 
-.wm-result .section-title,
-.wm-player .section-title {
+.wm-result .section-title {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -121,8 +106,7 @@
   overflow-wrap: anywhere;
 }
 
-.wm-result .section-title svg,
-.wm-player .section-title svg {
+.wm-result .section-title svg {
   width: 16px;
   height: 16px;
 }
@@ -163,114 +147,6 @@
   color: var(--muted);
 }
 
-.wm-player-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.wm-channel-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.wm-channel {
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-pill);
-  background: var(--canvas);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-
-.wm-channel[aria-selected="true"] {
-  border-color: var(--primary);
-  background: var(--primary);
-  color: var(--canvas);
-}
-
-.wm-channel:focus-visible,
-.wm-shift button:focus-visible {
-  outline: 2px solid var(--focus-strong);
-  outline-offset: 2px;
-}
-
-.wm-player-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 12px 0;
-}
-
-.wm-shift {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.wm-start {
-  min-width: 150px;
-  color: var(--text-strong);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.wm-length {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 0.8125rem;
-}
-
-.wm-length select {
-  min-height: 36px;
-  padding: 0 28px 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--canvas);
-  font: inherit;
-}
-
-.wm-video-frame {
-  position: relative;
-  overflow: hidden;
-  border-radius: var(--radius-md);
-  background: var(--active, #242424);
-  aspect-ratio: 16 / 9;
-}
-
-.wm-video {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.wm-video-message {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  padding: 16px;
-  background: rgba(17, 17, 17, 0.72);
-  color: #fff;
-  text-align: center;
-}
-
-/* display:flex 会覆盖 hidden 属性，遮罩不隐藏就会挡住播放器。 */
-.wm-video-message[hidden] { display: none; }
-
 .wm-hint {
   margin: 8px 0 0;
   color: var(--muted);
@@ -279,11 +155,4 @@
 
 @media (max-width: 640px) {
   .wm-search-form { flex-basis: 100%; max-width: none; }
-  .wm-player-controls { flex-direction: column; align-items: stretch; }
-  .wm-shift { justify-content: space-between; }
-  .wm-start { flex-basis: 100%; order: -1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .wm-channel { transition: none; }
 }

@@ -166,7 +166,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 融辉轨迹先以 `decrypt_masked: false` 查询并立即展示（主单轨迹只保留主单号自身扫描，子单扫描归入子单详情）；Agent 返回 `detail_masked=true` 时页面在后台再查一次解密收发货人（Agent 按原页“解密客户信息”的接口顺序：以快件跟踪页内运单轨迹子页面的 `authenticationKey/pageId` 调 `FIND_SITE_IS_SCAN` 校验当前登录网点 `IS_FLAG=1`（外层页 pageId 会被拒为“非法的请求”）后以 `isView=true` 重读 `getBillByCode`，不再启动浏览器），期间运单详情显示脱敏值与加载提示，失败显示原因与重试，不影响已显示的轨迹。浏览器本地只记最近 6 个查询单号，查询成功后同步地址栏单号
 - 改监控查询（按单号看卸车录像）：
   - `services/warehouse_monitor.py`、`routes/warehouse_monitor.py`、`templates/warehouse_monitor.html`、`static/warehouse_monitor.js`、`static/warehouse_monitor.css`
-  - 扫描时间只经 Agent `warehouse-scan-times` 读取；录像由服务器端以 `WAREHOUSE_VIDEO_BASE_URL/WAREHOUSE_VIDEO_TOKEN` 访问仓库笔记本录像服务，令牌不进入浏览器，离线明确提示。权限 `warehouse.monitor`，详见 [监控查询](../docs/warehouse_monitor.md)
+  - 扫描时间只经 Agent `warehouse-scan-times` 读取；服务器不转发视频，只以 `WAREHOUSE_VIDEO_TOKEN` 为查询结果签发 15 分钟有效的 `WAREHOUSE_VIDEO_LAN_URL/open` 链接，录像由仓库笔记本在局域网内直连录像机播放，令牌不进入浏览器，未配置明确提示。权限 `warehouse.monitor`，详见 [监控查询](../docs/warehouse_monitor.md)
 - 改专线分流公司维护页：
   - `templates/line_haul_contacts.html`
   - `line_haul_contacts.py`

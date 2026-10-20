@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import json
-import urllib.error
-from datetime import date, datetime, timedelta
+import hashlib
+import hmac
+from datetime import date, datetime
 from http import HTTPStatus
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -25,10 +25,10 @@ class _Handler:
 
 
 class _App(wm.WarehouseMonitorServiceMixin):
-    def __init__(self, *, base_url: str = "http://100.64.0.9:18765", token: str = "x" * 40,
+    def __init__(self, *, lan_url: str = "http://192.0.2.10:18766", token: str = "x" * 40,
                  agent_result: dict | None = None, principal: dict | None = PRINCIPAL) -> None:
         self.settings = SimpleNamespace(app_title="T", agent_timeout_seconds=30,
-                                        warehouse_video_base_url=base_url, warehouse_video_token=token)
+                                        warehouse_video_lan_url=lan_url, warehouse_video_token=token)
         self.agent_result = agent_result or {"ok": True, "data": {"rows": []}}
         self.principal = principal
         self.agent_calls: list[tuple] = []
@@ -50,18 +50,6 @@ class _App(wm.WarehouseMonitorServiceMixin):
 
     def _send_bytes(self, _handler, status, payload, content_type, cache_control=None, extra_headers=None):
         self.sent.append((int(status), payload, content_type))
-
-
-class _Response(io.BytesIO):
-    def __init__(self, body: bytes, content_type: str) -> None:
-        super().__init__(body)
-        self.headers = {"Content-Type": content_type}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
 
 def test_monitor_permission_is_explicit_and_defaults_to_super_admin_only():
@@ -138,7 +126,8 @@ def test_lookup_validates_code_and_forwards_only_the_code_to_agent():
     method, endpoint, payload, principal = app.agent_calls[-1]
     assert (method, endpoint) == ("POST", "/internal/v1/business/warehouse-scan-times")
     assert payload["params"] == {"code": "R00023000543"} and principal == PRINCIPAL
-    assert app.sent[-1][:2] == (200, {"ok": True, "data": {"main_tracking": "R00023000543", "rows": []}})
+    sent = app.sent[-1][1]
+    assert app.sent[-1][0] == 200 and sent["data"]["main_tracking"] == "R00023000543" and sent["data"]["rows"] == []
 
 
 def test_lookup_requires_a_real_mysql_admin_session():
@@ -147,82 +136,38 @@ def test_lookup_requires_a_real_mysql_admin_session():
     assert app.sent[-1][0] == HTTPStatus.FORBIDDEN and not app.agent_calls
 
 
-@pytest.mark.parametrize(
-    "outcome,expected",
-    [
-        (_Response(b'{"ok": true, "nvr_reachable": true}', "application/json"), "online"),
-        (_Response(b'{"ok": true, "nvr_reachable": false}', "application/json"), "nvr_unreachable"),
-        (urllib.error.URLError("down"), "offline"),
-    ],
-)
-def test_video_status_reports_the_real_service_state(monkeypatch, outcome, expected):
-    def fake_urlopen(request, timeout):
-        assert request.get_header("X-wv-token") == "x" * 40
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
-
-    monkeypatch.setattr(wm.urllib.request, "urlopen", fake_urlopen)
-    app = _App()
-    app._handle_warehouse_monitor_video_status(_Handler())
-    assert app.sent[-1][1] == {"ok": True, "data": {"status": expected}}
+def _query_signature(link: str) -> tuple[int, str]:
+    query = parse_qs(urlsplit(link).query)
+    return int(query["exp"][0]), query["sig"][0]
 
 
-def test_video_status_without_configuration_is_explicit(monkeypatch):
-    monkeypatch.setattr(wm.urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("must not call"))
-    app = _App(base_url="", token="")
-    app._handle_warehouse_monitor_video_status(_Handler())
-    assert app.sent[-1][1] == {"ok": True, "data": {"status": "not_configured"}}
+def test_lookup_attaches_a_short_lived_signed_lan_link(monkeypatch):
+    monkeypatch.setattr(wm.time, "time", lambda: 1_800_000_000)
+    app = _App(agent_result={"ok": True, "data": {"main_tracking": "R00023000543", "rows": []}})
+    app._handle_warehouse_monitor_lookup(_Handler(), {"code": ["R00023000543"]})
+    link = app.sent[-1][1]["data"]["video_link"]
+    assert link.startswith("http://192.0.2.10:18766/open?exp=")
+    exp, sig = _query_signature(link)
+    assert exp == 1_800_000_000 + 15 * 60
+    expected = hmac.new(b"x" * 40, f"open:{exp}".encode(), hashlib.sha256).hexdigest()
+    assert sig == expected and "x" * 40 not in link
 
 
-def _clip_query(**changes):
-    start = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
-    values = {"channel": ["3"], "start": [start], "seconds": ["60"]}
-    values.update({key: [value] for key, value in changes.items()})
-    return values
+def test_lookup_without_lan_configuration_returns_no_video_link():
+    app = _App(lan_url="", token="")
+    app._handle_warehouse_monitor_lookup(_Handler(), {"code": ["R00023000543"]})
+    assert app.sent[-1][1]["data"]["video_link"] == ""
 
 
-@pytest.mark.parametrize(
-    "changes",
-    [{"channel": "9"}, {"seconds": "45"}, {"start": "2026/10/19 10:00"},
-     {"start": (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")},
-     {"start": (datetime.now() - timedelta(days=61)).strftime("%Y-%m-%dT%H:%M:%S")}],
-)
-def test_clip_rejects_invalid_parameters_without_calling_the_service(monkeypatch, changes):
-    monkeypatch.setattr(wm.urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("must not call"))
-    app = _App()
-    app._handle_warehouse_monitor_clip(_Handler(), _clip_query(**changes))
-    assert app.sent[-1][0] == HTTPStatus.UNPROCESSABLE_ENTITY
+def test_server_no_longer_routes_any_video_proxy():
+    from console.routes import warehouse_monitor as routes
 
-
-def test_clip_proxies_mp4_with_the_server_side_token(monkeypatch):
-    seen = {}
-
-    def fake_urlopen(request, timeout):
-        seen.update(url=request.full_url, token=request.get_header("X-wv-token"), timeout=timeout)
-        return _Response(b"mp4-bytes", "video/mp4")
-
-    monkeypatch.setattr(wm.urllib.request, "urlopen", fake_urlopen)
-    app = _App()
-    app._handle_warehouse_monitor_clip(_Handler(), _clip_query())
-    assert app.sent[-1] == (200, b"mp4-bytes", "video/mp4")
-    assert seen["url"].startswith("http://100.64.0.9:18765/clip?channel=3&start=")
-    assert seen["token"] == "x" * 40
-
-
-@pytest.mark.parametrize(
-    "error,status,message",
-    [
-        (urllib.error.URLError("refused"), HTTPStatus.SERVICE_UNAVAILABLE, "仓库录像服务离线"),
-        (urllib.error.HTTPError("u", 503, "x", {}, io.BytesIO(json.dumps({"detail": "录像机不可达"}).encode())),
-         HTTPStatus.BAD_GATEWAY, "录像机不可达"),
-    ],
-)
-def test_clip_failures_are_reported_not_hidden(monkeypatch, error, status, message):
-    def fake_urlopen(_request, timeout):
-        raise error
-
-    monkeypatch.setattr(wm.urllib.request, "urlopen", fake_urlopen)
-    app = _App()
-    app._handle_warehouse_monitor_clip(_Handler(), _clip_query())
-    assert app.sent[-1][0] == status and message in app.sent[-1][1]["message"]
+    calls = []
+    fake_app = SimpleNamespace(
+        _render_warehouse_monitor=lambda *_a: calls.append("page"),
+        _handle_warehouse_monitor_lookup=lambda *_a: calls.append("lookup"),
+    )
+    for path in ("/warehouse-monitor/clip", "/warehouse-monitor/video-status", "/warehouse-monitor/stream"):
+        assert routes.handle_get(fake_app, None, path, path, {}) is False
+    assert not hasattr(wm.WarehouseMonitorServiceMixin, "_handle_warehouse_monitor_clip")
+    assert calls == []
