@@ -1402,29 +1402,46 @@ def release_missed_scheduled_task_ids(connection_factory, *, now: datetime | Non
     """
 
     now = now or datetime.now(timezone.utc)
-    placeholders = ",".join(["%s"] * len(RELEASE_CATCHUP_PLUGIN_IDS))
+
+    def values(row, *names):
+        return tuple(row[name] for name in names) if isinstance(row, Mapping) else tuple(row)
+
+    def marks(items) -> str:
+        return ",".join(["%s"] * len(items))
+
+    # These tables use different collations, so they are matched here
+    # rather than joined in SQL (production rejects the cross-collation =).
     connection = connection_factory()
     try:
         with connection.cursor() as cursor:
+            plugin_ids = tuple(sorted(RELEASE_CATCHUP_PLUGIN_IDS))
             cursor.execute(
-                f"""SELECT t.id, t.automation_id, t.cron_expression,
-                       (SELECT MAX(i.started_at) FROM automation_plugin_invocations i
-                        WHERE i.automation_id = t.automation_id) AS last_started
-                    FROM scheduled_tasks t
-                    JOIN automation_projects p ON p.automation_id = t.automation_id
-                    WHERE t.enabled = 1 AND p.enabled = 1 AND p.plugin_id IN ({placeholders})
-                    ORDER BY t.automation_id, t.id""",
-                tuple(sorted(RELEASE_CATCHUP_PLUGIN_IDS)),
+                f"SELECT automation_id FROM automation_projects WHERE enabled = 1 AND plugin_id IN ({marks(plugin_ids)})",
+                plugin_ids,
             )
-            rows = cursor.fetchall()
+            projects = tuple(sorted(str(values(row, "automation_id")[0]) for row in cursor.fetchall()))
+            if not projects:
+                return ()
+            cursor.execute(
+                f"""SELECT id, automation_id, cron_expression FROM scheduled_tasks
+                    WHERE enabled = 1 AND automation_id IN ({marks(projects)}) ORDER BY automation_id, id""",
+                projects,
+            )
+            tasks = [values(row, "id", "automation_id", "cron_expression") for row in cursor.fetchall()]
+            cursor.execute(
+                f"""SELECT automation_id, MAX(started_at) AS last_started FROM automation_plugin_invocations
+                    WHERE automation_id IN ({marks(projects)}) GROUP BY automation_id""",
+                projects,
+            )
+            last_started_by_project = {
+                str(automation_id): last_started
+                for automation_id, last_started in (values(row, "automation_id", "last_started") for row in cursor.fetchall())
+            }
     finally:
         connection.close()
     selected: dict[str, str] = {}
-    for row in rows:
-        task_id, automation_id, cron, last_started = (
-            (row["id"], row["automation_id"], row["cron_expression"], row["last_started"])
-            if isinstance(row, Mapping) else row
-        )
+    for task_id, automation_id, cron in tasks:
+        last_started = last_started_by_project.get(str(automation_id))
         if automation_id in selected or not isinstance(last_started, datetime):
             continue
         since = max(last_started.replace(tzinfo=timezone.utc), now - RELEASE_CATCHUP_LOOKBACK)
