@@ -173,6 +173,31 @@ def _clock_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
             "the reviewed clock page contract is unavailable",
             code="BROKER_SOURCE_INVALID",
         ) from exc
+    try:
+        identity = clock_in_dual.checker_identity(
+            clock_in_dual._load_user_info(session),
+            sitefbcode=site["sitefbcode"],
+        )
+    except RuntimeError as exc:
+        raise PluginExecutionError(
+            "authenticated clock identity does not belong to the site's 分拨",
+            code="BROKER_SOURCE_INVALID",
+        ) from exc
+
+    def pending_task(clock_type: str, business_date: date) -> Mapping[str, Any]:
+        try:
+            return clock_in_dual.find_pending_task(
+                session,
+                page_context,
+                site=site,
+                clock_in_type=clock_type,
+                business_date=business_date,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise PluginExecutionError(
+                "the site has no unique pending handover task for today",
+                code="CLOCK_TASK_NOT_PENDING",
+            ) from exc
 
     if action == "precheck":
         raw_types = arguments.get("clock_types")
@@ -181,18 +206,19 @@ def _clock_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
             or len(raw_types) != 2
             or any(not str(item or "").strip() for item in raw_types)
             or len({str(item).strip() for item in raw_types}) != 2
+            or any(str(item).strip() not in clock_in_dual.HANDOVER_TYPES for item in raw_types)
         ):
             raise PluginExecutionError(
                 "clock types are invalid",
                 code="BROKER_ARGUMENT_INVALID",
             )
+        business_date = clock_in_dual.localnow().date()
+        for clock_type in raw_types:
+            pending_task(str(clock_type).strip(), business_date)
         return {"ready": True}
 
     clock_type = str(arguments.get("clock_type") or "").strip()
-    if clock_type not in {
-        clock_in_dual.DEFAULT_FIRST_TYPE,
-        clock_in_dual.DEFAULT_SECOND_TYPE,
-    }:
+    if clock_type not in clock_in_dual.HANDOVER_TYPES:
         raise PluginExecutionError(
             "clock type is not source-reviewed",
             code="BROKER_ARGUMENT_INVALID",
@@ -219,6 +245,7 @@ def _clock_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
                 sitefbname=site["sitefbname"],
                 clock_in_type=clock_type,
                 submitted_at=submitted_at,
+                checker_code=identity["CHECKER_CODE"],
             )
         except Exception as exc:
             raise PluginExecutionError(
@@ -227,31 +254,10 @@ def _clock_action(arguments: Mapping[str, Any]) -> Mapping[str, Any]:
             ) from exc
         return {"confirmed": True, **verified}
 
-    user_info = clock_in_dual._load_user_info(session)
-    identity_fields = {
-        "createsite": "loginSiteName",
-        "createsitecode": "loginSiteCode",
-        "createman": "loginEmpName",
-        "createmancode": "loginEmpCode",
-    }
-    identity: dict[str, str] = {}
-    for output_key, source_key in identity_fields.items():
-        value = str(user_info.get(source_key) or "").strip()
-        if not value:
-            raise PluginExecutionError(
-                "authenticated clock identity is incomplete",
-                code="BROKER_SOURCE_INVALID",
-            )
-        identity[output_key] = value
     submitted_at = clock_in_dual.localnow()
     record = clock_in_dual.build_clockin_record(
-        sitecode=site["sitecode"],
-        sitefbcode=site["sitefbcode"],
-        sitename=site["sitename"],
-        sitefbname=site["sitefbname"],
-        clock_in_type=clock_type,
-        realitydt=submitted_at,
-        **identity,
+        pending_task(clock_type, submitted_at.date()),
+        identity,
     )
     try:
         response = clock_in_dual.submit_clockin([record], session, page_context)

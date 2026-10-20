@@ -815,7 +815,14 @@ def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -
         def login_and_get_session(self):
             return session
 
-    fixed_now = datetime(2026, 8, 15, 1, 2, 3)
+    fixed_now = datetime(2026, 8, 15, 18, 30, 3)
+    pending = {
+        "GUID": "task-row-1",
+        "HANDOVER_TYPE": "交件",
+        "PLAN_ARRIVAL_TIME": "2026-08-15 19:00:00",
+        "TASK_STATUS": 0,
+        "TASK_STATUS_TEXT": "待打卡",
+    }
     monkeypatch.setattr(clock_module, "TMSAuth", Auth)
     monkeypatch.setattr(
         clock_module,
@@ -827,12 +834,18 @@ def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -
         "_load_user_info",
         lambda value: {
             "loginSiteName": "operator-site",
-            "loginSiteCode": "operator-code",
+            "loginSiteCode": "73901",
             "loginEmpName": "operator",
             "loginEmpCode": "operator-id",
         },
     )
     monkeypatch.setattr(clock_module, "localnow", lambda: fixed_now)
+
+    def find_pending(source_session, page_context, **kwargs):
+        calls.append(("find", kwargs))
+        assert source_session is session
+        assert page_context == {"reviewed": "context"}
+        return pending
 
     def submit(records, source_session, page_context):
         calls.append(("submit", records))
@@ -845,12 +858,13 @@ def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -
         assert source_session is session
         assert page_context == {"reviewed": "context"}
         return {
-            "record_id": "source-row-1",
+            "record_id": "task-row-1",
             "clock_type": kwargs["clock_in_type"],
-            "clock_result": "交件及时",
-            "observed_at": "2026-08-15 01:02:03",
+            "clock_result": "及时",
+            "observed_at": "2026-08-15 18:30:04",
         }
 
+    monkeypatch.setattr(clock_module, "find_pending_task", find_pending)
     monkeypatch.setattr(clock_module, "submit_clockin", submit)
     monkeypatch.setattr(clock_module, "verify_clockin_record", verify)
     monkeypatch.setattr(
@@ -889,11 +903,64 @@ def test_production_clock_uses_exact_low_level_write_and_readback(monkeypatch) -
         },
     )
     assert verified["confirmed"] is True
+    found = next(value for name, value in calls if name == "find")
+    assert found["clock_in_type"] == "交件到港"
+    assert found["business_date"] == fixed_now.date()
     submitted_record = next(value for name, value in calls if name == "submit")[0]
-    assert submitted_record["SITE_CODE"] == "7390004"
-    assert submitted_record["REACH_OR_LEAVE_PORT_TYPE"] == "交件到港"
+    assert submitted_record["GUID"] == "task-row-1"
+    assert submitted_record["TASK_STATUS"] == 1
+    assert submitted_record["CHECKER_TYPE"] == "分拨代打"
+    assert submitted_record["CHECKER_CODE"] == "operator-id"
+    assert submitted_record["PLAN_ARRIVAL_TIME"] == "2026-08-15T11:00:00.000Z"
     verified_arguments = next(value for name, value in calls if name == "verify")
     assert verified_arguments["submitted_at"] == fixed_now
+    assert verified_arguments["checker_code"] == "operator-id"
+
+
+def test_production_clock_rejects_operator_outside_the_site_distribution(monkeypatch) -> None:
+    from agent.tms_runtime.scripts import clock_in_dual as clock_module
+
+    class Auth:
+        def __init__(self, *, profile: str) -> None:
+            del profile
+
+        def login_and_get_session(self):
+            return object()
+
+    monkeypatch.setattr(clock_module, "TMSAuth", Auth)
+    monkeypatch.setattr(clock_module, "_resolve_clockin_page_context", lambda _value: {})
+    monkeypatch.setattr(
+        clock_module,
+        "_load_user_info",
+        lambda _value: {
+            "loginSiteCode": "7390004",
+            "loginEmpName": "site-operator",
+            "loginEmpCode": "site-operator-id",
+        },
+    )
+    monkeypatch.setattr(
+        clock_module,
+        "find_pending_task",
+        lambda *_args, **_kwargs: pytest.fail("a non-distribution account must not query tasks"),
+    )
+    handlers = build_production_first_party_core_handler_map(
+        account_manager=_Manager(),
+        cursor_secret=_SECRET,
+        capability_authorizer=lambda _descriptor, _capability: None,
+    )
+    context = _context(
+        tool_name="clock_in_dual",
+        role="account_id",
+        account_ids=("clock-rh",),
+        action="ronghui.clock.precheck",
+    )
+    site = {"sitecode": "7390004", "sitefbcode": "73901", "sitename": "site", "sitefbname": "yard"}
+    with pytest.raises(PluginExecutionError) as caught:
+        handlers[("browser.invoke", "ronghui.clock.precheck")](
+            context,
+            {"site": site, "clock_types": ["交件到港", "接件离港"]},
+        )
+    assert caught.value.code == "BROKER_SOURCE_INVALID"
 
 
 def test_production_customer_binding_calls_low_level_endpoint_adapter(monkeypatch) -> None:

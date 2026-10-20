@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-13
+updated: 2026-10-20
 ---
 
 # 业务接口与独立插件调用
@@ -92,7 +92,7 @@ Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次�
 
 扫描、自提和分批的公共预览合同升级为版本 3，新增 `preview_state`，由持久化消费记录和服务端时间生成。`CONSUMED` 表示已经提交过正式执行，即使之后超过确认时间也显示“已使用”；只有未使用且超时的预览显示 `EXPIRED`。已使用不代表业务成功，业务结果仍读取正式 Invocation。Agent、Console、飞书须一起更新；现有签名插件包和数据库结构不变。
 
-融辉“大祥 S 站”真实菜单核验发现当前名称为“网点到离港记录-新”，查询页包含 `FIND_REACH_OR_LEAVE_PORT_DETNEW`、`REACH_OR_LEAVE_PORT_TYPE`、`SITE_FB_NAME` 和 `REALITY_DATE`。原检查仅接受旧名称导致写入前失败。检查现接受两个已审核精确名称，仍要求唯一 URL、有效页面和登录状态；未放宽提交或写后独立核验。Console 对 `FAILED` 和 `CAPABILITY_UNAVAILABLE` 给出失败提示，不再把终态描述为等待刷新。
+2026-10-20 起融辉网点打卡改为“扫描管理 / 交接任务管理”：分拨账号按网点查询当天任务（`FIND_TAB_SHIFT_HANDOVER_TASK`），勾选“待打卡”任务后点“代打卡”，页面把整行改为 `TASK_STATUS=1`、打卡人和 `CHECKER_TYPE=分拨代打`，以 `TAB_SHIFT_HANDOVER_TASK_UPT` 提交 `/dataOperation/saveTables`，实际到港时间与打卡结果（及时/迟到）由原站生成。宿主原语只对当天唯一正班“待打卡”任务提交，账号须属于该网点目的分拨，写后按 GUID、打卡人和实际到港时间独立回读；“网点到离港记录”旧入口不再使用。Console 对 `FAILED` 和 `CAPABILITY_UNAVAILABLE` 给出失败提示，不再把终态描述为等待刷新。
 
 回归入口为 `tests/test_direct_preview_state.py`、`tests/test_direct_invocation_feedback.py` 和 `agent/tests/test_session_process_isolation.py`，并联动 Console 预览及飞书确认用例。真实页面只读核验不等于重新执行打卡。
 

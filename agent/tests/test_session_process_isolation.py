@@ -493,13 +493,13 @@ class SessionProcessIsolationTests(unittest.TestCase):
         menu_urls = {
             "快件跟踪": "/widget/home?mv=tracking",
             "登记问题件查询": "/widget/home?mv=problem",
-            "网点到离港记录": "/widget/home?mv=clock",
+            "交接任务管理": "/widget/home?mv=clock",
             "结算明细查询": "/widget/home?mv=finance",
         }
         page_markers = {
             "tracking": "FIND_SACN_TRACK_BY_CODE",
             "problem": "FIND_PROBLEM_REGISTER_LIST",
-            "clock": "FIND_REACH_OR_LEAVE_PORT_DETNEW",
+            "clock": "FIND_TAB_SHIFT_HANDOVER_TASK",
             "finance": (
                 "FIND_BALANCE_QRY_WST_WITH_SITE "
                 "FIND_BALANCE_QRY_TJ_WST FIND_BALANCE_QRY_TJ_DETAIL"
@@ -593,7 +593,7 @@ class SessionProcessIsolationTests(unittest.TestCase):
                                 "data": [
                                     {"text": "快件跟踪", "url": "/widget/home?mv=tracking"},
                                     {"text": "登记问题件查询", "url": "/widget/home?mv=problem"},
-                                    {"text": "网点到离港记录", "url": "/widget/home?mv=clock"},
+                                    {"text": "交接任务管理", "url": "/widget/home?mv=clock"},
                                 ]
                             },
                         },
@@ -602,7 +602,7 @@ class SessionProcessIsolationTests(unittest.TestCase):
                 marker = (
                     "FIND_PROBLEM_REGISTER_LIST"
                     if "mv=problem" in url
-                    else "FIND_REACH_OR_LEAVE_PORT_DETNEW"
+                    else "FIND_TAB_SHIFT_HANDOVER_TASK"
                 )
                 return SimpleNamespace(
                     status_code=status_code,
@@ -627,37 +627,37 @@ class SessionProcessIsolationTests(unittest.TestCase):
         self.assertEqual("ok", result["capabilities"]["ronghui_clock"]["status"])
         self.assertEqual("UNKNOWN", result["capabilities"]["ronghui_write"]["status"])
 
-    def test_clock_probe_accepts_reviewed_new_menu_and_rejects_ambiguity(self):
+    def test_clock_probe_requires_unique_handover_task_menu(self):
         broker = self._broker("clock_reviewed_menu")
         config = SimpleNamespace(base_origin="https://tms.example.test")
-        for label in ("网点到离港记录", "网点到离港记录-新"):
-            calls = []
-            session = SimpleNamespace(get=lambda url, **kwargs: (
-                calls.append(url) or SimpleNamespace(status_code=200, url=url,
-                    text="FIND_REACH_OR_LEAVE_PORT_DETNEW", headers={})
-            ))
-            broker._validate_ronghui_menu_capability_once(session, config, "ronghui_clock",
-                menu_nodes=[{"text": label, "url": "/widget/home?view=clock"}])
-            self.assertEqual(["https://tms.example.test/widget/home?view=clock"], calls)
+        calls = []
+        session = SimpleNamespace(get=lambda url, **kwargs: (
+            calls.append(url) or SimpleNamespace(status_code=200, url=url,
+                text="FIND_TAB_SHIFT_HANDOVER_TASK", headers={})
+        ))
+        broker._validate_ronghui_menu_capability_once(session, config, "ronghui_clock",
+            menu_nodes=[{"text": "交接任务管理", "url": "/widget/home?view=clock"}])
+        self.assertEqual(["https://tms.example.test/widget/home?view=clock"], calls)
 
         session = SimpleNamespace(get=lambda *_a, **_kw: self.fail("ambiguous menu must not request a page"))
         for nodes in (
-            [{"text": "网点到离港时间", "url": "/widget/home?view=time"}],
-            [{"text": "网点到离港记录-新", "url": "/widget/home?view=one"},
-             {"text": "网点到离港记录-新", "url": "/widget/home?view=two"}],
+            [{"text": "网点到离港记录-新", "url": "/widget/home?view=old"}],
+            [{"text": "交接班次管理", "url": "/widget/home?view=shift"}],
+            [{"text": "交接任务管理", "url": "/widget/home?view=one"},
+             {"text": "交接任务管理", "url": "/widget/home?view=two"}],
         ):
             with self.assertRaises(TMSAuthStateError) as caught:
                 broker._validate_ronghui_menu_capability_once(session, config, "ronghui_clock", menu_nodes=nodes)
             self.assertEqual("CAPABILITY_UNAVAILABLE", caught.exception.code)
 
-    def test_clock_probe_new_menu_still_requires_real_page_markers(self):
+    def test_clock_probe_still_requires_real_page_markers(self):
         broker = self._broker("clock_reviewed_markers")
         session = SimpleNamespace(get=lambda url, **kwargs: SimpleNamespace(
             status_code=200, url=url, text="unrelated page", headers={}))
         with self.assertRaises(TMSAuthStateError) as caught:
             broker._validate_ronghui_menu_capability_once(session,
                 SimpleNamespace(base_origin="https://tms.example.test"), "ronghui_clock",
-                menu_nodes=[{"text": "网点到离港记录-新", "url": "/widget/home?view=clock"}])
+                menu_nodes=[{"text": "交接任务管理", "url": "/widget/home?view=clock"}])
         self.assertEqual("CAPABILITY_UNAVAILABLE", caught.exception.code)
 
     def test_ronghui_write_capability_has_no_synthetic_online_probe(self):

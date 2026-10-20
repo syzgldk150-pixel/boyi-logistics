@@ -21,6 +21,16 @@ def _runtime_patches(source_responses):
             return_value={"add_url": "https://example.invalid/add"},
         ),
         patch.object(clock_in_dual, "_load_user_info", return_value={}),
+        patch.object(
+            clock_in_dual,
+            "checker_identity",
+            return_value={"CHECKER_NAME": "operator", "CHECKER_CODE": "operator-1"},
+        ),
+        patch.object(
+            clock_in_dual,
+            "find_pending_task",
+            side_effect=lambda *_args, clock_in_type, **_kwargs: {"GUID": clock_in_type},
+        ),
         patch.object(clock_in_dual, "submit_clockin", side_effect=source_responses),
         patch.object(clock_in_dual.time, "sleep", return_value=None),
     )
@@ -34,11 +44,13 @@ def _runtime_patches(source_responses):
     ),
 )
 def test_dual_clock_in_failure_is_not_retried(source_responses):
-    auth, page, user, submit, sleep = _runtime_patches(source_responses)
+    auth, page, info, user, task, submit, sleep = _runtime_patches(source_responses)
     with (
         auth as auth_class,
         page,
+        info,
         user,
+        task,
         submit as submit_mock,
         sleep,
         pytest.raises(RuntimeError, match="dual clock-in failed"),
@@ -54,8 +66,8 @@ def test_dual_clock_in_failure_is_not_retried(source_responses):
 
 def test_dual_clock_in_preserves_both_explicit_source_confirmations():
     responses = [{"success": True, "message": "saved"}, {"success": True, "message": "saved"}]
-    auth, page, user, submit, sleep = _runtime_patches(responses)
-    with auth as auth_class, page, user, submit as submit_mock, sleep:
+    auth, page, info, user, task, submit, sleep = _runtime_patches(responses)
+    with auth as auth_class, page, info, user, task, submit as submit_mock, sleep:
         result = clock_in_dual.submit_dual_clockin(
             delay_seconds=0,
             session_profile="daxiang_s",

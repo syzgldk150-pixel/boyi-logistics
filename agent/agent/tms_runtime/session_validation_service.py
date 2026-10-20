@@ -35,8 +35,8 @@ _RONGHUI_MENU_PROBES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("FIND_PROBLEM_REGISTER_LIST", "登记问题件查询"),
     ),
     "ronghui_clock": (
-        ("网点到离港记录", "网点到离港记录-新"),
-        ("FIND_REACH_OR_LEAVE_PORT_DETNEW", "REACH_OR_LEAVE_PORT_TYPE", "网点到离港记录"),
+        ("交接任务管理",),
+        ("FIND_TAB_SHIFT_HANDOVER_TASK", "TAB_SHIFT_HANDOVER_TASK_UPT"),
     ),
     "ronghui_finance": (
         ("结算明细查询",),
