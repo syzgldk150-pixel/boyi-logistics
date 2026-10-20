@@ -310,9 +310,6 @@ class LocalDocFlowApp(
         if path == "/settings/accounts":
             self._render_admin_accounts(handler, query)
             return
-        if path == "/settings/system-status":
-            self._render_system_status(handler, query)
-            return
         if path == "/templates/new":
             self._render_template_editor(handler, None, query)
             return

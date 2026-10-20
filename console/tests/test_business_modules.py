@@ -47,30 +47,6 @@ class _Handler:
         }
 
 
-def _health(*, include_components: bool = True) -> dict:
-    components = (
-        {
-            "mysql": "connected",
-            "scheduler": {"state": "running"},
-            "automation_plugins": {"ok": True},
-        }
-        if include_components
-        else {}
-    )
-    return {
-        "ok": True,
-        "data": {
-            "status": "ok",
-            "release_sha": "test-sha",
-            "instance_id": "agent-1",
-            "uptime": "1d 2h 3m",
-            "memory_mb": 12.5,
-            "components": components,
-            "last_tool_run": {"must_not": "appear"},
-        },
-    }
-
-
 def test_fixed_navigation_never_queries_legacy_lifecycle_state() -> None:
     app = _Console({"ok": False})
 
@@ -82,19 +58,19 @@ def test_fixed_navigation_never_queries_legacy_lifecycle_state() -> None:
     assert app.calls == []
 
 
-def test_system_status_is_super_admin_only_and_not_a_fixed_module() -> None:
-    app = _Console(_health())
+def test_system_status_page_is_retired_from_navigation() -> None:
+    app = _Console({"ok": False})
     super_admin = {"id": 1, "role": "super_admin", "is_legacy_basic_auth": False}
-    ordinary_admin = {"id": 2, "role": "admin", "is_legacy_basic_auth": False}
 
-    assert "/settings/system-status" in {item["route"] for item in app._business_module_navigation(super_admin)}
-    assert "/settings/system-status" not in {item["route"] for item in app._business_module_navigation(ordinary_admin)}
-    assert "/settings/system-status" not in {item["route"] for item in app._business_module_navigation({})}
+    assert app._business_module_navigation(super_admin) == CONSOLE_NAVIGATION
+    assert "/settings/system-status" not in {item["route"] for item in CONSOLE_NAVIGATION}
+    assert not hasattr(app, "_render_system_status")
     assert len(BUSINESS_MODULE_CATALOG) == 16
+    assert app.calls == []
 
 
 def test_mobile_navigation_repairs_retired_module_manager_preference() -> None:
-    app = _Console(_health())
+    app = _Console({"ok": False})
     user = {
         "id": 1,
         "role": "super_admin",
@@ -108,54 +84,16 @@ def test_mobile_navigation_repairs_retired_module_manager_preference() -> None:
     assert "/tracking" in routes and "/automations" in routes
 
 
-def test_system_status_projects_only_whitelisted_health_fields() -> None:
-    app = _Console(_health(include_components=False))
-
-    snapshot = app._system_status_snapshot(_Handler())
-
-    assert app.calls == [("GET", "/internal/v1/health", None)]
-    assert snapshot["release_sha"] == "test-sha"
-    assert snapshot["memory_mb"] == 12.5
-    assert snapshot["components"][0]["value"] == "不可用"
-    assert "last_tool_run" not in snapshot
-
-
-def test_system_status_supports_real_scalar_and_ok_component_shapes() -> None:
-    app = _Console(_health())
-
-    snapshot = app._system_status_snapshot(_Handler())
-    components = {item["key"]: item["value"] for item in snapshot["components"]}
-
-    assert components["mysql"] == "connected"
-    assert components["scheduler"] == "running"
-    assert components["automation_plugins"] == "正常"
-
-
-def test_system_status_marks_agent_failures_and_missing_values_unavailable() -> None:
-    app = _Console({"ok": False, "error": {"code": "UNAVAILABLE"}})
-
-    snapshot = app._system_status_snapshot(_Handler())
-
-    assert snapshot["available"] is False
-    assert snapshot["status"] == "不可用"
-    assert all(item["value"] == "不可用" for item in snapshot["components"])
-
-
-def test_system_status_requires_super_admin_and_reuses_status_template() -> None:
+def test_plugin_maintenance_entry_moves_to_system_settings() -> None:
     root = Path(__file__).resolve().parents[1]
-    app = _Console(_health())
-    app.template_env = Environment(loader=FileSystemLoader(root / "templates"), autoescape=True)
-    app.template_env.globals.update(current_admin_user=lambda: None, navigation_for_user=lambda: (), mobile_navigation_for_user=lambda _user: ())
+    env = Environment(loader=FileSystemLoader(root / "templates"), autoescape=True)
+    identity = (root / "templates" / "identity_management.html").read_text(encoding="utf-8")
+    maintenance = (root / "templates" / "plugin_maintenance.html").read_text(encoding="utf-8")
 
-    app._render_system_status(_Handler(role="admin"), {})
-    assert app.sent[-1][0] == 403
-    app._render_system_status(_Handler(legacy=True), {})
-    assert app.sent[-1][0] == 403
-
-    app._render_system_status(_Handler(), {})
-    assert "系统状态 - test" in app.html
-    assert "智能服务与平台组件健康概览" in app.html
-    assert "test-sha" in app.html
+    assert "/settings/system-status" not in identity + maintenance
+    assert '{% if is_super_admin %}<a class="ghost-btn" href="/automations/maintenance">' in identity
+    assert 'href="/settings/accounts">返回系统管理' in maintenance
+    assert "system_status_only" not in env.loader.get_source(env, "admin_accounts.html")[0]
 
 
 def test_legacy_module_get_routes_stay_read_only_and_page_route_redirects() -> None:
@@ -163,7 +101,7 @@ def test_legacy_module_get_routes_stay_read_only_and_page_route_redirects() -> N
     handler = _Handler()
 
     assert business_modules_routes.handle_get(app, handler, "/settings/modules", "/settings/modules", {})
-    assert app.redirects == ["/settings/system-status"]
+    assert app.redirects == ["/settings/accounts"]
     assert business_modules_routes.handle_get(app, handler, "/settings/modules/receipts/audit", "/settings/modules/receipts/audit", {})
     assert app.calls[-1][:2] == ("GET", "/internal/v1/admin/modules/receipts/audit")
     assert business_modules_routes.handle_post(app, handler, "/settings/modules/lifecycle", "/settings/modules/lifecycle", {}) is False

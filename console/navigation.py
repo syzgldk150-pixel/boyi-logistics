@@ -109,16 +109,6 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
     )
 )
 
-# This is a Console control-plane entry, not a fifteenth fixed business module.
-CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS = register_console_menus(
-    (
-        ConsoleMenuRegistration("system_status", "/settings/system-status", "系统状态", "状态", "activity", "system"),
-    )
-)
-CONSOLE_NAVIGATION_REGISTRATIONS = register_console_menus(
-    (*CONSOLE_MENU_REGISTRATIONS, *CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS)
-)
-
 # The static registration remains the fifteen fixed module identities. The
 # visible projection omits internal-only control surfaces such as work items.
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
@@ -126,17 +116,14 @@ CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
     for registration in CONSOLE_MENU_REGISTRATIONS
     if registration.show_in_navigation
 )
-CONSOLE_CONTROL_PLANE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
-    registration.to_navigation_item() for registration in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS
-)
 
 NAVIGATION_BY_ROUTE = {
     registration.route: registration.to_navigation_item()
-    for registration in CONSOLE_NAVIGATION_REGISTRATIONS
+    for registration in CONSOLE_MENU_REGISTRATIONS
 }
 MOBILE_NAVIGATION_CANDIDATES = tuple(
     registration.to_navigation_item()
-    for registration in CONSOLE_NAVIGATION_REGISTRATIONS
+    for registration in CONSOLE_MENU_REGISTRATIONS
     if registration.route != "/" and registration.show_in_navigation
 )
 MOBILE_NAVIGATION_ROUTES = frozenset(item["route"] for item in MOBILE_NAVIGATION_CANDIDATES)

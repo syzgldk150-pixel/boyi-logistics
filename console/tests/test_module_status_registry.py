@@ -12,7 +12,7 @@ from console.module_status_registry import (
     register_console_module_statuses,
 )
 from console.navigation import CONSOLE_MENU_REGISTRATIONS
-from console.permission_registry import CONSOLE_PERMISSION_BY_ID, CONSOLE_PERMISSION_BY_MENU_ID
+from console.permission_registry import CONSOLE_PERMISSION_BY_MENU_ID
 from console.services.documents import DocumentServiceMixin
 
 
@@ -29,8 +29,7 @@ def test_status_registry_preserves_fixed_module_coverage_and_excludes_control_pl
     assert tuple(item.module_id for item in CONSOLE_MODULE_STATUS_REGISTRATIONS) == lifecycle_menu_ids
     assert tuple(CONSOLE_MODULE_STATUS_BY_ID) == lifecycle_menu_ids
     assert set(lifecycle_menu_ids).issubset(CONSOLE_PERMISSION_BY_MENU_ID)
-    assert "system_status" in CONSOLE_PERMISSION_BY_MENU_ID
-    assert "console.menu.system_status.view" in CONSOLE_PERMISSION_BY_ID
+    assert set(CONSOLE_PERMISSION_BY_MENU_ID) == set(lifecycle_menu_ids)
     assert "system_status" not in CONSOLE_MODULE_STATUS_BY_ID
     assert all(
         item.code_status == CODE_REGISTERED

@@ -30,7 +30,7 @@
 
 <nav class="identity-section-nav" aria-label="系统管理分区">
   <a class="ghost-btn" href="#identity-roles">身份设置</a><a class="ghost-btn" href="#identity-accounts">后台账号</a>
-  <a class="ghost-btn" href="#identity-feishu">飞书账号</a><a class="ghost-btn" href="/settings/system-status">系统状态</a>
+  <a class="ghost-btn" href="#identity-feishu">飞书账号</a>{% if is_super_admin %}<a class="ghost-btn" href="/automations/maintenance">插件迁移维护</a>{% endif %}
 </nav>
 <section class="panel account-admin-panel" id="identity-roles" aria-labelledby="identity-roles-title">
   <h2 id="identity-roles-title">身份设置</h2>

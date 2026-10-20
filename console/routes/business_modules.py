@@ -7,7 +7,7 @@ from typing import Any
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
     if path == "/settings/modules":
-        app._redirect(handler, "/settings/system-status")
+        app._redirect(handler, "/settings/accounts")
         return True
     if path == "/settings/modules/data":
         app._handle_legacy_business_modules_data(handler)

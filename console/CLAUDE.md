@@ -12,7 +12,7 @@ AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日�
 
 扫描、自提及分批预览支持实际 Service V2 实例 UUID；卡片按插件身份提供预览/确认，输出按 Agent 返回的 Invocation 插件身份区分预览类型，正式确认仍由 Agent 核验同实例、当前代次、发起人及有效期。详见 `../docs/plugin-platform-v2.md`。
 
-插件迁移维护入口为 `/automations/maintenance`，从系统状态页进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
+插件迁移维护入口为 `/automations/maintenance`，从系统管理页（`/settings/accounts`，仅超级管理员可见）进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
 
 ## 当前身份与统一对话边界
 
@@ -270,10 +270,10 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 移动端导航与视觉壳层
 
-- 唯一菜单注册目录：`navigation.py`。16 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`，其中 `work_items` 只保留内部路由与权限身份并明确 `show_in_navigation=False`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；`system_status` 仍由 `services/business_modules.py` 按真实 MySQL 管理员角色请求级追加。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 唯一菜单注册目录：`navigation.py`。16 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`，其中 `work_items` 只保留内部路由与权限身份并明确 `show_in_navigation=False`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
-- 模块代码注册状态目录：`module_status_registry.py`。它按 16 个固定模块顺序登记唯一 `code_registered`，不包含控制平面“系统状态”；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
-- 系统区可见固定模块顺序为“智能模型 → 系统管理”，super_admin 再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。`/work-items` 只允许业务页或 Codex 按需深链，不进入导航候选。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
+- 模块代码注册状态目录：`module_status_registry.py`。它按 16 个固定模块顺序登记唯一 `code_registered`；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
+- 系统区可见固定模块顺序为“智能模型 → 系统管理”，不再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。`/work-items` 只允许业务页或 Codex 按需深链，不进入导航候选。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
 - 视觉约束请先看根目录 `PRODUCT.md`、`DESIGN.md` 与 `.impeccable/design.json`。
@@ -288,11 +288,11 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 - 自动化目录“分批/未到问题件上传”和“自提到货问题件”只允许 Console 从已验签、已持久化的候选 Invocation 勾选并确认：后台先由 Agent 以独立只读 Invocation 生成候选，预览指纹始终只保留在 Agent 持久化 Invocation 中，浏览器不得提交账号、运单集合或预览指纹。两项任务不开放定时或 LLM 正式写入直达；LLM 可通过当前插件目录生成预览，正式执行仍要求用户确认；飞书固定命令继续使用各自的预览确认流程。
 
-## 固定业务模块与系统状态
+## 固定业务模块
 
 - 16 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新调用 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
 - 插件管理不是固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
-- `/settings/modules` 只重定向到 `/settings/system-status`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。`/settings/system-status` 同样只对真实非 legacy `super_admin` 显示，且只投影 `/internal/v1/health` 白名单字段，Agent 不可达或字段缺失时明确显示“不可用”。
+- `/settings/modules` 只重定向到 `/settings/accounts`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。原 `/settings/system-status` 页面、菜单与 `console.menu.system_status.view` 权限已删除（返回 404）。
 
 - 插件专属设置页必须先安装宿主消息监听器，再给隔离 iframe 设置 `src`，防止缓存子页的首次配置请求丢失；时序回归见 `tests/test_plugin_settings_initialization.py`，真实保存／改绑／历史恢复验收见 `../tests/v32_acceptance/custom_settings.py`。
 

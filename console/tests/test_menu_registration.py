@@ -5,10 +5,8 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from console.navigation import (
-    CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS,
     CONSOLE_MENU_REGISTRATIONS,
     CONSOLE_NAVIGATION,
-    CONSOLE_NAVIGATION_REGISTRATIONS,
     DEFAULT_MOBILE_BOTTOM_NAV,
     MOBILE_NAVIGATION_CANDIDATES,
     NAVIGATION_BY_ROUTE,
@@ -66,24 +64,13 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
     )
 
 
-def test_system_status_is_a_control_plane_registration_after_fixed_menus() -> None:
+def test_system_status_menu_is_retired() -> None:
     assert len(BUSINESS_MODULE_CATALOG) == 16
-    assert tuple(item.menu_id for item in CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS) == (
-        "system_status",
-    )
-    assert tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)[-2:] == (
-        "system_settings",
-        "system_status",
-    )
-    status = CONSOLE_CONTROL_PLANE_MENU_REGISTRATIONS[0]
-    assert status.route == "/settings/system-status"
-    assert status.icon == "activity"
-    assert status.section == "system"
-    assert NAVIGATION_BY_ROUTE[status.route] == status.to_navigation_item()
+    assert CONSOLE_MENU_REGISTRATIONS[-1].menu_id == "system_settings"
+    assert "/settings/system-status" not in NAVIGATION_BY_ROUTE
     assert "/settings/modules" not in {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES}
-    assert validate_mobile_bottom_nav(
-        ("/settings/system-status", "/tracking", "/automations")
-    ) == ("/settings/system-status", "/tracking", "/automations")
+    with pytest.raises(ValueError):
+        validate_mobile_bottom_nav(("/settings/system-status", "/tracking", "/automations"))
 
 
 def test_menu_registration_is_immutable_and_freezes_input_order() -> None:

@@ -79,7 +79,7 @@ updated: 2026-10-19
 | `system_settings` | 系统管理 | `/settings/accounts` | 固定模块 |
 
 固定模块只由代码路由、既有登录/用户权限和业务前置条件控制；旧数据库生命周期状态和版本不能隐藏或阻断它们。
-`/settings/system-status` 是仅真实 `super_admin` 可见的控制平面入口，不属于上述 16 个固定模块目录，只展示鉴权健康接口的白名单系统字段。`/settings/modules` 是退役重定向入口，旧 data/audit 子路径和 Agent 管理 API 只保留历史记录读取；数据库不能动态创造模块、菜单或实现。
+原 `/settings/system-status` 系统状态页已删除。`/settings/modules` 是退役重定向入口（转到 `/settings/accounts`），旧 data/audit 子路径和 Agent 管理 API 只保留历史记录读取；数据库不能动态创造模块、菜单或实现。
 
 ## 主要业务数据关系
 

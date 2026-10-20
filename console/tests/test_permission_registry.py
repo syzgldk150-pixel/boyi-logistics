@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from console.navigation import CONSOLE_NAVIGATION_REGISTRATIONS
+from console.navigation import CONSOLE_MENU_REGISTRATIONS
 from console.permission_registry import (
     CONSOLE_PERMISSION_BY_ID,
     CONSOLE_PERMISSION_BY_MENU_ID,
@@ -35,7 +35,7 @@ def _permission(
 
 
 def test_permission_registry_covers_every_registered_menu_exactly_once() -> None:
-    navigation_menu_ids = tuple(item.menu_id for item in CONSOLE_NAVIGATION_REGISTRATIONS)
+    navigation_menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
 
     assert tuple(item.menu_id for item in CONSOLE_PERMISSION_REGISTRATIONS) == navigation_menu_ids
     assert set(CONSOLE_PERMISSION_BY_MENU_ID) == set(navigation_menu_ids)
@@ -46,13 +46,10 @@ def test_permission_registry_covers_every_registered_menu_exactly_once() -> None
 
 def test_existing_administrator_roles_retain_all_registered_menu_views() -> None:
     assert CONSOLE_ADMIN_ROLES == frozenset({"admin", "super_admin"})
-    system_status_permission = "console.menu.system_status.view"
-    assert has_console_permission("super_admin", system_status_permission)
-    assert not has_console_permission("admin", system_status_permission)
+    assert "console.menu.system_status.view" not in CONSOLE_PERMISSION_BY_ID
     for item in CONSOLE_PERMISSION_REGISTRATIONS:
-        if item.permission_id != system_status_permission:
-            assert has_console_permission("admin", item.permission_id)
-            assert has_console_permission("super_admin", item.permission_id)
+        assert has_console_permission("admin", item.permission_id)
+        assert has_console_permission("super_admin", item.permission_id)
 
 
 def test_unknown_or_legacy_roles_and_unknown_permissions_fail_closed() -> None:

@@ -15,7 +15,7 @@ updated: 2026-09-09
 
 历史审计继续只读暴露：Agent `/internal/v1/admin/modules` 保留目录、详情和 audit GET，要求已签名 Console 管理员；Console 旧 `/settings/modules/data`、详情和 audit 子路径只允许真实非 legacy `super_admin` 代理这些读取。生命周期 POST 已从 Agent 和 Console 路由移除，旧页面及浏览器写资产已删除。底层仓储代码只为历史兼容和迁移合同保留，不得重新接回运行入口。
 
-`/settings/modules` 不再是日常管理入口，只重定向到 `/settings/system-status`。系统状态同样仅对真实非 legacy `super_admin` 可见；它通过签名 Console principal 调用 `/internal/v1/health`，只白名单展示状态、发布 SHA、实例、运行时间、内存和选定组件状态。Agent 不可达、响应无效或字段缺失时明确显示“不可用”，不猜测、不复用旧值，也不泄露未白名单健康负载。
+`/settings/modules` 不再是日常管理入口，只重定向到系统管理 `/settings/accounts`。原 `/settings/system-status` 系统状态页已于 2026-10-20 删除；Agent 鉴权 `/internal/v1/health` 保留给发布健康检查。
 
 删除旧生命周期门禁不放宽其他边界：Console/Agent 登录、角色权限、签名 principal、同源校验、业务账号/资源绑定、Service v2 generation、Command/Run/Evidence、业务写后核验和未知写隔离继续按各自合同失败关闭。旧生命周期记录漂移只是不再参与固定模块可用性判断。
 

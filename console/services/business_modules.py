@@ -1,4 +1,4 @@
-"""Fixed-module navigation and the super-admin system-status projection.
+"""Fixed-module navigation and the legacy module read-only compatibility.
 
 The legacy business-module lifecycle remains available only through its
 read-only Agent compatibility API. It is deliberately not a Console routing,
@@ -12,19 +12,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from console.app_support import *  # noqa: F403
-from console.navigation import CONSOLE_CONTROL_PLANE_NAVIGATION, CONSOLE_NAVIGATION
+from console.navigation import CONSOLE_NAVIGATION
 from shared.identity_routes import console_permission
 
 
-_SYSTEM_HEALTH_COMPONENTS = (
-    ("mysql", "业务数据库"),
-    ("scheduler", "调度器"),
-    ("workflow_runner", "工作流执行器"),
-    ("automation_plugins", "自动化扩展"),
-    ("automation_workers", "自动化工作节点"),
-    ("tms_session", "融辉登录会话"),
-)
-_UNAVAILABLE = "不可用"
 _CURRENT_REQUEST_USER = object()
 
 
@@ -32,7 +23,7 @@ class BusinessModulesServiceMixin:
     """Keep fixed menus independent from legacy lifecycle records."""
 
     @staticmethod
-    def _can_see_system_status_navigation(user: Mapping[str, Any] | None) -> bool:
+    def _is_real_super_admin(user: Mapping[str, Any] | None) -> bool:
         if not isinstance(user, Mapping):
             return False
         try:
@@ -52,18 +43,10 @@ class BusinessModulesServiceMixin:
         if user is _CURRENT_REQUEST_USER:
             user = current_admin_user()
         normalized_user = user if isinstance(user, Mapping) else None
-        control_plane = []
-        if self._can_see_system_status_navigation(normalized_user):
-            control_plane.extend(
-                item
-                for item in CONSOLE_CONTROL_PLANE_NAVIGATION
-                if item["route"] == "/settings/system-status"
-            )
-        items = (*CONSOLE_NAVIGATION, *control_plane)
-        if normalized_user and not self._can_see_system_status_navigation(normalized_user):
+        if normalized_user and not self._is_real_super_admin(normalized_user):
             permissions = normalized_user.get("access_permissions", ())
-            return tuple(item for item in items if console_permission("GET", item["route"]) in permissions)
-        return items
+            return tuple(item for item in CONSOLE_NAVIGATION if console_permission("GET", item["route"]) in permissions)
+        return CONSOLE_NAVIGATION
 
     def _business_module_mobile_nav(
         self,
@@ -95,81 +78,7 @@ class BusinessModulesServiceMixin:
     @staticmethod
     def _is_module_super_admin(handler: BaseHTTPRequestHandler) -> bool:
         user = getattr(handler, "current_admin_user", None) or current_admin_user() or {}
-        return BusinessModulesServiceMixin._can_see_system_status_navigation(user)
-
-    @staticmethod
-    def _health_field(value: object) -> str | int | float:
-        if isinstance(value, bool):
-            return "正常" if value else "异常"
-        if isinstance(value, (str, int, float)):
-            return value
-        return _UNAVAILABLE
-
-    @classmethod
-    def _health_component_value(cls, value: object) -> str | int | float:
-        if isinstance(value, Mapping):
-            for key in ("state", "status", "healthy", "ok"):
-                if key in value:
-                    return cls._health_field(value.get(key))
-            return _UNAVAILABLE
-        return cls._health_field(value)
-
-    def _system_status_snapshot(self, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-        # The live plugin and generation checks read the cross-region database;
-        # a 4s budget always ended in "unavailable" on this diagnostic page.
-        result = self._agent_request(
-            "GET",
-            "/internal/v1/health",
-            timeout=20,
-            console_principal=self._mysql_console_principal(
-                getattr(handler, "current_admin_user", None)
-            ),
-        )
-        payload = result.get("data") if isinstance(result.get("data"), Mapping) else {}
-        available = bool(result.get("ok")) and bool(payload)
-        components = payload.get("components") if isinstance(payload.get("components"), Mapping) else {}
-        return {
-            "available": available,
-            "status": self._health_field(payload.get("status")) if available else _UNAVAILABLE,
-            "release_sha": self._health_field(payload.get("release_sha")) if available else _UNAVAILABLE,
-            "instance_id": self._health_field(payload.get("instance_id")) if available else _UNAVAILABLE,
-            "uptime": self._health_field(payload.get("uptime")) if available else _UNAVAILABLE,
-            "memory_mb": self._health_field(payload.get("memory_mb")) if available else _UNAVAILABLE,
-            "components": tuple(
-                {
-                    "key": key,
-                    "label": label,
-                    "value": self._health_component_value(components.get(key)) if available else _UNAVAILABLE,
-                }
-                for key, label in _SYSTEM_HEALTH_COMPONENTS
-            ),
-        }
-
-    def _render_system_status(
-        self,
-        handler: BaseHTTPRequestHandler,
-        query: dict[str, list[str]],
-    ) -> None:
-        if not self._is_module_super_admin(handler):
-            self._send_json(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                {"ok": False, "error_code": "SUPER_ADMIN_REQUIRED", "message": "只有超级管理员可以查看系统状态。"},
-            )
-            return
-        template = self.template_env.get_template("admin_accounts.html")
-        body = template.render(
-            app_title=self.settings.app_title,
-            system_status_only=True,
-            system_health=self._system_status_snapshot(handler),
-            is_super_admin=True,
-            users=(),
-            feishu_binding={},
-            binding_challenge=None,
-            message=query.get("message", [""])[0],
-            message_kind=query.get("kind", ["info"])[0],
-        )
-        self._send_html(handler, body)
+        return BusinessModulesServiceMixin._is_real_super_admin(user)
 
     def _handle_legacy_business_modules_data(
         self,
