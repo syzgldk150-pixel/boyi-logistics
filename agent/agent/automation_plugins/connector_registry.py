@@ -456,10 +456,11 @@ def _reject_sensitive_result(
         # A1 rectangle here; URLs, sheet locators and paths remain rejected.
         if business_field == "ranges" and re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]*:[A-Z]{1,3}[1-9][0-9]*", value):
             checked = value.replace(":", " ")
-        # Ronghui record IDs are canonical base64 encodings of 16-byte IDs.
+        # Ronghui record IDs are canonical base64 encodings of 16-byte IDs
+        # (OUT_GUID links a detail attachment to its problem record).
         # Their slash is data, not a filesystem locator. Binding identity checks
         # above still apply; arbitrary text and URI/path values remain denied.
-        if business_field in {"external_id", "GUID"} and len(value) == 24:
+        if business_field in {"external_id", "GUID", "OUT_GUID"} and len(value) == 24:
             try:
                 binary = base64.b64decode(value, validate=True)
             except ValueError:

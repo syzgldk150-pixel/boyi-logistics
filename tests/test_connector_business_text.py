@@ -37,6 +37,13 @@ def test_business_fields_do_not_allow_other_targets_or_secrets(value):
         check(value)
 
 
+def test_ronghui_attachment_out_guid_is_preserved():
+    identity = base64.b64encode(b"\xff" * 16).decode()
+    check({"details": [{}, {"attachments": [{"raw": {"OUT_GUID": identity}}]}]})
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check({"OUT_GUID": "/var/tmp/result.json"})
+
+
 def test_record_id_matching_a_bound_identity_is_still_denied():
     identity = base64.b64encode(b"\xff" * 16).decode()
     with pytest.raises(ConnectorSensitiveDataDenied):
