@@ -37,16 +37,23 @@ class _Response:
 class _Session:
     """Fake of the page's three query calls and the saveTables upload."""
 
-    def __init__(self, *, signed=(), stations=STATIONS, saves=None, sign_payload=None):
+    def __init__(self, *, signed=(), stations=STATIONS, saves=None, sign_payload=None, sent=(), sent_payload=None):
         self.headers = {}
         self.signed = set(signed)
+        self.sent = list(sent)
+        self.sent_payload = sent_payload
         self.stations = stations
         self.saves = list(saves or [])
         self.sign_payload = sign_payload
         self.calls = []
         self.uploads = []
 
-    def post(self, url, data=None, files=None, headers=None, timeout=None):
+    def post(self, url, data=None, files=None, headers=None, timeout=None, params=None, allow_redirects=True):
+        if params and params.get("id") == "FIND_SEND_SCAN_RECORD":
+            self.calls.append(("FIND_SEND_SCAN_RECORD", dict(data or {}), headers))
+            if self.sent_payload is not None:
+                return _Response(self.sent_payload)
+            return _Response({"data": self.sent, "total": len(self.sent)})
         if url.endswith("/dataOperation/saveTables"):
             self.uploads.append({"params": json.loads(files["params"][1]), "headers": headers})
             return _Response(self.saves.pop(0) if self.saves else {"success": True, "message": "保存成功"})
@@ -207,8 +214,9 @@ class ScanNextHttpTests(unittest.TestCase):
         self.assertIn("单号不符合融辉单号规则: ABC", result["message"])
         self.assertEqual(session.uploads, [])
 
-    def test_station_lookup_requires_one_exact_row(self):
-        for stations in ({}, {"甲站": STATIONS["甲站"] * 2}):
+    def test_station_lookup_requires_one_exact_site_code(self):
+        other = {"SITE_CODE": "1009", "SITE_NAME": "甲站", "TYPE": "一级网点"}
+        for stations in ({}, {"甲站": STATIONS["甲站"] + [other]}):
             with self.subTest(stations=stations):
                 result, session, _, _ = self._run(
                     self._items(("甲站", "20000000000001")), _Session(stations=stations)
@@ -217,7 +225,47 @@ class ScanNextHttpTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["stage"], "select_station")
                 self.assertIn("下一站需唯一精确匹配", result["message"])
+                self.assertEqual(result["detail"]["bill_code"], "")
                 self.assertEqual(session.uploads, [])
+
+    def test_same_site_listed_twice_by_the_lookup_is_one_station(self):
+        session = _Session(stations={"甲站": STATIONS["甲站"] * 2})
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001")), session)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(session.uploads[0]["params"][0]["data"][0]["PRE_OR_NEXT_STATION_CODE"], "1001")
+
+    def _sent_row(self, bill, station="甲站", **overrides):
+        return {"BILL_CODE": bill, "SCAN_TYPE": "发件", "SCAN_SITE_CODE": "90001",
+                "PRE_OR_NEXT_STATION": station, **overrides}
+
+    def test_bills_sent_today_to_the_same_station_are_skipped(self):
+        session = _Session(sent=[
+            self._sent_row("20000000000001"),
+            self._sent_row("20000000000002", station="乙站"),
+            self._sent_row("20000000000003", SCAN_SITE_CODE="80001"),
+            self._sent_row("20000000000004", SCAN_TYPE="到件"),
+        ])
+        result, session, _, _ = self._run(
+            self._items(*(("甲站", f"2000000000000{index}") for index in range(1, 5))), session
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["detail"]["skipped_signed_codes"], ["20000000000001"])
+        uploaded = [row["BILL_CODE"] for row in session.uploads[0]["params"][0]["data"]]
+        self.assertEqual(uploaded, ["20000000000002", "20000000000003", "20000000000004"])
+        query = next(call for call in session.calls if call[0] == "FIND_SEND_SCAN_RECORD")
+        self.assertEqual(query[1]["SCAN_TYPE"], "发件")
+        self.assertEqual(query[1]["SCAN_SITE_CODE"], "90001")
+        self.assertEqual(query[1]["searchOrderInput"].split("\n"), [f"2000000000000{index}" for index in range(1, 5)])
+
+    def test_malformed_send_record_fails_before_any_upload(self):
+        session = _Session(sent_payload={"success": False})
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001")), session)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "sent_today")
+        self.assertEqual(session.uploads, [])
 
     def test_partial_station_name_is_not_accepted(self):
         result, _, _, _ = self._run(self._items(("乙站", "20000000000001")))

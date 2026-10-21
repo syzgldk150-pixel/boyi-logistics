@@ -1405,7 +1405,7 @@ def format_scan_sync_reply(result: dict[str, Any]) -> str:
 
     skipped_signed_count = payload.get("skipped_signed_count")
     if skipped_signed_count not in (None, "", 0):
-        lines.append(f"已签收跳过：{skipped_signed_count}")
+        lines.append(f"已签收或今日已扫描跳过：{skipped_signed_count}")
 
     flow_result = payload.get("flow_result")
     if isinstance(flow_result, dict):

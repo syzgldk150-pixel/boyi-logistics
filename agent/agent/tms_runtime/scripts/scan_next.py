@@ -22,6 +22,7 @@ import time
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
+from agent.tms_runtime.scripts import get_scan
 from agent.tms_runtime.scripts.login_manager import TMSAuth
 from agent.tms_runtime.scripts.ronghui_problem_upload import (
     BASE_URL,
@@ -52,6 +53,9 @@ CENTER_STATION_LOOKUP_CALL_ID = "FIND_SCAN_SEND_SITE_COMBOBOX_BY_CEN1"
 STATION_LOOKUP_PAGE_SIZE = 20
 LOGIN_CONTEXT_FIELDS = ("loginUserName", "loginUserAccount", "loginSiteName", "loginSiteCode")
 SCAN_MAN_CODE_MAX_UTF8_BYTES = 20
+SEND_SCAN_RECORD_CALL_ID = "FIND_SEND_SCAN_RECORD"
+SEND_SCAN_RECORD_PAGE_SIZE = 500
+SEND_SCAN_RECORD_MAX_PAGES = 20
 
 STATION_KEYS = (
     "station_name",
@@ -233,16 +237,70 @@ def _station_code(session: Any, page: dict[str, str], station_name: str, site_ty
     rows = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise RuntimeError(f"下一站查询响应结构异常: {call_id}")
-    matches = [
-        row for row in rows
+    # The lookup can list the same site more than once (2026-10-21: 邵阳武冈站
+    # twice with one SITE_CODE); one name must still resolve to one site code.
+    codes = {
+        str(row.get("SITE_CODE") or "").strip()
+        for row in rows
         if isinstance(row, dict) and str(row.get("SITE_NAME") or "").strip() == station_name
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(f"下一站需唯一精确匹配: {station_name}，实际 {len(matches)} 个")
-    code = str(matches[0].get("SITE_CODE") or "").strip()
+    }
+    if len(codes) != 1:
+        raise RuntimeError(f"下一站需唯一精确匹配: {station_name}，实际 {len(codes)} 个")
+    code = codes.pop()
     if not code:
         raise RuntimeError(f"下一站缺少网点编号: {station_name}")
     return code
+
+
+def _sent_today(session: Any, login: dict[str, str], items: list[Dict[str, str]], now: _dt.datetime) -> set[str]:
+    """Bills this site already send-scanned today to the same next station.
+
+    Reads the send-scan ledger the caller also verifies against, so a rerun
+    after a partial batch does not record the same scan twice.
+    """
+
+    stations = {item["bill_code"]: item["station_name"] for item in items}
+    date_range = json.dumps(
+        {"start": now.strftime("%Y-%m-%d 00:00:00"), "end": now.strftime("%Y-%m-%d 23:59:59")},
+        ensure_ascii=False,
+    )
+    rows: list[dict[str, Any]] = []
+    for page_index in range(SEND_SCAN_RECORD_MAX_PAGES):
+        payload = get_scan.build_payload(
+            date_range, login["loginSiteCode"], "发件", page_index, SEND_SCAN_RECORD_PAGE_SIZE
+        )
+        payload["searchOrderInput"] = "\n".join(stations)
+        response = session.post(
+            get_scan.SCAN_URL,
+            params={"id": SEND_SCAN_RECORD_CALL_ID},
+            data=payload,
+            headers=get_scan.build_headers(),
+            allow_redirects=False,
+            timeout=QUERY_TIMEOUT_SEC,
+        )
+        result = _json_payload(response, SEND_SCAN_RECORD_CALL_ID)
+        total = result.get("total") if isinstance(result, dict) else None
+        page_rows = result.get("data") if isinstance(result, dict) else None
+        if (
+            isinstance(total, bool)
+            or not isinstance(total, int)
+            or not isinstance(page_rows, list)
+            or any(not isinstance(row, dict) for row in page_rows)
+        ):
+            raise RuntimeError(f"{SEND_SCAN_RECORD_CALL_ID} 响应结构异常")
+        rows.extend(page_rows)
+        if len(rows) >= total or not page_rows:
+            break
+    else:
+        raise RuntimeError(f"{SEND_SCAN_RECORD_CALL_ID} 记录超过 {SEND_SCAN_RECORD_MAX_PAGES} 页")
+    return {
+        code
+        for row in rows
+        if (code := str(row.get("BILL_CODE") or "").strip()) in stations
+        and str(row.get("SCAN_TYPE") or "").strip() == "发件"
+        and str(row.get("SCAN_SITE_CODE") or "").strip() == login["loginSiteCode"]
+        and str(row.get("PRE_OR_NEXT_STATION") or "").strip() == stations[code]
+    }
 
 
 def _scan_row(
@@ -339,10 +397,13 @@ def run_flow(
         )
         stage = "bill_rules"
         rules = _bill_rules(session, page)
+        stage = "sent_today"
+        sent_today = _sent_today(session, login, scan_items, _dt.datetime.now(RONGHUI_TIMEZONE))
 
         row_index = 0
         for station, group in itertools.groupby(scan_items, key=lambda item: item["station_name"]):
             current_station = station
+            current_bill_code = ""
             stage = "select_station"
             station_code = _station_code(session, page, station, login["loginSiteType"])
             log(f"下一站: {station} ({station_code})")
@@ -352,6 +413,10 @@ def run_flow(
                 stage = "check_bill"
                 if not any(rule.search(current_bill_code) for rule in rules):
                     raise RuntimeError(f"单号不符合融辉单号规则: {current_bill_code}")
+                if current_bill_code in sent_today:
+                    log(f"单号今日已发件扫描到 {station}，跳过: {current_bill_code}")
+                    skipped_signed_codes.append(current_bill_code)
+                    continue
                 if _is_signed(session, page, current_bill_code):
                     log(f"单号已做过签收，跳过: {current_bill_code}")
                     skipped_signed_codes.append(current_bill_code)
