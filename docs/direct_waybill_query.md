@@ -1,3 +1,10 @@
+---
+module: 寄件查询
+type: 业务说明
+status: active
+updated: 2026-10-20
+---
+
 # 寄件数据查询与覆盖范围（架构 V1 / P4）
 
 寄件查询与夜间同步分开：Console 和 Agent 查询走 `send-waybills-query` 普通接口；夜间插件独立采集并写同一数据库。查询不创建 Command、Run 或后台领取任务。

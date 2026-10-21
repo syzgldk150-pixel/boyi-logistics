@@ -1,3 +1,10 @@
+---
+module: 扫描
+type: 未知写恢复
+status: active
+updated: 2026-09-08
+---
+
 # 扫描未知写恢复与数据保留
 
 `sync_scan_codes` 的原扫描算法和确认预览保持不变。历史核验仅由显式人工入口调用，启动、登录恢复与新预览不再调用旧 Run 恢复。核心恢复链只读取原 Command 的已验证预览、原 generation 账号、原写尝试 receipt，以及外部独立发件扫描账本。

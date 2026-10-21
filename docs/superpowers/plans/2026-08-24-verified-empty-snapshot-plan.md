@@ -1,4 +1,6 @@
 ---
+module: 自动化插件平台
+type: 发布记录
 status: historical
 updated: 2026-08-30
 ---

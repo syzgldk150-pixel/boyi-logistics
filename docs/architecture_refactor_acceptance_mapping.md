@@ -1,3 +1,10 @@
+---
+module: 项目验收
+type: 验收映射
+status: historical
+updated: 2026-09-16
+---
+
 # 架构 V1 与原 V3.2 验收映射
 
 当前合同为 `BOYI-PHASE1-FINAL-CLOSEOUT-R1`。唯一权威矩阵仍是 `docs/low_maintenance_v32_acceptance.json`：保留原编号、原要求和历史测试引用，以 `effective_requirement` 明示 Direct＋Service V2 的现行要求。资源忙可终结失败，用户用新请求重新触发；不恢复持久队列或旧 Runner 领取。需求修订本身不是 PASS。

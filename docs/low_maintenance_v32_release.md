@@ -1,3 +1,10 @@
+---
+module: 项目验收
+type: 复现与回退
+status: historical
+updated: 2026-09-15
+---
+
 # V3.2 复现、发布与回退
 
 本页保留 V3.2 隔离验收的复现方法；这些报告不代表当前线上状态。当前源码和 ZIP 升级以 [V2 维护入口](../agent/service_v2_plugins/README.md)为准，生产发布以 [ECS 手册](../agent/deploy/publish_to_ecs.md)为准。首次引入来源数据库、执行恢复及通用设置桥属于核心更新；之后兼容范围内的字段适配和局部业务判断更新对应插件。具体源码归属见 [维护归属表](low_maintenance_v32.md)，原验收逐组要求见 [验收矩阵](low_maintenance_v32_acceptance.json)。

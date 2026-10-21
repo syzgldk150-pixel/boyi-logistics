@@ -42,7 +42,7 @@ updated: 2026-10-21
 - [业务接口与独立插件调用架构](architecture_direct_invocation.md)：双服务、普通业务直接调用、独立插件 Invocation 和维护归属。
 - [当前插件源码、测试与升级入口](../agent/service_v2_plugins/README.md)、[Service V2 平台合同](plugin-platform-v2.md)：现行业务源码、Host 边界、独立 ZIP 与退役发布。
 - [身份权限与统一对话](identity_and_unified_chat.md)：后台账号和飞书身份继承、共用 AI 服务、授权插件执行及当前应签规则。
-- [V3.2 维护边界](low_maintenance_v32.md)、[复现与发布回退](low_maintenance_v32_release.md)：所属模块入口、可选 AI、简单设置、局部维护与来源历史。
+- [V3.2 维护边界](low_maintenance_v32.md)：所属模块入口、可选 AI、简单设置、局部维护与来源历史。
 - [寄件查询与范围覆盖](direct_waybill_query.md)：数据库优先、平台补查及完整来源边界。
 - [监控查询](warehouse_monitor.md)：按单号读取真实扫描时间并签发局域网回放链接，录像只在仓库局域网内播放，含位置推定边界。
 - [发货吨位与飞书知识读取](shipment_knowledge_queries.md)：类型化查询、追问、受限 Wiki CLI 与真实来源核实边界。
@@ -73,7 +73,7 @@ updated: 2026-10-21
 - [扩展平台原始方案](extension-platform-baseline.md)、[原迁移执行账本](extension-platform-progress.md)：保留阶段性 TASK 与隔离证据，不是当前待办或生产门禁。
 - [旧控制平面](../agent/docs/control_plane_v1.md)、[旧 Action V1 合同](../agent/docs/automation_plugin_platform.md)：解释历史记录；不用于新增插件或日常执行。
 - [任务领取与审批时间](control_plane_timebase.md)：旧领取、唤醒和审批时间口径，仅用于解释历史记录；新 Invocation 明确使用 UTC。
-- [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
+- [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)、[V3.2 复现与发布回退](low_maintenance_v32_release.md)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
 - [第一轮收尾验收报告](phase1_final_closeout.md)（2026-09-23）、[身份与 V2 插件验证记录](identity_v2_validation_20260911.md)（2026-09-11）：当时的验收证据与状态，不代表现行部署情况。
 
 - [空快照设计](superpowers/specs/2026-08-24-verified-empty-snapshot-design.md)与[历史发布记录](superpowers/plans/2026-08-24-verified-empty-snapshot-plan.md)保留空结果清理规则和发布证据；当前实现仍以插件及宿主代码为准。
@@ -91,4 +91,4 @@ updated: 2026-10-21
 - `status: historical`：历史记录，不进入默认现行检索。
 - `status: snapshot`：外部页面或系统在某次抓取时的证据，必须结合 `captured_at` 与 `verified_at` 判断时效。
 
-提交前运行 `python3 agent/scripts/check_documentation.py`，校验本地链接、生命周期元数据和已配置的指令镜像；修改其他层级镜像时也须同步核对。
+`docs/` 与 `agent/docs/` 下的每份 Markdown 都必须在文件头声明 `module`、`type`、`status`、`updated`，`status` 只能取上述值。提交前运行 `python3 agent/scripts/check_documentation.py`，校验本地链接、生命周期元数据和已配置的指令镜像；修改其他层级镜像时也须同步核对。

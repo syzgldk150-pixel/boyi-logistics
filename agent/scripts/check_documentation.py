@@ -17,6 +17,8 @@ INSTRUCTION_PAIRS = (
 REQUIRED_AGENT_DOC_FIELDS = {"module", "type", "status", "updated"}
 HISTORICAL_STATUSES = {"historical", "implemented", "superseded"}
 NON_CURRENT_STATUSES = HISTORICAL_STATUSES | {"aspirational", "snapshot"}
+# Lifecycle values defined in docs/README.md; repository docs must declare one.
+LIFECYCLE_STATUSES = NON_CURRENT_STATUSES | {"active", "planned"}
 MARKDOWN_LINK_PATTERN = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -116,6 +118,15 @@ def main() -> int:
                 problems.append(
                     f"missing agent doc metadata: {relative} ({', '.join(sorted(missing))})"
                 )
+
+        if relative.startswith("docs/"):
+            missing = REQUIRED_AGENT_DOC_FIELDS - set(frontmatter or {})
+            if missing:
+                problems.append(
+                    f"missing repository doc metadata: {relative} ({', '.join(sorted(missing))})"
+                )
+            elif frontmatter.get("status") not in LIFECYCLE_STATUSES:
+                problems.append(f"unknown lifecycle status: {relative} ({frontmatter.get('status')})")
 
         if relative.startswith("agent/tms_docs/"):
             required = {"type", "status", "captured_at", "verified_at"}

@@ -1,3 +1,10 @@
+---
+module: 项目维护
+type: 维护边界
+status: active
+updated: 2026-10-13
+---
+
 # V3.2 第一轮维护边界
 
 现行验收合同为 `BOYI-PHASE1-FINAL-CLOSEOUT-R1`，结果见[第一轮收尾记录](phase1_final_closeout.md)（历史验收报告）。调用层已由 [架构改造 V1](architecture_direct_invocation.md) 更新；本文件其余模块归属、权限与接口校验、数据正确性与性能标准继续适用。

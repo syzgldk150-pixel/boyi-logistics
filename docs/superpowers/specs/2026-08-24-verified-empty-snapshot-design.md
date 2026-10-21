@@ -1,4 +1,6 @@
 ---
+module: 自动化插件平台
+type: 设计
 status: implemented
 updated: 2026-08-30
 ---
