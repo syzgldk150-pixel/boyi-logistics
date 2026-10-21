@@ -966,37 +966,3 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertEqual("r13_account_id", captured["role_kwargs"]["output_account_field"])
         self.assertEqual("", captured["role_kwargs"]["output_session_profile_field"])
         self.assertEqual("selected-r13-user", captured["target_params"]["username"])
-
-    def test_scan_next_run_once_moves_flow_out_of_running_async_loop(self):
-        import scan_next
-
-        calls = []
-
-        def fake_run_flow_impl(**kwargs):
-            try:
-                asyncio.get_running_loop()
-                loop_running = True
-            except RuntimeError:
-                loop_running = False
-            calls.append({"loop_running": loop_running, "items": kwargs.get("items")})
-            return {"ok": not loop_running, "items": kwargs.get("items")}
-
-        async def _run_in_loop():
-            with patch.object(scan_next, "_run_flow_impl", side_effect=fake_run_flow_impl):
-                return scan_next.run_once(
-                    {
-                        "items": [
-                            {
-                                "station_name": "测试站",
-                                "bill_code": "TEST001",
-                            }
-                        ]
-                    }
-                )
-
-        result = asyncio.run(_run_in_loop())
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(len(calls), 1)
-        self.assertFalse(calls[0]["loop_running"])
-        self.assertEqual(calls[0]["items"][0]["bill_code"], "TEST001")

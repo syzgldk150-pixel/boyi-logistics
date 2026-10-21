@@ -1,17 +1,18 @@
 """Loopback-only source/scan HTTP boundary for the actual daily scripts.
 
-The production scan browser code executes against a small isolated page with
-the reviewed MiniUI interfaces. The page submits real HTTP rows; readback uses
-the same server ledger. No production business function is replaced.
+The production scan code calls the same menu, page, query and ``saveTables``
+interfaces as the real 发件扫描 page; readback uses the same server ledger.
+No production business function is replaced.
 """
 from __future__ import annotations
 
 from contextlib import ExitStack
+from email.parser import BytesParser
+from email.policy import HTTP
 from hashlib import sha256
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
 from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse, quote
@@ -43,33 +44,15 @@ class DailyAccounts:
         self.require_active_binding_descriptor(account_id)
         return {"username": LOGIN['loginUserAccount']}
 
-FRAME = r'''<!doctype html><meta charset="utf-8"><form id="searchForm">
-<input name="PRE_OR_NEXT_STATION"><input name="PRE_OR_NEXT_STATION_CODE">
-<input name="BILL_CODE" placeholder="单号输入后按回车键"></form><div id="datagrid"><table></table></div>
-<script>
-const controls = {};
-for (const id of ['PRE_OR_NEXT_STATION_CODE','BILL_CODE','LISTING_CODE','SCAN_DATE','FAST_TYPE']) {
-  controls[id] = {value:'',text:'',setValue(v){this.value=v},getValue(){return this.value},
-    setText(v){this.text=v},getText(){return this.text},setIsValid(){},isValid(){return true}};
-}
-controls.PRE_OR_NEXT_STATION_CODE.getData = () => [];
-controls.PRE_OR_NEXT_STATION_CODE.getUrl = () => '/stations';
-const grid = {rows:[],getData(){return this.rows},validate(){},setTotalCount(){},
-  addRow(row){this.rows.push(row);this.render()},setData(rows){this.rows=rows||[];this.render()},
-  render(){const table=document.querySelector('#datagrid table');table.replaceChildren();
-    for(const row of this.rows){const tr=table.insertRow();tr.className='mini-grid-row';tr.insertCell().textContent=row.BILL_CODE}}
-};
-controls.datagrid=grid;
-window.mini={get(id){return controls[id]},Form:function(){this.validate=()=>{};this.isValid=()=>true;
-  this.getData=()=>Object.fromEntries(Object.entries(controls).filter(([key])=>key!=='datagrid').map(([key,c])=>[key,c.value]))}};
-window.$U={httpUtils:{syncPostJson(url,data,done){const xhr=new XMLHttpRequest();xhr.open('POST',url,false);
-  xhr.setRequestHeader('Content-Type','application/json');xhr.send(JSON.stringify(data));if(xhr.status!==200)throw Error('isolated HTTP failure');done(JSON.parse(xhr.responseText))}}};
-window.$Z={user:{getUserInfo(){return __LOGIN__}},Parameter:function(name){this.name=name;this.rows=[];this.push=rows=>this.rows.push(...rows)},
-  Request:function(path){this.items=[];this.push=item=>this.items.push(item);this.post=async done=>{
-    const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.items)});
-    done(await response.json())}}};
-</script>'''.replace('__LOGIN__', json.dumps(LOGIN, ensure_ascii=False))
-INDEX = '''<!doctype html><meta charset="utf-8"><ul class="menu"><li class="has-children"><a><span class="menu-text">扫描管理</span></a><ul class="menu-submenu"><li><a><span class="menu-text">发件扫描</span></a></li></ul></li></ul><div id="mini-21$body$fixture"><iframe name="mini-iframe-isolated" src="/widget/home?authenticationKey=isolated-public-page" style="width:900px;height:600px"></iframe></div>'''
+MENU = {'result': {'data': [{'text': '扫描管理', 'children': [{'text': '发件扫描',
+    'url': '/widget/home?authenticationKey=isolated-public-page&pageId=isolated-page'}]}]}}
+SCAN_PAGE = '<!doctype html><meta charset="utf-8"><script>new $Z.Parameter("TAB_SCAN_SEND_ADD")</script>'
+
+
+def _multipart_fields(content_type, body):
+    message = BytesParser(policy=HTTP).parsebytes(b'Content-Type: ' + content_type.encode() + b'\r\n\r\n' + body)
+    return {part.get_param('name', header='content-disposition'): part.get_payload(decode=True).decode('utf-8')
+            for part in message.iter_parts()}
 
 
 class DailyProtocol:
@@ -106,7 +89,13 @@ class DailyProtocol:
             def respond(self):
                 location = urlparse(self.path)
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
-                arguments = json.loads(body) if body and 'application/json' in self.headers.get('Content-Type', '') else parse_qs(body.decode())
+                content_type = self.headers.get('Content-Type', '')
+                if body and 'multipart/form-data' in content_type:
+                    arguments = _multipart_fields(content_type, body)
+                elif body and 'application/json' in content_type:
+                    arguments = json.loads(body)
+                else:
+                    arguments = parse_qs(body.decode())
                 with owner.lock:
                     owner.requests.append({'method': self.command, 'path': location.path, 'action': parse_qs(location.query).get('id', [''])[0]})
                 try:
@@ -126,21 +115,24 @@ class DailyProtocol:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def handle(self, path, query, arguments):
-        if path == '/index':
-            return INDEX
+        if path == '/menuTreeExtend/loadMenu':
+            return MENU
         if path == '/widget/home':
-            return FRAME
-        if path == '/stations':
-            return [{'SITE_NAME': STATION, 'SITE_CODE': 'isolated-station-code'}]
+            return SCAN_PAGE
         action = query.get('id', [''])[0]
+        if action == 'FIND_SCAN_SEND_SITE_COMBOBOX_NEW':
+            if query.get('key') != [STATION]:
+                raise ValueError('station lookup differs from the isolated source')
+            return {'data': [{'SITE_NAME': STATION, 'SITE_CODE': 'isolated-station-code'}], 'total': 1}
         if action == 'FIND_TMS_SYS_SHARE_SET':
             return [{'SHARE_VALUE': '^R[0-9]+$'}]
         if action == 'FIND_WAYBILL_SIGN_STATE':
             return []
         if path == '/dataOperation/saveTables':
-            if not isinstance(arguments, list) or len(arguments) != 1 or arguments[0].get('name') != 'TAB_SCAN_SEND_ADD':
+            operations = json.loads(arguments['params']) if isinstance(arguments, dict) and isinstance(arguments.get('params'), str) else None
+            if not isinstance(operations, list) or len(operations) != 1 or operations[0].get('operationKey') != 'TAB_SCAN_SEND_ADD':
                 raise ValueError('unexpected scan mutation contract')
-            rows = arguments[0]['rows']
+            rows = operations[0]['data']
             for row in rows:
                 if row.get('BILL_CODE') != CHILD_CODE or row.get('PRE_OR_NEXT_STATION') != STATION:
                     raise ValueError('scan target differs from the isolated source')
@@ -205,21 +197,8 @@ class DailyProtocol:
             def login_and_get_session(self):
                 return owner.session()
 
-            def login(self, page, **_kwargs):
-                page.goto(owner.url + '/index')
-
-        def launch_browser(**_kwargs):
-            from playwright.sync_api import sync_playwright
-            runtime = sync_playwright().start()
-            browser = runtime.chromium.launch(executable_path=os.environ['V32_CHROMIUM_EXECUTABLE'], headless=True)
-            context = browser.new_context()
-            context.route('**/*', lambda route: route.continue_() if urlparse(route.request.url).hostname == '127.0.0.1' else route.abort())
-            return runtime, browser, context, context.new_page()
-
         stack.enter_context(patch('agent.tms_runtime.scripts.login_manager.TMSAuth', Auth))
-        stack.enter_context(patch.object(scan_next, 'TMSBrowserAuth', Auth))
-        stack.enter_context(patch.object(scan_next, 'launch_browser', launch_browser))
-        stack.enter_context(patch.object(scan_next, '_resolve_credentials', lambda *_args, **_kwargs: ('', '')))
+        stack.enter_context(patch.object(scan_next, 'TMSAuth', Auth))
         return stack
 
     def __enter__(self):
@@ -232,7 +211,7 @@ class DailyProtocol:
         self.server.server_close()
 
 
-def probe_scan_browser():
+def probe_scan_http():
     from plugin_core_adapters.first_party import _scan_next_submit, _scan_next_verify
     with DailyProtocol() as boundary, boundary.authentication_boundaries():
         descriptor = {'session_profile': 'v32-daily-profile'}
@@ -247,5 +226,5 @@ def probe_scan_browser():
 
 
 if __name__ == '__main__':
-    output = Path(__file__).resolve().parents[2] / '.task_tmp' / 'v32' / 'reliability' / 'scan-browser-boundary.json'
-    output.write_text(json.dumps(probe_scan_browser(), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    output = Path(__file__).resolve().parents[2] / '.task_tmp' / 'v32' / 'reliability' / 'scan-http-boundary.json'
+    output.write_text(json.dumps(probe_scan_http(), ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

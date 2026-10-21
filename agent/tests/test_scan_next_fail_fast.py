@@ -1,19 +1,95 @@
-"""Regression tests for fail-fast Ronghui outgoing scans."""
+"""Regression tests for Ronghui outgoing scans through the page's HTTP calls."""
 
 from _tms_runtime_test_support import *  # noqa: F403
 
 from agent.tms_runtime.scripts import scan_next
 
 
-class ScanNextFailFastTests(unittest.TestCase):
+USER_INFO = {
+    "loginUserName": "扫描员",
+    "loginUserAccount": "scanner01",
+    "loginSiteName": "测试操作场",
+    "loginSiteCode": "90001",
+    "loginSiteType": "分拨中心",
+}
+PAGE = {"url": "https://tms.example/widget/home", "authentication_key": "auth", "page_id": "page"}
+STATIONS = {
+    "甲站": [{"SITE_CODE": "1001", "SITE_NAME": "甲站", "TYPE": "一级网点"}],
+    "乙站": [
+        {"SITE_CODE": "1002", "SITE_NAME": "乙站", "TYPE": "一级网点"},
+        {"SITE_CODE": "1003", "SITE_NAME": "乙站东", "TYPE": "一级网点"},
+    ],
+}
+
+
+class _Response:
+    def __init__(self, payload):
+        self._payload = payload
+        self.content = json.dumps(payload).encode("utf-8")
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _Session:
+    """Fake of the page's three query calls and the saveTables upload."""
+
+    def __init__(self, *, signed=(), stations=STATIONS, saves=None, sign_payload=None):
+        self.headers = {}
+        self.signed = set(signed)
+        self.stations = stations
+        self.saves = list(saves or [])
+        self.sign_payload = sign_payload
+        self.calls = []
+        self.uploads = []
+
+    def post(self, url, data=None, files=None, headers=None, timeout=None):
+        if url.endswith("/dataOperation/saveTables"):
+            self.uploads.append({"params": json.loads(files["params"][1]), "headers": headers})
+            return _Response(self.saves.pop(0) if self.saves else {"success": True, "message": "保存成功"})
+        call_id = url.split("id=", 1)[1]
+        self.calls.append((call_id, dict(data or {}), headers))
+        if call_id == "FIND_TMS_SYS_SHARE_SET":
+            return _Response([{"SHARE_CODE": "SubBill", "SHARE_VALUE": "^((1|2|R)[0-9]{13})$"}])
+        if call_id == "FIND_WAYBILL_SIGN_STATE":
+            if self.sign_payload is not None:
+                return _Response(self.sign_payload)
+            return _Response([{"BILL_CODE": data["BILL_CODE"]}] if data["BILL_CODE"] in self.signed else [])
+        raise AssertionError(f"unexpected query {call_id}")
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append((params["id"], dict(params), headers))
+        rows = self.stations.get(params["key"], [])
+        return _Response({"data": rows, "total": len(rows)})
+
+
+class ScanNextHttpTests(unittest.TestCase):
+    def _run(self, items, session=None, user_info=None):
+        session = session or _Session()
+        auth = Mock()
+        auth.return_value.login_and_get_session.return_value = session
+        with (
+            patch.object(scan_next, "TMSAuth", auth),
+            patch.object(scan_next, "_read_user_info_cookie", return_value=dict(user_info or USER_INFO)),
+            patch.object(scan_next, "_resolve_menu_page_context", return_value=PAGE) as page_context,
+            patch.object(scan_next, "log"),
+        ):
+            result = scan_next.run_flow(items=items, session_profile="ronghui_account_a")
+        return result, session, auth, page_context
+
+    @staticmethod
+    def _items(*pairs):
+        return [{"station_name": station, "bill_code": bill} for station, bill in pairs]
+
     def test_run_once_forwards_selected_session_profile(self):
         with patch.object(scan_next, "run_flow", return_value={"ok": True}) as run_flow:
             scan_next.run_once(
                 {
                     "session_profile": "ronghui_account_a",
-                    "items": [
-                        {"station_name": "测试站", "bill_code": "R00010001"},
-                    ],
+                    "items": [{"station_name": "甲站", "bill_code": "20000000000001"}],
                 }
             )
 
@@ -22,325 +98,180 @@ class ScanNextFailFastTests(unittest.TestCase):
     def test_blank_session_profile_does_not_fall_back_to_default(self):
         with self.assertRaisesRegex(ValueError, "session_profile 不能为空"):
             scan_next.run_once(
-                {
-                    "session_profile": " ",
-                    "items": [
-                        {"station_name": "测试站", "bill_code": "R00010001"},
-                    ],
-                }
+                {"session_profile": " ", "items": [{"station_name": "甲站", "bill_code": "20000000000001"}]}
             )
 
-    def test_selected_session_profile_reaches_browser_and_auth(self):
-        source = inspect.getsource(scan_next._run_flow_impl)  # noqa: SLF001
+    def test_scan_opens_no_browser(self):
+        self.assertFalse(hasattr(scan_next, "launch_browser"))
+        self.assertFalse(hasattr(scan_next, "TMSBrowserAuth"))
 
-        self.assertIn("profile=session_profile", source)
-        self.assertRegex(
-            source,
-            r"(?s)launch_browser\(.*?profile=session_profile,.*?\)",
-        )
-        self.assertRegex(
-            source,
-            r"(?s)TMSBrowserAuth\(.*?profile=session_profile,.*?\)",
+    def test_rows_match_the_page_form_and_upload_once_per_station(self):
+        result, session, auth, page_context = self._run(
+            self._items(("甲站", "20000000000001"), ("甲站", "20000000000002"), ("乙站", "20000000000003"))
         )
 
-    def test_login_context_waits_for_real_frame_user_info(self):
-        frame = Mock()
-        frame.evaluate.side_effect = [
+        self.assertTrue(result["ok"], result)
+        auth.assert_called_once_with(profile="ronghui_account_a")
+        self.assertEqual(page_context.call_args.kwargs["menu_text"], "发件扫描")
+        self.assertEqual(page_context.call_args.kwargs["content_markers"], ("TAB_SCAN_SEND_ADD",))
+        self.assertEqual(len(session.uploads), 2)
+        operation = session.uploads[0]["params"]
+        self.assertEqual(len(operation), 1)
+        self.assertEqual(operation[0]["operationKey"], "TAB_SCAN_SEND_ADD")
+        self.assertEqual(session.uploads[0]["headers"]["authenticationKey"], "auth")
+        self.assertEqual(session.uploads[0]["headers"]["pageId"], "page")
+        row = operation[0]["data"][0]
+        self.assertEqual(
+            {key: row[key] for key in (
+                "BILL_CODE", "PRE_OR_NEXT_STATION_CODE", "PRE_OR_NEXT_STATION", "SCAN_SITE",
+                "SCAN_SITE_CODE", "SCAN_MAN", "SCAN_MAN_CODE", "SCAN_TYPE", "DATA_FROM",
+                "FAST_TYPE", "SCAN_STATUS", "DISPATCH_SITE", "_state",
+            )},
             {
-                "ok": False,
-                "error": "login_context_unavailable",
-                "context_status": "z_missing",
+                "BILL_CODE": "20000000000001",
+                "PRE_OR_NEXT_STATION_CODE": "1001",
+                "PRE_OR_NEXT_STATION": "甲站",
+                "SCAN_SITE": "测试操作场",
+                "SCAN_SITE_CODE": "90001",
+                "SCAN_MAN": "扫描员",
+                "SCAN_MAN_CODE": "scanner01",
+                "SCAN_TYPE": "发件",
+                "DATA_FROM": "K13",
+                "FAST_TYPE": "汽运",
+                "SCAN_STATUS": 3,
+                "DISPATCH_SITE": "",
+                "_state": "added",
             },
-            {"ok": True, "context_status": "ready"},
-        ]
+        )
+        self.assertRegex(row["LISTING_CODE"], r"^\d{14}$")
+        self.assertRegex(row["SCAN_DATE"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+        self.assertEqual([item["_id"] for item in operation[0]["data"]], [1, 2])
+        self.assertEqual(session.uploads[1]["params"][0]["data"][0]["_id"], 3)
+        self.assertEqual(
+            result["detail"]["stations"],
+            [
+                {"station_name": "甲站", "count": 2, "bill_codes": ["20000000000001", "20000000000002"]},
+                {"station_name": "乙站", "count": 1, "bill_codes": ["20000000000003"]},
+            ],
+        )
+        self.assertEqual(result["detail"]["total_scanned"], 3)
 
-        result = scan_next._wait_login_context(frame, timeout_ms=1_000)  # noqa: SLF001
+    def test_center_and_site_accounts_use_the_page_station_lookup(self):
+        _, center_session, _, _ = self._run(self._items(("甲站", "20000000000001")))
+        site_info = {**USER_INFO, "loginSiteType": "一级网点"}
+        _, site_session, _, _ = self._run(self._items(("甲站", "20000000000001")), user_info=site_info)
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(frame.evaluate.call_count, 2)
-
-    def test_login_context_timeout_keeps_precise_failure_state(self):
-        frame = Mock()
-        frame.evaluate.return_value = {
-            "ok": False,
-            "error": "missing_login_context_fields",
-            "context_status": "required_fields_missing",
-            "missing_fields": ["loginSiteCode"],
-        }
-        with (
-            patch.object(scan_next.time, "time", side_effect=[0.0, 0.0, 1.0]),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "missing_login_context_fields.*missing_fields=loginSiteCode.*context_status=required_fields_missing",
-            ),
-        ):
-            scan_next._wait_login_context(frame, timeout_ms=10)  # noqa: SLF001
-
-    def test_login_context_is_checked_before_any_station_or_bill_write(self):
-        source = inspect.getsource(scan_next._run_flow_impl)  # noqa: SLF001
-
-        preflight = source.index('stage = "wait_login_context"')
-        station_write = source.index('stage = "select_station"')
-        bill_write = source.index('stage = "input_bill_code"')
-        self.assertLess(preflight, station_write)
-        self.assertLess(preflight, bill_write)
-
-    def test_scan_user_fields_match_original_page_without_display_fallbacks(self):
-        script = scan_next.MINI_ADD_BILL_CODE_SCRIPT
-
-        self.assertIn('typeof $Z !== "undefined"', script)
-        self.assertNotIn("window.$Z", script)
-        self.assertIn("userInfo = $Z.user.getUserInfo();", script)
-        self.assertIn('{ name: "iframe", scope: window }', script)
-        self.assertIn('{ name: "top", scope: window.top }', script)
-        self.assertIn('{ name: "parent", scope: window.parent }', script)
-        self.assertIn('error: "ambiguous_login_context"', script)
-        self.assertIn("signatures.size !== 1", script)
-        self.assertIn('formData.SCAN_MAN = loginUserName;', script)
-        self.assertIn('formData.SCAN_MAN_CODE = loginUserAccount;', script)
-        self.assertIn('"loginUserName"', script)
-        self.assertIn('"loginUserAccount"', script)
-        self.assertNotIn("headerUser", script)
-        self.assertNotIn("headerSite", script)
-        self.assertNotIn('|| "TMS"', script)
-        self.assertNotIn('|| "73901"', script)
-
-    def test_scan_user_code_is_rejected_before_grid_write_when_too_long(self):
-        script = scan_next.MINI_ADD_BILL_CODE_SCRIPT
-
-        length_check = script.index("scanManCodeUtf8Bytes > 20")
-        grid_write = script.index("grid.addRow(formData)")
-        self.assertLess(length_check, grid_write)
-        self.assertIn('error: "scan_man_code_too_long"', script)
-        self.assertNotIn("slice(0, 20)", script)
-        self.assertNotIn("substring(0, 20)", script)
-
-    def test_station_lookup_requires_one_exact_row_and_real_code(self):
-        script = scan_next.MINI_SET_STATION_SCRIPT
-
-        self.assertIn("exact.length !== 1", script)
-        self.assertIn('error: "station_fields_missing"', script)
-        self.assertNotIn(".includes(wanted)", script)
-        self.assertNotIn("wanted.includes", script)
-        self.assertNotIn("valueFor(row, codeKeys) || name", script)
-
-    def test_invalid_scan_items_are_not_silently_dropped(self):
-        with self.assertRaisesRegex(ValueError, "索引: 1"):
-            scan_next._coerce_items(  # noqa: SLF001
-                [
-                    {"station_name": "测试站", "bill_code": "R00010001"},
-                    {"station_name": "测试站"},
-                ]
-            )
-
-    def test_station_api_failure_does_not_fall_back_to_typing(self):
-        with (
-            patch.object(scan_next, "_wait_xpath_visible"),
-            patch.object(
-                scan_next,
-                "_set_station_by_mini_api",
-                return_value={"ok": False, "error": "station_not_found"},
-            ),
-            patch.object(scan_next, "_fill_xpath") as fill_xpath,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "station_not_found"):
-                scan_next._select_station(object(), "测试站")  # noqa: SLF001
-
-        fill_xpath.assert_not_called()
-
-    def test_scan_flow_has_no_secondary_input_or_upload_path(self):
-        source = inspect.getsource(scan_next._run_flow_impl)  # noqa: SLF001
-
-        self.assertNotIn("回退输入法", source)
-        self.assertNotIn("回退点击上传", source)
-        self.assertNotIn("XPATH_UPLOAD", source)
+        lookups = [call for call in center_session.calls if call[0].startswith("FIND_SCAN_SEND_SITE")]
+        self.assertEqual(lookups[0][0], "FIND_SCAN_SEND_SITE_COMBOBOX_BY_CEN1")
+        self.assertEqual(lookups[0][1]["key"], "甲站")
+        site_lookup = [call for call in site_session.calls if call[0].startswith("FIND_SCAN_SEND_SITE")][0]
+        self.assertEqual(site_lookup[0], "FIND_SCAN_SEND_SITE_COMBOBOX_NEW")
+        self.assertEqual(site_session.uploads[0]["params"][0]["data"][0]["SCAN_STATUS"], 2)
 
     def test_signed_items_are_skipped_without_stopping_later_items(self):
-        source = inspect.getsource(scan_next._run_flow_impl)  # noqa: SLF001
-
-        self.assertRegex(
-            source,
-            r"(?s)elif add_result\.get\(\"signed\"\):.*?skipped_signed_codes\.append\(bill\).*?continue",
+        session = _Session(signed={"20000000000002"})
+        result, session, _, _ = self._run(
+            self._items(("甲站", "20000000000001"), ("甲站", "20000000000002"), ("甲站", "20000000000003")),
+            session,
         )
-        self.assertRegex(
-            source,
-            r"(?s)if skipped:.*?skipped_signed_codes\.append\(bill\).*?continue",
-        )
-
-    def _run_flow(self, add_results, *, messages=None, items=None):
-        """Run the real flow with every browser primitive replaced."""
-
-        items = items or [
-            {"station_name": "测试站", "bill_code": f"R0001000{index}"}
-            for index in range(len(add_results))
-        ]
-        calls = {"add": [], "upload": 0, "message_checks": 0}
-        message_values = list(messages or [])
-
-        def add(_frame, bill):
-            calls["add"].append(bill)
-            return add_results[len(calls["add"]) - 1]
-
-        def visible_message(_page, _frame):
-            calls["message_checks"] += 1
-            return message_values.pop(0) if message_values else None
-
-        def upload(_frame):
-            calls["upload"] += 1
-            return {"ok": True}
-
-        page = Mock()
-        frame = Mock()
-        with (
-            patch.object(scan_next, "launch_browser", return_value=(Mock(), Mock(), Mock(), page)),
-            patch.object(scan_next, "TMSBrowserAuth"),
-            patch.object(scan_next, "_resolve_credentials", return_value=("user", "pass")),
-            patch.object(scan_next, "_is_visible", return_value=True),
-            patch.object(scan_next, "_click_xpath"),
-            patch.object(scan_next, "_get_scan_frame", return_value=frame),
-            patch.object(scan_next, "_wait_xpath_visible"),
-            patch.object(scan_next, "_wait_login_context", return_value={"ok": True}),
-            patch.object(scan_next, "_select_station", return_value=True),
-            patch.object(scan_next, "_grid_row_count", return_value=0),
-            patch.object(scan_next, "_add_bill_code_by_mini_api", side_effect=add),
-            patch.object(scan_next, "_visible_messagebox_text", side_effect=visible_message),
-            patch.object(scan_next, "_wait_bill_code_added", return_value=(True, False)),
-            patch.object(scan_next, "_upload_rows_by_mini_api", side_effect=upload),
-            patch.object(scan_next, "_wait_table_cleared", return_value=True),
-            patch.object(scan_next, "_click_confirm_any") as confirm,
-            patch.object(scan_next, "_pause") as pause,
-            patch.object(scan_next.time, "sleep") as sleep,
-        ):
-            result = scan_next._run_flow_impl(  # noqa: SLF001
-                station_name="",
-                bill_code="",
-                items=items,
-                username="",
-                password="",
-                config_path="",
-                headless=True,
-                slow_mo_ms=0,
-                max_login_attempts=1,
-                action_delay_sec=1.0,
-                dump_on_error=False,
-                dump_dir="",
-                session_profile="ronghui_account_a",
-            )
-        calls["confirm"] = confirm.call_count
-        calls["pause"] = pause.call_count
-        calls["sleep"] = sleep.call_count
-        return result, calls
-
-    def test_bill_entry_has_no_fixed_per_item_wait(self):
-        result, calls = self._run_flow([{"ok": True}, {"ok": False, "signed": True}, {"ok": True}])
 
         self.assertTrue(result["ok"], result)
+        self.assertEqual(result["detail"]["skipped_signed_codes"], ["20000000000002"])
+        uploaded = [row["BILL_CODE"] for row in session.uploads[0]["params"][0]["data"]]
+        self.assertEqual(uploaded, ["20000000000001", "20000000000003"])
         self.assertEqual(result["detail"]["total_scanned"], 2)
-        self.assertEqual(result["detail"]["skipped_signed_codes"], ["R00010001"])
-        self.assertEqual((calls["pause"], calls["sleep"]), (0, 0))
-        # one instant check per added bill plus one before the station upload
-        self.assertEqual(calls["message_checks"], 3)
-        self.assertEqual(calls["upload"], 1)
 
-    def test_visible_signed_message_after_entry_skips_only_that_bill(self):
-        result, calls = self._run_flow(
-            [{"ok": True}, {"ok": True}],
-            messages=["该单号已做过签收，不能扫描", None, None],
-        )
+    def test_station_with_only_signed_items_uploads_nothing(self):
+        session = _Session(signed={"20000000000001"})
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001")), session)
 
         self.assertTrue(result["ok"], result)
-        self.assertEqual(result["detail"]["skipped_signed_codes"], ["R00010000"])
-        self.assertEqual(result["detail"]["total_scanned"], 1)
-        self.assertEqual(calls["confirm"], 1)
-        self.assertEqual(calls["upload"], 1)
+        self.assertEqual(session.uploads, [])
+        self.assertEqual(result["detail"]["stations"], [])
+        self.assertEqual(result["detail"]["total_scanned"], 0)
 
-    def test_unexpected_message_after_entry_fails_before_upload(self):
-        result, calls = self._run_flow([{"ok": True}], messages=["系统繁忙"])
+    def test_bill_rules_are_read_once_but_signed_state_per_bill(self):
+        _, session, _, _ = self._run(self._items(("甲站", "20000000000001"), ("甲站", "20000000000002")))
 
-        self.assertFalse(result["ok"])
-        self.assertIn("录入单号后出现未预期提示: 系统繁忙", result["message"])
-        self.assertEqual(calls["upload"], 0)
+        names = [call[0] for call in session.calls]
+        self.assertEqual(names.count("FIND_TMS_SYS_SHARE_SET"), 1)
+        self.assertEqual(names.count("FIND_WAYBILL_SIGN_STATE"), 2)
+        rule_call = next(call for call in session.calls if call[0] == "FIND_TMS_SYS_SHARE_SET")
+        self.assertEqual(rule_call[1], {"SHARE_CODE_IN": "MainBill,AllBill,ReturnBill,SubBill,VehicleCode"})
 
-    @staticmethod
-    def _scope_with_boxes(*texts):
-        boxes = []
-        for text in texts:
-            box = Mock()
-            box.is_visible.return_value = True
-            box.inner_text.return_value = text
-            boxes.append(box)
-        scope = Mock()
-        scope.query_selector_all.return_value = boxes
-        return scope
-
-    def test_work_order_reminder_is_ignored_without_clicking(self):
-        page = self._scope_with_boxes("工单处理:R00010001:2026-01-02 03:04:05")
-        frame = self._scope_with_boxes()
-
-        with patch.object(scan_next, "log"):
-            self.assertIsNone(scan_next._visible_messagebox_text(page, frame))  # noqa: SLF001
-
-    def test_several_work_order_reminders_in_one_box_are_ignored(self):
-        page = self._scope_with_boxes(
-            "工单处理:R00010001:2026-01-02 03:04:05\n工单处理:R00010002:2026-01-02 03:04:06"
-        )
-
-        with patch.object(scan_next, "log"):
-            self.assertIsNone(
-                scan_next._visible_messagebox_text(page, self._scope_with_boxes())  # noqa: SLF001
-            )
-
-    def test_problem_reply_reminders_are_ignored_with_work_orders(self):
-        page = self._scope_with_boxes(
-            "问题件回复:R00010003",
-            "工单处理:R00010001:2026-01-02 03:04:05\n问题件回复:R00010004",
-        )
-
-        with patch.object(scan_next, "log"):
-            self.assertIsNone(
-                scan_next._visible_messagebox_text(page, self._scope_with_boxes())  # noqa: SLF001
-            )
-
-    def test_problem_reply_text_with_other_content_is_not_ignored(self):
-        text = "问题件回复:R00010003 请先回复"
-        page = self._scope_with_boxes(text)
-
-        self.assertEqual(
-            scan_next._visible_messagebox_text(page, self._scope_with_boxes()),  # noqa: SLF001
-            text,
-        )
-
-    def test_real_message_next_to_work_order_reminder_still_fails(self):
-        page = self._scope_with_boxes("工单处理:R00010001:2026-01-02 03:04:05", "系统繁忙")
-
-        with patch.object(scan_next, "log"):
-            self.assertEqual(
-                scan_next._visible_messagebox_text(page, self._scope_with_boxes()),  # noqa: SLF001
-                "系统繁忙",
-            )
-
-    def test_work_order_text_with_other_content_is_not_ignored(self):
-        text = "工单处理:R00010001:2026-01-02 03:04:05 请先处理"
-        page = self._scope_with_boxes(text)
-
-        self.assertEqual(
-            scan_next._visible_messagebox_text(page, self._scope_with_boxes()),  # noqa: SLF001
-            text,
-        )
-
-    def test_message_visible_before_upload_fails_without_uploading(self):
-        result, calls = self._run_flow([{"ok": True}], messages=[None, "未处理提示"])
+    def test_bill_outside_ronghui_rules_fails_before_any_upload(self):
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001"), ("甲站", "ABC")))
 
         self.assertFalse(result["ok"])
-        self.assertIn("上传前页面存在未处理提示", result["message"])
-        self.assertEqual(calls["upload"], 0)
+        self.assertEqual(result["stage"], "check_bill")
+        self.assertIn("单号不符合融辉单号规则: ABC", result["message"])
+        self.assertEqual(session.uploads, [])
 
-    def test_add_script_reads_bill_formats_once_but_signed_state_per_bill(self):
-        script = scan_next.MINI_ADD_BILL_CODE_SCRIPT
+    def test_station_lookup_requires_one_exact_row(self):
+        for stations in ({}, {"甲站": STATIONS["甲站"] * 2}):
+            with self.subTest(stations=stations):
+                result, session, _, _ = self._run(
+                    self._items(("甲站", "20000000000001")), _Session(stations=stations)
+                )
 
-        self.assertIn("window.__boyiScanBillPatterns", script)
-        self.assertIn("if (loaded.length) window.__boyiScanBillPatterns = loaded;", script)
-        cache_check = script.index("let patterns = Array.isArray(window.__boyiScanBillPatterns)")
-        signed_query = script.index("FIND_WAYBILL_SIGN_STATE")
-        self.assertLess(cache_check, signed_query)
-        self.assertNotIn("__boyiSignedState", script)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["stage"], "select_station")
+                self.assertIn("下一站需唯一精确匹配", result["message"])
+                self.assertEqual(session.uploads, [])
+
+    def test_partial_station_name_is_not_accepted(self):
+        result, _, _, _ = self._run(self._items(("乙站", "20000000000001")))
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["detail"]["stations"][0]["station_name"], "乙站")
+
+    def test_malformed_signed_state_fails_instead_of_scanning(self):
+        session = _Session(sign_payload={"success": False, "message": "服务器内部错误"})
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001")), session)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("FIND_WAYBILL_SIGN_STATE 响应结构异常", result["message"])
+        self.assertEqual(session.uploads, [])
+
+    def test_rejected_upload_fails_and_keeps_earlier_station_results(self):
+        session = _Session(saves=[{"success": True, "message": "ok"}, {"success": False, "message": "单号重复"}])
+        result, session, _, _ = self._run(
+            self._items(("甲站", "20000000000001"), ("乙站", "20000000000002")), session
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "upload")
+        self.assertIn("上传失败: 单号重复", result["message"])
+        self.assertEqual([item["station_name"] for item in result["detail"]["stations"]], ["甲站"])
+
+    def test_missing_login_identity_fails_before_page_access(self):
+        info = {**USER_INFO, "loginSiteCode": ""}
+        result, session, _, page_context = self._run(self._items(("甲站", "20000000000001")), user_info=info)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "login_context")
+        self.assertIn("loginSiteCode", result["message"])
+        page_context.assert_not_called()
+        self.assertEqual(session.calls, [])
+
+    def test_scan_user_code_longer_than_page_limit_is_rejected(self):
+        info = {**USER_INFO, "loginUserAccount": "账" * 7}
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001")), user_info=info)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("扫描员编码超过 20 字节: 21", result["message"])
+        self.assertEqual(session.uploads, [])
+
+    def test_duplicate_and_invalid_items_are_rejected(self):
+        result, _, auth, _ = self._run(self._items(("甲站", "20000000000001"), ("乙站", "20000000000001")))
+        self.assertFalse(result["ok"])
+        self.assertIn("重复单号", result["message"])
+        auth.assert_not_called()
+
+        result, _, _, _ = self._run([{"station_name": "甲站"}])
+        self.assertFalse(result["ok"])
+        self.assertIn("items 存在格式错误项，索引: 0", result["message"])
+
+
+if __name__ == "__main__":
+    unittest.main()

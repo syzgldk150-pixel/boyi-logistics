@@ -763,12 +763,10 @@ def test_production_scan_next_calls_low_level_run_flow_and_never_whole_tool():
         )
 
     assert result["scanned"] == 1
-    assert run_flow.call_args.kwargs | {
+    assert run_flow.call_args.kwargs == {
         "items": items,
         "session_profile": "scan-profile",
-        "max_login_attempts": 1,
-        "dump_on_error": False,
-    } == run_flow.call_args.kwargs
+    }
     run_once.assert_not_called()
 
 

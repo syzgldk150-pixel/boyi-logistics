@@ -37,9 +37,6 @@ def daily_repository():
 @pytest.mark.parametrize("chat_entry", [False, True], ids=["console", "conversation"])
 def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_repository, monkeypatch, chat_entry):
     direct_repository = daily_repository
-    browser = Path(os.environ["V32_CHROMIUM_EXECUTABLE"])
-    assert browser.is_absolute() and browser.is_file(), "real isolated scan requires installed Chromium"
-    monkeypatch.setenv("V32_CHROMIUM_EXECUTABLE", str(browser))
     short_tmp = ROOT / ".t" / "tmp"
     short_tmp.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TMPDIR", str(short_tmp))

@@ -1,5 +1,6 @@
 """Twenty real HTTP readback rounds per outcome; not automatic Run recovery."""
 from datetime import datetime, timedelta
+import json
 import socket
 from zoneinfo import ZoneInfo
 
@@ -27,14 +28,16 @@ def test_production_scan_readback_classifies_actual_http_ledger_without_guessing
             "SCAN_SITE_CODE":LOGIN["loginSiteCode"], "SCAN_TYPE":"发件", "DATA_FROM":"K13"}
         started = datetime.now(ZoneInfo("Asia/Shanghai")) - timedelta(seconds=1)
         if outcome != "NOT_APPLIED":
-            body = requests.Request("POST", boundary.url + "/dataOperation/saveTables",
-                json=[{"name":"TAB_SCAN_SEND_ADD", "rows":[row]}]).prepare().body
+            params = json.dumps([{"operationKey":"TAB_SCAN_SEND_ADD", "data":[row]}], ensure_ascii=False)
+            request = requests.Request("POST", boundary.url + "/dataOperation/saveTables",
+                files={"params": (None, params)}).prepare()
+            body = request.body
             assert isinstance(body, bytes)
             # Intentionally abandon the client response after sending the full
             # valid write. The production readback, not that response, decides.
             host, port = boundary.server.server_address
             with socket.create_connection((host, port), timeout=3) as client:
-                client.sendall((f"POST /dataOperation/saveTables HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
+                client.sendall((f"POST /dataOperation/saveTables HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: {request.headers['Content-Type']}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
                 client.shutdown(socket.SHUT_WR)
                 # Reading one byte proves server processing has started; the
                 # business reply is deliberately discarded and never parsed.
@@ -43,7 +46,7 @@ def test_production_scan_readback_classifies_actual_http_ledger_without_guessing
                 # A second committed server row makes target identity ambiguous.
                 with boundary.session() as session:
                     response = session.post(boundary.url + "/dataOperation/saveTables",
-                        json=[{"name":"TAB_SCAN_SEND_ADD", "rows":[row]}], timeout=3)
+                        files={"params": (None, params)}, timeout=3)
                     response.raise_for_status()
         finished = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(seconds=1)
         before = len(boundary.ledger)

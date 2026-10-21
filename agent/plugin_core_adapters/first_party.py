@@ -498,12 +498,12 @@ def _scan_next_submit(
     descriptor: Mapping[str, Any],
     items: list[dict[str, str]],
 ) -> Mapping[str, Any]:
-    """Execute one exact batch using the low-level browser flow.
+    """Execute one exact batch through the 发件扫描 page's HTTP calls.
 
-    ``run_flow`` returns success only after every station upload succeeds and
-    the page table is observed empty.  The closed broker handler validates
-    that proof and turns it into a context-bound opaque operation token; this
-    adapter never calls the legacy whole ``sync_scan_codes`` tool.
+    ``run_flow`` returns success only after every station save is
+    acknowledged.  The closed broker handler validates that proof and turns
+    it into a context-bound opaque operation token; this adapter never calls
+    the legacy whole ``sync_scan_codes`` tool.
     """
 
     from agent.tms_runtime.scripts import scan_next
@@ -511,18 +511,7 @@ def _scan_next_submit(
     write_started_at = datetime.now(timezone.utc).isoformat()
     try:
         raw = scan_next.run_flow(
-            station_name="",
-            bill_code="",
             items=items,
-            username="",
-            password="",
-            config_path=scan_next.DEFAULT_CONFIG_PATH,
-            headless=True,
-            slow_mo_ms=0,
-            max_login_attempts=1,
-            action_delay_sec=scan_next.DEFAULT_ACTION_DELAY_SEC,
-            dump_on_error=False,
-            dump_dir="",
             session_profile=_required_profile(descriptor),
         )
     except Exception as exc:

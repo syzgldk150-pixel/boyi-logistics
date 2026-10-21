@@ -1,33 +1,58 @@
 """
-Automate outgoing scan flow in Ronghui TMS (Playwright, headed by default).
+Submit Ronghui TMS outgoing scans through the 发件扫描 page's own HTTP calls.
+
+The request contract comes from the real page (captured 2026-10-21): the page
+checks the bill against ``FIND_TMS_SYS_SHARE_SET`` rules, skips signed bills
+via ``FIND_WAYBILL_SIGN_STATE``, looks the next station up with its
+site-type specific lookup and uploads ``TAB_SCAN_SEND_ADD`` rows through
+``/dataOperation/saveTables``.  No browser is opened, so reminder pop-ups of
+the Ronghui index page cannot interfere.  A save acknowledgement is not
+business success on its own; the caller reads the send-scan ledger back.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import concurrent.futures
-import contextvars
 import datetime as _dt
+import itertools
 import json
-import os
 import re
 import sys
-import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
-from agent.tms_runtime.scripts.browser_manager import TMSBrowserAuth, launch_browser
-from agent.tms_runtime.scripts.shared_login import resolve_primary_credentials
+from agent.tms_runtime.scripts.login_manager import TMSAuth
+from agent.tms_runtime.scripts.ronghui_problem_upload import (
+    BASE_URL,
+    DATA_QUERY_URL,
+    _headers,
+    _json_datetime,
+    _read_user_info_cookie,
+    _resolve_menu_page_context,
+    operation,
+    save_tables,
+)
 
 
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 DEFAULT_STATION_NAME = ""
 DEFAULT_BILL_CODE = ""
-DEFAULT_TIMEOUT_MS = 30_000
-DEFAULT_ACTION_DELAY_SEC = 1.0
-DEFAULT_DUMP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SESSION_PROFILE = "default"
+QUERY_TIMEOUT_SEC = 20
+PAGE_QUERY_URL = f"{BASE_URL}/dataQuery/findPageByCallId"
+RONGHUI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+SCAN_MENU_TEXT = "发件扫描"
+SCAN_OPERATION_KEY = "TAB_SCAN_SEND_ADD"
+BILL_RULE_CODES = "MainBill,AllBill,ReturnBill,SubBill,VehicleCode"
+# The page's init() switches the next-station lookup for distribution centres.
+CENTER_SITE_TYPE = "分拨中心"
+STATION_LOOKUP_CALL_ID = "FIND_SCAN_SEND_SITE_COMBOBOX_NEW"
+CENTER_STATION_LOOKUP_CALL_ID = "FIND_SCAN_SEND_SITE_COMBOBOX_BY_CEN1"
+STATION_LOOKUP_PAGE_SIZE = 20
+LOGIN_CONTEXT_FIELDS = ("loginUserName", "loginUserAccount", "loginSiteName", "loginSiteCode")
+SCAN_MAN_CODE_MAX_UTF8_BYTES = 20
+
 STATION_KEYS = (
     "station_name",
     "stationName",
@@ -61,526 +86,6 @@ BILL_KEYS = (
     "单据号",
 )
 
-_ACTION_DELAY_SEC = contextvars.ContextVar("action_delay_sec", default=DEFAULT_ACTION_DELAY_SEC)
-
-
-def _has_running_event_loop() -> bool:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
-def _run_flow_in_playwright_thread(**kwargs: Any) -> Dict[str, Any]:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="scan-next-playwright") as executor:
-        return executor.submit(_run_flow_impl, **kwargs).result()
-
-XPATH_MENU_SCAN_MANAGEMENT = (
-    '//ul[@class="menu"]/li[@class="has-children"]/a/span[normalize-space(.)="扫描管理"][contains(@class, "menu-text")]'
-)
-XPATH_MENU_OUT_SCAN = (
-    '//ul[@class="menu"]/li/ul[1][contains(@class, "menu-submenu")]/li/a/span[normalize-space(.)="发件扫描"][contains(@class, "menu-text")]'
-)
-
-XPATH_SCAN_FRAME = (
-    "//div[contains(@id, 'mini-21$body$')][not(contains(@style,'display'))]"
-    "//iframe[starts-with(@name, 'mini-iframe-') and contains(@src, '/widget/home?authenticationKey=')]"
-)
-XPATH_NEXT_STATION_INPUT = '//input[@name="PRE_OR_NEXT_STATION"]'
-XPATH_SCAN_INPUT = "//input[@placeholder='单号输入后按回车键']"
-XPATH_CHECK_ALL = '//table//tr/td//span[@id="mini-58checkall"]'
-XPATH_UPLOAD = (
-    '//a[@id="addBtn"]/span[contains(@class, "mini-button-icon-text")]/span[contains(@class, "mini-button-text")]'
-)
-XPATH_CONFIRM_BUTTON = (
-    '//div[contains(@class, "mini-messagebox-buttons")]/a[normalize-space(.)="确定"][contains(@class, "mini-button")]'
-)
-XPATH_CONFIRM_UPLOAD_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "确定上传当前已编数据")]'
-XPATH_SUCCESS_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "数据保存成功")]'
-XPATH_ALREADY_SIGNED_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "已做过签收")]'
-XPATH_MESSAGEBOX_CONTENT = '//div[contains(@class, "mini-messagebox-content")]'
-_RONGHUI_REMINDER_ENTRY = (
-    r"(?:工单处理:[A-Za-z0-9]+:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
-    r"|问题件回复:[A-Za-z0-9]+)"
-)
-RONGHUI_REMINDER_PATTERN = re.compile(
-    rf"{_RONGHUI_REMINDER_ENTRY}(?: {_RONGHUI_REMINDER_ENTRY})*"
-)
-XPATH_GRID_ROW_ANY = '//div[@id="datagrid"]//table//tr[contains(@class, "mini-grid-row")]'
-XPATH_GRID_ROW_UNSELECTED = (
-    '//div[@id="datagrid"]//table//tr[@class="mini-grid-row mini-grid-newRow"]'
-)
-XPATH_GRID_ROW_SELECTED = '//div[@id="datagrid"]//table//tr[contains(@class,"mini-grid-row-selected")]'
-XPATH_GRID_ROW_CHECKED = '//div[@id="datagrid"]//table//tr[contains(@class,"mini-grid-row-checked")]'
-XPATH_GRID_ROW_ARIA_SELECTED = '//div[@id="datagrid"]//table//tr[@aria-selected="true"]'
-XPATH_GRID_CHECKED_CELL = (
-    "//div[@id='datagrid']//tr[contains(@class,'mini-grid-row')]"
-    "//*[contains(@class,'mini-checkcolumn-checked') "
-    "or contains(@class,'mini-grid-checkbox-checked') "
-    "or contains(@class,'mini-grid-checkcolumn-checked') "
-    "or contains(@class,'mini-checkbox-checked')]"
-)
-XPATH_CHECK_ALL_CHECKED = (
-    "//div[@id='datagrid']//span[contains(@id,'checkall') "
-    "and (contains(@class,'checked') or @aria-checked='true')]"
-)
-STATION_LOOKUP_CALL_IDS = (
-    "FIND_SCAN_SEND_SITE_COMBOBOX_BY_CENTER",
-    "FIND_SCAN_SEND_SITE_DIST",
-    "FIND_SCAN_SEND_SITE_COMBOBOX",
-    "FIND_SITE_ALL_COMBOBOX",
-)
-
-MINI_LOGIN_CONTEXT_RESOLVER_JS = r"""
-() => {
-  const requiredLoginFields = [
-    "loginUserName",
-    "loginUserAccount",
-    "loginSiteName",
-    "loginSiteCode",
-  ];
-  const scopeEntries = [
-    { name: "iframe", scope: window },
-    { name: "top", scope: window.top },
-    { name: "parent", scope: window.parent },
-  ];
-  const seenScopes = [];
-  const statuses = [];
-  const candidates = [];
-  const recordStatus = (scope, status, missingFields = []) => {
-    statuses.push({ scope, status, missing_fields: missingFields });
-  };
-
-  for (const entry of scopeEntries) {
-    const scope = entry.scope;
-    if (!scope || seenScopes.some((seen) => seen === scope)) continue;
-    seenScopes.push(scope);
-
-    let z = null;
-    try {
-      if (scope === window) {
-        if (typeof $Z !== "undefined") z = $Z;
-      } else {
-        z = scope["$Z"];
-      }
-    } catch (_) {
-      recordStatus(entry.name, "cross_origin_or_inaccessible");
-      continue;
-    }
-    if (!z) {
-      recordStatus(entry.name, "z_missing");
-      continue;
-    }
-    if (!z.user || typeof z.user.getUserInfo !== "function") {
-      recordStatus(entry.name, "user_api_missing");
-      continue;
-    }
-
-    let userInfo = null;
-    try {
-      if (scope === window) {
-        userInfo = $Z.user.getUserInfo();
-      } else {
-        userInfo = z.user.getUserInfo();
-      }
-    } catch (_) {
-      recordStatus(entry.name, "user_api_failed");
-      continue;
-    }
-    if (!userInfo || typeof userInfo !== "object") {
-      recordStatus(entry.name, "user_info_missing");
-      continue;
-    }
-    const values = requiredLoginFields.map(
-      (field) => String(userInfo[field] == null ? "" : userInfo[field]).trim()
-    );
-    const missingFields = requiredLoginFields.filter((_, index) => values[index] === "");
-    if (missingFields.length > 0) {
-      recordStatus(entry.name, "required_fields_missing", missingFields);
-      continue;
-    }
-    candidates.push({ source: entry.name, signature: JSON.stringify(values), userInfo });
-    recordStatus(entry.name, "ready");
-  }
-
-  if (candidates.length === 0) {
-    const missingFields = Array.from(
-      new Set(statuses.flatMap((status) => status.missing_fields || []))
-    );
-    if (missingFields.length > 0) {
-      return {
-        ok: false,
-        error: "missing_login_context_fields",
-        context_status: "required_fields_missing",
-        missing_fields: missingFields,
-        scope_statuses: statuses,
-      };
-    }
-    return {
-      ok: false,
-      error: "login_context_unavailable",
-      context_status: "no_ready_scope",
-      scope_statuses: statuses,
-    };
-  }
-  const signatures = new Set(candidates.map((candidate) => candidate.signature));
-  const sources = candidates.map((candidate) => candidate.source);
-  if (signatures.size !== 1) {
-    return {
-      ok: false,
-      error: "ambiguous_login_context",
-      context_status: "scope_values_disagree",
-      sources,
-      scope_statuses: statuses,
-    };
-  }
-  return {
-    ok: true,
-    context_status: "ready",
-    source: candidates[0].source,
-    sources,
-    userInfo: candidates[0].userInfo,
-  };
-}
-"""
-
-MINI_LOGIN_CONTEXT_SCRIPT = (
-    r"""
-() => {
-  const resolveLoginContext = """
-    + MINI_LOGIN_CONTEXT_RESOLVER_JS
-    + r""";
-  const result = resolveLoginContext();
-  if (!result.ok) return result;
-  return {
-    ok: true,
-    context_status: result.context_status,
-    source: result.source,
-    sources: result.sources,
-  };
-}
-"""
-)
-
-MINI_SET_STATION_SCRIPT = r"""
-async ({ stationName, callIds }) => {
-  const clean = (value) => String(value || "").trim();
-  const wanted = clean(stationName);
-  const result = { ok: false, stationName: wanted, attempts: [] };
-  if (!wanted) {
-    result.error = "empty_station";
-    return result;
-  }
-
-  const combo = window.mini && mini.get ? mini.get("PRE_OR_NEXT_STATION_CODE") : null;
-  if (!combo) {
-    result.error = "combo_not_found";
-    return result;
-  }
-
-  const nameKeys = ["SITE_NAME", "siteName", "name", "text", "TEXT", "NAME"];
-  const codeKeys = ["SITE_CODE", "siteCode", "code", "id", "value", "CODE", "ID", "VALUE"];
-  const valueFor = (row, keys) => {
-    for (const key of keys) {
-      if (row && row[key] !== undefined && row[key] !== null && clean(row[key])) {
-        return clean(row[key]);
-      }
-    }
-    return "";
-  };
-  const rowsFrom = (payload) => {
-    if (Array.isArray(payload)) return payload;
-    if (!payload || typeof payload !== "object") return [];
-    for (const key of ["data", "rows", "records", "result"]) {
-      if (Array.isArray(payload[key])) return payload[key];
-    }
-    return [];
-  };
-  const pickRow = (rows) => {
-    const normalized = rows.filter((row) => row && typeof row === "object");
-    const exact = normalized.filter((row) => valueFor(row, nameKeys) === wanted);
-    if (exact.length !== 1) return null;
-    return exact[0];
-  };
-  const applyRow = (row, source) => {
-    const name = valueFor(row, nameKeys);
-    const code = valueFor(row, codeKeys);
-    if (!name || !code) {
-      return { ok: false, error: "station_fields_missing", source };
-    }
-    if (combo.setValue) combo.setValue(code);
-    if (combo.setText) combo.setText(name);
-    if (combo.setIsValid) combo.setIsValid(true);
-
-    const textInput = document.querySelector('input[name="PRE_OR_NEXT_STATION"]');
-    if (textInput) {
-      textInput.value = name;
-      textInput.dispatchEvent(new Event("input", { bubbles: true }));
-      textInput.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    const valueInput =
-      document.querySelector("#PRE_OR_NEXT_STATION_CODE\\$value") ||
-      document.querySelector('input[name="PRE_OR_NEXT_STATION_CODE"]');
-    if (valueInput) {
-      valueInput.value = code;
-      valueInput.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-
-    return {
-      ok: true,
-      source,
-      stationName: name,
-      stationCode: code,
-      value: combo.getValue ? combo.getValue() : code,
-      text: combo.getText ? combo.getText() : name,
-    };
-  };
-
-  try {
-    if (combo.getData) {
-      const row = pickRow(rowsFrom(combo.getData()));
-      if (row) return applyRow(row, "combo_data");
-    }
-  } catch (error) {
-    result.attempts.push({ source: "combo_data", error: String(error) });
-  }
-
-  const urls = [];
-  try {
-    const comboUrl = combo.getUrl ? clean(combo.getUrl()) : "";
-    if (comboUrl) {
-      urls.push({
-        source: "combo_url",
-        url: comboUrl.startsWith("http") || comboUrl.startsWith("/") ? comboUrl : "/" + comboUrl,
-      });
-    }
-  } catch (error) {
-    result.attempts.push({ source: "combo_url", error: String(error) });
-  }
-  for (const id of callIds || []) {
-    urls.push({
-      source: id,
-      url: "/dataQuery/findPageByCallId?id=" + encodeURIComponent(id),
-    });
-  }
-
-  const seen = new Set();
-  for (const entry of urls) {
-    const baseUrl = entry.url;
-    const separator = baseUrl.includes("?") ? "&" : "?";
-    const url =
-      baseUrl +
-      separator +
-      "pageSize=20&pageIndex=0&key=" +
-      encodeURIComponent(wanted) +
-      "&_=" +
-      Date.now();
-    if (seen.has(url)) continue;
-    seen.add(url);
-    try {
-      const response = await fetch(url, {
-        credentials: "include",
-        headers: { "X-Requested-With": "XMLHttpRequest" },
-      });
-      const text = await response.text();
-      let payload = null;
-      try {
-        payload = JSON.parse(text);
-      } catch (_) {
-        payload = null;
-      }
-      const rows = rowsFrom(payload);
-      result.attempts.push({ source: entry.source, status: response.status, rows: rows.length });
-      const row = pickRow(rows);
-      if (row) return applyRow(row, entry.source);
-    } catch (error) {
-      result.attempts.push({ source: entry.source, error: String(error) });
-    }
-  }
-
-  result.error = "station_not_found";
-  return result;
-}
-"""
-
-MINI_ADD_BILL_CODE_SCRIPT = (
-    r"""
-(billCode) => {
-  const resolveLoginContext = """
-    + MINI_LOGIN_CONTEXT_RESOLVER_JS
-    + r""";
-  const bill = String(billCode || "").trim();
-  if (!bill) return { ok: false, error: "empty_bill_code" };
-  if (!window.mini || !mini.get) return { ok: false, error: "mini_not_found" };
-  if (!window.$U || !$U.httpUtils || !$U.httpUtils.syncPostJson) {
-    return { ok: false, error: "http_utils_not_found" };
-  }
-
-  const control = mini.get("BILL_CODE");
-  if (!control) return { ok: false, error: "bill_code_control_not_found" };
-  control.setValue(bill);
-  if (control.setIsValid) control.setIsValid(true);
-
-  const textInput = document.querySelector('input[name="BILL_CODE"]');
-  if (textInput) {
-    textInput.value = bill;
-    textInput.dispatchEvent(new Event("input", { bubbles: true }));
-    textInput.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
-  const base = window.basepath || "";
-  // Bill-number formats are system settings; read them once per page and
-  // keep only a non-empty successful answer. Signed state stays per bill.
-  let patterns = Array.isArray(window.__boyiScanBillPatterns) ? window.__boyiScanBillPatterns : null;
-  if (!patterns) {
-    const loaded = [];
-    $U.httpUtils.syncPostJson(
-      base + "/dataQuery/findAllByCallId?id=FIND_TMS_SYS_SHARE_SET",
-      { SHARE_CODE_IN: "MainBill,AllBill,ReturnBill,SubBill" },
-      (data) => {
-        if (!Array.isArray(data)) return;
-        for (const row of data) {
-          const pattern = row && row.SHARE_VALUE;
-          if (pattern) loaded.push(String(pattern));
-        }
-      }
-    );
-    if (loaded.length) window.__boyiScanBillPatterns = loaded;
-    patterns = loaded;
-  }
-  let allowed = false;
-  for (const pattern of patterns) {
-    try {
-      if (new RegExp(pattern).test(bill)) {
-        allowed = true;
-        break;
-      }
-    } catch (_) {}
-  }
-  if (!allowed) return { ok: false, error: "invalid_bill_code" };
-
-  let signed = false;
-  $U.httpUtils.syncPostJson(
-    base + "/dataQuery/findAllByCallId?id=FIND_WAYBILL_SIGN_STATE",
-    { BILL_CODE: bill },
-    (data) => {
-      signed = Array.isArray(data) && data.length > 0;
-    }
-  );
-  if (signed) return { ok: false, signed: true, error: "already_signed" };
-
-  const station = mini.get("PRE_OR_NEXT_STATION_CODE");
-  const stationText = station && station.getText ? String(station.getText() || "").trim() : "";
-  const stationCode = station && station.getValue ? String(station.getValue() || "").trim() : "";
-  if (!stationText) return { ok: false, error: "empty_station" };
-
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const listingCode = String(now.getFullYear()) + pad(now.getMonth() + 1) + pad(now.getDate()) + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
-  const listing = mini.get("LISTING_CODE");
-  if (listing && listing.setValue) listing.setValue(listingCode);
-  const scanDate = mini.get("SCAN_DATE");
-  if (scanDate && scanDate.setValue) scanDate.setValue(now);
-
-  const form = new mini.Form("#searchForm");
-  form.validate();
-  if (form.isValid && form.isValid() === false) {
-    const invalidFields = [];
-    for (const id of ["BILL_CODE", "PRE_OR_NEXT_STATION_CODE", "SCAN_DATE", "FAST_TYPE", "LISTING_CODE"]) {
-      const field = mini.get(id);
-      if (!field || !field.isValid || field.isValid()) continue;
-      invalidFields.push(id);
-    }
-    return { ok: false, error: "form_invalid", invalidFields };
-  }
-
-  const grid = mini.get("datagrid");
-  if (!grid || !grid.getData || !grid.addRow) return { ok: false, error: "datagrid_not_found" };
-  const beforeRows = grid && grid.getData ? grid.getData() : [];
-  const before = Array.isArray(beforeRows) ? beforeRows.length : 0;
-  for (const row of beforeRows) {
-    if (row && row.BILL_CODE === bill) {
-      return { ok: true, rows: before, duplicate: true };
-    }
-  }
-
-  const loginContext = resolveLoginContext();
-  if (!loginContext.ok) return loginContext;
-  const userInfo = loginContext.userInfo;
-  const loginUserName = String(userInfo.loginUserName).trim();
-  const loginUserAccount = String(userInfo.loginUserAccount).trim();
-  const loginSiteName = String(userInfo.loginSiteName).trim();
-  const loginSiteCode = String(userInfo.loginSiteCode).trim();
-  if (typeof TextEncoder !== "function") {
-    return { ok: false, error: "utf8_length_unavailable" };
-  }
-  const scanManCodeUtf8Bytes = new TextEncoder().encode(loginUserAccount).length;
-  if (scanManCodeUtf8Bytes > 20) {
-    return {
-      ok: false,
-      error: "scan_man_code_too_long",
-      actual_utf8_bytes: scanManCodeUtf8Bytes,
-      maximum_utf8_bytes: 20,
-    };
-  }
-  const formData = form.getData();
-  formData.PRE_OR_NEXT_STATION_CODE = stationCode;
-  formData.PRE_OR_NEXT_STATION = stationText;
-  formData.BILL_CODE = bill;
-  formData.SCAN_SITE = loginSiteName;
-  formData.SCAN_SITE_CODE = loginSiteCode;
-  formData.SCAN_MAN = loginUserName;
-  formData.SCAN_MAN_CODE = loginUserAccount;
-  formData.SCAN_TYPE = "发件";
-  formData.DATA_FROM = "K13";
-  formData.DISPATCH_SITE = window.DISPATCH_OR_SEND_MAN || "";
-  formData.REGISTER_DATE = new Date();
-
-  if (grid.setTotalCount) grid.setTotalCount(before + 1);
-  grid.addRow(formData);
-  control.setValue("");
-  if (control.setIsValid) control.setIsValid(true);
-  if (listing && listing.setValue) listing.setValue(listingCode);
-  if (scanDate && scanDate.setValue) scanDate.setValue(new Date());
-
-  const rows = grid && grid.getData ? grid.getData() : [];
-  const after = Array.isArray(rows) ? rows.length : 0;
-  if (after > before) {
-    return { ok: true, rows: after, trigger: "direct_datagrid_add" };
-  }
-  return { ok: false, error: "direct_datagrid_add_failed", before, after };
-}
-"""
-)
-
-MINI_UPLOAD_ROWS_SCRIPT = r"""
-() => new Promise((resolve) => {
-  try {
-    if (!window.mini || !mini.get) return resolve({ ok: false, error: "mini_not_found" });
-    if (!window.$Z || !$Z.Request || !$Z.Parameter) return resolve({ ok: false, error: "z_request_not_found" });
-    const grid = mini.get("datagrid");
-    if (!grid || !grid.getData) return resolve({ ok: false, error: "datagrid_not_found" });
-    if (grid.validate) grid.validate();
-    const rows = grid.getData();
-    if (!Array.isArray(rows) || rows.length <= 0) return resolve({ ok: false, error: "empty_rows" });
-
-    const request = new $Z.Request("/dataOperation/saveTables");
-    const param = new $Z.Parameter("TAB_SCAN_SEND_ADD");
-    param.push(rows);
-    request.push(param);
-    request.post((result) => {
-      const message = result && result.message ? String(result.message) : "";
-      const success = !!(result && result.success);
-      if (success && grid.setData) grid.setData();
-      resolve({ ok: success, message, result, rows: rows.length });
-    });
-  } catch (error) {
-    resolve({ ok: false, error: String(error) });
-  }
-})
-"""
-
 
 def _ts() -> str:
     ts = _dt.datetime.now()
@@ -589,15 +94,6 @@ def _ts() -> str:
 
 def log(message: str) -> None:
     print(f"[{_ts()}] {message}", flush=True)
-
-
-def _xpath_literal(text: str) -> str:
-    if '"' not in text:
-        return f'"{text}"'
-    if "'" not in text:
-        return f"'{text}'"
-    parts = text.split('"')
-    return "concat(" + ", '\"', ".join(f'"{part}"' for part in parts) + ")"
 
 
 def _get_first_value(raw: Dict[str, Any], keys: tuple[str, ...]) -> Optional[Any]:
@@ -661,438 +157,165 @@ def _load_json_file(path: str) -> Any:
         return json.load(handle)
 
 
-def _wait_xpath_visible(scope, xpath: str, *, timeout_ms: int = DEFAULT_TIMEOUT_MS):
-    return scope.wait_for_selector(f"xpath={xpath}", state="visible", timeout=timeout_ms)
+def _login_context(session: Any) -> dict[str, str]:
+    """Read the scan identity from the same cookie ``$Z.user.getUserInfo()`` decodes."""
 
-
-def _pause(scope, delay_sec: Optional[float] = None) -> None:
-    if delay_sec is None:
-        delay_sec = float(_ACTION_DELAY_SEC.get())
-    if delay_sec <= 0:
-        return
-    try:
-        scope.wait_for_timeout(int(delay_sec * 1000))
-    except Exception:
-        time.sleep(delay_sec)
-
-
-def _click_xpath(scope, xpath: str, *, label: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> None:
-    log(f"点击：{label}")
-    el = _wait_xpath_visible(scope, xpath, timeout_ms=timeout_ms)
-    el.scroll_into_view_if_needed()
-    el.click()
-    _pause(scope)
-
-
-def _fill_xpath(scope, xpath: str, value: str, *, label: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> None:
-    log(f"输入：{label}")
-    el = _wait_xpath_visible(scope, xpath, timeout_ms=timeout_ms)
-    el.click()
-    el.fill(value)
-    _pause(scope)
-
-
-def _is_visible(scope, xpath: str) -> bool:
-    try:
-        return scope.is_visible(f"xpath={xpath}")
-    except Exception:
-        return False
-
-
-def _get_scan_frame(page, *, timeout_ms: int = DEFAULT_TIMEOUT_MS):
-    deadline = time.time() + timeout_ms / 1000.0
-    last_error: Optional[BaseException] = None
-    while time.time() < deadline:
-        try:
-            iframe = page.query_selector(f"xpath={XPATH_SCAN_FRAME}")
-            if iframe is None:
-                page.wait_for_timeout(200)
-                continue
-            frame = iframe.content_frame()
-            if frame is None:
-                page.wait_for_timeout(200)
-                continue
-            return frame
-        except BaseException as exc:
-            last_error = exc
-            page.wait_for_timeout(200)
-    raise TimeoutError("未找到发件扫描 iframe") from last_error
-
-
-def _resolve_credentials(
-    config_path: str,
-    *,
-    username: str = "",
-    password: str = "",
-) -> Tuple[str, str]:
-    _ = config_path
-    return resolve_primary_credentials(username=username, password=password)
-
-
-def _set_station_by_mini_api(frame, station_name: str) -> dict[str, Any]:
-    try:
-        return frame.evaluate(
-            MINI_SET_STATION_SCRIPT,
-            {
-                "stationName": station_name,
-                "callIds": list(STATION_LOOKUP_CALL_IDS),
-            },
+    user_info = _read_user_info_cookie(session)
+    context = {field: str(user_info.get(field) or "").strip() for field in LOGIN_CONTEXT_FIELDS}
+    missing = [field for field, value in context.items() if not value]
+    if missing:
+        raise RuntimeError(f"融辉登录身份缺少字段: {', '.join(missing)}")
+    code_bytes = len(context["loginUserAccount"].encode("utf-8"))
+    if code_bytes > SCAN_MAN_CODE_MAX_UTF8_BYTES:
+        raise RuntimeError(
+            f"扫描员编码超过 {SCAN_MAN_CODE_MAX_UTF8_BYTES} 字节: {code_bytes}"
         )
-    except BaseException as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    context["loginSiteType"] = str(user_info.get("loginSiteType") or "").strip()
+    return context
 
 
-def _get_login_context_status(frame) -> dict[str, Any]:
+def _json_payload(response: Any, label: str) -> Any:
+    response.raise_for_status()
     try:
-        return frame.evaluate(MINI_LOGIN_CONTEXT_SCRIPT)
-    except BaseException as exc:
-        return {
-            "ok": False,
-            "error": "login_context_evaluation_failed",
-            "context_status": type(exc).__name__,
-        }
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"{label} 响应不是 JSON") from exc
 
 
-def _wait_login_context(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
-    deadline = time.time() + timeout_ms / 1000.0
-    last_result: dict[str, Any] = {
-        "ok": False,
-        "error": "login_context_unavailable",
-        "context_status": "not_checked",
-    }
-    while time.time() < deadline:
-        last_result = _get_login_context_status(frame)
-        if last_result.get("ok"):
-            return last_result
-        try:
-            frame.wait_for_timeout(200)
-        except Exception:
-            time.sleep(0.2)
-    raise RuntimeError(f"登录上下文未就绪: {_mini_failure_detail(last_result)}")
-
-
-def _add_bill_code_by_mini_api(frame, bill_code: str) -> dict[str, Any]:
-    try:
-        return frame.evaluate(MINI_ADD_BILL_CODE_SCRIPT, bill_code)
-    except BaseException as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-
-
-def _upload_rows_by_mini_api(frame) -> dict[str, Any]:
-    try:
-        return frame.evaluate(MINI_UPLOAD_ROWS_SCRIPT)
-    except BaseException as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-
-
-def _mini_failure_detail(result: Any) -> str:
-    if not isinstance(result, dict):
-        return "invalid_result"
-    error = str(result.get("error") or result.get("message") or "unknown_error").strip()
-    details: list[str] = []
-    missing_fields = result.get("missing_fields")
-    if isinstance(missing_fields, list):
-        fields = ",".join(str(field).strip() for field in missing_fields if str(field).strip())
-        if fields:
-            details.append(f"missing_fields={fields}")
-    context_status = str(result.get("context_status") or "").strip()
-    if context_status:
-        details.append(f"context_status={context_status}")
-    sources = result.get("sources")
-    if isinstance(sources, list):
-        source_text = ",".join(str(source).strip() for source in sources if str(source).strip())
-        if source_text:
-            details.append(f"sources={source_text}")
-    scope_statuses = result.get("scope_statuses")
-    if isinstance(scope_statuses, list):
-        status_parts: list[str] = []
-        for item in scope_statuses:
-            if not isinstance(item, dict):
-                continue
-            scope = str(item.get("scope") or "").strip()
-            status = str(item.get("status") or "").strip()
-            if scope and status:
-                status_parts.append(f"{scope}:{status}")
-        if status_parts:
-            details.append(f"scope_statuses={';'.join(status_parts)}")
-    actual_bytes = result.get("actual_utf8_bytes")
-    maximum_bytes = result.get("maximum_utf8_bytes")
-    if actual_bytes not in (None, ""):
-        details.append(f"actual_utf8_bytes={actual_bytes}")
-    if maximum_bytes not in (None, ""):
-        details.append(f"maximum_utf8_bytes={maximum_bytes}")
-    if details:
-        return f"{error} ({', '.join(details)})"
-    return error
-
-
-def _select_station(frame, station_name: str, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
-    _wait_xpath_visible(frame, XPATH_NEXT_STATION_INPUT, timeout_ms=timeout_ms)
-    mini_result = _set_station_by_mini_api(frame, station_name)
-    if mini_result.get("ok"):
-        log(
-            "下一站已通过 MiniUI 设置: "
-            f"{mini_result.get('text') or mini_result.get('stationName')} "
-            f"({mini_result.get('value') or mini_result.get('stationCode')})"
-        )
-        return True
-    raise RuntimeError(f"下一站设置失败: {_mini_failure_detail(mini_result)}")
-
-
-def _safe_filename(text: str) -> str:
-    keep = []
-    for ch in (text or ""):
-        if ch.isalnum() or ch in ("_", "-", "."):
-            keep.append(ch)
-        else:
-            keep.append("_")
-    return "".join(keep) or "scan_next"
-
-
-def dump_page_debug(page, frame=None, *, out_dir: str, prefix: str) -> Dict[str, str]:
-    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    safe_prefix = _safe_filename(prefix)
-    unique = f"{os.getpid()}_{threading.get_ident()}"
-    os.makedirs(out_dir, exist_ok=True)
-    base = os.path.join(out_dir, f"{safe_prefix}_{ts}_{unique}")
-    png_path = base + ".png"
-    html_path = base + ".html"
-    frame_path = base + ".frame.html"
-    frames_path = base + ".frames.json"
-    results: Dict[str, str] = {}
-
-    try:
-        page.screenshot(path=png_path, full_page=True)
-        results["screenshot"] = png_path
-    except Exception as exc:
-        log(f"保存截图失败: {type(exc).__name__}: {exc}")
-
-    try:
-        html = page.content() or ""
-        with open(html_path, "w", encoding="utf-8") as handle:
-            handle.write(html)
-        results["html"] = html_path
-    except Exception as exc:
-        log(f"保存页面HTML失败: {type(exc).__name__}: {exc}")
-
-    if frame is not None:
-        try:
-            frame_html = frame.content() or ""
-            with open(frame_path, "w", encoding="utf-8") as handle:
-                handle.write(frame_html)
-            results["frame_html"] = frame_path
-        except Exception as exc:
-            log(f"保存iframe HTML失败: {type(exc).__name__}: {exc}")
-
-    try:
-        frames = []
-        try:
-            frames = [{"url": f.url, "name": getattr(f, "name", "")} for f in (page.frames or [])]
-        except Exception:
-            frames = []
-        with open(frames_path, "w", encoding="utf-8") as handle:
-            json.dump(frames, handle, ensure_ascii=False, indent=2)
-        results["frames"] = frames_path
-    except Exception as exc:
-        log(f"保存frames列表失败: {type(exc).__name__}: {exc}")
-
-    return results
-
-
-def _wait_table_cleared(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
-    deadline = time.time() + timeout_ms / 1000.0
-    rows = frame.locator(f"xpath={XPATH_GRID_ROW_ANY}")
-    while time.time() < deadline:
-        try:
-            total_count = rows.count()
-        except Exception:
-            frame.wait_for_timeout(300)
-            continue
-        if total_count == 0:
-            return True
-        frame.wait_for_timeout(300)
-    return False
-
-
-def _grid_row_count(frame) -> int:
-    try:
-        return int(frame.locator(f"xpath={XPATH_GRID_ROW_ANY}").count())
-    except Exception:
-        return 0
-
-
-def _wait_grid_has_rows(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
-    deadline = time.time() + timeout_ms / 1000.0
-    rows = frame.locator(f"xpath={XPATH_GRID_ROW_ANY}")
-    while time.time() < deadline:
-        try:
-            count = rows.count()
-        except Exception:
-            count = 0
-        if count > 0:
-            return True
-        frame.wait_for_timeout(300)
-    return False
-
-
-def _wait_bill_code_added(
-    page,
-    frame,
-    bill_code: str,
-    *,
-    previous_count: int,
-    timeout_ms: int = DEFAULT_TIMEOUT_MS,
-    skip_message_xpath: Optional[str] = None,
-) -> tuple[bool, bool]:
-    deadline = time.time() + timeout_ms / 1000.0
-    literal = _xpath_literal(str(bill_code))
-    row_xpath = (
-        "//div[@id='datagrid']//table//tr[contains(@class,'mini-grid-row')]"
-        "//*[contains(normalize-space(.), "
-        + literal
-        + ")]"
+def _query_rows(session: Any, call_id: str, data: dict[str, str], page: dict[str, str]) -> list[dict[str, Any]]:
+    response = session.post(
+        f"{DATA_QUERY_URL}?id={call_id}",
+        data=data,
+        headers=_headers(page, content_type="application/x-www-form-urlencoded; charset=UTF-8"),
+        timeout=QUERY_TIMEOUT_SEC,
     )
-    row_locator = frame.locator(f"xpath={row_xpath}")
-    rows = frame.locator(f"xpath={XPATH_GRID_ROW_ANY}")
-    while time.time() < deadline:
-        if skip_message_xpath:
-            try:
-                if _is_visible(frame, skip_message_xpath) or _is_visible(page, skip_message_xpath):
-                    _click_confirm_any(page, frame, message_xpath=skip_message_xpath, timeout_ms=2_000)
-                    return False, True
-            except Exception:
-                pass
-        try:
-            if row_locator.count() > 0:
-                return True, False
-        except Exception:
-            pass
-        try:
-            if rows.count() > previous_count:
-                return True, False
-        except Exception:
-            pass
-        frame.wait_for_timeout(300)
-    return False, False
+    payload = _json_payload(response, call_id)
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        payload = payload["data"]
+    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+        raise RuntimeError(f"{call_id} 响应结构异常")
+    return payload
 
 
-def _wait_rows_selected(frame, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
-    deadline = time.time() + timeout_ms / 1000.0
-    selected = frame.locator(f"xpath={XPATH_GRID_ROW_SELECTED}")
-    checked_rows = frame.locator(f"xpath={XPATH_GRID_ROW_CHECKED}")
-    aria_selected = frame.locator(f"xpath={XPATH_GRID_ROW_ARIA_SELECTED}")
-    checked_cells = frame.locator(f"xpath={XPATH_GRID_CHECKED_CELL}")
-    checkall_checked = frame.locator(f"xpath={XPATH_CHECK_ALL_CHECKED}")
-    rows = frame.locator(f"xpath={XPATH_GRID_ROW_ANY}")
-    while time.time() < deadline:
-        try:
-            if (
-                selected.count() > 0
-                or checked_rows.count() > 0
-                or aria_selected.count() > 0
-                or checked_cells.count() > 0
-            ):
-                return True
-            if checkall_checked.count() > 0 and rows.count() > 0:
-                return True
-        except Exception:
-            pass
-        frame.wait_for_timeout(300)
-    return False
-
-
-def _click_confirm_any(
-    page,
-    frame,
-    *,
-    message_xpath: Optional[str] = None,
-    timeout_ms: int = DEFAULT_TIMEOUT_MS,
-) -> None:
-    deadline = time.time() + timeout_ms / 1000.0
-    last_error: Optional[BaseException] = None
-    while time.time() < deadline:
-        try:
-            if message_xpath and _is_visible(frame, message_xpath):
-                _click_xpath(frame, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
-                return
-            if not message_xpath and _is_visible(frame, XPATH_CONFIRM_BUTTON):
-                _click_xpath(frame, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
-                return
-        except BaseException as exc:
-            last_error = exc
-        try:
-            if message_xpath and _is_visible(page, message_xpath):
-                _click_xpath(page, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
-                return
-            if not message_xpath and _is_visible(page, XPATH_CONFIRM_BUTTON):
-                _click_xpath(page, XPATH_CONFIRM_BUTTON, label="确定", timeout_ms=timeout_ms)
-                return
-        except BaseException as exc:
-            last_error = exc
-        time.sleep(0.2)
-    raise TimeoutError("未等到确认弹窗") from last_error
-
-
-def _visible_messagebox_text(page, frame) -> Optional[str]:
-    """Return the text of a MiniUI message box that is visible now.
-
-    Bills are added through the page API, which already queries the signed
-    state synchronously, so the normal path raises no message box. Checking
-    the current page state replaces waiting a fixed time for a box to appear.
-    """
-
-    for scope in (frame, page):
-        try:
-            boxes = scope.query_selector_all(f"xpath={XPATH_MESSAGEBOX_CONTENT}")
-        except Exception:
+def _bill_rules(session: Any, page: dict[str, str]) -> list[re.Pattern[str]]:
+    rules: list[re.Pattern[str]] = []
+    for row in _query_rows(session, "FIND_TMS_SYS_SHARE_SET", {"SHARE_CODE_IN": BILL_RULE_CODES}, page):
+        value = str(row.get("SHARE_VALUE") or "")
+        if not value:
             continue
-        for box in boxes:
-            try:
-                if not box.is_visible():
-                    continue
-                text = " ".join(str(box.inner_text() or "").split())
-            except Exception:
-                continue
-            # Ronghui pops a reminder for every open work order and every
-            # problem-case reply after login; they are unrelated to the scan
-            # and are left untouched.
-            if RONGHUI_REMINDER_PATTERN.fullmatch(text):
-                log(f"忽略融辉登录提醒: {text[:200]}")
-                continue
-            return text[:200]
-    return None
+        try:
+            rules.append(re.compile(value))
+        except re.error as exc:
+            raise RuntimeError(f"融辉单号规则无法解析: {row.get('SHARE_CODE')}") from exc
+    if not rules:
+        raise RuntimeError("融辉未返回单号规则")
+    return rules
 
 
-def _run_flow_impl(
+def _is_signed(session: Any, page: dict[str, str], bill_code: str) -> bool:
+    return bool(_query_rows(session, "FIND_WAYBILL_SIGN_STATE", {"BILL_CODE": bill_code}, page))
+
+
+def _station_code(session: Any, page: dict[str, str], station_name: str, site_type: str) -> str:
+    call_id = CENTER_STATION_LOOKUP_CALL_ID if site_type == CENTER_SITE_TYPE else STATION_LOOKUP_CALL_ID
+    response = session.get(
+        PAGE_QUERY_URL,
+        params={
+            "id": call_id,
+            "pageSize": STATION_LOOKUP_PAGE_SIZE,
+            "pageIndex": 0,
+            "key": station_name.upper(),
+        },
+        headers=_headers(page),
+        timeout=QUERY_TIMEOUT_SEC,
+    )
+    payload = _json_payload(response, call_id)
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"下一站查询响应结构异常: {call_id}")
+    matches = [
+        row for row in rows
+        if isinstance(row, dict) and str(row.get("SITE_NAME") or "").strip() == station_name
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"下一站需唯一精确匹配: {station_name}，实际 {len(matches)} 个")
+    code = str(matches[0].get("SITE_CODE") or "").strip()
+    if not code:
+        raise RuntimeError(f"下一站缺少网点编号: {station_name}")
+    return code
+
+
+def _scan_row(
     *,
-    station_name: str,
+    index: int,
     bill_code: str,
-    items: Optional[list[Dict[str, str]]],
-    username: str,
-    password: str,
-    config_path: str,
-    headless: bool,
-    slow_mo_ms: int,
-    max_login_attempts: int,
-    action_delay_sec: float,
-    dump_on_error: bool,
-    dump_dir: str,
-    session_profile: str,
+    station_name: str,
+    station_code: str,
+    login: dict[str, str],
+    now: _dt.datetime,
+) -> dict[str, Any]:
+    """Build one row exactly as the page's grid sends it to ``saveTables``."""
+
+    timestamp = _json_datetime(now)
+    return {
+        # ``new mini.Form("#searchForm").getData()`` of the real page
+        "SITE_TYPE": "",
+        "SCAN_STATUS": 3 if login["loginSiteType"] == CENTER_SITE_TYPE else 2,
+        "LONG_TIME": "12",
+        "OTHER_BILL": "",
+        "SCAN_DATE": timestamp,
+        "FAST_TYPE": "汽运",
+        # The page's own listing code adds the date parts numerically from
+        # October on; keep the 14-digit time code the ledger already holds.
+        "LISTING_CODE": now.strftime("%Y%m%d%H%M%S"),
+        "BILL_CODE": bill_code,
+        "PRE_OR_NEXT_STATION_CODE": station_code,
+        "PRE_OR_NEXT_STATION": station_name,
+        "REMARK": "",
+        "TRANSFERE_BILL_CODE": "",
+        "TRUCK_CODE": "",
+        # Fields the page's entry handler sets on top of the form
+        "SCAN_SITE": login["loginSiteName"],
+        "SCAN_SITE_CODE": login["loginSiteCode"],
+        "SCAN_MAN": login["loginUserName"],
+        "SCAN_MAN_CODE": login["loginUserAccount"],
+        "SCAN_TYPE": "发件",
+        "DATA_FROM": "K13",
+        "DISPATCH_SITE": "",
+        "REGISTER_DATE": timestamp,
+        # MiniUI bookkeeping carried by every added grid row
+        "_id": index,
+        "_uid": index,
+        "_state": "added",
+    }
+
+
+def _save_scan_rows(session: Any, page: dict[str, str], rows: list[dict[str, Any]]) -> str:
+    result = save_tables(session, [operation(SCAN_OPERATION_KEY, rows)], page)
+    if not isinstance(result, dict) or result.get("success") is not True:
+        message = result.get("message") if isinstance(result, dict) else result
+        raise RuntimeError(f"上传失败: {str(message or '')[:300]}")
+    return str(result.get("message") or "")
+
+
+def run_flow(
+    *,
+    items: Optional[list[Dict[str, str]]] = None,
+    session_profile: str = DEFAULT_SESSION_PROFILE,
+    station_name: str = DEFAULT_STATION_NAME,
+    bill_code: str = DEFAULT_BILL_CODE,
 ) -> Dict[str, Any]:
+    profile = str(session_profile).strip()
+    if not profile:
+        raise ValueError("session_profile 不能为空")
     started = time.time()
     stage = "init"
     scan_items: list[Dict[str, str]] = []
     station_results: list[Dict[str, Any]] = []
-    pending_codes: list[str] = []
     skipped_signed_codes: list[str] = []
     current_station = ""
     current_bill_code = ""
-    processed_count = 0
-    p = browser = context = page = None
-    frame = None
-    delay_token = None
     try:
-        delay_token = _ACTION_DELAY_SEC.set(max(0.0, float(action_delay_sec)))
         scan_items = _coerce_items(items)
         if not scan_items:
             station_text = str(station_name).strip()
@@ -1100,115 +323,64 @@ def _run_flow_impl(
             if not station_text or not bill_text:
                 raise RuntimeError("未提供扫描数据")
             scan_items = [{"station_name": station_text, "bill_code": bill_text}]
-        stage = "launch_browser"
-        p, browser, context, page = launch_browser(
-            headless=headless,
-            slow_mo_ms=slow_mo_ms,
-            profile=session_profile,
+        codes = [item["bill_code"] for item in scan_items]
+        if len(set(codes)) != len(codes):
+            raise RuntimeError("扫描数据存在重复单号")
+
+        stage = "session"
+        session = TMSAuth(profile=profile).login_and_get_session()
+        stage = "login_context"
+        login = _login_context(session)
+        stage = "page_context"
+        page = _resolve_menu_page_context(
+            session,
+            menu_text=SCAN_MENU_TEXT,
+            content_markers=(SCAN_OPERATION_KEY,),
         )
+        stage = "bill_rules"
+        rules = _bill_rules(session, page)
 
-        stage = "login"
-        uid, pwd = _resolve_credentials(config_path, username=username, password=password)
-        auth = TMSBrowserAuth(
-            max_attempts=max(1, int(max_login_attempts)),
-            profile=session_profile,
-        )
-        log("开始登录")
-        auth.login(page, username=uid, password=pwd)
-        log(f"登录完成，当前URL：{page.url}")
-
-        stage = "open_menu"
-        if not _is_visible(page, XPATH_MENU_OUT_SCAN):
-            _click_xpath(page, XPATH_MENU_SCAN_MANAGEMENT, label="扫描管理")
-        _click_xpath(page, XPATH_MENU_OUT_SCAN, label="发件扫描")
-
-        stage = "wait_frame"
-        frame = _get_scan_frame(page)
-        _wait_xpath_visible(frame, XPATH_SCAN_INPUT, timeout_ms=DEFAULT_TIMEOUT_MS)
-
-        stage = "wait_login_context"
-        _wait_login_context(frame, timeout_ms=DEFAULT_TIMEOUT_MS)
-
-        def _upload_current_station() -> None:
-            nonlocal stage, pending_codes, station_results, current_station
-            if not pending_codes:
-                return
+        row_index = 0
+        for station, group in itertools.groupby(scan_items, key=lambda item: item["station_name"]):
+            current_station = station
+            stage = "select_station"
+            station_code = _station_code(session, page, station, login["loginSiteType"])
+            log(f"下一站: {station} ({station_code})")
+            rows: list[dict[str, Any]] = []
+            for item in group:
+                current_bill_code = item["bill_code"]
+                stage = "check_bill"
+                if not any(rule.search(current_bill_code) for rule in rules):
+                    raise RuntimeError(f"单号不符合融辉单号规则: {current_bill_code}")
+                if _is_signed(session, page, current_bill_code):
+                    log(f"单号已做过签收，跳过: {current_bill_code}")
+                    skipped_signed_codes.append(current_bill_code)
+                    continue
+                row_index += 1
+                rows.append(
+                    _scan_row(
+                        index=row_index,
+                        bill_code=current_bill_code,
+                        station_name=station,
+                        station_code=station_code,
+                        login=login,
+                        now=_dt.datetime.now(RONGHUI_TIMEZONE),
+                    )
+                )
+            if not rows:
+                continue
             stage = "upload"
-            message = _visible_messagebox_text(page, frame)
-            if message is not None:
-                raise RuntimeError(f"上传前页面存在未处理提示: {message}")
-            upload_result = _upload_rows_by_mini_api(frame)
-            if not upload_result.get("ok"):
-                raise RuntimeError(f"上传失败: {_mini_failure_detail(upload_result)}")
-            log(f"扫描数据上传成功: {upload_result.get('message') or 'success'}")
-            stage = "upload_success"
-            stage = "verify_clear"
-            if not _wait_table_cleared(frame, timeout_ms=DEFAULT_TIMEOUT_MS):
-                raise RuntimeError("表格未清空或未刷新完成")
+            message = _save_scan_rows(session, page, rows)
+            log(f"扫描数据上传成功: {station} {len(rows)} 单 {message}".rstrip())
             station_results.append(
                 {
-                    "station_name": current_station,
-                    "count": len(pending_codes),
-                    "bill_codes": list(pending_codes),
+                    "station_name": station,
+                    "count": len(rows),
+                    "bill_codes": [row["BILL_CODE"] for row in rows],
                 }
             )
-            pending_codes.clear()
 
-        for item in scan_items:
-            station = item["station_name"]
-            bill = item["bill_code"]
-            current_bill_code = bill
-            if station != current_station:
-                if current_station:
-                    log(f"切换站点: {current_station} -> {station}")
-                    _upload_current_station()
-                stage = "select_station"
-                log(f"输入下一站: {station}")
-                _select_station(frame, station)
-                current_station = station
-
-            stage = "input_bill_code"
-            log(f"录入单号: {bill}")
-            row_count_before = _grid_row_count(frame)
-            add_result = _add_bill_code_by_mini_api(frame, bill)
-            if add_result.get("ok"):
-                log(f"扫描单号已提交到页面逻辑: {bill}")
-            elif add_result.get("signed"):
-                log(f"单号已做过签收，跳过: {bill}")
-                skipped_signed_codes.append(bill)
-                continue
-            else:
-                raise RuntimeError(f"扫描单号写入失败: {_mini_failure_detail(add_result)}")
-            # The add API above already queried the signed state; inspect a box
-            # that is visible now instead of waiting a fixed time for one.
-            message = _visible_messagebox_text(page, frame)
-            if message is not None:
-                if "已做过签收" not in message:
-                    raise RuntimeError(f"录入单号后出现未预期提示: {message}")
-                _click_confirm_any(page, frame, message_xpath=XPATH_ALREADY_SIGNED_MESSAGE, timeout_ms=2_000)
-                log(f"单号已做过签收，跳过: {bill}")
-                skipped_signed_codes.append(bill)
-                continue
-            added, skipped = _wait_bill_code_added(
-                page,
-                frame,
-                bill,
-                previous_count=row_count_before,
-                timeout_ms=DEFAULT_TIMEOUT_MS,
-                skip_message_xpath=XPATH_ALREADY_SIGNED_MESSAGE,
-            )
-            if skipped:
-                log(f"单号已做过签收扫描，跳过: {bill}")
-                skipped_signed_codes.append(bill)
-                continue
-            if not added:
-                raise RuntimeError(f"扫描单号未写入表格: {bill}")
-            pending_codes.append(bill)
-            processed_count += 1
-
-        _upload_current_station()
         stage = "done"
-
         return {
             "ok": True,
             "stage": stage,
@@ -1218,28 +390,14 @@ def _run_flow_impl(
                 "bill_code": current_bill_code or bill_code,
                 "items": scan_items,
                 "stations": station_results,
-                "total_scanned": processed_count,
+                "total_scanned": sum(result["count"] for result in station_results),
                 "skipped_signed_codes": list(skipped_signed_codes),
                 "skipped_signed_count": len(skipped_signed_codes),
-                "url": page.url if page is not None else "",
             },
             "ts": _ts(),
             "cost_sec": round(time.time() - started, 3),
         }
-    except BaseException as exc:
-        debug_info: Dict[str, str] = {}
-        if dump_on_error and page is not None:
-            try:
-                debug_info = dump_page_debug(
-                    page,
-                    frame=frame,
-                    out_dir=dump_dir or DEFAULT_DUMP_DIR,
-                    prefix=f"scan_next_{stage}",
-                )
-                if debug_info:
-                    log(f"调试文件已保存: {debug_info}")
-            except Exception as dump_exc:
-                log(f"调试文件保存失败: {type(dump_exc).__name__}: {dump_exc}")
+    except Exception as exc:
         return {
             "ok": False,
             "stage": stage,
@@ -1249,103 +407,25 @@ def _run_flow_impl(
                 "bill_code": current_bill_code or bill_code,
                 "items": scan_items,
                 "stations": station_results,
-                "processed": processed_count,
-                "pending_codes": list(pending_codes),
                 "skipped_signed_codes": list(skipped_signed_codes),
                 "skipped_signed_count": len(skipped_signed_codes),
-                "url": page.url if page is not None else "",
-                "debug": debug_info,
             },
             "ts": _ts(),
             "cost_sec": round(time.time() - started, 3),
         }
-    finally:
-        if delay_token is not None:
-            try:
-                _ACTION_DELAY_SEC.reset(delay_token)
-            except Exception:
-                pass
-        try:
-            if context is not None:
-                context.close()
-        except Exception:
-            pass
-        try:
-            if browser is not None:
-                browser.close()
-        except Exception:
-            pass
-        try:
-            if p is not None:
-                p.stop()
-        except Exception:
-            pass
-
-
-def run_flow(
-    *,
-    station_name: str,
-    bill_code: str,
-    items: Optional[list[Dict[str, str]]],
-    username: str,
-    password: str,
-    config_path: str,
-    headless: bool,
-    slow_mo_ms: int,
-    max_login_attempts: int,
-    action_delay_sec: float,
-    dump_on_error: bool,
-    dump_dir: str,
-    session_profile: str = DEFAULT_SESSION_PROFILE,
-) -> Dict[str, Any]:
-    normalized_session_profile = str(session_profile).strip()
-    if not normalized_session_profile:
-        raise ValueError("session_profile 不能为空")
-    kwargs = {
-        "station_name": station_name,
-        "bill_code": bill_code,
-        "items": items,
-        "username": username,
-        "password": password,
-        "config_path": config_path,
-        "headless": headless,
-        "slow_mo_ms": slow_mo_ms,
-        "max_login_attempts": max_login_attempts,
-        "action_delay_sec": action_delay_sec,
-        "dump_on_error": dump_on_error,
-        "dump_dir": dump_dir,
-        "session_profile": normalized_session_profile,
-    }
-    if _has_running_event_loop():
-        return _run_flow_in_playwright_thread(**kwargs)
-    return _run_flow_impl(**kwargs)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ronghui TMS 发件扫描自动化")
+    parser = argparse.ArgumentParser(description="Ronghui TMS 发件扫描（页面接口）")
     parser.add_argument("--station-name", default=DEFAULT_STATION_NAME, help="下一站名称")
     parser.add_argument("--bill-code", default=DEFAULT_BILL_CODE, help="扫描单号")
     parser.add_argument("--items-json", default="", help="JSON列表，元素包含站点与单号")
     parser.add_argument("--items-file", default="", help="包含JSON列表的文件路径")
-    parser.add_argument("--username", default="", help="账号（为空则读取 config.json）")
-    parser.add_argument("--password", default="", help="密码（为空则读取 config.json）")
-    parser.add_argument("--config-path", default=DEFAULT_CONFIG_PATH, help="config.json 路径")
     parser.add_argument(
         "--session-profile",
         default=DEFAULT_SESSION_PROFILE,
         help="共享登录会话配置名",
     )
-    parser.add_argument(
-        "--headless",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="无头模式运行（默认无头）",
-    )
-    parser.add_argument("--slow-mo-ms", type=int, default=0, help="每步操作延迟毫秒")
-    parser.add_argument("--max-login-attempts", type=int, default=6, help="登录重试次数")
-    parser.add_argument("--action-delay-sec", type=float, default=DEFAULT_ACTION_DELAY_SEC, help="动作之间的延迟秒数")
-    parser.add_argument("--dump-on-error", action="store_true", help="失败时保存截图/HTML")
-    parser.add_argument("--dump-dir", default=DEFAULT_DUMP_DIR, help="调试输出目录")
     return parser.parse_args(argv)
 
 
@@ -1360,27 +440,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         station_name=str(args.station_name),
         bill_code=str(args.bill_code),
         items=items,
-        username=str(args.username),
-        password=str(args.password),
-        config_path=str(args.config_path),
-        headless=bool(args.headless),
-        slow_mo_ms=int(args.slow_mo_ms),
-        max_login_attempts=int(args.max_login_attempts),
-        action_delay_sec=float(args.action_delay_sec),
-        dump_on_error=bool(args.dump_on_error),
-        dump_dir=str(args.dump_dir),
         session_profile=str(args.session_profile),
     )
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 1
-
-
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _get_param(params: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
@@ -1399,9 +462,6 @@ def run_once(params: Dict[str, Any]) -> Any:
     raw_items = _get_param(params, "items", "data", "records", "rows", default=None)
     if raw_items is None:
         raw_items = _get_param(params, "items_json", "itemsJson", default="")
-    username = str(_get_param(params, "username", default=""))
-    password = str(_get_param(params, "password", default=""))
-    config_path = str(_get_param(params, "config_path", "configPath", default=DEFAULT_CONFIG_PATH))
     session_profile = str(
         _get_param(
             params,
@@ -1413,13 +473,6 @@ def run_once(params: Dict[str, Any]) -> Any:
     if not session_profile:
         raise ValueError("session_profile 不能为空")
 
-    headless = _coerce_bool(_get_param(params, "headless", default=True))
-    slow_mo_ms = int(_get_param(params, "slow_mo_ms", "slowMoMs", default=0))
-    max_login_attempts = int(_get_param(params, "max_login_attempts", "maxLoginAttempts", default=6))
-    action_delay_sec = float(_get_param(params, "action_delay_sec", "actionDelaySec", default=DEFAULT_ACTION_DELAY_SEC))
-    dump_on_error = _coerce_bool(_get_param(params, "dump_on_error", "dumpOnError", default=True))
-    dump_dir = str(_get_param(params, "dump_dir", "dumpDir", default=DEFAULT_DUMP_DIR))
-
     items = _coerce_items(raw_items)
     if not items:
         items_file = _get_param(params, "items_file", "itemsFile", default="")
@@ -1430,15 +483,6 @@ def run_once(params: Dict[str, Any]) -> Any:
         station_name=station_name,
         bill_code=bill_code,
         items=items,
-        username=username,
-        password=password,
-        config_path=config_path,
-        headless=headless,
-        slow_mo_ms=slow_mo_ms,
-        max_login_attempts=max_login_attempts,
-        action_delay_sec=action_delay_sec,
-        dump_on_error=dump_on_error,
-        dump_dir=dump_dir,
         session_profile=session_profile,
     )
 
