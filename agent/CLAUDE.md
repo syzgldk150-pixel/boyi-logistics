@@ -176,7 +176,9 @@ docs/
 ├── plugin_maintenance.md             # V2 插件局部测试、打包与升级
 ├── service_v2_developer_tooling.md   # Service V2 离线开发 CLI 与 Manifest Schema
 ├── plugin_account_http.md            # 插件通过宿主通用账号请求访问业务网页
+├── three_platform_quote.md           # 三平台报价 V2 包的输入、平台规则与结果展示
 ├── r7_vehicle_checkin.md             # R7 车线每日打卡 V2 包的账号、定时与原站协议
+├── self_pickup_daily_sign.md         # 自提部每日应签 V2 包的账号、资源与隔离边界
 ├── business_module_lifecycle.md      # 固定模块与旧生命周期只读兼容
 ├── rules_and_definitions.md          # 业务规则与术语
 ├── automation_plugin_platform.md     # historical：V1 插件平台设计

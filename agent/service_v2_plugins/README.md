@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-15
+updated: 2026-10-21
 ---
 
 # 当前插件维护入口
@@ -30,6 +30,32 @@ updated: 2026-10-15
 自提、分批和到货统计三个包提升到 2.1.0；财务只修改 Host，现有财务 ZIP 不变。账号、资源、权限及定时配置均不变。本次显式计划协议需要核心与三个 ZIP 一起升级：先通过真实管理员入口暂停这三个实例并等待调用排空，再按标准流程发布核心，逐实例升级 ZIP，回读版本/代次后恢复原启用状态与原定时。不能把旧包留在新 Host 上继续运行，也不能只发布源码代替安装。保留旧包及核心回滚材料；失败时保持相关实例暂停，在恢复匹配版本后才启用。
 
 2026-10-08 已按上述顺序完成核心 `17ad00c` 与三个 2.1.0 ZIP 的安装，恢复原启用状态，原配置保持不变。具体版本、核验结果和未覆盖的正式业务范围见[上线记录](../../docs/plugin_business_boundary_20261008.md)；该记录是当时状态，后续以真实实例为准。
+
+## 插件清单
+
+名称取自各包 `manifest.json`；版本以 `manifest.json` 为准，线上是否安装、启用及定时以后台实例为准。新增或退役插件时同步维护本表。
+
+| 插件 ID | 名称 | 管理入口 | 说明文档 |
+|---|---|---|---|
+| `sync_scan_codes_v2` | 扫描 | 后台“自动化” | [平台手册](../../docs/plugin-platform-v2.md#只读预览与未启用定时)、本目录 `CLAUDE.md`“扫描” |
+| `sync_arrival_stats_v2` | 统计到货数据 | 后台“自动化” | [插件说明](sync_arrival_stats_v2/README.md) |
+| `sync_arrive_list_v2` | 到货清单 | 后台“自动化” | [Agent 自动化](../docs/agent_automation/module_overview.md) |
+| `sync_site_send_list_v2` | 网点出港清单 | 后台“自动化” | [Agent 自动化](../docs/agent_automation/module_overview.md) |
+| `sync_delivery_status_v2` | 查询并更新签收状态 | 后台“自动化” | [Agent 自动化](../docs/agent_automation/module_overview.md) |
+| `sync_daily_send_orders_v2` | 获取当日寄件数据（融辉） | 后台“自动化” | [寄件查询](../../docs/direct_waybill_query.md) |
+| `sync_yunda_send_waybills_v2` | 韵达寄件运单同步 | 后台“自动化” | [寄件查询](../../docs/direct_waybill_query.md) |
+| `sync_yunda_dispatch_forecast_v2` | 韵达应派预报 | 后台“自动化” | [Agent 自动化](../docs/agent_automation/module_overview.md) |
+| `sync_ronghui_route_status_v2` | 融辉在途轨迹刷新 | 后台“自动化” | [寄件查询](../../docs/direct_waybill_query.md#融辉在途轨迹2026-10-15) |
+| `sync_daily_should_sign_v2` | 每日应签 | 后台“自动化” | [身份与业务规则](../../docs/identity_and_unified_chat.md)、本目录 `CLAUDE.md`“每日应签” |
+| `sync_self_pickup_should_sign_v2` | 自提部每日应签 | 后台“自动化” | [自提部每日应签](../docs/self_pickup_daily_sign.md) |
+| `self_pickup_problem_upload_v2` | 自提到货问题件 | 后台“自动化” | `../CLAUDE.md`“分批及有发未到问题件” |
+| `split_pending_problem_upload_v2` | 分批及有发未到问题件 | 后台“自动化” | `../CLAUDE.md`“分批及有发未到问题件” |
+| `clockin_daxiang_v2` | 网点打卡-大祥站 | 后台“自动化” | [插件说明](clockin_daxiang_v2/README.md) |
+| `clockin_daxiang_s_v2` | 网点打卡-大祥 S 站 | 后台“自动化” | [插件说明](clockin_daxiang_s_v2/README.md) |
+| `r7_vehicle_checkin_v2` | R7车线每日打卡 | 后台“自动化” | [R7 车线打卡](../docs/r7_vehicle_checkin.md) |
+| `quote_prices_v2` | 三平台价格查询 | 后台“自动化”（飞书与录单页共用实例） | [三平台报价](../docs/three_platform_quote.md) |
+| `sync_finance_bills_v2` | 财务账单采集 | 财务模块“数据源管理” | [财务模块](../docs/finance_module.md) |
+| `sync_customer_service_problems_v2` | 客服问题件采集 | 客户服务“数据源管理” | [客服系统](../docs/customer_service/module_overview.md) |
 
 ## 源码归属
 

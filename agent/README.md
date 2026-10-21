@@ -8,7 +8,7 @@
 - 普通业务直接接口、独立插件调用与结果核验
 - 飞书消息接入
 - 后台 AI 助手与飞书共用的对话服务、权限与已注册能力
-- 价格获取、融辉生产财务账本同步等业务工具封装（韵达财务待真实页面验收后启用）
+- 融辉生产财务账本同步等 Host 业务接口（韵达财务待真实页面验收后启用）；三平台报价由 `service_v2_plugins/quote_prices_v2/` 插件承担
 
 ## 不在这里改什么
 
@@ -30,8 +30,8 @@
   Host 采集、存储、回读及受控接口；不复制 V2 业务算法
 - `docs/`
   项目文档、模块说明、代码定位索引
-- `price_scripts/`
-  价格工具底层业务目录
+- `price_scripts/`、`legacy/price_quote/`
+  旧报价脚本的隔离离线参考，不发布、不作为报价入口
 - `../shared/finance/`
   财务领域模型、金额规则、校验、费用映射与共享账本仓储
 - `agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`
@@ -101,7 +101,7 @@ cd /home/deng/projects/boyi-logistics/console
 - Webhook 与 WebSocket 把 `im.message.receive_v1` 送入同一受管消息路由；当前固定命令以
   `agent/direct_tool_router.py`、`feishu/message_handler.py` 和受管工具注册表为准，不在此处复制清单。
 - 报价文本可使用 `地址，重量，体积` 形式；这只是报价入口示例，不代表机器人只有这一项能力。
-- 价格查询必须使用用户明确提供的完整地址、重量和体积；缺少影响金额的字段时先澄清，不得静默补 `0.1` 或其他业务默认值。体积可填写厘米尺寸表达式，如 `30*23*103*1+97*23*31*4`，由受管工具按 `长*宽*高*件数` 计算；申明价值只采用真实页面返回的当前规则和值，飞书不自行传入或猜测。
+- 报价必须提供地址和重量，缺少时先提示补齐；省略体积时仅由 `quote_prices_v2` 插件按 0.1 立方米计算并在结果中注明，Host 不补其他默认值。平台协议、金额和网点资料由插件维护，详见 [三平台报价](docs/three_platform_quote.md)。
 
 ## 发布到 ECS
 

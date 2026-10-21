@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-08
+updated: 2026-10-21
 ---
 
 # 仓库文档索引
@@ -48,6 +48,9 @@ updated: 2026-10-08
 - [发货吨位与飞书知识读取](shipment_knowledge_queries.md)：类型化查询、追问、受限 Wiki CLI 与真实来源核实边界。
 - [代码定位索引](../agent/docs/code_navigation_index.md)、[项目总览](../agent/docs/project_overview.md)：代码、测试和模块入口。
 - [数据库迁移](../agent/docs/database_migrations.md)：部署期顺序迁移；运行时只做校验和读写。
+- [运行、运单回单、财务分库](database_domains.md)、[MySQL 迁往 RDS](mysql_rds_migration.md)：迁移 055 的三库与跨库视图、连接身份，RDS TLS 连接与跨地域性能约束。
+- [首页消息与收到工单](monitoring_messages.md)：融辉、韵达消息与工单的来源、分类、分页和不标已读边界。
+- [原页初始化读取与已有任务追踪](original_page_read_requests.md)：录单原页的真实读取接口、受审手工领号和验证边界。
 - [ECS 发布手册](../agent/deploy/publish_to_ecs.md)、[Nginx 边界](../agent/deploy/nginx/README.md)、[Git 工作流](git_workflow.md)：当前 main 维护、V2-only 发布、验证与回滚。
 - [旧执行链退役边界](legacy_execution_retirement.md)、[历史未知写核验](historical_write_recovery.md)、[扫描未知写恢复](scan_recovery_v32.md)：保留事实和人工核验，不恢复旧待领取业务。
 - [产品原则](../PRODUCT.md)、[设计系统](../DESIGN.md)：产品与界面约束。
@@ -69,6 +72,7 @@ updated: 2026-10-08
 
 - [扩展平台原始方案](extension-platform-baseline.md)、[原迁移执行账本](extension-platform-progress.md)：保留阶段性 TASK 与隔离证据，不是当前待办或生产门禁。
 - [旧控制平面](../agent/docs/control_plane_v1.md)、[旧 Action V1 合同](../agent/docs/automation_plugin_platform.md)：解释历史记录；不用于新增插件或日常执行。
+- [任务领取与审批时间](control_plane_timebase.md)：旧领取、唤醒和审批时间口径，仅用于解释历史记录；新 Invocation 明确使用 UTC。
 - [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
 - [第一轮收尾验收报告](phase1_final_closeout.md)（2026-09-23）、[身份与 V2 插件验证记录](identity_v2_validation_20260911.md)（2026-09-11）：当时的验收证据与状态，不代表现行部署情况。
 
