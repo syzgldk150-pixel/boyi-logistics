@@ -100,9 +100,12 @@ XPATH_CONFIRM_UPLOAD_MESSAGE = '//div[contains(@class, "mini-messagebox-content"
 XPATH_SUCCESS_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "数据保存成功")]'
 XPATH_ALREADY_SIGNED_MESSAGE = '//div[contains(@class, "mini-messagebox-content")][contains(., "已做过签收")]'
 XPATH_MESSAGEBOX_CONTENT = '//div[contains(@class, "mini-messagebox-content")]'
-_WORK_ORDER_REMINDER_ENTRY = r"工单处理:[A-Za-z0-9]+:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
-WORK_ORDER_REMINDER_PATTERN = re.compile(
-    rf"{_WORK_ORDER_REMINDER_ENTRY}(?: {_WORK_ORDER_REMINDER_ENTRY})*"
+_RONGHUI_REMINDER_ENTRY = (
+    r"(?:工单处理:[A-Za-z0-9]+:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"
+    r"|问题件回复:[A-Za-z0-9]+)"
+)
+RONGHUI_REMINDER_PATTERN = re.compile(
+    rf"{_RONGHUI_REMINDER_ENTRY}(?: {_RONGHUI_REMINDER_ENTRY})*"
 )
 XPATH_GRID_ROW_ANY = '//div[@id="datagrid"]//table//tr[contains(@class, "mini-grid-row")]'
 XPATH_GRID_ROW_UNSELECTED = (
@@ -1050,10 +1053,11 @@ def _visible_messagebox_text(page, frame) -> Optional[str]:
                 text = " ".join(str(box.inner_text() or "").split())
             except Exception:
                 continue
-            # Ronghui pops a reminder for every open work order after login;
-            # it is unrelated to the scan and is left untouched.
-            if WORK_ORDER_REMINDER_PATTERN.fullmatch(text):
-                log(f"忽略融辉工单提醒: {text[:200]}")
+            # Ronghui pops a reminder for every open work order and every
+            # problem-case reply after login; they are unrelated to the scan
+            # and are left untouched.
+            if RONGHUI_REMINDER_PATTERN.fullmatch(text):
+                log(f"忽略融辉登录提醒: {text[:200]}")
                 continue
             return text[:200]
     return None

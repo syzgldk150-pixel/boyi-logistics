@@ -290,6 +290,26 @@ class ScanNextFailFastTests(unittest.TestCase):
                 scan_next._visible_messagebox_text(page, self._scope_with_boxes())  # noqa: SLF001
             )
 
+    def test_problem_reply_reminders_are_ignored_with_work_orders(self):
+        page = self._scope_with_boxes(
+            "问题件回复:R00010003",
+            "工单处理:R00010001:2026-01-02 03:04:05\n问题件回复:R00010004",
+        )
+
+        with patch.object(scan_next, "log"):
+            self.assertIsNone(
+                scan_next._visible_messagebox_text(page, self._scope_with_boxes())  # noqa: SLF001
+            )
+
+    def test_problem_reply_text_with_other_content_is_not_ignored(self):
+        text = "问题件回复:R00010003 请先回复"
+        page = self._scope_with_boxes(text)
+
+        self.assertEqual(
+            scan_next._visible_messagebox_text(page, self._scope_with_boxes()),  # noqa: SLF001
+            text,
+        )
+
     def test_real_message_next_to_work_order_reminder_still_fails(self):
         page = self._scope_with_boxes("工单处理:R00010001:2026-01-02 03:04:05", "系统繁忙")
 
