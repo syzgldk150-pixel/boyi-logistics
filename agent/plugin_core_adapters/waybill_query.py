@@ -48,7 +48,11 @@ def ronghui_send_sync_accounts(catalog) -> tuple[str, ...]:
     default account may see other branches and is not used for Ronghui.
     """
     accounts = set()
-    for entry in catalog.list(include_disabled=False):
+    # One snapshot connection for the whole listing: outside a read scope every
+    # project opens its own cross-region connection and the refresh timed out.
+    with catalog.read_scope():
+        entries = catalog.list(include_disabled=False)
+    for entry in entries:
         if entry.plugin_id != RONGHUI_SEND_SYNC_PLUGIN:
             continue
         account_id = dict(entry.account_bindings).get(RONGHUI_SEND_SYNC_ACCOUNT_ROLE)

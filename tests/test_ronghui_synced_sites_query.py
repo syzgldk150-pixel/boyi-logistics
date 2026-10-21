@@ -72,14 +72,33 @@ def test_own_site_rows_keep_only_the_login_site_and_fail_on_missing_codes(monkey
         waybill_query._own_site_rows(object(), [{"BILL_CODE": "C", "SEND_SITE_CODE": ""}])
 
 
+class _ScopedCatalog:
+    """Catalog fake that only lists inside one read scope, like production."""
+
+    def __init__(self, entries):
+        self.entries, self.scoped = entries, False
+
+    @contextmanager
+    def read_scope(self):
+        self.scoped = True
+        try:
+            yield
+        finally:
+            self.scoped = False
+
+    def list(self, include_disabled):
+        assert self.scoped and include_disabled is False
+        return self.entries
+
+
 def test_sync_accounts_come_from_enabled_send_order_instances():
     entry = lambda plugin, account: SimpleNamespace(plugin_id=plugin, account_bindings={"daily_send_source": account})
-    catalog = SimpleNamespace(list=lambda include_disabled: [
+    catalog = _ScopedCatalog([
         entry("sync_daily_send_orders_v2", "price_default"),
         entry("sync_daily_send_orders_v2", "ronghui_daxiang_s"),
         entry("sync_yunda_send_waybills_v2", "yunda_default")])
     assert waybill_query.ronghui_send_sync_accounts(catalog) == ("price_default", "ronghui_daxiang_s")
-    broken = SimpleNamespace(list=lambda include_disabled: [entry("sync_daily_send_orders_v2", "")])
+    broken = _ScopedCatalog([entry("sync_daily_send_orders_v2", "")])
     with pytest.raises(ValueError, match="WAYBILL_ACCOUNT_BINDING_UNAVAILABLE"):
         waybill_query.ronghui_send_sync_accounts(broken)
 
