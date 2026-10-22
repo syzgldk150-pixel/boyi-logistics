@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-21
+updated: 2026-10-22
 ---
 
 ## 当前执行边界
@@ -157,6 +157,7 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 登录协议要点：
 
 - 融辉与大祥报价登录按图片验证码处理，不要求手机号：直接点击真实登录页 `newLogin()`，沿用原页密码加密、AJAX 成功判定和 `userInfo` Cookie 写入回调。共享会话保留 Cookie 的 `HttpOnly`、`Secure`、`SameSite` 与过期属性，并把历史上误标为 `HttpOnly` 的融辉 `userInfo` 恢复为 JavaScript 可读；缺少或无法唯一解析 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode` 时，即使主页、菜单可访问也不得显示 authenticated。
+- R7/R13 登录态校验以保存的令牌调用 `/gateway/public/aurora/auth`，`code=-2` 判为过期；首页可打开不代表令牌有效。出错的 5xx/429 按服务不可用处理，不计认证失败。详见 [R7 车线每日打卡](../r7_vehicle_checkin.md)。
 - 每次登录先用本地 OCR 识别图片验证码，最多 3 次（`session_support.MAX_AUTO_CAPTCHA_ATTEMPTS`）；仍失败时返回 `pending_code + challenge_type=image`，Console 透传 `captcha_image/captcha_image_mime/captcha_captured_at` 供人工输入，飞书支持回复 4-8 位字母数字验证码。账号级连续自动登录失败 3 次后持久暂停（`AUTO_LOGIN_FAILURE_LIMIT`）。
 - 融辉登录页为短信形态、或韵达密码登录被 SSO 重定向到 `/public/sms/sms_valid` 时，记为 `challenge_type=sms`，Console 与飞书改为输入短信验证码。韵达登录后在同一上下文初始化寄件、报表和问题件子系统，见仓库根 `docs/identity_and_unified_chat.md`。
 

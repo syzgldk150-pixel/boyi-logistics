@@ -86,16 +86,53 @@ class SSOSessionPersistenceMixin:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _verify_aurora_token(self, *, origin: str, app_id: str, back_url: str) -> bool:
+        """Ask the business gateway whether the saved token is still accepted.
+
+        The site's welcome page opens without a valid token, so it cannot tell
+        an expired token apart from a live one; business calls answer -2.
+        """
+        token = str(self.last_token or "").strip()
+        if not token:
+            return False
+        response = self.session.post(
+            f"{origin}/gateway/public/aurora/auth",
+            json={},
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "aurora-token": token,
+                "x-appId": app_id,
+                "aurora-back": back_url,
+                "Origin": origin,
+                "Referer": back_url,
+                "Authorization": None,
+            },
+            allow_redirects=False,
+            timeout=10,
+        )
+        if response.status_code == 429 or response.status_code >= 500:
+            response.raise_for_status()
+        if response.status_code != 200:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        return isinstance(payload, dict) and str(payload.get("code")) in {"0", "1", "200"}
+
     def _save_sso_state(self, *, status: str, error: str = "") -> dict[str, Any]:
         previous = self._load_sso_state()
         now = _now_label()
+        token = str(self.last_token or "") if status == "authenticated" else ""
+        # A new token is a new login; revalidating the same token keeps its time.
+        same_login = bool(token) and token == str(previous.get("token") or "")
         payload = {
             "status": str(status or "logged_out"),
-            "token": str(self.last_token or "") if status == "authenticated" else "",
+            "token": token,
             "cookies": _cookie_payload(self.session) if status == "authenticated" else [],
             "authenticated_at": (
-                str(previous.get("authenticated_at") or now) if status == "authenticated" else ""
-            ),
+                str(previous.get("authenticated_at") or now) if same_login else now
+            ) if status == "authenticated" else "",
             "last_validation_at": now,
             "last_error_summary": str(error or "")[:500],
         }

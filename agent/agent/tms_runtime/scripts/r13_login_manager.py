@@ -200,7 +200,11 @@ class R13SSOAuth(SSOSessionPersistenceMixin):
             body = response.text or ""
             if "sso.ronghuiwl.com" in body:
                 return False
-        return response.status_code < 500
+        if response.status_code >= 500:
+            return False
+        return self._verify_aurora_token(
+            origin=self.r13_origin, app_id="site", back_url=f"{self.r13_origin}/welcome"
+        )
 
     def login_and_get_session(
         self,

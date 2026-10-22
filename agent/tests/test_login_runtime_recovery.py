@@ -1,6 +1,7 @@
 """Runtime failures recover without exhausting the account's authentication budget."""
 
 from contextlib import ExitStack
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -94,6 +95,78 @@ class LoginRuntimeErrorTests(unittest.TestCase):
                     with patch.object(auth.session, "get", return_value=response):
                         with self.assertRaises(requests.HTTPError):
                             auth._verify_authenticated()
+
+
+def _json_response(status, payload):
+    response = requests.Response()
+    response.status_code = status
+    response.headers["Content-Type"] = "application/json;charset=UTF-8"
+    response._content = json.dumps(payload).encode()
+    return response
+
+
+class SSOTokenValidationTests(unittest.TestCase):
+    """The welcome page opens with an expired token; the gateway does not."""
+
+    def _auth(self, auth_type, directory):
+        auth = auth_type(config_path="", state_path=Path(directory) / "sso_session.json")
+        auth.last_token = "fixture-token"
+        auth.session.headers["Authorization"] = "Bearer fixture-token"
+        welcome = requests.Response()
+        welcome.status_code = 200
+        welcome._content = b"<html></html>"
+        return auth, welcome
+
+    def test_expired_gateway_token_is_not_authenticated(self):
+        for auth_type, app_id in ((R7SSOAuth, "tms"), (R13SSOAuth, "site")):
+            with self.subTest(provider=auth_type.__name__), tempfile.TemporaryDirectory() as directory:
+                auth, welcome = self._auth(auth_type, directory)
+                rejected = _json_response(200, {"code": -2, "message": "Token无效"})
+                with (
+                    patch.object(auth.session, "get", return_value=welcome),
+                    patch.object(auth.session, "post", return_value=rejected) as post,
+                ):
+                    self.assertFalse(auth._verify_authenticated())
+                url = post.call_args.args[0]
+                headers = post.call_args.kwargs["headers"]
+                self.assertTrue(url.endswith("/gateway/public/aurora/auth"))
+                self.assertEqual("fixture-token", headers["aurora-token"])
+                self.assertEqual(app_id, headers["x-appId"])
+                self.assertIsNone(headers["Authorization"], "the gateway check must not send a Bearer header")
+
+    def test_accepted_gateway_token_is_authenticated(self):
+        for auth_type in (R7SSOAuth, R13SSOAuth):
+            with self.subTest(provider=auth_type.__name__), tempfile.TemporaryDirectory() as directory:
+                auth, welcome = self._auth(auth_type, directory)
+                with (
+                    patch.object(auth.session, "get", return_value=welcome),
+                    patch.object(auth.session, "post", return_value=_json_response(200, {"code": 200})),
+                ):
+                    self.assertTrue(auth._verify_authenticated())
+
+    def test_gateway_outage_is_not_a_rejected_login(self):
+        for auth_type in (R7SSOAuth, R13SSOAuth):
+            with self.subTest(provider=auth_type.__name__), tempfile.TemporaryDirectory() as directory:
+                auth, welcome = self._auth(auth_type, directory)
+                with (
+                    patch.object(auth.session, "get", return_value=welcome),
+                    patch.object(auth.session, "post", return_value=_json_response(503, {})),
+                ):
+                    with self.assertRaises(requests.HTTPError):
+                        auth._verify_authenticated()
+
+    def test_login_time_changes_only_with_a_new_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            auth, _ = self._auth(R7SSOAuth, directory)
+            with patch("agent.tms_runtime.sso_session_persistence._now_label", return_value="2026-10-08 13:06:25"):
+                auth._save_sso_state(status="authenticated")
+            with patch("agent.tms_runtime.sso_session_persistence._now_label", return_value="2026-10-09 09:00:00"):
+                saved = auth._save_sso_state(status="authenticated")
+            self.assertEqual("2026-10-08 13:06:25", saved["authenticated_at"])
+            auth.last_token = "fixture-new-token"
+            with patch("agent.tms_runtime.sso_session_persistence._now_label", return_value="2026-10-22 14:00:00"):
+                saved = auth._save_sso_state(status="authenticated")
+            self.assertEqual("2026-10-22 14:00:00", saved["authenticated_at"])
 
 
 class AccountLoginRecoveryTests(unittest.TestCase):
