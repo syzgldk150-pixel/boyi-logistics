@@ -116,22 +116,49 @@ class DirectWaybillQueryService:
                             publications.append(repository.publish(values, scope=matched.scope,
                                 business_date=day, captured_at=started, complete=False))
                         return publications, []
+                    days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+                    plans = []
                     for binding in bindings:
                         coverage = repository.coverage_range(binding.scope, start, end)
-                        current = start
-                        while current <= end:
-                            if not params.get("force_refresh") and coverage_satisfies(
-                                    coverage.get(current), binding.scope, current, requested_at=started):
-                                publications.append({"source": source, "target_date": current.isoformat(),
+                        plans.append([(day, params.get("force_refresh") or not coverage_satisfies(
+                            coverage.get(day), binding.scope, day, requested_at=started)) for day in days])
+
+                    def fetch(binding: WaybillQuerySource, plan) -> tuple[list[tuple], Exception | None]:
+                        # One account's days stay sequential: no extra load on any platform account.
+                        fetched = []
+                        try:
+                            for day, needed in plan:
+                                if needed:
+                                    observed = datetime.now(timezone.utc)
+                                    fetched.append((day, observed, *binding.fetch_day(day)))
+                                else:
+                                    fetched.append((day, None, None, None))
+                        except Exception as exc:  # published below in order, then reported
+                            return fetched, exc
+                        return fetched, None
+
+                    if len(bindings) > 1:
+                        # Accounts of one platform (one per synced site) are fetched in
+                        # parallel; publishing below stays sequential on one connection.
+                        with ThreadPoolExecutor(max_workers=len(bindings),
+                                                thread_name_prefix="waybill-account") as pool:
+                            outcomes = list(pool.map(fetch, bindings, plans))
+                    else:
+                        outcomes = [fetch(bindings[0], plans[0])]
+                    # A failed account still lets the other accounts' fetched days publish.
+                    first_failure = next((failure for _fetched, failure in outcomes if failure is not None), None)
+                    for binding, (fetched, _failure) in zip(bindings, outcomes):
+                        for day, observed, records, total in fetched:
+                            if observed is None:
+                                publications.append({"source": source, "target_date": day.isoformat(),
                                                      "complete": True, "from_database": True})
-                            else:
-                                observed = datetime.now(timezone.utc)
-                                records, total = binding.fetch_day(current)
-                                if datetime.now(timezone.utc) > deadline:
-                                    raise ValueError("WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH")
-                                publications.append(repository.publish(records, scope=binding.scope,
-                                    business_date=current, captured_at=observed, complete=True, expected_total=total))
-                            current += timedelta(days=1)
+                                continue
+                            if datetime.now(timezone.utc) > deadline:
+                                raise ValueError("WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH")
+                            publications.append(repository.publish(records, scope=binding.scope,
+                                business_date=day, captured_at=observed, complete=True, expected_total=total))
+                    if first_failure is not None:
+                        raise first_failure
             except Exception as exc:
                 # No raw provider response, credentials or arbitrary error text.
                 code = str(exc) if str(exc).startswith("WAYBILL_") and str(exc).replace("_", "").isalnum() else "WAYBILL_SOURCE_QUERY_FAILED"

@@ -1,6 +1,7 @@
 """Ronghui page refresh follows the synced sites: one account per site, own-site rows only."""
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -51,6 +52,39 @@ def test_each_synced_site_account_publishes_its_own_day():
         {"source": "ronghui", "date_from": "2026-10-14", "date_to": "2026-10-14"})
     assert result["ok"] is True, result
     assert repo.published == [("price_default", "2026-10-14", ["R1"]), ("ronghui_daxiang_s", "2026-10-14", ["R2"])]
+
+
+def test_site_accounts_fetch_in_parallel_and_publish_in_order():
+    repo, barrier = Repository(), threading.Barrier(2, timeout=3)
+
+    def waiting(account, rows):
+        binding = _binding(account, day_rows=rows)
+
+        def fetch_day(day):
+            barrier.wait()  # both accounts must be fetching at the same time
+            return binding.fetch_day(day)
+
+        return WaybillQuerySource(binding.scope, fetch_day, binding.fetch_exact)
+
+    bindings = (waiting("price_default", ["R1"]), waiting("ronghui_daxiang_s", ["R2"]))
+    result = DirectWaybillQueryService(repo, lambda _p: bindings).query(
+        {"source": "ronghui", "date_from": "2026-10-14", "date_to": "2026-10-14"})
+    assert result["ok"] is True, result
+    assert repo.published == [("price_default", "2026-10-14", ["R1"]), ("ronghui_daxiang_s", "2026-10-14", ["R2"])]
+
+
+def test_one_failed_site_account_keeps_the_other_sites_publication():
+    repo = Repository()
+    failing = _binding("price_default")
+
+    def broken(_day):
+        raise ValueError("WAYBILL_SOURCE_LOGIN_EXPIRED")
+
+    bindings = (WaybillQuerySource(failing.scope, broken, None), _binding("ronghui_daxiang_s", day_rows=["R2"]))
+    result = DirectWaybillQueryService(repo, lambda _p: bindings).query(
+        {"source": "ronghui", "date_from": "2026-10-14", "date_to": "2026-10-14"})
+    assert result["error_code"] == "WAYBILL_SOURCE_LOGIN_EXPIRED"
+    assert repo.published == [("ronghui_daxiang_s", "2026-10-14", ["R2"])]
 
 
 def test_exact_query_uses_the_site_that_owns_the_waybill_and_rejects_other_branches():
