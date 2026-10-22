@@ -220,6 +220,7 @@
           {% set can_run_now = false %}
           {% set run_disabled_reason = '未声明后台手动入口' %}
         {% endif %}
+        {% set plugin_schedule_locked = task.plugin and (not can_manage_plugins or not task.plugin.configured or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed) %}
         {% set has_expandable_settings = can_save and ((has_schedule) if task.plugin else (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles)) %}
 
         {# ── 卡片主行 ── #}
@@ -262,7 +263,7 @@
           <div class="auto-card-actions">
             {% if task.is_schedulable and can_save %}
             <label class="auto-toggle-wrap" title="启用/禁用定时">
-              <input type="checkbox" name="enabled" {% if task.enabled_value %}checked{% endif %} data-automation-toggle>
+              <input type="checkbox" name="enabled" {% if task.enabled_value %}checked{% endif %} {% if plugin_schedule_locked %}disabled title="当前账号或插件状态不允许修改定时"{% endif %} data-automation-toggle>
               <span class="auto-toggle-track"><span class="auto-toggle-thumb"></span></span>
             </label>
             {% endif %}
@@ -755,7 +756,7 @@
               <i data-feather="plus"></i>
               添加时间
             </button>
-            {% if task.plugin %}<p class="auto-webhook-note">时间由系统保存，修改后点击“保存项目设置”。{% if task.plugin_schedule_source == 'legacy_migration' %} 当前显示旧任务时间，保存后会统一到项目设置。{% endif %}</p>{% endif %}
+            {% if task.plugin %}<p class="auto-webhook-note">修改时间后点击“保存定时计划”；卡片右上角的开关拨动后立即保存。{% if task.plugin_schedule_source == 'legacy_migration' %} 当前显示旧任务时间，保存后会统一到项目设置。{% endif %}</p>{% endif %}
           </div>
           {% endif %}
 
@@ -778,7 +779,7 @@
           <div class="auto-settings-footer">
             {% if task.plugin %}
             {% set plugin_settings_feedback_id = 'plugin-settings-feedback-' ~ task.task_id %}
-            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if not can_manage_plugins or not task.plugin.configured or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed %}disabled{% endif %}>
+            <button class="primary-btn auto-save-btn" type="button" data-plugin-configuration-save aria-describedby="{{ plugin_settings_feedback_id }}" {% if plugin_schedule_locked %}disabled{% endif %}>
               <i data-feather="check"></i>
               保存定时计划
             </button>
@@ -1865,7 +1866,9 @@
         syncMobileCardDetails();
       });
     }
-    form.addEventListener("automation:plugin-configuration-saved", () => {
+    form.addEventListener("automation:plugin-configuration-saved", event => {
+      // A schedule switch saves in place; keep focus on the switch.
+      if (event.detail?.fromToggle) return;
       closeAutomationTaskPanels(form);
       window.requestAnimationFrame(() => settingsBtn?.focus());
     });
@@ -2461,6 +2464,7 @@
         syncEnabledCount();
         autoSaveToggle(form);
       });
+      toggle.addEventListener("automation:schedule-toggle-reverted", syncEnabledCount);
     }
 
     // checkbox 标签文字联动

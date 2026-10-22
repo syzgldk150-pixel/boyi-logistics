@@ -199,14 +199,26 @@ function buildProject(automationId) {
   form.setQuery("[data-plugin-resource-role]", []);
   form.setQuery("[data-plugin-entrypoint]:checked", consoleEntrypoint);
   form.setQuery("[data-plugin-schedule-kind]", scheduleKind);
-  form.setQuery("[data-automation-toggle]", []);
+  form.setQuery("[data-plugin-configuration-save]", button);
+  const toggle = form.appendChild(new FakeElement("input"));
+  toggle.setAttribute("data-automation-toggle", "");
+  form.setQuery("[data-automation-toggle]", toggle);
   form.setQuery("[data-run-now]", runButton);
   instance.setQuery("[data-plugin-instance-feedback]", summary);
   instance.setQuery("[data-plugin-worker-select]", []);
 
   let savedEvents = 0;
-  form.addEventListener("automation:plugin-configuration-saved", () => { savedEvents += 1; });
-  return { button, form, instance, local, summary, scheduleKind, runButton, savedEvents: () => savedEvents };
+  const savedDetails = [];
+  form.addEventListener("automation:plugin-configuration-saved", (event) => {
+    savedEvents += 1;
+    savedDetails.push(event.detail);
+  });
+  let reverted = 0;
+  toggle.addEventListener("automation:schedule-toggle-reverted", () => { reverted += 1; });
+  return {
+    button, form, instance, local, summary, scheduleKind, runButton, toggle, savedDetails,
+    savedEvents: () => savedEvents, reverted: () => reverted,
+  };
 }
 
 async function settle() {
@@ -295,6 +307,69 @@ async function settle() {
   assert.equal(rejected.local.getAttribute("role"), "alert");
   assert.equal(rejected.button.dataset.requestId, undefined);
   assert.equal(reloadCalls, 0, "successful save must not hide its result behind a reload");
+
+  // The card switch saves on its own: on means on, off means off.
+  const switchOutcomes = [
+    response(200, {
+      ok: true,
+      data: {
+        project_configuration_version: 2,
+        schedule_sha256: "c".repeat(64),
+        schedule_runtime_state: "ACTIVE",
+        scheduler_refresh_completed: true,
+      },
+      message: "定时计划已保存并生效。",
+    }),
+    response(403, { ok: false, message: "只有超级管理员可以保存自动化项目设置。" }),
+  ];
+  const switchBodies = [];
+  global.fetch = async (_url, options) => {
+    switchBodies.push(JSON.parse(options.body));
+    return switchOutcomes.shift();
+  };
+
+  const switchedOn = buildProject("switch-on");
+  switchedOn.scheduleKind.value = "startup";
+  switchedOn.toggle.checked = true;
+  document.dispatchEvent({ type: "change", target: switchedOn.toggle });
+  assert.equal(switchedOn.toggle.disabled, true, "the switch is locked while its save runs");
+  await settle();
+  assert.equal(switchBodies.length, 1, "turning the switch on saves without the save button");
+  assert.deepEqual(switchBodies[0].schedule, { kind: "startup", times: [], enabled: true });
+  assert.equal(switchedOn.toggle.checked, true);
+  assert.equal(switchedOn.toggle.disabled, false);
+  assert.equal(switchedOn.runButton.disabled, false, "a switch save never blocks manual runs");
+  assert.equal(switchedOn.summary.dataset.kind, "success");
+  assert.equal(switchedOn.summary.hidden, false, "the result is visible without expanding settings");
+  assert.equal(switchedOn.savedDetails[0].fromToggle, true);
+
+  const refused = buildProject("switch-refused");
+  refused.scheduleKind.value = "startup";
+  refused.toggle.checked = true;
+  document.dispatchEvent({ type: "change", target: refused.toggle });
+  await settle();
+  assert.equal(switchBodies.length, 2);
+  assert.equal(refused.toggle.checked, false, "a refused save puts the switch back");
+  assert.equal(refused.reverted(), 1);
+  assert.equal(refused.summary.dataset.kind, "error");
+  assert.equal(refused.summary.hidden, false);
+
+  const noTimes = buildProject("switch-without-schedule");
+  noTimes.toggle.checked = true;
+  document.dispatchEvent({ type: "change", target: noTimes.toggle });
+  await settle();
+  assert.equal(switchBodies.length, 2, "a switch without a schedule is not submitted");
+  assert.equal(noTimes.toggle.checked, false);
+  assert.equal(noTimes.summary.dataset.kind, "error");
+
+  const locked = buildProject("switch-locked");
+  locked.scheduleKind.value = "startup";
+  locked.button.disabled = true;
+  locked.toggle.checked = true;
+  document.dispatchEvent({ type: "change", target: locked.toggle });
+  await settle();
+  assert.equal(switchBodies.length, 2, "a locked card does not save from the switch");
+  assert.equal(locked.toggle.checked, false);
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

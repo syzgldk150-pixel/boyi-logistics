@@ -116,18 +116,21 @@
     setFeedback(local, message, kind);
   }
 
-  function markPluginConfigurationDirty(instance) {
+  function markPluginConfigurationDirty(instance, { keepFeedback = false } = {}) {
     const form = instance.closest("form");
     const configurationSave = form?.querySelector("[data-plugin-configuration-save]");
     const runButton = form?.querySelector("[data-run-now]");
-    if (configurationSave instanceof HTMLButtonElement) {
-      delete configurationSave.dataset.requestId;
+    // An unconfirmed save keeps its request ID and message so the retry is idempotent.
+    if (!keepFeedback) {
+      if (configurationSave instanceof HTMLButtonElement) {
+        delete configurationSave.dataset.requestId;
+      }
+      setPluginConfigurationFeedback(
+        instance,
+        "定时计划尚未保存；保存后才能按新计划运行。",
+        "warning",
+      );
     }
-    setPluginConfigurationFeedback(
-      instance,
-      "定时计划尚未保存；保存后才能按新计划运行。",
-      "warning",
-    );
     if (runButton instanceof HTMLButtonElement && !runButton.disabled) {
       runButton.dataset.runTitleBeforePluginConfig = runButton.getAttribute("title") || "";
       runButton.disabled = true;
@@ -336,37 +339,30 @@
     if (addSchedule instanceof HTMLElement) addSchedule.focus();
   }
 
-  async function savePluginConfiguration(instance, button) {
-    if (button.getAttribute("aria-busy") === "true") return;
+  // Returns "saved", "pending" (stored, scheduler not yet refreshed),
+  // "rejected" (nothing stored) or "unconfirmed" (outcome unknown).
+  async function savePluginConfiguration(instance, button, { fromToggle = false } = {}) {
+    if (button.getAttribute("aria-busy") === "true") return "rejected";
+    const feedback = (message, kind, success = false) => setPluginConfigurationFeedback(
+      instance, message, kind, { summary: fromToggle || success },
+    );
     const automationId = instance.dataset.automationId || "";
     const configurationVersion = Number(instance.dataset.projectConfigurationVersion || 0);
     if (!Number.isInteger(configurationVersion) || configurationVersion < 1) {
-      setPluginConfigurationFeedback(
-        instance,
-        "项目配置版本已缺失，请刷新页面后重新保存。",
-        "error",
-      );
-      return;
+      feedback("项目配置版本已缺失，请刷新页面后重新保存。", "error");
+      return "rejected";
     }
     let settings;
     try {
       settings = collectPluginSchedule(instance);
     } catch (error) {
-      setPluginConfigurationFeedback(
-        instance,
-        error instanceof Error ? error.message : "项目设置无效，请检查后重试。",
-        "error",
-      );
-      return;
+      feedback(error instanceof Error ? error.message : "项目设置无效，请检查后重试。", "error");
+      return "rejected";
     }
     const requestId = button.dataset.requestId || secureRequestId(null);
     if (!requestId) {
-      setPluginConfigurationFeedback(
-        instance,
-        "当前浏览器无法生成安全请求标识，设置尚未提交。请刷新页面后重试。",
-        "error",
-      );
-      return;
+      feedback("当前浏览器无法生成安全请求标识，设置尚未提交。请刷新页面后重试。", "error");
+      return "rejected";
     }
     button.dataset.requestId = requestId;
     setBusy(button, true, "保存中…");
@@ -416,40 +412,31 @@
         || !stableRuntime
         || !schedulerRefreshCompleted
       ) {
-        setPluginConfigurationFeedback(
-          instance,
+        feedback(
           payload.message || "设置已保存，但运行中定时尚未生效；请使用同一请求重试。",
           "warning",
         );
-        return;
+        return "pending";
       }
       const newVersion = Number(payload?.data?.project_configuration_version || 0);
       const scheduleSha256 = payload?.data?.schedule_sha256;
       if (!Number.isInteger(newVersion) || newVersion < 1
           || typeof scheduleSha256 !== "string" || !/^[0-9a-f]{64}$/.test(scheduleSha256)) {
-        setPluginConfigurationFeedback(
-          instance,
-          "设置可能已经保存，但页面未取得新的配置版本。请刷新页面核对后再继续。",
-          "warning",
-        );
-        return;
+        feedback("设置可能已经保存，但页面未取得新的配置版本。请刷新页面核对后再继续。", "warning");
+        return "unconfirmed";
       }
       instance.dataset.projectConfigurationVersion = String(newVersion);
       // The server's committed digest is the next times-only CAS base.
       instance.dataset.projectScheduleSha256 = scheduleSha256;
       delete button.dataset.requestId;
-      setPluginConfigurationFeedback(
-        instance,
-        payload.message || "定时计划已保存。",
-        "success",
-        { summary: true },
-      );
+      feedback(payload.message || "定时计划已保存。", "success", true);
       const form = instance.closest("form");
       restoreRunButtonAfterPluginConfig(form);
       form?.dispatchEvent(new CustomEvent("automation:plugin-configuration-saved", {
         bubbles: false,
-        detail: { automationId, projectConfigurationVersion: newVersion },
+        detail: { automationId, projectConfigurationVersion: newVersion, fromToggle },
       }));
+      return "saved";
     } catch (error) {
       if (error?.responseConfirmed === true) delete button.dataset.requestId;
       const message = error instanceof TypeError
@@ -457,9 +444,45 @@
         : error instanceof Error
           ? error.message
           : "项目设置保存失败，请重试。";
-      setPluginConfigurationFeedback(instance, message, "error");
+      feedback(message, "error");
+      return error?.responseConfirmed === true ? "rejected" : "unconfirmed";
     } finally {
       setBusy(button, false, "");
+    }
+  }
+
+  async function savePluginScheduleToggle(instance, toggle) {
+    const form = instance.closest("form");
+    const button = form?.querySelector("[data-plugin-configuration-save]");
+    const enabled = toggle.checked;
+    const revert = message => {
+      toggle.checked = !enabled;
+      toggle.dispatchEvent(new CustomEvent("automation:schedule-toggle-reverted", { bubbles: true }));
+      if (message) setPluginConfigurationFeedback(instance, message, "error", { summary: true });
+    };
+    if (button instanceof HTMLButtonElement && button.getAttribute("aria-busy") === "true") {
+      revert("上一次保存尚未完成，请稍后再拨动开关。");
+      return;
+    }
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      revert("当前账号或插件状态不允许修改定时。");
+      return;
+    }
+    const scheduleKind = form.querySelector("[data-plugin-schedule-kind]");
+    if (enabled && (!(scheduleKind instanceof HTMLSelectElement) || scheduleKind.value === "none")) {
+      revert("还没有设置运行时间，请展开设置选择运行时间并保存定时计划。");
+      return;
+    }
+    toggle.disabled = true;
+    setPluginConfigurationFeedback(instance, enabled ? "正在开启定时…" : "正在关闭定时…", "", { summary: true });
+    try {
+      const outcome = await savePluginConfiguration(instance, button, { fromToggle: true });
+      if (outcome === "rejected") revert("");
+      // The stored state is unknown: keep the operator's choice and require
+      // an explicit retry through the save button with the same request ID.
+      if (outcome === "unconfirmed") markPluginConfigurationDirty(instance, { keepFeedback: true });
+    } finally {
+      toggle.disabled = false;
     }
   }
 
@@ -486,7 +509,13 @@
       const control = event.target instanceof Element ? event.target : null;
       if (!control?.matches(PLUGIN_CONFIGURATION_CONTROL_SELECTOR)) return;
       const context = pluginConfigurationContext(control);
-      if (context) markPluginConfigurationDirty(context.instance);
+      if (!context) return;
+      // The card's schedule switch saves itself; other controls wait for "保存".
+      if (control.matches("[data-automation-toggle]")) {
+        if (event.type === "change") void savePluginScheduleToggle(context.instance, control);
+        return;
+      }
+      markPluginConfigurationDirty(context.instance);
     };
     document.addEventListener("input", markFromControl);
     document.addEventListener("change", markFromControl);
