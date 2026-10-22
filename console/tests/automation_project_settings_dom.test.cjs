@@ -206,7 +206,7 @@ function buildProject(automationId) {
 
   let savedEvents = 0;
   form.addEventListener("automation:plugin-configuration-saved", () => { savedEvents += 1; });
-  return { button, form, instance, local, summary, savedEvents: () => savedEvents };
+  return { button, form, instance, local, summary, scheduleKind, runButton, savedEvents: () => savedEvents };
 }
 
 async function settle() {
@@ -249,6 +249,8 @@ async function settle() {
     "data-project-schedule-sha256",
     "a".repeat(64),
   );
+  document.dispatchEvent({ type: "change", target: saved.scheduleKind });
+  assert.equal(saved.runButton.disabled, true, "unsaved schedule edits block manual runs");
   document.dispatchEvent({ type: "click", target: saved.button });
   document.dispatchEvent({ type: "click", target: saved.button });
   await settle();
@@ -261,6 +263,8 @@ async function settle() {
   assert.equal(saved.summary.hidden, false);
   assert.equal(saved.summary.dataset.kind, "success");
   assert.equal(saved.local.hidden, true);
+  assert.equal(saved.runButton.disabled, false, "a confirmed save re-enables manual runs");
+  assert.equal(saved.runButton.dataset.disabledForPluginConfig, undefined);
 
   // Closing a Console tab closes its request runtime. A newly imported page
   // gets a new runtime while document-level delegation remains installed.
@@ -270,6 +274,7 @@ async function settle() {
   vm.runInThisContext(fs.readFileSync(scriptPath, "utf8"), {filename: scriptPath});
   assert.equal(document.listeners.get("click").length, 1, "partial navigation must not duplicate document delegation");
   const refreshFailed = buildProject("refresh-failed");
+  document.dispatchEvent({ type: "change", target: refreshFailed.scheduleKind });
   document.dispatchEvent({ type: "click", target: refreshFailed.button });
   await settle();
   assert.equal(fetchCalls, 2, "new page save must use its live request runtime after the old tab closes");
@@ -278,6 +283,7 @@ async function settle() {
   assert.equal(refreshFailed.local.hidden, false);
   assert.equal(refreshFailed.local.dataset.kind, "warning");
   assert.ok(refreshFailed.button.dataset.requestId, "partial success must retain request identity");
+  assert.equal(refreshFailed.runButton.disabled, true, "an unconfirmed schedule keeps manual runs blocked");
 
   const rejected = buildProject("rejected");
   document.dispatchEvent({ type: "click", target: rejected.button });

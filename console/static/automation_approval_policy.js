@@ -136,6 +136,17 @@
     }
   }
 
+  function restoreRunButtonAfterPluginConfig(form) {
+    const runButton = form?.querySelector("[data-run-now]");
+    if (!(runButton instanceof HTMLButtonElement) || runButton.dataset.disabledForPluginConfig !== "true") return;
+    const previousTitle = runButton.dataset.runTitleBeforePluginConfig || "";
+    if (previousTitle) runButton.title = previousTitle;
+    else runButton.removeAttribute("title");
+    delete runButton.dataset.disabledForPluginConfig;
+    delete runButton.dataset.runTitleBeforePluginConfig;
+    runButton.disabled = false;
+  }
+
   function announce(governance, message) {
     const live = governance.querySelector("[data-governance-live]");
     if (live) live.textContent = message || "";
@@ -434,6 +445,7 @@
         { summary: true },
       );
       const form = instance.closest("form");
+      restoreRunButtonAfterPluginConfig(form);
       form?.dispatchEvent(new CustomEvent("automation:plugin-configuration-saved", {
         bubbles: false,
         detail: { automationId, projectConfigurationVersion: newVersion },
