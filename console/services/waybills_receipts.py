@@ -923,7 +923,8 @@ class WaybillsReceiptsServiceMixin:
         if not attachment:
             self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "附件不存在。"})
             return
-        target = self._resolve_receipt_attachment_target(attachment)
+        target = self._resolve_receipt_attachment_target(
+            attachment, trusted_context=self._receipt_attachment_context())
         if not target:
             self._send_json(
                 handler,
@@ -972,9 +973,10 @@ class WaybillsReceiptsServiceMixin:
         archive_buffer = io.BytesIO()
         used_names: set[str] = set()
         added = 0
+        trusted_context = self._receipt_attachment_context()
         with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for attachment in attachments:
-                target = self._resolve_receipt_attachment_target(attachment)
+                target = self._resolve_receipt_attachment_target(attachment, trusted_context=trusted_context)
                 if not target:
                     continue
                 with target.open("rb") as handle:
@@ -999,7 +1001,17 @@ class WaybillsReceiptsServiceMixin:
             extra_headers={"Content-Disposition": self._content_disposition_attachment(filename)},
         )
 
-    def _resolve_receipt_attachment_target(self, attachment: dict[str, Any]) -> Path | None:
+    def _receipt_attachment_context(self) -> dict[str, Any] | None:
+        # Uncached Yunda images are read by Agent with the admin's signed identity.
+        principal = self._mysql_console_principal()
+        return {"_console_principal": principal} if principal else None
+
+    def _resolve_receipt_attachment_target(
+        self,
+        attachment: dict[str, Any],
+        *,
+        trusted_context: dict[str, Any] | None = None,
+    ) -> Path | None:
         runtime_root = self.settings.runtime_dir.resolve()
 
         def resolve_local_path(local_path: str) -> Path | None:
@@ -1016,7 +1028,7 @@ class WaybillsReceiptsServiceMixin:
         target = resolve_local_path(str(attachment.get("local_path") or "").strip())
         if target and self._is_receipt_attachment_image_file(target):
             return target
-        local_path = self._cache_receipt_attachment_from_source(attachment)
+        local_path = self._cache_receipt_attachment_from_source(attachment, trusted_context=trusted_context)
         if not local_path:
             return None
         return resolve_local_path(local_path)
@@ -1134,11 +1146,16 @@ class WaybillsReceiptsServiceMixin:
         ascii_name = "".join(ch if 32 <= ord(ch) < 127 else "_" for ch in cleaned).strip() or "receipt"
         return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(cleaned.encode('utf-8'))}"
 
-    def _cache_receipt_attachment_from_source(self, attachment: dict[str, Any]) -> str:
+    def _cache_receipt_attachment_from_source(
+        self,
+        attachment: dict[str, Any],
+        *,
+        trusted_context: dict[str, Any] | None = None,
+    ) -> str:
         source_url = self._normalize_receipt_attachment_source_url(attachment, str(attachment.get("source_url") or ""))
         if not source_url:
             return ""
-        fetched = self._fetch_receipt_attachment_source(attachment, source_url)
+        fetched = self._fetch_receipt_attachment_source(attachment, source_url, trusted_context=trusted_context)
         if not fetched:
             return ""
         payload, _upstream_content_type = fetched
@@ -1263,18 +1280,46 @@ class WaybillsReceiptsServiceMixin:
         safe_content_type = self._receipt_image_mime_type(payload)
         return (payload, safe_content_type) if safe_content_type else None
 
-    def _fetch_receipt_attachment_source(self, attachment: dict[str, Any], source_url: str) -> tuple[bytes, str] | None:
+    def _fetch_receipt_attachment_source(
+        self,
+        attachment: dict[str, Any],
+        source_url: str,
+        *,
+        trusted_context: dict[str, Any] | None = None,
+    ) -> tuple[bytes, str] | None:
         source_url = self._normalize_receipt_attachment_source_url(attachment, source_url)
         if not source_url:
             return None
         direct_attachment = self._fetch_direct_receipt_attachment(source_url)
         if direct_attachment:
             return direct_attachment
+        if str(attachment.get("platform") or "").strip().lower() == "yunda" and trusted_context:
+            return self._fetch_yunda_receipt_attachment(source_url, trusted_context)
         # Authenticated third-party page fetches previously reused the active
         # original-page proxy.  That surface is disabled until it can run on an
         # origin isolated from the Console administrator session.  Public,
         # allow-listed image CDN URLs above remain available.
         return None
+
+    def _fetch_yunda_receipt_attachment(
+        self,
+        source_url: str,
+        trusted_context: dict[str, Any],
+    ) -> tuple[bytes, str] | None:
+        """Yunda images need the platform login, so only Agent may read them."""
+        result = call_business(self, "receipt-attachment-image", {"source_url": source_url},
+                               trusted_context=trusted_context, timeout_sec=60)
+        data = result.get("data") if result.get("ok") else None
+        if not isinstance(data, dict):
+            return None
+        try:
+            payload = base64.b64decode(str(data.get("content_base64") or ""), validate=True)
+        except (ValueError, TypeError):
+            return None
+        if not payload or len(payload) > RECEIPT_ATTACHMENT_MAX_BYTES:
+            return None
+        content_type = self._receipt_image_mime_type(payload)
+        return (payload, content_type) if content_type else None
 
     def _query_receipts_live(self, filters: dict[str, Any], *, page: int, page_size: int,
                              trusted_context: dict[str, Any], request_id: str = "") -> dict[str, Any]:

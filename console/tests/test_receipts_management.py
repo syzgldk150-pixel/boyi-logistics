@@ -1158,7 +1158,7 @@ class ReceiptRouteTests(unittest.TestCase):
         file_path.write_bytes(b"<html>bad cache</html>")
         handler = _Handler()
 
-        def fetch_source(attachment, source_url):
+        def fetch_source(attachment, source_url, **_kwargs):
             return b"\xff\xd8fresh-image", "image/jpeg"
 
         app._fetch_receipt_attachment_source = fetch_source
@@ -1262,6 +1262,58 @@ class ReceiptRouteTests(unittest.TestCase):
         result = app._fetch_receipt_attachment_source(
             {"platform": "ronghui"},
             "https://tms.ronghuiwl.com/unauth/download/demo.jpg",
+        )
+
+        self.assertIsNone(result)
+
+    def test_uncached_yunda_attachment_is_read_through_agent_and_cached(self):
+        repo = _ReceiptRepo()
+        app = _build_app(repo)
+        source_url = "https://kyinms.yunda56.com/upload/return/demo.jpg"
+        repo.get_receipt_attachment = lambda attachment_id: {
+            "id": attachment_id, "record_id": 3, "platform": "yunda", "local_path": "", "source_url": source_url,
+        }
+        calls = []
+
+        def agent_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
+            calls.append({"endpoint": endpoint, "payload": payload, "principal": console_principal})
+            encoded = base64.b64encode(b"\xff\xd8yunda-receipt").decode("ascii")
+            return {"ok": True, "data": {"mime_type": "image/jpeg", "size": 14, "content_base64": encoded}}
+
+        app._agent_request = agent_request
+        handler = _Handler()
+        app._handle_receipt_attachment(handler, "/receipts/attachments/11")
+
+        self.assertEqual(HTTPStatus.OK, handler.status)
+        self.assertEqual(b"\xff\xd8yunda-receipt", handler.wfile.getvalue())
+        self.assertEqual("/internal/v1/business/receipt-attachment-image", calls[0]["endpoint"])
+        self.assertEqual({"source_url": source_url}, calls[0]["payload"]["params"])
+        self.assertEqual("7", calls[0]["principal"]["actor_id"])
+        self.assertEqual(11, repo.cache_updates[0]["attachment_id"])
+        self.assertTrue(repo.cache_updates[0]["local_path"].startswith("receipts/yunda/3/11_"))
+
+    def test_uncached_yunda_attachment_without_admin_session_does_not_call_agent(self):
+        app = _build_app(_ReceiptRepo())
+        app._mysql_console_principal = lambda: None
+        app._agent_request = lambda *_args, **_kwargs: self.fail("agent must not be called")
+
+        result = app._fetch_receipt_attachment_source(
+            {"platform": "yunda"},
+            "https://kyinms.yunda56.com/upload/return/demo.jpg",
+            trusted_context=app._receipt_attachment_context(),
+        )
+
+        self.assertIsNone(result)
+
+    def test_yunda_attachment_rejects_agent_payload_that_is_not_image(self):
+        app = _build_app(_ReceiptRepo())
+        encoded = base64.b64encode(b"<html>login</html>").decode("ascii")
+        app._agent_request = lambda *_args, **_kwargs: {"ok": True, "data": {"content_base64": encoded}}
+
+        result = app._fetch_receipt_attachment_source(
+            {"platform": "yunda"},
+            "https://kyinms.yunda56.com/upload/return/demo.jpg",
+            trusted_context=app._receipt_attachment_context(),
         )
 
         self.assertIsNone(result)

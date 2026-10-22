@@ -47,7 +47,7 @@ def console_permission(method: str, path: str) -> str:
 def business_permission(operation: str) -> str:
     if operation.startswith("customer-service-") or operation == "receipts-audit":
         return "customer_service"
-    if operation in {"receipts-query", "receipt-feishu-detail", "send-waybills-query", "delivery_status",
+    if operation in {"receipts-query", "receipt-feishu-detail", "receipt-attachment-image", "send-waybills-query", "delivery_status",
                      "query_waybill_detail", "ronghui_tms_tracking", "tracking_query", "waybill_tracking", "yunda_waybill_tracking"}:
         return "business.query"
     if operation == "warehouse-scan-times":

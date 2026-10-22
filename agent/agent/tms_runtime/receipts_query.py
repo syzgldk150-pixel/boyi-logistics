@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 from agent.tms_runtime.account_manager import resolve_account_params
 from agent.tms_runtime.direct_business import DirectBusinessError
@@ -74,6 +77,77 @@ def query_receipts(params: dict[str, Any], *, read_source_boundary=None) -> dict
         "has_prev": page > 1, "has_next": start_index + page_size < total,
         "start": start_index + 1 if total else 0, "end": min(start_index + page_size, total),
     }, "sources": [stats for _, stats in results], "complete": True}
+
+
+RECEIPT_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+RECEIPT_IMAGE_SIGNATURES = (
+    (b"\xff\xd8", "image/jpeg"),
+    (b"\x89PNG", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _receipt_image_mime_type(payload: bytes) -> str:
+    for signature, mime_type in RECEIPT_IMAGE_SIGNATURES:
+        if payload.startswith(signature):
+            return mime_type
+    if len(payload) >= 12 and payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _yunda_receipt_image_url(params: dict[str, Any]) -> str:
+    """Only a Yunda INMS image path recorded by the receipt query is fetchable."""
+    if set(params) != {"source_url"} or not isinstance(params["source_url"], str):
+        raise DirectBusinessError("INVALID_RECEIPT_IMAGE", "回单图片只接受附件地址参数。")
+    source_url = params["source_url"].strip()
+    parsed, origin = urlparse(source_url), urlparse(receipts_sync.YUNDA_INMS_ORIGIN)
+    suffix = PurePosixPath(parsed.path or "").suffix.lower()
+    if (len(source_url) > 2048 or parsed.scheme not in {"http", "https"} or parsed.hostname != origin.hostname
+            or parsed.port not in {None, 80, 443} or parsed.username or parsed.password
+            or (suffix and suffix not in receipts_sync.YUNDA_IMAGE_SUFFIXES)):
+        raise DirectBusinessError("INVALID_RECEIPT_IMAGE", "回单图片地址不是韵达回单附件。")
+    return source_url
+
+
+def fetch_yunda_receipt_image(params: dict[str, Any], *, session_profile: str, timeout_sec: int = 30) -> dict[str, Any]:
+    source_url = _yunda_receipt_image_url(params)
+    session = receipts_sync.get_session_broker(session_profile).build_requests_session(validate=False)
+    response = session.get(source_url, headers={"Accept": "image/*,*/*;q=0.8",
+        "Referer": receipts_sync.YUNDA_RECEIPT_PAGE_BY_DIRECTION["send"]},
+        timeout=timeout_sec, allow_redirects=False, stream=True)
+    try:
+        if response.status_code != 200:
+            raise DirectBusinessError("RECEIPT_IMAGE_UNAVAILABLE", f"韵达回单图片读取失败（HTTP {response.status_code}）。")
+        chunks, total = [], 0
+        for chunk in response.iter_content(256 * 1024):
+            total += len(chunk)
+            if total > RECEIPT_IMAGE_MAX_BYTES:
+                raise DirectBusinessError("RECEIPT_IMAGE_TOO_LARGE", "韵达回单图片超过 20MB。")
+            chunks.append(chunk)
+    finally:
+        response.close()
+    payload = b"".join(chunks)
+    mime_type = _receipt_image_mime_type(payload)
+    if not mime_type:
+        raise DirectBusinessError("RECEIPT_IMAGE_NOT_IMAGE", "韵达未返回图片内容，请确认韵达账号登录状态。")
+    return {"mime_type": mime_type, "size": len(payload),
+            "content_base64": base64.b64encode(payload).decode("ascii")}
+
+
+async def fetch_receipt_image_async(params: dict[str, Any], timeout_sec: int, *, read_lifecycle) -> dict[str, Any]:
+    _yunda_receipt_image_url(params)
+    account = await call_blocking(lambda: resolve_account_params({}, default_system="yunda", default_purpose=""),
+                                  timeout_sec=timeout_sec)
+    account_id, session_profile = account.get("account_id"), str(account.get("session_profile") or "")
+    if not account_id or not session_profile:
+        raise DirectBusinessError("AUTH_REQUIRED", "回单图片未解析到有效韵达账号。")
+    return await read_lifecycle.call_read(operation="receipt-attachment-image.yunda",
+        account_ids=(account_id,), handler=lambda: call_blocking(
+            lambda: fetch_yunda_receipt_image(params, session_profile=session_profile,
+                                              timeout_sec=min(int(timeout_sec), 60)),
+            timeout_sec=timeout_sec))
 
 
 async def query_receipts_async(params: dict[str, Any], timeout_sec: int, *, read_lifecycle=None) -> dict[str, Any]:
