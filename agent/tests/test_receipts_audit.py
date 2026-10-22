@@ -269,13 +269,92 @@ class ReceiptAuditTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual("MISSING_RONGHUI_AUDIT_FIELDS", result["error_code"])
 
-    def test_yunda_still_requires_captured_adapter(self):
-        result = receipts_audit.run_once({"platform": "yunda", "result": "passed", "waybill_no": "Y001"})
+    def _run_yunda(self, params, rows_sequence, payload=None, status_code=200):
+        class Response:
+            def __init__(self):
+                self.status_code = status_code
+                self.text = json.dumps(payload or {"info": 1, "msg": "审核成功"}, ensure_ascii=False)
 
-        self.assertFalse(result["ok"])
-        self.assertEqual("capture_required", result["result_status"])
+            def json(self):
+                return json.loads(self.text)
+
+        class Session:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, **kwargs):
+                self.calls.append({"url": url, "kwargs": kwargs})
+                return Response()
+
+        session = Session()
+        broker = types.SimpleNamespace(build_requests_session=lambda validate=True: session)
+        with (
+            patch.object(receipts_audit, "resolve_yunda_session_profile", return_value="yunda"),
+            patch.object(receipts_audit, "get_session_broker", return_value=broker),
+            patch.object(receipts_audit, "_fetch_yunda_send_receipt_rows", side_effect=rows_sequence),
+        ):
+            result = receipts_audit.run_once({"platform": "yunda", "direction": "send", "waybill_no": "Y001",
+                                              "receipt_no": "1000Y001", **params})
+        return result, session.calls
+
+    @staticmethod
+    def _yunda_row(status):
+        return {"Id": 415377481, "Logistics_Id": "Y001", "Return_Logistics_Id": "1000Y001", "Audit_Status": status}
+
+    def test_yunda_pass_posts_page_form_and_verifies_readback(self):
+        result, calls = self._run_yunda({"result": "passed"}, [[self._yunda_row(3)], [self._yunda_row(1)]])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("direct_api_executed", result["result_status"])
         self.assertEqual("审核通过", result["audit_status"])
-        self.assertEqual("AUDIT_CAPTURE_REQUIRED", result["error_code"])
+        self.assertEqual(1, len(calls))
+        self.assertTrue(calls[0]["url"].endswith("/business/waybill/mailing/audit.html"))
+        self.assertEqual({"Id": "415377481", "Audit_Status": "1", "Audit_Reason": ""}, calls[0]["kwargs"]["data"])
+        self.assertFalse(calls[0]["kwargs"]["allow_redirects"])
+        verification = result["verification"]
+        self.assertEqual(("415377481", "Y001", "1"),
+                         (verification["external_id"], verification["waybill_no"], verification["audit_status"]))
+
+    def test_yunda_fail_requires_reason_and_posts_it(self):
+        missing, calls = self._run_yunda({"result": "failed"}, [[self._yunda_row(3)]])
+        self.assertEqual("YUNDA_AUDIT_REASON_REQUIRED", missing["error_code"])
+        self.assertEqual([], calls)
+
+        result, calls = self._run_yunda({"result": "failed", "reason": "未盖章"},
+                                        [[self._yunda_row(3)], [self._yunda_row(2)]])
+        self.assertTrue(result["ok"])
+        self.assertEqual({"Id": "415377481", "Audit_Status": "2", "Audit_Reason": "未盖章"}, calls[0]["kwargs"]["data"])
+
+    def test_yunda_already_at_target_does_not_resubmit(self):
+        result, calls = self._run_yunda({"result": "passed"}, [[self._yunda_row(1)]])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("already_applied", result["result_status"])
+        self.assertEqual([], calls)
+
+    def test_yunda_rejections_fail_explicitly(self):
+        receive, calls = self._run_yunda({"result": "passed", "direction": "receive"}, [])
+        self.assertEqual("YUNDA_AUDIT_UNSUPPORTED_DIRECTION", receive["error_code"])
+
+        missing, calls = self._run_yunda({"result": "passed"}, [[]])
+        self.assertEqual("MISSING_YUNDA_AUDIT_FIELDS", missing["error_code"])
+        self.assertEqual([], calls)
+
+        duplicate, calls = self._run_yunda({"result": "passed"}, [[self._yunda_row(3), self._yunda_row(3)]])
+        self.assertEqual("MISSING_YUNDA_AUDIT_FIELDS", duplicate["error_code"])
+
+        not_required, calls = self._run_yunda({"result": "passed"}, [[self._yunda_row(4)]])
+        self.assertEqual("YUNDA_AUDIT_NOT_REQUIRED", not_required["error_code"])
+        self.assertEqual([], calls)
+
+        rejected, _ = self._run_yunda({"result": "passed"}, [[self._yunda_row(3)]], payload={"info": 0, "msg": "无权限"})
+        self.assertEqual(("YUNDA_AUDIT_SAVE_FAILED", "无权限"), (rejected["error_code"], rejected["message"]))
+
+        expired, _ = self._run_yunda({"result": "passed"}, [[self._yunda_row(3)]], status_code=302)
+        self.assertEqual("AUTH_REQUIRED", expired["error_code"])
+
+        unverified, _ = self._run_yunda({"result": "passed"}, [[self._yunda_row(3)], [self._yunda_row(3)]])
+        self.assertEqual("POSTCONDITION_UNVERIFIED", unverified["error_code"])
 
     def test_validates_result_and_platform(self):
         bad_result = receipts_audit.run_once({"platform": "yunda", "result": "approved", "waybill_no": "Y001"})

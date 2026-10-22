@@ -31,12 +31,24 @@ RONGHUI_AUDIT_MENU_BY_DIRECTION = {
     "send": ("2910", "寄方回单跟踪"),
     "receive": ("2911", "派方回单处理"),
 }
+# 韵达寄件回单页（mailing/index.html）的“审核通过/审核不通过”按钮：表单 Id/Audit_Status/Audit_Reason，
+# 列表 Audit_Status 1=审核通过 2=审核不通过 3=待审核 4=无需审核；到件回单页没有审核按钮。
+YUNDA_AUDIT_PATH = "/ky_inms/public/index.php/business/waybill/mailing/audit.html"
+YUNDA_AUDIT_STATUS_BY_RESULT = {"passed": "1", "failed": "2"}
+YUNDA_AUDIT_NOT_REQUIRED = "4"
 
 
 def get_session_broker(profile_name: str):
     from agent.tms_runtime.session_broker import get_session_broker as build_broker
 
     return build_broker(profile_name)
+
+
+def resolve_yunda_session_profile() -> str:
+    from agent.tms_runtime.account_manager import resolve_account_params
+
+    account = resolve_account_params({}, default_system="yunda", default_purpose="")
+    return _clean_text(account.get("session_profile")) if account.get("account_id") else ""
 
 
 def fetch_ronghui_process_rows(
@@ -467,6 +479,160 @@ def _audit_ronghui(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fetch_yunda_send_receipt_rows(session: Any, params: dict[str, Any], *, timeout_sec: int) -> list[dict[str, Any]]:
+    from agent.tms_runtime.scripts import receipts_sync
+
+    data_url = receipts_sync._discover_yunda_datagrid_url(session, direction="send", timeout_sec=timeout_sec)
+    if not data_url:
+        raise ValueError("韵达寄件回单页未找到列表接口。")
+    response = session.post(
+        data_url,
+        data=receipts_sync._yunda_payload(params, page=1, rows=20),
+        headers=_yunda_headers(),
+        timeout=timeout_sec,
+        allow_redirects=False,
+    )
+    response.raise_for_status()
+    return receipts_sync._extract_rows(response.json())
+
+
+def _yunda_headers() -> dict[str, str]:
+    from agent.tms_runtime.scripts import receipts_sync
+
+    return {
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": receipts_sync.YUNDA_RECEIPT_PAGE_BY_DIRECTION["send"],
+    }
+
+
+def _select_yunda_receipt_row(rows: list[dict[str, Any]], params: dict[str, str]) -> tuple[dict[str, Any] | None, str]:
+    expected = (
+        ("Logistics_Id", params["waybill_no"]),
+        ("Return_Logistics_Id", params["receipt_no"]),
+        ("Return_Express_Id", params["return_waybill_no"]),
+    )
+    matches = [
+        row
+        for row in rows
+        if _first_text(row, "Id")
+        and all(not value or _first_text(row, key) == value for key, value in expected)
+    ]
+    if len(matches) == 1:
+        return matches[0], ""
+    if not matches:
+        return None, "韵达寄件回单列表未查到该回单。"
+    return None, f"韵达寄件回单列表查到 {len(matches)} 条匹配记录，无法唯一确定要审核的回单。"
+
+
+def _yunda_observation(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "verified": True,
+        "external_id": _first_text(row, "Id"),
+        "waybill_no": _first_text(row, "Logistics_Id"),
+        "audit_status": _first_text(row, "Audit_Status"),
+        "observed_at": _utc_iso_millis(),
+    }
+
+
+def _audit_yunda(params: dict[str, str], timeout_sec: int) -> dict[str, Any]:
+    result = params["result"]
+    if params["direction"] != "send":
+        return _failure(
+            platform="yunda",
+            result=result,
+            error_code="YUNDA_AUDIT_UNSUPPORTED_DIRECTION",
+            message="韵达只有寄件回单可审核，到件回单原页没有审核功能。",
+        )
+    reason = params["reason"]
+    if result == "failed" and not reason:
+        return _failure(platform="yunda", result=result, error_code="YUNDA_AUDIT_REASON_REQUIRED",
+                        message="韵达审核不通过必须填写原因。")
+    try:
+        session_profile = resolve_yunda_session_profile()
+        if not session_profile:
+            return _failure(platform="yunda", result=result, error_code="AUTH_REQUIRED",
+                            message="未解析到有效韵达账号，请检查业务账号设置。")
+        session = get_session_broker(session_profile).build_requests_session(validate=False)
+        row, error_message = _select_yunda_receipt_row(
+            _fetch_yunda_send_receipt_rows(session, params, timeout_sec=timeout_sec), params)
+    except TMSAuthStateError as exc:
+        return _failure(platform="yunda", result=result,
+                        error_code=getattr(exc, "code", "AUTH_REQUIRED") or "AUTH_REQUIRED",
+                        message=str(exc) or "韵达登录态不可用。")
+    except Exception as exc:
+        return _failure(platform="yunda", result=result, error_code="YUNDA_AUDIT_LOOKUP_FAILED",
+                        message=f"韵达寄件回单查询失败：{exc}")
+    if row is None:
+        return _failure(platform="yunda", result=result, error_code="MISSING_YUNDA_AUDIT_FIELDS",
+                        message=error_message)
+
+    audit_status = AUDIT_STATUS_BY_RESULT[result]
+    expected_status = YUNDA_AUDIT_STATUS_BY_RESULT[result]
+    current_status = _first_text(row, "Audit_Status")
+    if current_status == YUNDA_AUDIT_NOT_REQUIRED:
+        return _failure(platform="yunda", result=result, error_code="YUNDA_AUDIT_NOT_REQUIRED",
+                        message="韵达显示该回单无需审核。")
+    if current_status == expected_status:
+        return {
+            "ok": True,
+            "platform": "yunda",
+            "result_status": "already_applied",
+            "audit_status": audit_status,
+            "verification": _yunda_observation(row),
+            "message": f"韵达回单已是{audit_status}，未重复提交。",
+        }
+
+    from agent.tms_runtime.scripts.receipts_sync import YUNDA_INMS_ORIGIN
+
+    external_id = _first_text(row, "Id")
+    try:
+        response = session.post(
+            f"{YUNDA_INMS_ORIGIN}{YUNDA_AUDIT_PATH}",
+            data={"Id": external_id, "Audit_Status": expected_status, "Audit_Reason": reason if result == "failed" else ""},
+            headers=_yunda_headers(),
+            timeout=timeout_sec,
+            allow_redirects=False,
+        )
+    except TMSAuthStateError as exc:
+        return _failure(platform="yunda", result=result,
+                        error_code=getattr(exc, "code", "AUTH_REQUIRED") or "AUTH_REQUIRED",
+                        message=str(exc) or "韵达登录态不可用。")
+    except Exception as exc:
+        return _failure(platform="yunda", result=result, error_code="YUNDA_AUDIT_REQUEST_FAILED",
+                        message=f"韵达审核接口调用失败：{exc}")
+    if response.status_code in {301, 302, 303, 307, 308}:
+        return _failure(platform="yunda", result=result, error_code="AUTH_REQUIRED",
+                        message="韵达登录已过期，请在业务账号中重新登录韵达。")
+    payload = _safe_response_json(response)
+    if response.status_code != 200 or str(payload.get("info")) != "1":
+        return _failure(
+            platform="yunda",
+            result=result,
+            error_code="YUNDA_AUDIT_SAVE_FAILED",
+            message=_clean_text(payload.get("msg") or payload.get("message")) or f"韵达审核保存失败（HTTP {response.status_code}）。",
+        )
+
+    try:
+        readback_rows = _fetch_yunda_send_receipt_rows(session, params, timeout_sec=timeout_sec)
+    except Exception as exc:
+        return _failure(platform="yunda", result=result, error_code="POSTCONDITION_UNVERIFIED",
+                        message=f"韵达审核已提交，但回读失败：{exc}")
+    matches = [item for item in readback_rows if _first_text(item, "Id") == external_id]
+    if len(matches) != 1 or _first_text(matches[0], "Audit_Status") != expected_status:
+        return _failure(platform="yunda", result=result, error_code="POSTCONDITION_UNVERIFIED",
+                        message="韵达审核已提交，但回读的审核状态与提交结果不一致。")
+    return {
+        "ok": True,
+        "platform": "yunda",
+        "result_status": "direct_api_executed",
+        "audit_status": audit_status,
+        "verification": _yunda_observation(matches[0]),
+        "message": f"韵达{audit_status}已通过接口提交。",
+    }
+
+
 def _failure(
     *,
     platform: str,
@@ -514,11 +680,4 @@ def run_once(params: dict[str, Any] | None = None) -> dict[str, Any]:
 
     if platform == "ronghui":
         return _audit_ronghui(dict(params or {}))
-
-    return _failure(
-        platform=platform,
-        result=result,
-        error_code="AUDIT_CAPTURE_REQUIRED",
-        message="回单审核真实接口尚未抓取，未执行第三方审核请求。",
-        result_status="capture_required",
-    )
+    return _audit_yunda(safe_params, int((params or {}).get("timeout_sec") or 30))

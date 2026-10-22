@@ -6,6 +6,12 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
+# 各平台原页回读的审核状态码：融辉 AUDIT_STATUS，韵达寄件回单 Audit_Status。
+RECEIPT_AUDIT_STATUS_CODES = {
+    "ronghui": {"passed": "2", "failed": "3"},
+    "yunda": {"passed": "1", "failed": "2"},
+}
+
 
 class GovernedAdapterError(ValueError):
     """Raised when a narrow adapter receives an internally inconsistent input."""
@@ -424,7 +430,8 @@ def validate_receipts_audit_response(
         return response
     payload = _business_payload(response)
     verification = payload.get("verification")
-    expected_status = "2" if _clean(params.get("result")).lower() == "passed" else "3"
+    codes = RECEIPT_AUDIT_STATUS_CODES.get(_clean(params.get("platform")).lower(), {})
+    expected_status = codes.get(_clean(params.get("result")).lower(), "")
     if (
         not isinstance(verification, dict)
         or verification.get("verified") is not True

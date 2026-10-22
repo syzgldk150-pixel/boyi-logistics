@@ -41,9 +41,11 @@ def business_payload(response: Mapping[str, Any]) -> dict[str, Any]:
         if current.get("ok") is False or current.get("success") is False or current.get("error"):
             error = current.get("error")
             message = error.get("message") if isinstance(error, dict) else error
+            # Task envelopes ({"ok": false, "data": {...}}) carry the platform reason one level down.
+            nested = current.get("data") if isinstance(current.get("data"), dict) else {}
             raise DirectBusinessError(
-                str(current.get("error_code") or "BUSINESS_CALL_FAILED"),
-                str(message or current.get("message") or "业务接口执行失败。"),
+                str(current.get("error_code") or nested.get("error_code") or "BUSINESS_CALL_FAILED"),
+                str(message or current.get("message") or nested.get("message") or "业务接口执行失败。"),
             )
         nested = current.get("data")
         if not isinstance(nested, dict):

@@ -10,7 +10,7 @@ import pytest
 
 from agent.tool_registry import ToolRegistry
 from agent.automation_plugins.direct_invocation import DirectPluginInvocationService
-from agent.tms_runtime.direct_business import DirectBusinessError, DirectBusinessService
+from agent.tms_runtime.direct_business import DirectBusinessError, DirectBusinessService, business_payload
 from agent.tms_runtime.finance_business import FinancePluginBusinessService
 from agent.tms_runtime.receipts_query import query_receipts
 from agent.tms_runtime.scripts import receipts_sync
@@ -205,3 +205,10 @@ def test_finance_requires_explicit_collector_instance():
         asyncio.run(FinancePluginBusinessService(policy, None)({"mode": "sync"}, ADMIN, str(uuid4()), 300))
     assert failure.value.code == "FINANCE_PLUGIN_REQUIRED"
     policy.invoke_trusted_and_wait.assert_not_awaited()
+
+
+def test_business_payload_surfaces_task_envelope_reason():
+    with pytest.raises(DirectBusinessError) as caught:
+        business_payload({"ok": False, "cost_sec": 0.8, "data": {
+            "ok": False, "error_code": "YUNDA_AUDIT_SAVE_FAILED", "message": "无权限"}})
+    assert (caught.value.code, str(caught.value)) == ("YUNDA_AUDIT_SAVE_FAILED", "无权限")

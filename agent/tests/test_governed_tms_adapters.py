@@ -300,6 +300,19 @@ class GovernedTmsAdapterTests(unittest.TestCase):
         )
         self.assertEqual(mismatch["error_code"], "POSTCONDITION_UNVERIFIED")
 
+    def test_receipts_audit_uses_yunda_status_codes(self):
+        def response(status):
+            return {"ok": True, "data": {"ok": True, "verification": {
+                "verified": True, "external_id": "415377481", "waybill_no": "Y001",
+                "audit_status": status, "observed_at": "2026-10-22T12:00:00Z"}}}
+
+        passed = {"platform": "yunda", "result": "passed", "waybill_no": "Y001"}
+        failed = {"platform": "yunda", "result": "failed", "waybill_no": "Y001"}
+        self.assertNotIn("error", adapter.validate_receipts_audit_response(response("1"), passed))
+        self.assertNotIn("error", adapter.validate_receipts_audit_response(response("2"), failed))
+        self.assertEqual("POSTCONDITION_UNVERIFIED",
+                         adapter.validate_receipts_audit_response(response("2"), passed)["error_code"])
+
     def test_clock_in_requires_explicit_success_from_both_source_responses(self):
         params = {
             "account_id": "ronghui_daxiang_s",
