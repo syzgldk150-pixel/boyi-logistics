@@ -8,6 +8,13 @@ from tools.receipt_feishu_detail_query_tool import (
 )
 
 
+def _fields(*names):
+    return lambda *_args: {"items": [{"field_name": name} for name in names]}
+
+
+TABLE_FIELDS = _fields(RECEIPT_FEISHU_WAYBILL_FIELD, "收货人", "件数")
+
+
 class ReceiptFeishuDetailQueryToolTests(unittest.TestCase):
     def test_exact_query_returns_one_normalized_record_and_evidence(self):
         calls = []
@@ -32,6 +39,7 @@ class ReceiptFeishuDetailQueryToolTests(unittest.TestCase):
         result = query_receipt_feishu_detail(
             {"waybill_no": "981296115"},
             search_records=search,
+            list_fields=TABLE_FIELDS,
         )
 
         self.assertEqual("SUCCESS", result["status"])
@@ -44,6 +52,7 @@ class ReceiptFeishuDetailQueryToolTests(unittest.TestCase):
         )
         params = calls[0][2]
         self.assertEqual(2, params["page_size"])
+        self.assertEqual(["收货人", "件数", RECEIPT_FEISHU_WAYBILL_FIELD], params["field_names"])
         self.assertEqual(
             {
                 "conjunction": "and",
@@ -70,6 +79,7 @@ class ReceiptFeishuDetailQueryToolTests(unittest.TestCase):
                     ],
                 }
             },
+            list_fields=TABLE_FIELDS,
         )
 
         self.assertEqual("FAILED", result["status"])
@@ -79,6 +89,7 @@ class ReceiptFeishuDetailQueryToolTests(unittest.TestCase):
         result = query_receipt_feishu_detail(
             {"waybill_no": "981296115"},
             search_records=lambda *_args: {"data": {"items": []}},
+            list_fields=TABLE_FIELDS,
         )
 
         self.assertEqual("FAILED", result["status"])
@@ -93,6 +104,42 @@ class ReceiptFeishuDetailQueryToolTests(unittest.TestCase):
 
         self.assertEqual("FAILED", result["status"])
         self.assertEqual("INVALID_ARGUMENTS", result["error"]["code"])
+
+    def test_only_existing_fields_are_requested(self):
+        calls = []
+
+        def search(_base, _table, params):
+            calls.append(params)
+            return {"data": {"has_more": False, "items": []}}
+
+        result = query_receipt_feishu_detail(
+            {"waybill_no": "981296115"},
+            search_records=search,
+            list_fields=_fields(RECEIPT_FEISHU_WAYBILL_FIELD, "收货人", "其他字段"),
+        )
+
+        self.assertEqual("SUCCESS", result["status"])
+        self.assertEqual(["收货人", RECEIPT_FEISHU_WAYBILL_FIELD], calls[0]["field_names"])
+
+    def test_missing_waybill_field_fails_before_search(self):
+        result = query_receipt_feishu_detail(
+            {"waybill_no": "981296115"},
+            search_records=lambda *_args: self.fail("search must not run"),
+            list_fields=_fields("收货人"),
+        )
+
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("FEISHU_FIELD_MISSING", result["error"]["code"])
+
+    def test_field_list_error_fails_closed(self):
+        result = query_receipt_feishu_detail(
+            {"waybill_no": "981296115"},
+            search_records=lambda *_args: self.fail("search must not run"),
+            list_fields=lambda *_args: {"error": "飞书 OpenAPI 失败: NoPermission"},
+        )
+
+        self.assertEqual("FAILED", result["status"])
+        self.assertEqual("FEISHU_QUERY_FAILED", result["error"]["code"])
 
 
 if __name__ == "__main__":

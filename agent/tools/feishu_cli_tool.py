@@ -269,6 +269,12 @@ def search_bitable_records(base_token: str, table_id: str, params: dict) -> dict
     return _search_bitable_records(base_token, table_id, params)
 
 
+def list_bitable_fields(base_token: str, table_id: str) -> dict:
+    """Public read-only primitive listing a Bitable table's real field names."""
+
+    return _list_bitable_fields(base_token, table_id)
+
+
 def _create_bitable_field(base_token: str, table_id: str, params: dict) -> dict:
     field_name = str(params.get("field_name") or params.get("name") or "").strip()
     field_type = params.get("type", params.get("field_type", 1))

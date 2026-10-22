@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
-from tools.feishu_cli_tool import search_bitable_records
+from tools.feishu_cli_tool import list_bitable_fields, search_bitable_records
 
 
 RECEIPT_FEISHU_BASE_TOKEN = "Fcm8b2H7wayK1UsYLjlcFmWhnMh"
@@ -41,6 +41,7 @@ RECEIPT_FEISHU_FIELD_NAMES = (
 
 
 SearchRecords = Callable[[str, str, dict[str, Any]], dict[str, Any]]
+ListFields = Callable[[str, str], dict[str, Any]]
 
 
 def _now() -> str:
@@ -87,6 +88,7 @@ def query_receipt_feishu_detail(
     arguments: Mapping[str, Any],
     *,
     search_records: SearchRecords = search_bitable_records,
+    list_fields: ListFields = list_bitable_fields,
 ) -> dict[str, Any]:
     """Return zero or one exact record; ambiguity and incomplete paging fail."""
 
@@ -99,12 +101,32 @@ def query_receipt_feishu_detail(
     if not waybill_no or len(waybill_no) > 100 or any(ord(char) < 32 for char in waybill_no):
         return _failed("INVALID_WAYBILL_NO", "waybill_no is required and must be at most 100 characters.")
 
+    # Feishu rejects the whole search with FieldNameNotFound when any requested
+    # name is absent, so only request candidate names the table really has.
+    fields_response = list_fields(RECEIPT_FEISHU_BASE_TOKEN, RECEIPT_FEISHU_TABLE_ID)
+    if not isinstance(fields_response, Mapping):
+        return _failed("FEISHU_CONTRACT_ERROR", "Feishu returned a non-object field list.")
+    if fields_response.get("error"):
+        return _failed("FEISHU_QUERY_FAILED", _text(fields_response.get("error")) or "Feishu field list failed.")
+    field_items = fields_response.get("items")
+    if not isinstance(field_items, list) or not field_items:
+        return _failed("FEISHU_CONTRACT_ERROR", "Feishu did not return the table field list.")
+    table_field_names = {
+        _text(item.get("field_name")) for item in field_items if isinstance(item, Mapping)
+    }
+    if RECEIPT_FEISHU_WAYBILL_FIELD not in table_field_names:
+        return _failed(
+            "FEISHU_FIELD_MISSING",
+            f"飞书回单表缺少字段「{RECEIPT_FEISHU_WAYBILL_FIELD}」，无法精确查询。",
+        )
+    requested_field_names = [name for name in RECEIPT_FEISHU_FIELD_NAMES if name in table_field_names]
+
     response = search_records(
         RECEIPT_FEISHU_BASE_TOKEN,
         RECEIPT_FEISHU_TABLE_ID,
         {
             "view_id": RECEIPT_FEISHU_VIEW_ID,
-            "field_names": list(RECEIPT_FEISHU_FIELD_NAMES),
+            "field_names": requested_field_names,
             "filter": {
                 "conjunction": "and",
                 "conditions": [
