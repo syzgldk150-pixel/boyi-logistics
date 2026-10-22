@@ -616,6 +616,7 @@
         {% if entry_initial_provider == 'yunda' %}data-yunda-live-frame{% elif entry_initial_provider == 'ronghui' %}data-ronghui-live-frame{% elif entry_initial_provider == 'best' %}data-best-live-frame{% endif %}
         {% if entry_initial_provider in ['yunda', 'ronghui', 'best'] %}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
+        allow="local-network-access; local-network; loopback-network"
         data-entry-pending-src="{{ entry_initial_src }}"
         {% else %}src="{{ entry_initial_src }}"{% endif %}
         title="{{ entry_initial_label }}"
@@ -1249,6 +1250,8 @@
       frame.title = label;
       if (["yunda", "ronghui", "best"].includes(normalizedProvider)) {
         frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads");
+        // Chrome only lets a cross-site frame reach the local C-Lodop print service when delegated.
+        frame.setAttribute("allow", "local-network-access; local-network; loopback-network");
       } else {
         frame.src = entryFrameSrc(normalizedProvider);
       }

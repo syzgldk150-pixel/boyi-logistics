@@ -300,6 +300,8 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn("allow-modals", permissions)
         self.assertIn("allow-popups-to-escape-sandbox", permissions)
         self.assertFalse(any(token.startswith("allow-top-navigation") for token in permissions))
+        # Original-site printing reaches the local C-Lodop service only when delegated.
+        self.assertIn('allow="local-network-access; local-network; loopback-network"', frame)
 
     def test_document_template_mode_switch_supports_multi_open_tabs(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
