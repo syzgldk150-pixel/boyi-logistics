@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-22
+updated: 2026-10-23
 ---
 
 ## 当前执行边界
@@ -193,7 +193,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 
 `sync_arrive_list` 的当前执行链路是：飞书文本 `arrivelist/到货清单/预到达清单` → `agent/direct_tool_router.py` 精确解析 committed 项目 → `AutomationProjectEntrypoints` → Direct Invocation → 签名插件 `service_v2_plugins/sync_arrive_list_v2/payload/action.py` → 闭合 Broker / `plugin_core_adapters/` → TMS、MySQL 与飞书。`tools/arrive_list_sync_tool.py` 保留公共表头等兼容辅助函数，不是插件的 whole-tool 回退入口。当前 V2 执行允许后续成功任务覆盖同一目标到货表：重新执行到货清单会以本次有效结果替换旧清单或旧统计内容，权威查询的合法空结果也会清除旧行；来源查询失败不能当作空结果覆盖。到货统计可以在之后重新执行，生成新的统计结果。`arrival.report.publication.read` 的历史发布识别不作为当前 V2 表格的防覆盖保证；精确资源读取在 `plugin_core_adapters/arrival_report.py`。派件预报返回的 18 列字段会直接规范化为 `waybill_data` 基础清单；`H...` / `HR...` 回单号只允许作为回单字段保留，不能作为主单号进入表格首列。后台卡片的 `target_date` 留空时使用执行当天，选择日期时拉取指定单日。`sync_arrival_stats` 每次也会重新拉取目标日 `/fetch_dispatch` 与目标日 `/get_scan`，以“目标日 arrive-list 主单 ∪ 目标日实际到件扫描主单”生成当天统计范围：arrive-list 有但未扫描且历史未到齐（包括历史到货为 0）的单号继续以到货 0 展示；每票目标日前最近一份有效成功快照已经到齐、且目标日未再次扫描的 arrive-list 重复主单会被过滤；目标日实际重扫主单始终保留；扫描存在但 arrive-list 缺失的主单通过 `/query_waybill_detail` 补齐详情。仅存在于累计扫描索引的旧主单不得进入当天表。累计扫描索引仍用于计算当天范围内每票的累计到货件数，支持跨日分批到货，但输出以开单件数封顶，并通过 `historical_filter_result` 与 `count_result.quantity_adjustments` 返回过滤、保留和超量封顶计数。
 
-`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → 本次预览与明确确认 → Direct Invocation → `service_v2_plugins/sync_scan_codes_v2/payload/action.py` → 受审 Broker 读取、索引投影、分批扫描和独立核验。后台卡片的 `target_date` 留空时扫描执行当天（上海业务日），选择日期时扫描指定单日，Host 按融辉扫描记录查询使用的日期格式发起查询。调度器选定账号后，`scan_next` 沿用该账号的 `session_profile`，不打开浏览器，直接调用真实发件扫描页的接口：扫描员和网点严格采用原页 `$Z.user.getUserInfo()` 读取的 `userInfo` Cookie，禁止页头/默认值回退；单号规则与签收状态使用页面同一查询，已签收单及本网点今日已发件扫描到同一下一站的单跳过（中断后重扫不重复记录）；下一站使用页面同一查询，同名只接受唯一网点编号；每个下一站一次 `saveTables` 上传。首页登录提醒弹窗不再影响扫描。每批默认最多 200 单（`batch_size` 上限 200），不同主单的子单可同批录入。每批上传后以融辉扫描账本权威回读核验；任一批次提交或核验失败即终止本次调用，已提交但无法证实的批次记为未知写，不重放。显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
+`sync_scan_codes` 的执行链路是：后台“获取并扫描数据”、飞书扫描指令或 Webhook → 本次预览与明确确认 → Direct Invocation → `service_v2_plugins/sync_scan_codes_v2/payload/action.py` → 受审 Broker 读取、索引投影、分批扫描和独立核验。后台卡片的 `target_date` 留空时扫描执行当天（上海业务日），选择日期时扫描指定单日，Host 按融辉扫描记录查询使用的日期格式发起查询。调度器选定账号后，`scan_next` 沿用该账号的 `session_profile`，不打开浏览器，直接调用真实发件扫描页的接口：扫描员和网点严格采用原页 `$Z.user.getUserInfo()` 读取的 `userInfo` Cookie，禁止页头/默认值回退；单号规则与签收状态使用页面同一查询，已签收单及本网点今日已发件扫描到同一下一站的单跳过（中断后重扫不重复记录）；下一站使用页面同一查询，同名只接受唯一网点编号；每个下一站一次 `saveTables` 上传。首页登录提醒弹窗不再影响扫描。每批默认最多 200 单（`batch_size` 上限 200），不同主单的子单可同批录入。每批上传后按单号（`BILL_CODE`，每次 100 单、单页取全）查询融辉发件扫描账本权威回读核验，按日期翻页查询会因分页不稳定重复或遗漏记录，不得使用；任一批次提交或核验失败即终止本次调用，已提交但无法证实的批次记为未知写，不重放。显式 `child_item_limit/max_batches` 导致的未排入子单通过 `omitted_items/truncated` 返回，避免把限定执行误报为全量完成。
 
 `sync_arrival_stats_v2` 在包内把本次统计结果交给共享 `split_rules.py`，校验表头、件数、重复运单和到货范围并生成未齐候选与表格行；当前分类规则为 `已到 < 应到`。Host 接收已分类 `records` 和已渲染 `rows`，覆盖 `split_pending_problem_items` 快照与“分批及有发未到表”，不调用旧 `tools/split_pending_snapshot.py` 重新分类。合法空结果或全部到齐时仍提交表头并清除旧行；来源读取失败、字段异常或重复单号不能解释为空结果，明确失败并保留原有事实。旧的 `phase7.pending_arrivals_sheet` 仅为可选输出：迁移生成的签名插件实例默认保存 `pending_sheet_disabled=true` 且不绑定 `arrival_stats_pending_sheet`，因此不会调用该资源；只有先配置并显式绑定精确资源，再把开关改为 false 才会启用。该自动阶段只刷新数据，不调用融辉问题件上报。
 

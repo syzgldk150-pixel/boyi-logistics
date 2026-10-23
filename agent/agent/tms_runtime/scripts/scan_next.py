@@ -55,7 +55,7 @@ LOGIN_CONTEXT_FIELDS = ("loginUserName", "loginUserAccount", "loginSiteName", "l
 SCAN_MAN_CODE_MAX_UTF8_BYTES = 20
 SEND_SCAN_RECORD_CALL_ID = "FIND_SEND_SCAN_RECORD"
 SEND_SCAN_RECORD_PAGE_SIZE = 500
-SEND_SCAN_RECORD_MAX_PAGES = 20
+SEND_SCAN_RECORD_CHUNK_SIZE = 100
 
 STATION_KEYS = (
     "station_name",
@@ -252,28 +252,30 @@ def _station_code(session: Any, page: dict[str, str], station_name: str, site_ty
     return code
 
 
-def _sent_today(session: Any, login: dict[str, str], items: list[Dict[str, str]], now: _dt.datetime) -> set[str]:
-    """Bills this site already send-scanned today to the same next station.
+def query_send_scan_records(session: Any, *, site_code: str, bill_codes: list[str]) -> list[dict[str, Any]]:
+    """Send-scan ledger rows of exactly these bills, queried as 扫描记录查询 does by 单号.
 
-    Reads the send-scan ledger the caller also verifies against, so a rerun
-    after a partial batch does not record the same scan twice.
+    With 单号 the page sends only ``BILL_CODE`` (comma separated; the server
+    turns it into an IN filter) plus ``LOGIN_SITE_CODE``.  The server ignores
+    ``searchOrderInput``, so a date-range query returns every scan of the site,
+    and its pages have no stable order: rows repeat or go missing across pages
+    (2026-10-23, 626 rows).  Each chunk therefore has to fit one page.
     """
 
-    stations = {item["bill_code"]: item["station_name"] for item in items}
-    date_range = json.dumps(
-        {"start": now.strftime("%Y-%m-%d 00:00:00"), "end": now.strftime("%Y-%m-%d 23:59:59")},
-        ensure_ascii=False,
-    )
     rows: list[dict[str, Any]] = []
-    for page_index in range(SEND_SCAN_RECORD_MAX_PAGES):
-        payload = get_scan.build_payload(
-            date_range, login["loginSiteCode"], "发件", page_index, SEND_SCAN_RECORD_PAGE_SIZE
-        )
-        payload["searchOrderInput"] = "\n".join(stations)
+    for start in range(0, len(bill_codes), SEND_SCAN_RECORD_CHUNK_SIZE):
+        chunk = bill_codes[start : start + SEND_SCAN_RECORD_CHUNK_SIZE]
         response = session.post(
             get_scan.SCAN_URL,
             params={"id": SEND_SCAN_RECORD_CALL_ID},
-            data=payload,
+            data={
+                "BILL_CODE": ",".join(chunk),
+                "LOGIN_SITE_CODE": site_code,
+                "pageIndex": "0",
+                "pageSize": str(SEND_SCAN_RECORD_PAGE_SIZE),
+                "sortField": "",
+                "sortOrder": "",
+            },
             headers=get_scan.build_headers(),
             allow_redirects=False,
             timeout=QUERY_TIMEOUT_SEC,
@@ -288,11 +290,24 @@ def _sent_today(session: Any, login: dict[str, str], items: list[Dict[str, str]]
             or any(not isinstance(row, dict) for row in page_rows)
         ):
             raise RuntimeError(f"{SEND_SCAN_RECORD_CALL_ID} 响应结构异常")
+        if total != len(page_rows):
+            raise RuntimeError(
+                f"{SEND_SCAN_RECORD_CALL_ID} 返回 {len(page_rows)}/{total} 条，未能单页取全"
+            )
         rows.extend(page_rows)
-        if len(rows) >= total or not page_rows:
-            break
-    else:
-        raise RuntimeError(f"{SEND_SCAN_RECORD_CALL_ID} 记录超过 {SEND_SCAN_RECORD_MAX_PAGES} 页")
+    return rows
+
+
+def _sent_today(session: Any, login: dict[str, str], items: list[Dict[str, str]], now: _dt.datetime) -> set[str]:
+    """Bills this site already send-scanned today to the same next station.
+
+    Reads the send-scan ledger the caller also verifies against, so a rerun
+    after a partial batch does not record the same scan twice.
+    """
+
+    stations = {item["bill_code"]: item["station_name"] for item in items}
+    today = now.strftime("%Y-%m-%d")
+    rows = query_send_scan_records(session, site_code=login["loginSiteCode"], bill_codes=list(stations))
     return {
         code
         for row in rows
@@ -300,6 +315,7 @@ def _sent_today(session: Any, login: dict[str, str], items: list[Dict[str, str]]
         and str(row.get("SCAN_TYPE") or "").strip() == "发件"
         and str(row.get("SCAN_SITE_CODE") or "").strip() == login["loginSiteCode"]
         and str(row.get("PRE_OR_NEXT_STATION") or "").strip() == stations[code]
+        and str(row.get("SCAN_DATE") or "").strip().startswith(today)
     }
 
 

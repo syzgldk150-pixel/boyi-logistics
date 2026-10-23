@@ -786,11 +786,15 @@ def _authoritative_scan_row(*, row_id: str = "row-1") -> dict[str, str]:
 class _ScanReadbackResponse:
     status_code = 200
 
-    def __init__(self, rows: list[dict[str, str]]) -> None:
+    def __init__(self, rows: list[dict[str, str]], total: int | None = None) -> None:
         self._rows = rows
+        self._total = len(rows) if total is None else total
+
+    def raise_for_status(self) -> None:
+        return None
 
     def json(self) -> dict[str, object]:
-        return {"data": self._rows, "total": len(self._rows)}
+        return {"data": self._rows, "total": self._total}
 
 
 def test_scan_next_adapter_reads_the_fresh_authoritative_send_scan_ledger():
@@ -833,16 +837,18 @@ def test_scan_next_adapter_reads_the_fresh_authoritative_send_scan_ledger():
     }
     assert len(session.calls) == 1
     assert session.calls[0]["params"] == {"id": "FIND_SEND_SCAN_RECORD"}
-    assert session.calls[0]["data"] | {
-        "SCAN_TYPE": "发件",
-        "SCAN_SITE_CODE": "site-1",
+    # The 扫描记录查询 page's 单号 query; a date-range query ignores the bills.
+    assert session.calls[0]["data"] == {
+        "BILL_CODE": "R123456789010001",
         "LOGIN_SITE_CODE": "site-1",
-        "searchOrderInput": "R123456789010001",
         "pageIndex": "0",
-    } == session.calls[0]["data"]
+        "pageSize": "500",
+        "sortField": "",
+        "sortOrder": "",
+    }
 
 
-def test_scan_next_adapter_uses_ronghui_line_breaks_for_multiple_waybills():
+def test_scan_next_adapter_joins_multiple_waybills_with_commas():
     class Session:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -884,16 +890,19 @@ def test_scan_next_adapter_uses_ronghui_line_breaks_for_multiple_waybills():
         )
 
     assert result["record_count"] == 2
-    assert session.calls[0]["data"]["searchOrderInput"] == (
-        "R123456789010001\nR123456789010002"
-    )
-    assert "BILL_CODE" not in session.calls[0]["data"]
+    assert session.calls[0]["data"]["BILL_CODE"] == "R123456789010001,R123456789010002"
+    assert "searchOrderInput" not in session.calls[0]["data"]
 
 
-@pytest.mark.parametrize("case", ["zero", "multiple", "incomplete"])
+@pytest.mark.parametrize("case", ["zero", "multiple", "incomplete", "paged"])
 def test_scan_next_authoritative_readback_fails_unknown_for_non_exact_rows(case):
+    total = None
     if case == "zero":
         rows: list[dict[str, str]] = []
+    elif case == "paged":
+        # Ledger pages have no stable order; a result beyond one page is not proof.
+        rows = [_authoritative_scan_row()]
+        total = 501
     elif case == "multiple":
         rows = [
             _authoritative_scan_row(row_id="row-1"),
@@ -906,7 +915,7 @@ def test_scan_next_authoritative_readback_fails_unknown_for_non_exact_rows(case)
 
     class Session:
         def post(self, _url, **_kwargs):
-            return _ScanReadbackResponse(rows)
+            return _ScanReadbackResponse(rows, total)
 
     with (
         patch(

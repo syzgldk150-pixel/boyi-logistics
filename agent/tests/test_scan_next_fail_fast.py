@@ -53,7 +53,9 @@ class _Session:
             self.calls.append(("FIND_SEND_SCAN_RECORD", dict(data or {}), headers))
             if self.sent_payload is not None:
                 return _Response(self.sent_payload)
-            return _Response({"data": self.sent, "total": len(self.sent)})
+            codes = set(data["BILL_CODE"].split(","))
+            rows = [row for row in self.sent if row["BILL_CODE"] in codes]
+            return _Response({"data": rows, "total": len(rows)})
         if url.endswith("/dataOperation/saveTables"):
             self.uploads.append({"params": json.loads(files["params"][1]), "headers": headers})
             return _Response(self.saves.pop(0) if self.saves else {"success": True, "message": "保存成功"})
@@ -236,8 +238,9 @@ class ScanNextHttpTests(unittest.TestCase):
         self.assertEqual(session.uploads[0]["params"][0]["data"][0]["PRE_OR_NEXT_STATION_CODE"], "1001")
 
     def _sent_row(self, bill, station="甲站", **overrides):
+        today = scan_next._dt.datetime.now(scan_next.RONGHUI_TIMEZONE).strftime("%Y-%m-%d")
         return {"BILL_CODE": bill, "SCAN_TYPE": "发件", "SCAN_SITE_CODE": "90001",
-                "PRE_OR_NEXT_STATION": station, **overrides}
+                "PRE_OR_NEXT_STATION": station, "SCAN_DATE": f"{today} 08:00:00", **overrides}
 
     def test_bills_sent_today_to_the_same_station_are_skipped(self):
         session = _Session(sent=[
@@ -245,19 +248,43 @@ class ScanNextHttpTests(unittest.TestCase):
             self._sent_row("20000000000002", station="乙站"),
             self._sent_row("20000000000003", SCAN_SITE_CODE="80001"),
             self._sent_row("20000000000004", SCAN_TYPE="到件"),
+            self._sent_row("20000000000005", SCAN_DATE="2000-01-01 08:00:00"),
         ])
         result, session, _, _ = self._run(
-            self._items(*(("甲站", f"2000000000000{index}") for index in range(1, 5))), session
+            self._items(*(("甲站", f"2000000000000{index}") for index in range(1, 6))), session
         )
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["detail"]["skipped_signed_codes"], ["20000000000001"])
         uploaded = [row["BILL_CODE"] for row in session.uploads[0]["params"][0]["data"]]
-        self.assertEqual(uploaded, ["20000000000002", "20000000000003", "20000000000004"])
+        self.assertEqual(uploaded, [f"2000000000000{index}" for index in range(2, 6)])
         query = next(call for call in session.calls if call[0] == "FIND_SEND_SCAN_RECORD")
-        self.assertEqual(query[1]["SCAN_TYPE"], "发件")
-        self.assertEqual(query[1]["SCAN_SITE_CODE"], "90001")
-        self.assertEqual(query[1]["searchOrderInput"].split("\n"), [f"2000000000000{index}" for index in range(1, 5)])
+        # The 扫描记录查询 page's 单号 query: comma separated BILL_CODE, no date range.
+        self.assertEqual(query[1], {
+            "BILL_CODE": ",".join(f"2000000000000{index}" for index in range(1, 6)),
+            "LOGIN_SITE_CODE": "90001",
+            "pageIndex": "0",
+            "pageSize": "500",
+            "sortField": "",
+            "sortOrder": "",
+        })
+
+    def test_send_record_query_is_chunked_to_single_pages(self):
+        bills = [f"2{index:013d}" for index in range(1, 151)]
+        result, session, _, _ = self._run(self._items(*(("甲站", bill) for bill in bills)))
+
+        self.assertTrue(result["ok"], result)
+        queries = [call[1]["BILL_CODE"].split(",") for call in session.calls if call[0] == "FIND_SEND_SCAN_RECORD"]
+        self.assertEqual(queries, [bills[:100], bills[100:]])
+
+    def test_send_record_spanning_pages_fails_before_any_upload(self):
+        session = _Session(sent_payload={"data": [self._sent_row("20000000000001")], "total": 501})
+        result, session, _, _ = self._run(self._items(("甲站", "20000000000001")), session)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "sent_today")
+        self.assertIn("未能单页取全", result["message"])
+        self.assertEqual(session.uploads, [])
 
     def test_malformed_send_record_fails_before_any_upload(self):
         session = _Session(sent_payload={"success": False})

@@ -540,7 +540,6 @@ def _scan_next_submit(
     }
 
 
-_SCAN_SEND_RECORD_CALL_ID = "FIND_SEND_SCAN_RECORD"
 _SCAN_SEND_RECORD_FIELDS = frozenset(
     {
         "BILL_CODE",
@@ -606,77 +605,6 @@ def _scan_next_identities_sha256(items: list[dict[str, str]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _scan_next_query_rows(
-    session: Any,
-    *,
-    site_code: str,
-    bill_codes: list[str],
-    local_start: datetime,
-    local_end: datetime,
-) -> list[Mapping[str, Any]]:
-    from agent.tms_runtime.scripts import get_scan
-
-    date_range = {
-        "start": local_start.strftime("%Y-%m-%d %H:%M:%S"),
-        "end": local_end.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    rows: list[Mapping[str, Any]] = []
-    declared_total: int | None = None
-    for page_index in range(20):
-        payload = get_scan.build_payload(
-            json.dumps(date_range, ensure_ascii=False),
-            site_code,
-            "\u53d1\u4ef6",
-            page_index,
-            500,
-        )
-        payload["searchOrderInput"] = "\n".join(bill_codes)
-        try:
-            response = session.post(
-                get_scan.SCAN_URL,
-                params={"id": _SCAN_SEND_RECORD_CALL_ID},
-                data=payload,
-                headers=get_scan.build_headers(),
-                allow_redirects=False,
-                timeout=20,
-            )
-            if response.status_code != 200:
-                _scan_next_unknown(
-                    "scan-next authoritative readback returned a non-success status"
-                )
-            raw = response.json()
-        except PluginExecutionError:
-            raise
-        except Exception as exc:
-            _scan_next_unknown("scan-next authoritative readback failed", cause=exc)
-        if not isinstance(raw, Mapping):
-            _scan_next_unknown("scan-next authoritative readback schema is invalid")
-        total = raw.get("total")
-        page_rows = raw.get("data")
-        if (
-            isinstance(total, bool)
-            or not isinstance(total, int)
-            or total < 0
-            or not isinstance(page_rows, list)
-            or any(not isinstance(row, Mapping) for row in page_rows)
-        ):
-            _scan_next_unknown("scan-next authoritative readback schema is invalid")
-        if declared_total is None:
-            declared_total = total
-        elif total != declared_total:
-            _scan_next_unknown("scan-next authoritative readback total changed")
-        rows.extend(page_rows)
-        if len(rows) >= total:
-            if len(rows) != total:
-                _scan_next_unknown("scan-next authoritative readback count is invalid")
-            break
-        if not page_rows:
-            _scan_next_unknown("scan-next authoritative readback ended early")
-    else:
-        _scan_next_unknown("scan-next authoritative readback exceeded its page limit")
-    return rows
-
-
 def _scan_next_readback_state(
     descriptor: Mapping[str, Any],
     items: list[dict[str, str]],
@@ -692,8 +620,15 @@ def _scan_next_readback_state(
         }
     if not local_windows:
         _scan_next_unknown("scan-next authoritative readback window is missing")
+    for local_start, local_end in local_windows:
+        if (
+            local_start.tzinfo is None
+            or local_end.tzinfo is None
+            or local_end < local_start
+        ):
+            _scan_next_unknown("scan-next authoritative readback window is invalid")
 
-    from agent.tms_runtime.scripts import receipts_sync
+    from agent.tms_runtime.scripts import receipts_sync, scan_next
     from agent.tms_runtime.scripts.login_manager import TMSAuth
 
     try:
@@ -709,46 +644,40 @@ def _scan_next_readback_state(
         _scan_next_unknown("scan-next authoritative readback site identity is missing")
 
     expected = {item["bill_code"]: item["station_name"] for item in items}
-    bill_codes = list(expected)
-    matches: dict[str, dict[str, Mapping[str, Any]]] = {
-        code: {} for code in expected
-    }
-    for local_start, local_end in local_windows:
-        if (
-            local_start.tzinfo is None
-            or local_end.tzinfo is None
-            or local_end < local_start
-        ):
-            _scan_next_unknown("scan-next authoritative readback window is invalid")
-        rows = _scan_next_query_rows(
+    try:
+        rows = scan_next.query_send_scan_records(
             session,
             site_code=site_code,
-            bill_codes=bill_codes,
-            local_start=local_start,
-            local_end=local_end,
+            bill_codes=list(expected),
         )
-        for row in rows:
-            code = str(row.get("BILL_CODE") or "").strip()
-            if code not in expected:
-                continue
-            if not _SCAN_SEND_RECORD_FIELDS.issubset(row):
-                _scan_next_unknown("scan-next authoritative row is incomplete")
-            timestamp = _scan_next_record_timestamp(row)
-            if timestamp is None:
-                _scan_next_unknown("scan-next authoritative row timestamp is invalid")
-            if (
-                str(row.get("SCAN_TYPE") or "").strip() != "\u53d1\u4ef6"
-                or str(row.get("DATA_FROM") or "").strip() != "K13"
-                or str(row.get("SCAN_SITE_CODE") or "").strip() != site_code
-                or str(row.get("PRE_OR_NEXT_STATION") or "").strip()
-                != expected[code]
-                or not str(row.get("ROW_ID") or "").strip()
-                or timestamp < local_start
-                or timestamp > local_end
-            ):
-                continue
-            row_id = str(row.get("ROW_ID") or "").strip()
-            matches[code][row_id] = row
+    except Exception as exc:
+        _scan_next_unknown("scan-next authoritative readback failed", cause=exc)
+    # One single-page response per chunk, so each returned row is a distinct
+    # ledger record; its position also dedupes a row matching two windows.
+    matches: dict[str, set[int]] = {code: set() for code in expected}
+    for index, row in enumerate(rows):
+        code = str(row.get("BILL_CODE") or "").strip()
+        if code not in expected:
+            continue
+        if not _SCAN_SEND_RECORD_FIELDS.issubset(row):
+            _scan_next_unknown("scan-next authoritative row is incomplete")
+        timestamp = _scan_next_record_timestamp(row)
+        if timestamp is None:
+            _scan_next_unknown("scan-next authoritative row timestamp is invalid")
+        if (
+            str(row.get("SCAN_TYPE") or "").strip() != "\u53d1\u4ef6"
+            or str(row.get("DATA_FROM") or "").strip() != "K13"
+            or str(row.get("SCAN_SITE_CODE") or "").strip() != site_code
+            or str(row.get("PRE_OR_NEXT_STATION") or "").strip()
+            != expected[code]
+            or not str(row.get("ROW_ID") or "").strip()
+            or not any(
+                local_start <= timestamp <= local_end
+                for local_start, local_end in local_windows
+            )
+        ):
+            continue
+        matches[code].add(index)
 
     counts = [len(found) for found in matches.values()]
     if all(count == 1 for count in counts):

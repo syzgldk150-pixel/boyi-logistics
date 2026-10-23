@@ -144,7 +144,9 @@ class DailyProtocol:
                     self.ledger.append({**row, 'ROW_ID': f'isolated-row-{len(self.ledger)+1}', 'SCAN_DATE': stamp, 'REGISTER_DATE': stamp})
             return {'success': True, 'message': 'isolated scan rows committed'}
         if action == 'FIND_SEND_SCAN_RECORD':
-            return {'data': list(self.ledger), 'total': len(self.ledger)}
+            codes = set(arguments['BILL_CODE'][0].split(','))
+            rows = [row for row in self.ledger if row['BILL_CODE'] in codes]
+            return {'data': rows, 'total': len(rows)}
         if action == 'FIND_COME_SCAN_RECORD':
             page = int(arguments['pageIndex'][0])
             size = int(arguments['pageSize'][0])
