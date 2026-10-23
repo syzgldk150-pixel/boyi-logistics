@@ -17,6 +17,7 @@ try:
         FeeLevel as SharedFeeLevel,
         FinanceMappingConflictError as SharedFinanceMappingConflictError,
         FinanceNotFoundError as SharedFinanceNotFoundError,
+        FinancePeriodError as SharedFinancePeriodError,
         FinanceQuery as SharedFinanceQuery,
         FinanceRepository as SharedFinanceRepository,
         FinanceRepositoryError as SharedFinanceRepositoryError,
@@ -34,6 +35,7 @@ except ModuleNotFoundError as exc:  # Shared package may be absent in isolated C
     SharedFeeLevel = None
     SharedFinanceMappingConflictError = None
     SharedFinanceNotFoundError = None
+    SharedFinancePeriodError = None
     SharedFinanceQuery = None
     SharedFinanceRepository = None
     SharedFinanceRepositoryError = None
@@ -93,6 +95,22 @@ class FinanceUpstreamError(FinanceError):
 
 class FinancePartialFailureError(FinanceUpstreamError):
     error_code = "FINANCE_SYNC_PARTIAL_FAILED"
+
+
+class FinancePeriodRequestError(FinanceError):
+    """A refused period operation; the code and details come from the ledger."""
+
+    _STATUS = {
+        "INVALID_MONTH": 400, "INVALID_REQUEST": 400, "NOT_FOUND": 404,
+        "PERIOD_CHECKS_FAILED": 422, "SNAPSHOT_MISMATCH": 422,
+        "PERIOD_UNAVAILABLE": 503,
+    }
+
+    def __init__(self, code: str, message: str, details: Any = None) -> None:
+        super().__init__(message)
+        self.error_code = code
+        self.http_status = self._STATUS.get(code, 409)
+        self.details = details
 
 
 def _sync_error_message(payload: Mapping[str, Any], default: str) -> str:
@@ -334,6 +352,8 @@ class FinanceService:
         except FinanceError:
             raise
         except Exception as exc:
+            if SharedFinancePeriodError is not None and isinstance(exc, SharedFinancePeriodError):
+                raise FinancePeriodRequestError(exc.code, str(exc), exc.details) from exc
             if SharedFinanceNotFoundError is not None and isinstance(exc, SharedFinanceNotFoundError):
                 raise FinanceNotFoundError(f"{operation}失败：目标记录不存在。") from exc
             if SharedFinanceMappingConflictError is not None and isinstance(
@@ -740,6 +760,69 @@ class FinanceService:
             ),
         )
         return {"review_case_id": int(review_case_id), "status": "rejected"}
+
+    def get_period(self, month: str, *, today: date | None = None) -> dict[str, Any]:
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "读取月度清点",
+                lambda: repository.get_period_view(month, today=today or date.today()),
+            ),
+            operation="读取月度清点",
+        )
+
+    def confirm_period_items(self, month: str, body: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        items = body.get("items")
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise FinanceValidationError("请选择要确认的项目。")
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "确认本月归类",
+                lambda: repository.confirm_period_items(
+                    month, items, actor=actor, request_id=str(body.get("request_id") or "")
+                ),
+            ),
+            operation="确认本月归类",
+        )
+
+    def close_period(self, month: str, body: Mapping[str, Any], *, actor: str, today: date | None = None) -> dict[str, Any]:
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "封账",
+                lambda: repository.close_period(
+                    month, actor=actor, request_id=str(body.get("request_id") or ""), today=today or date.today()
+                ),
+            ),
+            operation="封账",
+        )
+
+    def reopen_period(self, month: str, body: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "反结账",
+                lambda: repository.reopen_period(
+                    month, actor=actor, request_id=str(body.get("request_id") or ""),
+                    reason=str(body.get("reason") or ""),
+                ),
+            ),
+            operation="反结账",
+        )
+
+    def acknowledge_anomaly(self, anomaly_id: int, body: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        repository = self._require_repository()
+        return self._ensure_mapping(
+            self._repository_call(
+                "确认知悉异常",
+                lambda: repository.acknowledge_anomaly(
+                    anomaly_id, actor=actor, request_id=str(body.get("request_id") or ""),
+                    reason=str(body.get("reason") or ""),
+                ),
+            ),
+            operation="确认知悉异常",
+        )
 
     def list_sync_batches(self, query: Mapping[str, Any]) -> dict[str, Any]:
         pagination = parse_pagination(query)

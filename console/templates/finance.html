@@ -7,7 +7,7 @@
 {% block main_class %}finance-main{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/static/finance.css?v=20261016-design-audit">
+<link rel="stylesheet" href="/static/finance.css?v=20261023-period-close">
 {% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
@@ -90,6 +90,9 @@
     </button>
     <button id="finance-tab-reviews" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-reviews" tabindex="-1" data-finance-tab="reviews">
       <i data-feather="alert-circle" aria-hidden="true"></i><span>异常审批</span>
+    </button>
+    <button id="finance-tab-periods" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-periods" tabindex="-1" data-finance-tab="periods">
+      <i data-feather="lock" aria-hidden="true"></i><span>月度封账</span>
     </button>
     <button id="finance-tab-waybill-facts" class="finance-tab" type="button" role="tab" aria-selected="false" aria-controls="finance-panel-waybill-facts" tabindex="-1" data-finance-tab="waybill-facts">
       <i data-feather="package" aria-hidden="true"></i><span>运单财务</span>
@@ -298,6 +301,83 @@
     </section>
   </section>
 
+  <section id="finance-panel-periods" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-periods" tabindex="0" hidden data-finance-panel="periods">
+    <section class="finance-panel finance-mapping-intro">
+      <div>
+        <h2>月度清点与封账</h2>
+        <p>逐项核对当月出现的融辉费用项目归类，检查全部通过后由超级管理员封账；封账后该月报表读取快照，反结账须写明原因。这里汇总的是融辉账户收支，不是利润。</p>
+      </div>
+      <span class="finance-pill" data-finance-period-badge>未查询</span>
+    </section>
+    <form class="finance-panel finance-mapping-filters" data-finance-period-form>
+      <label class="finance-field"><span>月份</span><input type="month" name="month" required max="{{ today[:7] }}" data-finance-period-month></label>
+      <button class="primary-btn" type="submit"><i data-feather="search" aria-hidden="true"></i><span>查看该月</span></button>
+    </form>
+    <div class="finance-table-state" data-finance-period-state aria-live="polite"></div>
+    <div class="finance-period-body" data-finance-period-body hidden>
+      <section class="finance-panel" aria-labelledby="finance-period-check-title">
+        <div class="finance-panel-head">
+          <div><h2 id="finance-period-check-title">封账检查</h2><p data-finance-period-check-summary></p></div>
+          <div class="finance-row-actions" data-finance-period-actions></div>
+        </div>
+        <ul class="finance-period-checks" data-finance-period-checks></ul>
+      </section>
+      <section class="finance-panel finance-table-panel" aria-labelledby="finance-period-item-title">
+        <div class="finance-panel-head">
+          <div>
+            <h2 id="finance-period-item-title">费用项目清点</h2>
+            <p data-finance-period-item-count></p>
+            <p class="finance-period-note" data-finance-period-catalog-note></p>
+          </div>
+          <button class="ghost-btn" type="button" data-finance-period-confirm-selected disabled><span>确认所选</span></button>
+        </div>
+        <div class="finance-table-wrap">
+          <table class="finance-table finance-period-table">
+            <caption class="visually-hidden">本月费用项目清点</caption>
+            <thead><tr><th scope="col"><input type="checkbox" aria-label="全选可确认的项目" data-finance-period-select-all></th><th scope="col">项目</th><th scope="col">方向</th><th scope="col">本月笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th><th scope="col">上月净额</th><th scope="col">当前绑定</th><th scope="col">核对状态</th><th scope="col">操作</th></tr></thead>
+            <tbody data-finance-period-item-body></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="finance-panel" aria-labelledby="finance-period-report-title">
+        <div class="finance-panel-head"><div><h2 id="finance-period-report-title">月度收支</h2><p data-finance-period-report-source></p></div></div>
+        <dl class="finance-period-totals" data-finance-period-totals></dl>
+        <div class="finance-period-report-grid">
+          <div class="finance-table-wrap"><table class="finance-table finance-table--compact"><caption>按费用级别</caption><thead><tr><th scope="col">级别</th><th scope="col">笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th></tr></thead><tbody data-finance-period-levels></tbody></table></div>
+          <div class="finance-table-wrap"><table class="finance-table finance-table--compact"><caption>按账号</caption><thead><tr><th scope="col">账号</th><th scope="col">笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th><th scope="col">运单级成本</th><th scope="col">运营级成本</th></tr></thead><tbody data-finance-period-accounts></tbody></table></div>
+        </div>
+        <div class="finance-table-wrap"><table class="finance-table finance-table--compact"><caption>按标准科目</caption><thead><tr><th scope="col">级别</th><th scope="col">标准科目</th><th scope="col">笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th></tr></thead><tbody data-finance-period-subjects></tbody></table></div>
+      </section>
+      <section class="finance-panel finance-table-panel" aria-labelledby="finance-period-comparison-title" data-finance-period-comparison hidden>
+        <div class="finance-panel-head"><div><h2 id="finance-period-comparison-title">与上一版本的差异</h2><p data-finance-period-comparison-summary></p></div></div>
+        <div class="finance-table-wrap"><table class="finance-table finance-table--compact"><caption class="visually-hidden">与上一封账版本的逐项差异</caption><thead><tr><th scope="col">项目</th><th scope="col">方向</th><th scope="col">笔数</th><th scope="col">净额</th><th scope="col">差额</th><th scope="col">绑定</th></tr></thead><tbody data-finance-period-comparison-body></tbody></table></div>
+      </section>
+      <section class="finance-panel" aria-labelledby="finance-period-drift-title" data-finance-period-drift hidden>
+        <div class="finance-panel-head"><div><h2 id="finance-period-drift-title">封账后数据有变化</h2><p>以下日期重新同步后与封账快照不一致；报表仍按快照显示，需要更正时由超级管理员反结账后重新封账。</p></div></div>
+        <ul class="finance-period-issues" data-finance-period-drift-list></ul>
+      </section>
+      <section class="finance-panel finance-table-panel" aria-labelledby="finance-period-history-title">
+        <div class="finance-panel-head"><div><h2 id="finance-period-history-title">封账记录</h2><p data-finance-period-history-count></p></div></div>
+        <div class="finance-table-wrap"><table class="finance-table finance-table--compact finance-period-history-table"><caption class="visually-hidden">该月封账与反结账记录</caption><thead><tr><th scope="col">版本</th><th scope="col">状态</th><th scope="col">封账</th><th scope="col">笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th><th scope="col">反结账</th></tr></thead><tbody data-finance-period-history></tbody></table></div>
+      </section>
+    </div>
+    <dialog class="finance-dialog native-modal" aria-labelledby="finance-period-dialog-title" data-finance-period-dialog>
+      <form method="dialog" class="finance-dialog-card" data-finance-period-dialog-form>
+        <div class="finance-dialog-head">
+          <h2 id="finance-period-dialog-title" data-finance-period-dialog-title></h2>
+          <button class="icon-btn" type="submit" value="cancel" aria-label="关闭"><i data-feather="x" aria-hidden="true"></i></button>
+        </div>
+        <div class="finance-dialog-body" data-finance-period-dialog-body></div>
+        <label class="finance-field" data-finance-period-dialog-reason hidden><span>原因（必填）</span><textarea rows="3" maxlength="500"></textarea></label>
+        <p class="finance-dialog-error" role="alert" data-finance-period-dialog-error hidden></p>
+        <div class="finance-dialog-actions">
+          <button class="ghost-btn" type="submit" value="cancel">取消</button>
+          <button class="primary-btn" type="submit" value="confirm" data-finance-period-dialog-confirm>确认</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
+
   <section id="finance-panel-waybill-facts" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-waybill-facts" tabindex="0" hidden data-finance-panel="waybill-facts">
     <form class="finance-panel finance-mapping-filters" data-finance-waybill-form>
       <label class="finance-field"><span>运单号</span><input name="waybill_no" type="search" autocomplete="off"></label>
@@ -348,6 +428,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=20261014-v2-collection"></script>
+<script src="/static/finance.js?v=20261023-period-close"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

@@ -33,6 +33,10 @@ NEW_TABLES = (
 )
 # Entity tables created by later migrations; projected once they exist.
 LATER_WAYBILL_TABLES = ("boyi_waybill_edit_logs",)
+LATER_FINANCE_TABLES = (
+    "finance_periods", "finance_period_item_reviews", "finance_period_closes",
+    "finance_period_close_lines", "finance_period_events",
+)
 
 
 def quote(identifier):
@@ -186,7 +190,10 @@ def _views(cursor, runtime, waybill, finance):
     cursor.execute("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s", (waybill,))
     present = {row["name"] for row in cursor.fetchall()}
     later = tuple(table for table in LATER_WAYBILL_TABLES if table in present)
-    for schema, tables in ((finance, FINANCE_TABLES), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences", *later))):
+    cursor.execute("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s", (finance,))
+    finance_present = {row["name"] for row in cursor.fetchall()}
+    later_finance = tuple(table for table in LATER_FINANCE_TABLES if table in finance_present)
+    for schema, tables in ((finance, (*FINANCE_TABLES, *later_finance)), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences", *later))):
         for table in tables:
             cursor.execute(f"CREATE OR REPLACE ALGORITHM=MERGE SQL SECURITY INVOKER VIEW {qualified(runtime, table)} AS SELECT * FROM {qualified(schema, table)}")
     wb_columns = columns(cursor, waybill, "ronghui_waybills")

@@ -134,6 +134,11 @@ def test_physical_split_preserves_rows_links_and_finance_foreign_keys(database):
         assert str(totals["income"]) == "12.3456"
         assert str(totals["expense"]) == "7.8901"
         assert str(totals["net"]) == "4.4555"
+        # The current finance schema also needs the later period-close tables.
+        sql = (ROOT / "agent/migrations/062_finance_period_close.sql").read_text(encoding="utf-8")
+        migration.apply_later_migration(cur, sql, load("run_migrations").split_sql_statements)
+        assert migration.table_type(cur, finance, "finance_periods") == "BASE TABLE"
+        assert migration.table_type(cur, runtime, "finance_periods") == "VIEW"
     finance_repo = FinanceRepository(connect)
     finance_repo.initialize_schema()
     batch_id = finance_repo.create_batch(trigger_type="manual", start_date="2026-09-08", end_date="2026-09-08")

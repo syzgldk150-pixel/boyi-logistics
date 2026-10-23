@@ -213,7 +213,7 @@ class FinanceEvolutionMixin:
             SET status = 'resolved', last_seen_at = %s
             WHERE anomaly_type = 'MISSING_WAYBILL'
               AND platform = %s AND account_id = %s AND business_date = %s
-              AND status = 'open'
+              AND status IN ('open', 'acknowledged')
             """,
             (now, platform, account_id, business_date),
         )
@@ -254,8 +254,8 @@ class FinanceEvolutionMixin:
                     occurrence_count = VALUES(occurrence_count),
                     amount = VALUES(amount),
                     details_json = VALUES(details_json),
-                    notified_at = IF(status = 'resolved', NULL, notified_at),
-                    status = 'open',
+                    notified_at = IF(status = 'resolved' AND NOT (acknowledged_at IS NOT NULL AND acknowledged_count = VALUES(occurrence_count) AND acknowledged_amount = VALUES(amount)), NULL, notified_at),
+                    status = IF(acknowledged_at IS NOT NULL AND acknowledged_count = VALUES(occurrence_count) AND acknowledged_amount = VALUES(amount), 'acknowledged', 'open'),
                     last_seen_at = VALUES(last_seen_at)
                 """,
                 (
@@ -441,7 +441,7 @@ class FinanceEvolutionMixin:
                     UPDATE finance_anomalies
                     SET status = 'resolved', last_seen_at = %s
                     WHERE fee_item_id = %s AND anomaly_type = 'MISSING_WAYBILL'
-                      AND status = 'open'
+                      AND status IN ('open', 'acknowledged')
                     """,
                     (now, int(fee_item_id)),
                 )
@@ -483,8 +483,9 @@ class FinanceEvolutionMixin:
                         ON DUPLICATE KEY UPDATE
                             occurrence_count = VALUES(occurrence_count),
                             amount = VALUES(amount), details_json = VALUES(details_json),
-                            notified_at = IF(status = 'resolved', NULL, notified_at),
-                            status = 'open', last_seen_at = VALUES(last_seen_at)
+                            notified_at = IF(status = 'resolved' AND NOT (acknowledged_at IS NOT NULL AND acknowledged_count = VALUES(occurrence_count) AND acknowledged_amount = VALUES(amount)), NULL, notified_at),
+                            status = IF(acknowledged_at IS NOT NULL AND acknowledged_count = VALUES(occurrence_count) AND acknowledged_amount = VALUES(amount), 'acknowledged', 'open'),
+                            last_seen_at = VALUES(last_seen_at)
                         """,
                         (
                             fingerprint,

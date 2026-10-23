@@ -4,10 +4,12 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-10-19
+updated: 2026-10-23
 ---
 
 # 数据库迁移
+
+`062_finance_period_close.sql` 在 `finance_db` 新建月度清点与封账的 5 张表（期间状态、逐项核对、封账版本、快照明细、操作事件），并给 `finance_anomalies` 增加确认知悉的人、时间、原因和确认时的笔数与金额。迁移通过 `{{finance_db}}` 绑定实体库，执行后由 `migration_055_domain_databases.py` 投影同名视图并重建 `finance_anomalies` 视图。新代码的财务结构校验要求这些表存在，必须先迁移再重启 Agent 与 Console；回退到旧代码时新表和新列闲置无害。业务规则见 [财务模块说明](finance_module.md#月度清点与封账)。
 
 `061_scan_codes_scanned_at.sql` 给运行库 `agent_db.scan_codes` 新增可空 `scanned_at DATETIME` 及索引，保存扫描插件 2.0.3 起提交的融辉扫描来源真实扫描时间（`SCAN_DATE`）；`last_seen_at` 仍是快照时间。历史行保持 NULL，不回填或推算。`phase7_mysql_store.ensure_phase7_tables()` 要求该列存在，因此必须先迁移再重启 Agent；旧扫描插件与统计插件不提交该字段，写入保持 NULL。回退旧代码时该列闲置无害。
 

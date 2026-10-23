@@ -184,15 +184,23 @@ class FinanceBrain:
         rows = self.repository.list_unnotified_anomalies(limit=50)
         sent_ids: list[int] = []
         for row in rows:
+            title = "财务异常待人工确认"
             details = (
                 f"平台={row.get('platform')}; 日期={row.get('business_date')}; "
                 f"类目={row.get('secondary_fee_name') or row.get('primary_fee_name') or '-'}; "
                 f"笔数={row.get('occurrence_count')}; 净额={row.get('amount')}"
             )
+            if row.get("anomaly_type") == "CLOSED_PERIOD_DRIFT":
+                title = "已封账月份的数据有变化"
+                details = (
+                    f"日期={row.get('business_date')}; 账号={row.get('account_id')}; "
+                    f"变化项目数={row.get('occurrence_count')}; 与封账快照的净额差={row.get('amount')}; "
+                    "请在财务页“月度清点与封账”核对，需要时由超级管理员反结账"
+                )
             sent = publish_finance_alert(
                 {
                     "anomaly_type": str(row.get("anomaly_type") or "FINANCE_ANOMALY"),
-                    "title": "财务异常待人工确认",
+                    "title": title,
                     "details": details,
                     "admin_url": self._admin_url(),
                 }

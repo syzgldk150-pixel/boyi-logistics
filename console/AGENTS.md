@@ -198,7 +198,8 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `static/finance.js`
   - `finance_service.py`
   - `app.py`
-  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 同步记录”四个页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
+  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 异常审批 / 月度封账 / 运单财务 / 同步记录”页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
+  - “月度封账”页签读取 `GET /finance/periods/{YYYY-MM}`。逐项核对（`POST .../confirmations`）与缺运单号异常确认知悉（`POST /finance/anomalies/{id}/acknowledge`）需 `finance.manage`；封账与反结账（`.../close`、`.../reopen`）只允许真实 MySQL 超级管理员，路由权限与处理器双重校验。所有写入要求同源会话以及 body 与 `X-Browser-Request-UUID` 一致。检查、快照、锁定与漂移规则只在 `shared/finance/periods.py`，Console 不重算；规则见 `../agent/docs/finance_module.md` 的“月度清点与封账”。
   - 财务查询经共享账本直接读取，不触发采集。同步、回填和重试从所选来源的已接续生产者唯一确定实例，经 `/internal/v1/business/finance-collect` 调用当前 Service V2 `manual_run`；多实例或未接续时明确提示，不使用旧 `finance_bills` 默认实例。财务包 2.0.2 起以可选 `collection_request` 接收本次日期，后台显示对应 Invocation。真实管理员、同源、稳定浏览器 UUID 和精确账号绑定均保留，不创建事项审批或 Command/Run；不传凭据。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。

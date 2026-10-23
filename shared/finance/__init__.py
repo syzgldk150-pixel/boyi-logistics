@@ -61,6 +61,7 @@ from shared.finance.repository import (
     FinanceRepositoryError,
     FinanceSnapshotRejectedError,
 )
+from shared.finance.periods import FinancePeriodError, parse_period_month, period_month_end
 from shared.finance.schema import FINANCE_REQUIRED_TABLES, MYSQL_DDL, mysql_schema_statements
 from shared.finance.sources import (
     FINANCE_SOURCE_SPECS,
@@ -97,6 +98,7 @@ __all__ = [
     "FeeMappingSeed",
     "FinanceMappingConflictError",
     "FinanceNotFoundError",
+    "FinancePeriodError",
     "FinanceQuery",
     "FinanceRepository",
     "FinanceRepositoryError",
@@ -137,6 +139,8 @@ __all__ = [
     "month_start",
     "mysql_schema_statements",
     "optional_decimal",
+    "parse_period_month",
+    "period_month_end",
     "quantize_money",
     "quantize_storage",
     "resolve_account_binding",

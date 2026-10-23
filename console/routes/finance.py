@@ -18,9 +18,18 @@ _GET_ACTIONS = {
 }
 
 
+_PERIOD_GET = re.compile(r"/finance/periods/(\d{4}-\d{2})")
+_PERIOD_POST = re.compile(r"/finance/periods/(\d{4}-\d{2})/(confirmations|close|reopen)")
+_ANOMALY_ACKNOWLEDGE = re.compile(r"/finance/anomalies/(\d+)/acknowledge")
+
+
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path == "/modules/finance":
         app._render_finance(handler, query)
+        return True
+    match = _PERIOD_GET.fullmatch(path)
+    if match:
+        app._handle_finance_period_get(handler, match.group(1))
         return True
     action = _GET_ACTIONS.get(path)
     if action:
@@ -47,5 +56,14 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if re.fullmatch(r"/finance/sync-batches/\d+/retry", path):
         app._handle_finance_post(handler, "retry_batch", path=path)
+        return True
+    match = _PERIOD_POST.fullmatch(path)
+    if match:
+        action = "confirm" if match.group(2) == "confirmations" else match.group(2)
+        app._handle_finance_period_post(handler, action, match.group(1))
+        return True
+    match = _ANOMALY_ACKNOWLEDGE.fullmatch(path)
+    if match:
+        app._handle_finance_period_post(handler, "acknowledge", match.group(1))
         return True
     return False

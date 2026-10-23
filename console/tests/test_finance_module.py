@@ -161,7 +161,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertEqual("dollar-sign", item["icon"])
         self.assertEqual("财务模块", item["label"])
 
-    def test_finance_route_renders_specialized_six_tab_workbench(self):
+    def test_finance_route_renders_specialized_tab_workbench(self):
         self.app._render_finance(_Handler(), {})
 
         self.assertEqual(HTTPStatus.OK, self.sent_status)
@@ -172,6 +172,7 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertIn('data-finance-tab="sync"', self.sent_html)
         self.assertIn('data-finance-tab="reviews"', self.sent_html)
         self.assertIn('data-finance-tab="waybill-facts"', self.sent_html)
+        self.assertIn('data-finance-tab="periods"', self.sent_html)
         self.assertNotIn("module-detail-sections", self.sent_html)
 
     def test_finance_assets_are_page_scoped_and_no_chart_library_is_global(self):

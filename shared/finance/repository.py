@@ -47,6 +47,7 @@ from shared.finance.evolution import (
     _enabled_platform_clause,
     _enabled_source_clause,
 )
+from shared.finance.periods import FinancePeriodMixin
 
 
 ConnectionFactory = Callable[[], Any]
@@ -135,7 +136,7 @@ def _managed_cursor(connection: Any) -> Iterator[Any]:
             close()
 
 
-class FinanceRepository(FinanceEvolutionMixin):
+class FinanceRepository(FinanceEvolutionMixin, FinancePeriodMixin):
     """Finance persistence over a caller-supplied DB-API connection factory."""
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:
@@ -858,6 +859,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             published_runs = _fetchall(cursor)
             for published_run in published_runs:
                 self._refresh_run_derivatives(cursor, published_run)
+            self._record_closed_period_drift(cursor, published_runs)
             if completed:
                 cursor.execute("""UPDATE module_data_sources s JOIN (
                     SELECT DISTINCT b.source_id FROM finance_source_run_bindings b
@@ -1300,6 +1302,7 @@ class FinanceRepository(FinanceEvolutionMixin):
                 requires_waybill=require_waybill,
                 created_by=actor,
             )
+            closed_mappings = self._closed_month_mappings(cursor, int(fee_item_id))
             cursor.execute(
                 """
                 SELECT * FROM finance_fee_mappings
@@ -1331,6 +1334,8 @@ class FinanceRepository(FinanceEvolutionMixin):
                 action="update" if current else "create",
                 before=current,
             )
+            # Raises inside the transaction, so a closed month's mapping never moves.
+            self._assert_closed_mappings_unchanged(cursor, int(fee_item_id), closed_mappings)
         self.rebuild_waybill_facts_for_fee_item(
             fee_item_id=int(fee_item_id),
             reviewed_by=actor,
@@ -1547,6 +1552,35 @@ class FinanceRepository(FinanceEvolutionMixin):
             )
             return _fetchone(cursor) or {}
 
+    def _expected_finance_sources(self, cursor: Any, query: FinanceQuery) -> set[tuple[str, str]]:
+        """The selected sources as (platform, source identity) pairs.
+
+        Persistent identities determine the selection. The explicit legacy set
+        remains only for pre-migration historical aliases.
+        """
+
+        legacy_sources = {
+            (spec.platform, spec.account_id)
+            for spec in enabled_finance_source_specs()
+            if (query.platform is None or spec.platform == query.platform.value)
+            and (not query.account_id or spec.account_id == query.account_id)
+        }
+        source_clauses = ["a.module='finance'"]
+        source_params: list[Any] = []
+        if query.platform:
+            source_clauses.append("a.provider=%s")
+            source_params.append(query.platform.value)
+        if query.account_id:
+            source_clauses.append("a.account_id=%s")
+            source_params.append(query.account_id)
+        if query.source_ids:
+            source_clauses.append("a.source_id IN (" + ",".join(["%s"] * len(query.source_ids)) + ")")
+            source_params.extend(query.source_ids)
+        cursor.execute("SELECT a.provider AS platform,a.account_id,a.source_id FROM module_data_source_accounts a WHERE " + " AND ".join(source_clauses), tuple(source_params))
+        persisted_sources = {(str(row["platform"]), str(row["source_id"])) for row in _fetchall(cursor)}
+        return persisted_sources if persisted_sources or query.source_ids else {
+            (provider, "legacy-account:" + account) for provider, account in legacy_sources}
+
     def _coverage_status(
         self,
         query: FinanceQuery,
@@ -1559,12 +1593,6 @@ class FinanceRepository(FinanceEvolutionMixin):
             with self._connection() as owned_connection:
                 return self._coverage_status(query, connection=owned_connection)
 
-        legacy_sources = {
-            (spec.platform, spec.account_id)
-            for spec in enabled_finance_source_specs()
-            if (query.platform is None or spec.platform == query.platform.value)
-            and (not query.account_id or spec.account_id == query.account_id)
-        }
         enabled_clause, enabled_params = _enabled_source_clause(
             platform_column="r.platform", account_column="r.account_id"
         )
@@ -1580,23 +1608,7 @@ class FinanceRepository(FinanceEvolutionMixin):
             clauses.append(source_alias_filter(query.source_ids, platform_column="r.platform", account_column="r.account_id"))
             params.extend(query.source_ids)
         with _managed_cursor(connection) as cursor:
-            # Persistent identities determine the selection. The explicit
-            # legacy set remains only for pre-migration historical aliases.
-            source_clauses = ["a.module='finance'"]
-            source_params: list[Any] = []
-            if query.platform:
-                source_clauses.append("a.provider=%s")
-                source_params.append(query.platform.value)
-            if query.account_id:
-                source_clauses.append("a.account_id=%s")
-                source_params.append(query.account_id)
-            if query.source_ids:
-                source_clauses.append("a.source_id IN (" + ",".join(["%s"] * len(query.source_ids)) + ")")
-                source_params.extend(query.source_ids)
-            cursor.execute("SELECT a.provider AS platform,a.account_id,a.source_id FROM module_data_source_accounts a WHERE " + " AND ".join(source_clauses), tuple(source_params))
-            persisted_sources = {(str(row["platform"]), str(row["source_id"])) for row in _fetchall(cursor)}
-        expected_sources = persisted_sources if persisted_sources or query.source_ids else {
-            (provider, "legacy-account:" + account) for provider, account in legacy_sources}
+            expected_sources = self._expected_finance_sources(cursor, query)
         if not expected_sources:
             return "unavailable"
         sql = f"""

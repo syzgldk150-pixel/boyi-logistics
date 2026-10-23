@@ -1,6 +1,7 @@
 """Migration-owned schema contract for the shared finance ledger.
 
-Finance DDL lives in the deployment migrations, including V3.2 migration 039.
+Finance DDL lives in the deployment migrations, including V3.2 migration 039
+and the period close tables of migration 062.
 Runtime code may only validate that the deployment has applied it.
 """
 
@@ -28,6 +29,11 @@ FINANCE_REQUIRED_TABLES = frozenset(
         "module_data_sources",
         "module_data_source_accounts",
         "finance_source_run_bindings",
+        "finance_periods",
+        "finance_period_item_reviews",
+        "finance_period_closes",
+        "finance_period_close_lines",
+        "finance_period_events",
     }
 )
 

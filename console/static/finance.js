@@ -12,6 +12,8 @@
     analyzeReviews: "/finance/reviews/analyze",
     waybillFacts: "/finance/waybill-facts",
     knowledge: "/finance/knowledge",
+    periods: "/finance/periods",
+    anomalies: "/finance/anomalies",
     llmStatus: "/settings/llm/status",
   };
 
@@ -42,6 +44,8 @@
       overviewRequest: 0,
       entriesRequest: 0,
       waybillRequest: 0,
+      periodRequest: 0,
+      periodData: null,
     };
 
     const statusNode = $("[data-finance-status]");
@@ -355,6 +359,7 @@
         if (name === "mappings") loadMappings();
         if (name === "reviews") loadReviews();
         if (name === "waybill-facts") loadWaybillFacts();
+        if (name === "periods") loadPeriod();
         if (name === "sync") loadBatches();
       }
     }
@@ -1194,6 +1199,445 @@
       }
     }
 
+    const periodForm = $("[data-finance-period-form]");
+    const periodMonthInput = $("[data-finance-period-month]");
+    const periodDialog = $("[data-finance-period-dialog]");
+
+    function previousMonthKey() {
+      const start = parseDateKey(root.dataset.monthStart) || new Date();
+      const previous = new Date(start.getFullYear(), start.getMonth() - 1, 1);
+      return formatDateKey(previous).slice(0, 7);
+    }
+
+    function feeItemName(item) {
+      return [item.primary_fee_name, item.secondary_fee_name].filter(Boolean).join(" / ") || `项目 ${item.fee_item_id}`;
+    }
+
+    function compactDates(dates) {
+      const ranges = [];
+      (dates || []).forEach((value) => {
+        const current = parseDateKey(value);
+        const last = ranges[ranges.length - 1];
+        if (last && current && (current - parseDateKey(last.end)) === 86400000) last.end = value;
+        else ranges.push({ start: value, end: value });
+      });
+      return ranges.map((range) => range.start === range.end
+        ? range.start.slice(5)
+        : `${range.start.slice(5)} 至 ${range.end.slice(5)}`).join("、");
+    }
+
+    function periodStatusText(data) {
+      if (data.status === "closed") return [`已封账 v${data.current_version}`, "success"];
+      if (data.status === "reopened") return ["已反结账，待重新封账", "warning"];
+      return ["未封账", "info"];
+    }
+
+    async function postPeriodAction(url, body) {
+      const requestId = newBrowserRequestUuid();
+      return fetchJson(url, {
+        method: "POST",
+        headers: { "X-Browser-Request-UUID": requestId },
+        body: JSON.stringify({ ...body, request_id: requestId }),
+      });
+    }
+
+    function openPeriodDialog({ title, bodyHtml, confirmLabel, requireReason = false, danger = false }) {
+      if (!periodDialog) return Promise.resolve({ confirmed: false });
+      const form = periodDialog.querySelector("[data-finance-period-dialog-form]");
+      const reasonField = periodDialog.querySelector("[data-finance-period-dialog-reason]");
+      const reasonInput = reasonField?.querySelector("textarea");
+      const errorNode = periodDialog.querySelector("[data-finance-period-dialog-error]");
+      const confirmButton = periodDialog.querySelector("[data-finance-period-dialog-confirm]");
+      periodDialog.querySelector("[data-finance-period-dialog-title]").textContent = title;
+      periodDialog.querySelector("[data-finance-period-dialog-body]").innerHTML = bodyHtml;
+      confirmButton.textContent = confirmLabel;
+      confirmButton.classList.toggle("finance-danger-btn", danger);
+      if (reasonField) reasonField.hidden = !requireReason;
+      if (reasonInput) reasonInput.value = "";
+      if (errorNode) { errorNode.hidden = true; errorNode.textContent = ""; }
+      return new Promise((resolve) => {
+        function onSubmit(event) {
+          if (event.submitter?.value !== "confirm" || !requireReason) return;
+          const reason = reasonInput?.value.trim() || "";
+          if (reason.length < 2) {
+            event.preventDefault();
+            errorNode.textContent = "请填写至少 2 个字的原因。";
+            errorNode.hidden = false;
+            reasonInput?.focus();
+          }
+        }
+        function onBackdrop(event) { if (event.target === periodDialog) periodDialog.close("cancel"); }
+        function onClose() {
+          form.removeEventListener("submit", onSubmit);
+          periodDialog.removeEventListener("click", onBackdrop);
+          resolve({ confirmed: periodDialog.returnValue === "confirm", reason: reasonInput?.value.trim() || "" });
+        }
+        form.addEventListener("submit", onSubmit);
+        periodDialog.addEventListener("click", onBackdrop);
+        periodDialog.addEventListener("close", onClose, { once: true });
+        periodDialog.returnValue = "";
+        periodDialog.showModal();
+        if (window.feather) window.feather.replace();
+      });
+    }
+
+    async function loadPeriod() {
+      const month = periodMonthInput?.value || "";
+      const stateNode = $("[data-finance-period-state]");
+      const body = $("[data-finance-period-body]");
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        setPanelState(stateNode, "请选择月份。", "warning");
+        return;
+      }
+      const request = state.periodRequest + 1;
+      state.periodRequest = request;
+      setPanelState(stateNode, `正在读取 ${month} 的清点与检查结果。`, "");
+      try {
+        const data = await fetchJson(`${ENDPOINTS.periods}/${month}`);
+        if (request !== state.periodRequest) return;
+        state.periodData = data;
+        renderPeriod(data);
+        setPanelState(stateNode, "", "");
+        if (body) body.hidden = false;
+      } catch (error) {
+        if (request !== state.periodRequest) return;
+        state.periodData = null;
+        if (body) body.hidden = true;
+        setPanelState(stateNode, `读取失败：${error.message}`, "error");
+      }
+    }
+
+    function renderPeriod(data) {
+      const [statusText, tone] = periodStatusText(data);
+      const badge = $("[data-finance-period-badge]");
+      if (badge) { badge.textContent = `${data.month} · ${statusText}`; badge.dataset.tone = tone; }
+      renderPeriodChecks(data);
+      renderPeriodActions(data);
+      renderPeriodItems(data);
+      renderPeriodReport(data);
+      renderPeriodComparison(data);
+      renderPeriodDrift(data);
+      renderPeriodHistory(data);
+    }
+
+    function periodIssueHtml(check, issue, closed) {
+      if (check.code === "balance_chain") {
+        return `${escapeHtml(issue.source)}：${escapeHtml(issue.from_date)} 末余额 ${escapeHtml(issue.closing_balance)} → ${escapeHtml(issue.to_date)} 初余额 ${escapeHtml(issue.opening_balance)}，相差 ${escapeHtml(issue.difference)}`;
+      }
+      if (issue.dates) {
+        const dates = issue.dates.length ? `（${issue.dates.length} 天：${escapeHtml(compactDates(issue.dates))}）` : "";
+        return `${escapeHtml(issue.source)}：${escapeHtml(issue.reason)}${dates}`;
+      }
+      if (issue.kind === "review_case") return `待审项目：${escapeHtml(issue.name || "未命名项目")}`;
+      if (issue.kind === "missing_waybill") {
+        const text = `${escapeHtml(issue.business_date)} ${escapeHtml(issue.name || "")} 缺运单号 ${escapeHtml(issue.occurrence_count)} 笔，净额 ${escapeHtml(issue.amount)}`;
+        if (closed) return text;
+        return `${text}<span class="finance-period-ack"><input type="text" maxlength="500" aria-label="确认知悉的原因" placeholder="确认知悉的原因" data-finance-period-ack-reason><button class="ghost-btn finance-row-action" type="button" data-finance-period-ack="${escapeHtml(issue.anomaly_id)}"><span>确认知悉</span></button></span>`;
+      }
+      const status = issue.review_status === "stale" ? "（绑定已改，需重新核对）" : "";
+      return `${escapeHtml(issue.name || "")}${status}`;
+    }
+
+    function renderPeriodChecks(data) {
+      const list = $("[data-finance-period-checks]");
+      const summary = $("[data-finance-period-check-summary]");
+      const checks = data.checks || [];
+      const failed = checks.filter((check) => !check.passed).length;
+      const closed = data.status === "closed";
+      if (summary) {
+        summary.textContent = closed
+          ? `以下是 v${data.current_version} 封账时的检查结果。`
+          : failed
+            ? `${failed} 项未通过，处理后才能封账。${data.earliest_close_date ? `回扫窗口要求最早 ${data.earliest_close_date} 起重新同步。` : ""}`
+            : "检查全部通过，可以封账。";
+      }
+      if (!list) return;
+      list.innerHTML = checks.map((check) => {
+        const issues = check.issues || [];
+        const details = issues.length
+          ? `<details${check.passed ? "" : " open"}><summary>查看 ${issues.length} 条</summary><ul class="finance-period-issues">${issues.map((issue) => `<li>${periodIssueHtml(check, issue, closed)}</li>`).join("")}</ul></details>`
+          : "";
+        return `<li class="finance-period-check">
+          <span class="finance-pill" data-tone="${check.passed ? "success" : "error"}">${check.passed ? "通过" : "未通过"}</span>
+          <div><strong>${escapeHtml(check.label)}</strong><p>${escapeHtml(check.summary)}</p>${details}</div>
+        </li>`;
+      }).join("");
+    }
+
+    function renderPeriodActions(data) {
+      const node = $("[data-finance-period-actions]");
+      if (!node) return;
+      const viewer = data.viewer || {};
+      if (!viewer.can_close) {
+        node.innerHTML = '<span class="finance-pill">封账和反结账需超级管理员操作</span>';
+        return;
+      }
+      if (data.status === "closed") {
+        node.innerHTML = '<button class="ghost-btn finance-danger-btn" type="button" data-finance-period-reopen><span>反结账</span></button>';
+        return;
+      }
+      node.innerHTML = `<button class="primary-btn" type="button" data-finance-period-close ${data.can_close ? "" : "disabled"}><i data-feather="lock" aria-hidden="true"></i><span>封账</span></button>`;
+      if (window.feather) window.feather.replace();
+    }
+
+    function periodReviewPill(item) {
+      if (item.closed) return '<span class="finance-pill" data-tone="success">已封账</span>';
+      const label = {
+        confirmed: ["已核对", "success"],
+        pending: ["待核对", "warning"],
+        stale: ["绑定已改，待重新核对", "warning"],
+        unbound: ["未绑定", "error"],
+      }[item.review_status] || ["未知", ""];
+      const by = item.confirmed_by && item.review_status === "confirmed"
+        ? `<small>${escapeHtml(item.confirmed_by)} ${escapeHtml(item.confirmed_at || "")}</small>` : "";
+      return `<span class="finance-pill" data-tone="${label[1]}">${label[0]}</span>${by}`;
+    }
+
+    function renderPeriodItems(data) {
+      const body = $("[data-finance-period-item-body]");
+      const count = $("[data-finance-period-item-count]");
+      const note = $("[data-finance-period-catalog-note]");
+      const items = data.items || [];
+      const closed = data.status === "closed";
+      const confirmable = items.filter((item) => !closed && item.mapping && item.review_status !== "confirmed");
+      if (count) {
+        const pending = items.filter((item) => item.review_status !== "confirmed").length;
+        count.textContent = items.length
+          ? `本月出现 ${items.length} 个费用项目${closed ? "。" : `，${pending} 个待处理。`}`
+          : "本月没有已发布的流水。";
+      }
+      if (note) note.textContent = data.catalog_note || "";
+      const selectAll = $("[data-finance-period-select-all]");
+      if (selectAll) { selectAll.checked = false; selectAll.disabled = !confirmable.length; }
+      updatePeriodSelection();
+      if (!body) return;
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="11">本月没有已发布的流水；请先在“同步记录”页同步或回溯该月日期。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((item) => {
+        const canConfirm = !closed && item.mapping && item.review_status !== "confirmed";
+        const mapping = item.mapping
+          ? `${escapeHtml(item.mapping.fee_level_label)} · ${escapeHtml(item.mapping.subject_name || "")}<small>v${escapeHtml(item.mapping.version_no)} · ${escapeHtml(item.mapping.effective_start_month)} 起${item.mapping.include_in_cost ? " · 计入成本" : ""}</small>`
+          : '<span class="finance-pill" data-tone="error">未绑定</span>';
+        const previous = item.previous_net_change === null
+          ? '<span class="finance-pill" data-tone="info">本月新出现</span>'
+          : `${escapeHtml(item.previous_net_change)}<small>变化 ${escapeHtml(item.net_change_delta)}</small>`;
+        let action = "—";
+        if (!closed && !item.mapping) {
+          action = '<button class="ghost-btn finance-row-action" type="button" data-finance-period-go-reviews><span>去绑定</span></button>';
+        } else if (canConfirm) {
+          action = `<div class="finance-row-actions"><button class="ghost-btn finance-row-action" type="button" data-finance-period-confirm-one><span>确认本月归类</span></button><button class="ghost-btn finance-row-action" type="button" data-finance-period-edit-mapping><span>修改绑定</span></button></div>`;
+        } else if (!closed) {
+          action = '<button class="ghost-btn finance-row-action" type="button" data-finance-period-edit-mapping><span>修改绑定</span></button>';
+        }
+        return `<tr data-finance-period-item data-fee-item-id="${escapeHtml(item.fee_item_id)}" data-mapping-id="${escapeHtml(item.mapping?.mapping_id || "")}" data-name="${escapeHtml(feeItemName(item))}" data-search="${escapeHtml(item.secondary_fee_name || item.primary_fee_name || "")}">
+          ${responsiveCell("选择", `<input type="checkbox" aria-label="选择 ${escapeHtml(feeItemName(item))}" data-finance-period-select ${canConfirm ? "" : "disabled"}>`)}
+          ${responsiveCell("项目", `${escapeHtml(item.primary_fee_name)}${item.secondary_fee_name ? `<small>${escapeHtml(item.secondary_fee_name)}</small>` : ""}`)}
+          ${responsiveCell("方向", `<span class="finance-pill" data-tone="${item.direction === "income" ? "success" : "error"}">${escapeHtml(directionLabel(item.direction))}</span>`)}
+          ${responsiveCell("本月笔数", escapeHtml(item.transaction_count))}
+          ${responsiveCell("收入", escapeHtml(item.income), "data-money")}
+          ${responsiveCell("支出", escapeHtml(item.expense), "data-money")}
+          ${responsiveCell("净额", escapeHtml(item.net_change), "data-money")}
+          ${responsiveCell("上月净额", previous)}
+          ${responsiveCell("当前绑定", mapping)}
+          ${responsiveCell("核对状态", periodReviewPill(item))}
+          ${responsiveCell("操作", action)}
+        </tr>`;
+      }).join("");
+    }
+
+    function selectedPeriodRows() {
+      return $$("[data-finance-period-item]").filter((row) => row.querySelector("[data-finance-period-select]")?.checked);
+    }
+
+    function updatePeriodSelection() {
+      const button = $("[data-finance-period-confirm-selected]");
+      const count = selectedPeriodRows().length;
+      if (!button) return;
+      button.disabled = count === 0;
+      const label = button.querySelector("span") || button;
+      label.textContent = count ? `确认所选 ${count} 项` : "确认所选";
+    }
+
+    function moneyRow(cells) {
+      return `<tr>${cells.map(([label, value, money]) => responsiveCell(label, escapeHtml(value), money ? "data-money" : "")).join("")}</tr>`;
+    }
+
+    function renderPeriodReport(data) {
+      const report = data.report || {};
+      const source = $("[data-finance-period-report-source]");
+      if (source) {
+        const close = (data.closes || []).find((item) => item.version === data.current_version);
+        source.textContent = data.status === "closed" && close
+          ? `读取 v${close.version} 封账快照（${close.closed_by} ${close.closed_at}）。`
+          : data.status === "reopened"
+            ? "已反结账，显示实时数据，待重新封账。"
+            : "未封账，显示实时数据；封账前数字可能随同步变化。";
+      }
+      const totals = $("[data-finance-period-totals]");
+      if (totals) {
+        totals.innerHTML = [
+          ["收入", report.total_income], ["支出", report.total_expense], ["净变动", report.net_change],
+          ["笔数", report.transaction_count], ["运单级计入成本", report.waybill_cost], ["运营级计入成本", report.operating_cost],
+        ].map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(displayText(value))}</dd></div>`).join("");
+      }
+      const levels = $("[data-finance-period-levels]");
+      if (levels) levels.innerHTML = (report.levels || []).map((row) => moneyRow([
+        ["级别", row.label], ["笔数", row.transaction_count], ["收入", row.income, true], ["支出", row.expense, true], ["净额", row.net_change, true],
+      ])).join("");
+      const accounts = $("[data-finance-period-accounts]");
+      if (accounts) accounts.innerHTML = (report.accounts || []).map((row) => moneyRow([
+        ["账号", row.label], ["笔数", row.transaction_count], ["收入", row.income, true], ["支出", row.expense, true],
+        ["净额", row.net_change, true], ["运单级成本", row.waybill_cost, true], ["运营级成本", row.operating_cost, true],
+      ])).join("") || '<tr><td colspan="7">无数据</td></tr>';
+      const subjects = $("[data-finance-period-subjects]");
+      if (subjects) subjects.innerHTML = (report.subjects || []).map((row) => moneyRow([
+        ["级别", row.fee_level_label], ["标准科目", row.subject_name], ["笔数", row.transaction_count],
+        ["收入", row.income, true], ["支出", row.expense, true], ["净额", row.net_change, true],
+      ])).join("") || '<tr><td colspan="6">无已绑定科目的数据</td></tr>';
+    }
+
+    function renderPeriodComparison(data) {
+      const panel = $("[data-finance-period-comparison]");
+      const comparison = data.comparison;
+      if (!panel) return;
+      panel.hidden = !comparison;
+      if (!comparison) return;
+      const summary = $("[data-finance-period-comparison-summary]");
+      if (summary) {
+        summary.textContent = `与 v${comparison.base_version} 相比：净额 ${comparison.base_net_change} → ${comparison.net_change}，差 ${comparison.delta}；${comparison.differences.length ? `${comparison.differences.length} 个项目有变化。` : "逐项一致。"}`;
+      }
+      const body = $("[data-finance-period-comparison-body]");
+      if (body) body.innerHTML = comparison.differences.map((row) => `<tr>
+        ${responsiveCell("项目", escapeHtml(feeItemName(row)))}
+        ${responsiveCell("方向", escapeHtml(directionLabel(row.direction)))}
+        ${responsiveCell("笔数", `${escapeHtml(row.base_transaction_count)} → ${escapeHtml(row.transaction_count)}`)}
+        ${responsiveCell("净额", `${escapeHtml(row.base_net_change)} → ${escapeHtml(row.net_change)}`, "data-money")}
+        ${responsiveCell("差额", escapeHtml(row.delta), "data-money")}
+        ${responsiveCell("绑定", row.mapping_changed ? "已改动" : "未变")}
+      </tr>`).join("") || '<tr><td colspan="6">逐项一致</td></tr>';
+    }
+
+    function renderPeriodDrift(data) {
+      const panel = $("[data-finance-period-drift]");
+      const list = $("[data-finance-period-drift-list]");
+      const drift = data.drift || [];
+      if (panel) panel.hidden = !drift.length;
+      if (list) list.innerHTML = drift.map((row) => `<li>${escapeHtml(row.business_date)} ${escapeHtml(row.account_label)}：${escapeHtml(row.changed_items)} 个项目变化，净额差 ${escapeHtml(row.delta)}</li>`).join("");
+    }
+
+    function renderPeriodHistory(data) {
+      const body = $("[data-finance-period-history]");
+      const count = $("[data-finance-period-history-count]");
+      const closes = data.closes || [];
+      if (count) count.textContent = closes.length ? `共 ${closes.length} 个版本。` : "该月尚未封账。";
+      if (!body) return;
+      body.innerHTML = closes.map((row) => `<tr>
+        ${responsiveCell("版本", `v${escapeHtml(row.version)}`)}
+        ${responsiveCell("状态", `<span class="finance-pill" data-tone="${row.status === "closed" ? "success" : "warning"}">${row.status === "closed" ? "生效中" : "已反结账"}</span>`)}
+        ${responsiveCell("封账", `${escapeHtml(row.closed_by)}<small>${escapeHtml(row.closed_at)}</small>`)}
+        ${responsiveCell("笔数", escapeHtml(row.transaction_count))}
+        ${responsiveCell("收入", escapeHtml(row.total_income), "data-money")}
+        ${responsiveCell("支出", escapeHtml(row.total_expense), "data-money")}
+        ${responsiveCell("净额", escapeHtml(row.net_change), "data-money")}
+        ${responsiveCell("反结账", row.reopened_by ? `${escapeHtml(row.reopened_by)}<small>${escapeHtml(row.reopened_at || "")}</small><small>${escapeHtml(row.reopen_reason || "")}</small>` : "—")}
+      </tr>`).join("") || '<tr><td colspan="8">该月尚未封账</td></tr>';
+    }
+
+    async function confirmPeriodRows(rows, button) {
+      const data = state.periodData;
+      if (!data || !rows.length) return;
+      const names = rows.map((row) => `<li>${escapeHtml(row.dataset.name)}</li>`).join("");
+      const { confirmed } = await openPeriodDialog({
+        title: `确认 ${data.month} 的归类`,
+        bodyHtml: `<p>按各项目当前绑定确认 ${rows.length} 个项目在 ${escapeHtml(data.month)} 的归类：</p><ul class="finance-period-issues">${names}</ul>`,
+        confirmLabel: `确认 ${rows.length} 项`,
+      });
+      if (!confirmed) return;
+      setButtonBusy(button, true, "确认中");
+      try {
+        await postPeriodAction(`${ENDPOINTS.periods}/${data.month}/confirmations`, {
+          items: rows.map((row) => ({ fee_item_id: Number(row.dataset.feeItemId), mapping_id: Number(row.dataset.mappingId) })),
+        });
+        setStatus(`已确认 ${rows.length} 个项目的本月归类。`, "success");
+        await loadPeriod();
+      } catch (error) {
+        setStatus(`确认失败：${error.message}`, "error");
+        await loadPeriod();
+      } finally { setButtonBusy(button, false, "确认中"); }
+    }
+
+    async function closePeriod(button) {
+      const data = state.periodData;
+      if (!data) return;
+      const report = data.report || {};
+      const { confirmed } = await openPeriodDialog({
+        title: `封账 ${data.month}`,
+        bodyHtml: `<p>封账后该月报表固定为本次快照，绑定不能再改动到该月；需要更正时只能由超级管理员反结账。</p>
+          <dl class="finance-period-totals"><div><dt>笔数</dt><dd>${escapeHtml(report.transaction_count)}</dd></div><div><dt>收入</dt><dd>${escapeHtml(report.total_income)}</dd></div><div><dt>支出</dt><dd>${escapeHtml(report.total_expense)}</dd></div><div><dt>净变动</dt><dd>${escapeHtml(report.net_change)}</dd></div></dl>`,
+        confirmLabel: "确认封账",
+      });
+      if (!confirmed) return;
+      setButtonBusy(button, true, "封账中");
+      try {
+        const result = await postPeriodAction(`${ENDPOINTS.periods}/${data.month}/close`, {});
+        setStatus(`${data.month} 已封账为 v${result.version}，快照笔数 ${result.transaction_count}，净额 ${result.net_change}。`, "success");
+      } catch (error) {
+        setStatus(`封账未完成：${error.message}`, "error");
+      } finally {
+        setButtonBusy(button, false, "封账中");
+        await loadPeriod();
+      }
+    }
+
+    async function reopenPeriod(button) {
+      const data = state.periodData;
+      if (!data) return;
+      const { confirmed, reason } = await openPeriodDialog({
+        title: `反结账 ${data.month}`,
+        bodyHtml: `<p>反结账后 v${escapeHtml(data.current_version)} 快照保留，该月报表回到实时数据，绑定和核对可以再修改；重新封账会生成新版本并显示逐项差异。</p>`,
+        confirmLabel: "确认反结账",
+        requireReason: true,
+        danger: true,
+      });
+      if (!confirmed) return;
+      setButtonBusy(button, true, "处理中");
+      try {
+        await postPeriodAction(`${ENDPOINTS.periods}/${data.month}/reopen`, { reason });
+        setStatus(`${data.month} 已反结账，待重新封账。`, "warning");
+      } catch (error) {
+        setStatus(`反结账未完成：${error.message}`, "error");
+      } finally {
+        setButtonBusy(button, false, "处理中");
+        await loadPeriod();
+      }
+    }
+
+    async function acknowledgeAnomaly(button) {
+      const reasonInput = button.closest(".finance-period-ack")?.querySelector("[data-finance-period-ack-reason]");
+      const reason = reasonInput?.value.trim() || "";
+      if (reason.length < 2) { setStatus("确认知悉前请填写至少 2 个字的原因。", "error"); reasonInput?.focus(); return; }
+      setButtonBusy(button, true, "提交中");
+      try {
+        await postPeriodAction(`${ENDPOINTS.anomalies}/${Number(button.dataset.financePeriodAck)}/acknowledge`, { reason });
+        setStatus("异常已确认知悉；同一笔数和金额再次出现时不会重新阻止封账。", "success");
+        await loadPeriod();
+      } catch (error) {
+        setStatus(`确认知悉失败：${error.message}`, "error");
+      } finally { setButtonBusy(button, false, "提交中"); }
+    }
+
+    function editPeriodMapping(row) {
+      activateTab("mappings");
+      if (mappingForm) {
+        mappingForm.elements.status.value = "all";
+        mappingForm.elements.search.value = row.dataset.search || "";
+        mappingForm.elements.effective_month.value = state.periodData?.month || "";
+      }
+      loadMappings();
+    }
+
     $$('[data-finance-tab]').forEach((tab) => {
       tab.addEventListener("click", () => activateTab(tab.dataset.financeTab));
       tab.addEventListener("keydown", handleTabKeydown);
@@ -1224,6 +1668,8 @@
     mappingForm?.addEventListener("submit", (event) => { event.preventDefault(); loadMappings(); });
     reviewForm?.addEventListener("submit", (event) => { event.preventDefault(); loadReviews(); });
     waybillForm?.addEventListener("submit", (event) => { event.preventDefault(); loadWaybillFacts(); });
+    if (periodMonthInput && !periodMonthInput.value) periodMonthInput.value = previousMonthKey();
+    periodForm?.addEventListener("submit", (event) => { event.preventDefault(); loadPeriod(); });
     syncForm?.addEventListener("submit", (event) => { event.preventDefault(); submitSyncAction(syncForm, ENDPOINTS.sync, "提交中"); });
     backfillForm?.addEventListener("submit", (event) => { event.preventDefault(); submitSyncAction(backfillForm, ENDPOINTS.backfill, "创建中"); });
     $("[data-finance-sync-status]")?.addEventListener("change", loadBatches);
@@ -1278,7 +1724,28 @@
         return;
       }
       const analyze = event.target.closest("[data-finance-analyze-reviews]");
-      if (analyze) analyzeReviews(analyze);
+      if (analyze) { analyzeReviews(analyze); return; }
+      const confirmOne = event.target.closest("[data-finance-period-confirm-one]");
+      if (confirmOne) {
+        const row = confirmOne.closest("[data-finance-period-item]");
+        if (row) confirmPeriodRows([row], confirmOne);
+        return;
+      }
+      const confirmSelected = event.target.closest("[data-finance-period-confirm-selected]");
+      if (confirmSelected) { confirmPeriodRows(selectedPeriodRows(), confirmSelected); return; }
+      const closeButton = event.target.closest("[data-finance-period-close]");
+      if (closeButton) { closePeriod(closeButton); return; }
+      const reopenButton = event.target.closest("[data-finance-period-reopen]");
+      if (reopenButton) { reopenPeriod(reopenButton); return; }
+      const ackButton = event.target.closest("[data-finance-period-ack]");
+      if (ackButton) { acknowledgeAnomaly(ackButton); return; }
+      const goReviews = event.target.closest("[data-finance-period-go-reviews]");
+      if (goReviews) { activateTab("reviews"); return; }
+      const editMapping = event.target.closest("[data-finance-period-edit-mapping]");
+      if (editMapping) {
+        const row = editMapping.closest("[data-finance-period-item]");
+        if (row) editPeriodMapping(row);
+      }
     });
 
     root.addEventListener("change", (event) => {
@@ -1287,9 +1754,15 @@
         const row = level.closest("[data-finance-mapping-row]");
         if (row) updateMappingLevel(row);
       }
+      if (event.target.matches("[data-finance-period-select-all]")) {
+        $$("[data-finance-period-select]").forEach((box) => { if (!box.disabled) box.checked = event.target.checked; });
+        updatePeriodSelection();
+      } else if (event.target.matches("[data-finance-period-select]")) {
+        updatePeriodSelection();
+      }
     });
 
-    $$('table.finance-entry-table, table.finance-mapping-table, table.finance-review-table, table.finance-waybill-table, table.finance-sync-table').forEach((table) => table.classList.add("finance-table--responsive"));
+    $$('table.finance-entry-table, table.finance-mapping-table, table.finance-review-table, table.finance-waybill-table, table.finance-sync-table, table.finance-period-table').forEach((table) => table.classList.add("finance-table--responsive"));
     let restoredTab;
     try { restoredTab = restoreFinanceSelection(); }
     catch (error) { setStatus(error.message, "error"); return; }

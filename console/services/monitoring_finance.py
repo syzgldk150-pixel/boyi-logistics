@@ -315,15 +315,76 @@ class MonitoringFinanceServiceMixin:
             status = HTTPStatus(int(getattr(error, "http_status", HTTPStatus.INTERNAL_SERVER_ERROR)))
         except ValueError:
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-        self._send_json(
-            handler,
-            status,
-            {
-                "ok": False,
-                "error_code": str(getattr(error, "error_code", "FINANCE_ERROR")),
-                "message": str(error),
-            },
-        )
+        payload = {
+            "ok": False,
+            "error_code": str(getattr(error, "error_code", "FINANCE_ERROR")),
+            "message": str(error),
+        }
+        if getattr(error, "details", None) is not None:
+            payload["details"] = error.details
+        self._send_json(handler, status, payload)
+
+    def _handle_finance_period_get(self, handler: BaseHTTPRequestHandler, month: str) -> None:
+        user = getattr(handler, "current_admin_user", None) or {}
+        try:
+            data = self._get_finance_service().get_period(month)
+        except FinanceError as exc:
+            self._send_finance_error(handler, exc)
+            return
+        except Exception as exc:
+            LOGGER.exception("Finance period GET failed: %s", type(exc).__name__)
+            self._send_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False, "error_code": "FINANCE_INTERNAL_ERROR",
+                "message": "月度清点读取失败，请查看服务日志后重试。"})
+            return
+        data["viewer"] = {"can_close": str(user.get("control_plane_role") or "") == "super_admin"}
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
+
+    def _handle_finance_period_post(self, handler: BaseHTTPRequestHandler, action: str, target: str) -> None:
+        """Confirm items, acknowledge an anomaly, close or reopen one month."""
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        body = self._read_control_plane_json(handler)
+        if body is None:
+            return
+        user = getattr(handler, "current_admin_user", None) or {}
+        request_id = self._normalize_browser_request_uuid(body.get("request_id"))
+        if not request_id or request_id != self._normalize_browser_request_uuid(
+            handler.headers.get("X-Browser-Request-UUID")
+        ):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {
+                "ok": False, "error_code": "INVALID_REQUEST", "message": "请求标识无效，请刷新页面后重试。"})
+            return
+        if action in {"close", "reopen"} and str(user.get("control_plane_role") or "") != "super_admin":
+            self._send_json(handler, HTTPStatus.FORBIDDEN, {
+                "ok": False, "error_code": "SUPER_ADMIN_REQUIRED", "message": "封账和反结账只允许超级管理员操作。"})
+            return
+        actor = str(user.get("username") or user.get("display_name") or "").strip()
+        body = {**body, "request_id": request_id}
+        service = self._get_finance_service()
+        try:
+            if not actor:
+                raise FinanceValidationError("无法识别当前操作人，请重新登录后重试。")
+            if action == "confirm":
+                data = service.confirm_period_items(target, body, actor=actor)
+            elif action == "close":
+                data = service.close_period(target, body, actor=actor)
+            elif action == "reopen":
+                data = service.reopen_period(target, body, actor=actor)
+            else:
+                data = service.acknowledge_anomaly(int(target), body, actor=actor)
+        except FinanceError as exc:
+            self._send_finance_error(handler, exc)
+            return
+        except Exception as exc:
+            LOGGER.exception("Finance period POST failed: %s", type(exc).__name__)
+            self._send_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False, "error_code": "FINANCE_INTERNAL_ERROR",
+                "message": "操作未完成，请刷新页面核对结果后重试。"})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
 
     def _render_module(self, handler: BaseHTTPRequestHandler, slug: str, query: dict) -> None:
         counts = self.repository.count_by_status()

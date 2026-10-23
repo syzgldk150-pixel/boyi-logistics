@@ -1,17 +1,17 @@
 ---
 module: 财务工作台
 type: 模块文档
-tags: [融辉, 财务同步, 费用绑定, BI, Decimal]
+tags: [融辉, 财务同步, 费用绑定, BI, Decimal, 月度封账]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-10-14
+updated: 2026-10-23
 ---
 
 # 融辉财务工作台
 
 ## 模块边界
 
-本模块当前只从已完成真实页面验收的融辉财务页面同步逐笔交易、平台汇总和费用项目，并为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计和 BI 查询。
+本模块当前只从已完成真实页面验收的融辉财务页面同步逐笔交易、平台汇总和费用项目，并为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计、BI 查询和[月度清点与封账](#月度清点与封账)。
 
 本模块是项目唯一的财务架构。生产财务来源由 `shared/finance/sources.py` 的启用注册表统一控制；当前仅启用融辉三个业务账号。韵达适配器只作为待真实页面验收的预留实现，不进入定时、启动补拉、手工同步、重试目标、Console 平台选项或当前失败告警。不得新增 Excel/CSV 工作簿 ETL，也不得在运行失败时回退到历史导出文件、手工汇总或上一次成功值。
 
@@ -90,6 +90,7 @@ updated: 2026-10-14
 - `finance_fee_items`：平台原始费用项目及首次/最后出现月份。
 - `finance_fee_mappings`：带生效月份的费用绑定版本。
 - `finance_mapping_audit_logs`：绑定修改审计。
+- `finance_periods`、`finance_period_item_reviews`、`finance_period_closes`、`finance_period_close_lines`、`finance_period_events`：月度清点与封账（迁移 062），见下文。
 
 最终费用级别只有“运单级”和“运营级”。“待绑定”是审核状态，不是第三个费用级别。未绑定交易继续进入全部收入、全部支出和净额，但不进入运单级/运营级成本拆分。
 
@@ -155,6 +156,40 @@ updated: 2026-10-14
 
 运单事实独立于主运单表，按标准科目保留收入、支出和 `净额 = 收入 - 支出`。运营级费用不分摊到运单；未分类流水不进入正式分类 KPI。知识规则以数据库为权威，确认后在 `runtime/finance_knowledge/` 生成按版本命名且不含密钥、完整运单号或原始流水的 MD 镜像，并记录内容哈希和版本。
 
+## 月度清点与封账
+
+融辉的费用项目每月都会变动，所以每月逐项核对归类后再封账。当前只封“融辉账户收支 + 当月归类”，不建记账凭证；资金账户、总账和往来属于后续阶段。检查、快照与锁定规则只在 `shared/finance/periods.py` 实现，Console 只做身份校验和展示。
+
+### 费用项目来源
+
+- 新的原始项目名称由每日同步自动发现，写入 `finance_fee_items` 并进入待审；AI 只给建议，管理员确认后才生效。
+- 融辉尚未核实有独立的费用项目字典接口，因此清点表的项目目录就是当月已发布流水中实际出现的项目，页面明确写出这一口径。确认真实字典接口前不新增目录拉取。
+
+### 清点
+
+- Console 财务页“月度封账”页签按月列出每个费用项目：笔数、收入、支出、净额、上月净额、当前生效绑定和核对状态。
+- “确认本月归类”把（月份、费用项目、当时生效的绑定版本）写入 `finance_period_item_reviews`。请求必须带上页面看到的绑定 ID；绑定已改时返回 `MAPPING_CHANGED`。之后绑定再改，状态变为“待重新核对”。未绑定的项目不能确认。
+- 核对和确认知悉需要 `finance.manage`；查看需要 `finance.read`。
+
+### 封账前检查
+
+每项检查都由服务端计算并逐项给出原因，全部通过才能封账：
+
+1. 月份已结束。
+2. 数据覆盖：每个财务数据源在该月每一天都有最新已发布运行，校验为 `passed`，或 `warning` 只含 `NEW_FEE_ITEM` / `HISTORICAL_REVISION`。其他提示（如 `AMOUNT_EXTREME`）要重新同步该日。
+3. 回扫窗口：每天最新运行的开始时间不早于该日之后第 7 天，即例行回扫已经扫完；不满足时给出“最早可重新同步”的日期。
+4. 跨日余额：同一账号相邻两个有流水的日期，前一天末笔的后余额必须等于后一天首笔的前余额。排序与日内余额链一致（`transaction_at`, `source_reference`）。上月末日有已发布运行时，同样核对月初衔接。2026-10-23 生产只读核验：覆盖完整的相邻日期 100% 连续，所有断点都落在采集缺口上，因此作为硬条件。
+5. 本月出现的项目全部绑定标准科目，并按当前版本“本月已核对”。
+6. 没有未处理的待审，也没有未处理的缺运单号异常。缺运单号异常可以填写原因“确认知悉”；之后重扫时笔数和金额不变则保持确认，变化后重新打开。
+
+### 封账、快照与反结账
+
+- 封账只允许真实 MySQL 超级管理员操作。同一事务内先锁 `finance_periods` 行并重算检查，再按“账号 × 日期 × 费用项目 × 方向”写入 `finance_period_close_lines`（含生效绑定和来源运行）。写完核对三方一致：快照、逐笔流水聚合、BI 汇总，比较笔数、收入、支出和净额（Decimal），不一致整体回滚并返回 `SNAPSHOT_MISMATCH`。内容哈希不含版本号，所以数据未变时重新封账的哈希不变。
+- 封账后，该月报表读快照；任何会改变已封账月份生效绑定的保存都被拒绝（`PERIOD_CLOSED`），从之后月份起生效的新版本照常允许。
+- 采集不受影响：已封账日期被重新采集时，`finalize_batch` 逐账号逐日与快照比较，不一致记为 `CLOSED_PERIOD_DRIFT` 异常并经现有财务告警飞书提醒；数据恢复一致后自动关闭。
+- 反结账只允许超级管理员，并且必须填写原因。原版本保留，状态标为已反结账；该月报表回到实时数据。重新封账生成下一版本，并显示与上一版本的逐项差异。
+- 幂等：核对和确认知悉按 `finance_period_events (action, request_id)`；封账和反结账按封账版本上的请求 ID。同一请求重放返回原结果。
+
 ## 全局智能模型配置
 
 Console `/settings/llm` 统一管理通用 Agent 和财务大脑使用的模型。首期只接受 DeepSeek 与 GLM 的固定官方 API 地址，不接受自定义 Base URL。每个供应商独立保存候选密钥和模型，但全系统同一时间只有一个激活的“供应商 + 模型”版本。
@@ -181,6 +216,10 @@ API Key 使用环境变量 `AGENT_LLM_CONFIG_MASTER_KEY` 提供的 32 字节 Bas
 - `POST /finance/review-cases/{id}/reject`
 - `GET /finance/waybill-facts`
 - `GET /finance/knowledge`
+- `GET /finance/periods/{YYYY-MM}`
+- `POST /finance/periods/{YYYY-MM}/confirmations`
+- `POST /finance/periods/{YYYY-MM}/close`、`POST /finance/periods/{YYYY-MM}/reopen`（仅超级管理员）
+- `POST /finance/anomalies/{id}/acknowledge`
 - `GET /settings/llm/status`
 - `POST /settings/llm/candidates|models/refresh|test|activate|rollback|credentials/clear`
 
@@ -210,7 +249,7 @@ Console 的 GET 接口查询共享 MySQL 账本。财务数据源页的采集插
 
 ## 代码入口
 
-- 公共领域与仓储：`../shared/finance/`。
+- 公共领域与仓储：`../shared/finance/`；月度清点与封账：`../shared/finance/periods.py`。
 - Agent 经营汇总合同：`agent/business_query.py`；组合根注入：`main.py`；固定失败占位：`tools/business_finance_query_tool.py`。
 - 融辉生产响应适配：`agent/tms_runtime/scripts/ronghui_finance_adapter.py`；韵达预留适配器：`agent/tms_runtime/scripts/yunda_finance_adapter.py`（未启用）。
 - 真实页面发现与只读查询：`agent/tms_runtime/scripts/finance_live_capture.py`。
@@ -222,6 +261,8 @@ Console 的 GET 接口查询共享 MySQL 账本。财务数据源页的采集插
 ## 测试原则
 
 测试使用脱敏的最小真实响应结构，不写入真实账号或认证信息。必须覆盖 Decimal 精度、缺失金额、分页重叠、同键异内容、映射月份版本、S/F 方向、跨午夜日期、7 天重扫、重启不自动补拉、账号/网点不匹配、未启用来源拒绝、历史失败告警过滤、BI 与明细对账，以及财务页的响应式和无障碍状态。
+
+月度清点与封账的真实 SQL 回归为 `tests/test_finance_periods_mysql.py`：经生产批次接口写入合成流水，覆盖迁移 062 的视图投影、检查失败分支、核对与绑定失效、封账三方核对、幂等、封账后拒绝改绑、反结账再封账、漂移检测与确认知悉。需要 `RUN_MYSQL_INTEGRATION=1` 和回环隔离 MySQL；Console 路由与权限见 `console/tests/test_finance_periods.py`。
 
 定向测试：
 

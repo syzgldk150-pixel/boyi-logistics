@@ -17,6 +17,8 @@ def console_permission(method: str, path: str) -> str:
         return "ai.chat"
     if _under(path, "/automation-accounts"):
         return "accounts.manage"
+    if not read and path.startswith("/finance/periods/") and path.endswith(("/close", "/reopen")):
+        return SUPER_ADMIN
     if _under(path, "/finance") or _under(path, "/modules/finance") or path == "/module-data-sources/finance":
         return "finance.read" if read else "finance.manage"
     if _under(path, "/customer-service") or _under(path, "/modules/customer-service") or path == "/module-data-sources/customer_service":
