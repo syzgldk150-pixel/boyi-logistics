@@ -1109,13 +1109,12 @@ async def lifespan(app: FastAPI):
     core_catalog = runtime.registry
     account_manager = get_account_manager()
     cursor_secret = production_cursor_secret(os.environ)
-    from agent.automation_plugins.daily_sign_connectors_v2 import daily_sign_broker_action_keys
-    from agent.automation_plugins.route_status_connectors_v2 import route_status_broker_action_keys
+    from agent.automation_plugins.production_connectors import production_connector_broker_action_keys
     plugin_handlers = build_production_first_party_core_handler_map(
         account_manager=account_manager,
         cursor_secret=cursor_secret,
-        allowed_action_keys=(release_first_party_broker_action_keys(core_catalog) | daily_sign_broker_action_keys()
-                             | route_status_broker_action_keys()),
+        allowed_action_keys=(release_first_party_broker_action_keys(core_catalog)
+                             | production_connector_broker_action_keys()),
     )
     plugin_runtime = await asyncio.to_thread(
         build_production_automation_plugin_runtime,

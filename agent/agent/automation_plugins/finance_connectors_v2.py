@@ -23,6 +23,12 @@ FINANCE_OPERATIONS = {
 _REFERENCE_FIELDS = {"capture_ref", "source_context_ref", "run_ref"}
 
 
+def finance_platform_capture_broker_action_keys():
+    """Host primitives of the statement capture, outside any first-party tool."""
+    return frozenset(FINANCE_OPERATIONS[name][:2]
+                     for name in ("write_platform_capture", "publish_capture_day", "finalize_capture"))
+
+
 def _references(value, *, encode):
     if isinstance(value, Mapping):
         result = {}

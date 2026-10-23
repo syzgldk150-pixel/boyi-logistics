@@ -1983,3 +1983,24 @@ def test_production_yunda_resource_primitive_never_substitutes_a_binding(
     ]
     assert ambiguous_calls.count("write_records") == 1
     assert readback_sleeps == [0.5, 1.0, 2.0]
+
+
+def test_production_allow_list_keeps_every_connector_primitive() -> None:
+    """main.py filters the merged map before Connectors bind; none may be lost."""
+    from agent.automation_plugins.first_party import release_first_party_broker_action_keys
+    from agent.automation_plugins.production_connectors import (
+        build_production_connector_registry,
+        production_connector_broker_action_keys,
+    )
+    from agent.tool_registry import ToolRegistry
+
+    handlers = build_production_first_party_core_handler_map(
+        account_manager=_Manager(),
+        cursor_secret=_SECRET,
+        capability_authorizer=lambda _descriptor, _capability: None,
+        allowed_action_keys=(release_first_party_broker_action_keys(ToolRegistry())
+                             | production_connector_broker_action_keys()),
+    )
+    assert {("ledger.invoke", "finance.platform_capture.write"), ("ledger.invoke", "finance.platform_capture.publish_day"),
+            ("ledger.invoke", "finance.platform_capture.finalize")} <= set(handlers)
+    assert build_production_connector_registry(handlers)
