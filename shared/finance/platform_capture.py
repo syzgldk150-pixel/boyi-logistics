@@ -31,7 +31,9 @@ STATEMENT_FIELDS = ("item_name", "amount", "site_code", "site_name")
 PROFILE_FIELDS = ("rows_pointer", "total_pointer", "page_fields", "site_field", "settlement_period_field",
                   "billing_period_field", "waybill_number_shapes")
 MAX_PERIOD_DAYS = 31
-_SHAPE = re.compile(r"(?:[A-Z]{1,4}\+)?[1-9][0-9]?")
+# A declared waybill number pattern: ``R+11`` (letters then 11 digits), ``10``
+# (10 digits) or ``200*`` (digits starting with 200, any length).
+_WAYBILL_PATTERN = re.compile(r"(?:[A-Z]{1,4}\+)?[1-9][0-9]?|[0-9]{1,8}\*")
 _DATETIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S")
 
 
@@ -80,11 +82,26 @@ def number_shape(value: Any) -> str:
     return f"{prefix.upper()}+{len(digits)}" if prefix else str(len(digits))
 
 
+def waybill_pattern_match(value: Any, patterns: Sequence[str]) -> str | None:
+    """The first declared waybill pattern the number matches, if any."""
+
+    text = _text(value)
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            if re.fullmatch(r"[0-9]+", text) and text.startswith(pattern[:-1]):
+                return pattern
+        elif text and number_shape(text) == pattern:
+            return pattern
+    return None
+
+
 def shape_label(shape: str) -> str:
     if not shape:
         return "无单号"
     if shape == "other":
         return "其他格式"
+    if shape.endswith("*"):
+        return f"{shape[:-1]}开头"
     prefix, _, digits = shape.rpartition("+")
     return f"{prefix}+{digits}位数字" if prefix else f"{digits}位数字"
 
@@ -159,7 +176,7 @@ def validate_request_profile(value: Any) -> dict[str, Any]:
     # person classifying fee items; it never classifies anything by itself.
     shapes = value["waybill_number_shapes"]
     if (not isinstance(shapes, list) or not 1 <= len(shapes) <= 8 or len(set(shapes)) != len(shapes)
-            or any(not isinstance(item, str) or not _SHAPE.fullmatch(item) for item in shapes)):
+            or any(not isinstance(item, str) or not _WAYBILL_PATTERN.fullmatch(item) for item in shapes)):
         raise PlatformCaptureError("PROFILE_INVALID", "waybill number shapes are invalid")
     return {**{key: value[key] for key in PROFILE_FIELDS}, "page_fields": list(page_fields),
             "waybill_number_shapes": list(shapes)}

@@ -23,7 +23,7 @@ MAPPING = {
 }
 PROFILE = {"rows_pointer": "/data", "total_pointer": "/total", "page_fields": ["pageIndex", "pageSize"],
            "site_field": "SITE_NAME_CODE", "settlement_period_field": "BALANCE_DATE",
-           "billing_period_field": "FINANCE_DATE", "waybill_number_shapes": ["R+11", "10"]}
+           "billing_period_field": "FINANCE_DATE", "waybill_number_shapes": ["R+11", "200*", "10"]}
 SITE = "7000001"
 PERIOD = '{"start": "2026/03/01 00:00:00", "end": "2026/03/31 23:59:59"}'
 
@@ -104,6 +104,7 @@ def test_complete_capture_keeps_raw_rows_and_closes_statement_by_item():
     (lambda v: v["request_profile"].update(rows_pointer="data"), "PROFILE_INVALID"),
     (lambda v: v["request_profile"].update(waybill_number_shapes=["R+11", "R+11"]), "PROFILE_INVALID"),
     (lambda v: v["request_profile"].update(waybill_number_shapes=["^R.*$"]), "PROFILE_INVALID"),
+    (lambda v: v["request_profile"].update(waybill_number_shapes=["R*"]), "PROFILE_INVALID"),
 ])
 def test_incomplete_or_inconsistent_captures_are_rejected(mutate, code):
     rows = detail_rows()
@@ -139,6 +140,17 @@ def test_number_shape_describes_letters_and_digit_count(value, shape, label):
     from shared.finance.platform_capture import number_shape, shape_label
 
     assert number_shape(value) == shape and shape_label(shape) == label
+
+
+@pytest.mark.parametrize("value, matched", [
+    ("R00022248363", "R+11"), ("2003441974", "200*"), ("200123", "200*"), ("1234567890", "10"),
+    ("2026092512042046327", None), ("17907585489415345", None), ("S2026093000021924697", None), ("", None),
+])
+def test_declared_waybill_patterns_match_in_order(value, matched):
+    from shared.finance.platform_capture import shape_label, waybill_pattern_match
+
+    assert waybill_pattern_match(value, ["R+11", "200*", "10"]) == matched
+    assert shape_label("200*") == "200开头"
 
 
 def test_period_is_one_to_thirty_one_days():

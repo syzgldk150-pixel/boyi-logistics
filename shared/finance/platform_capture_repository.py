@@ -11,7 +11,13 @@ from typing import Any, Mapping
 from shared.finance.evolution import _all, _enabled_platform_clause, _now, _one
 from shared.finance.models import TRANSACTION_SOURCE_PAYLOAD_ALLOWLIST
 from shared.finance.money import format_money
-from shared.finance.platform_capture import PlatformCapture, canonical_json, number_shape, shape_label
+from shared.finance.platform_capture import (
+    PlatformCapture,
+    canonical_json,
+    number_shape,
+    shape_label,
+    waybill_pattern_match,
+)
 from shared.finance.publication import LATEST_PUBLISHED_RUNS
 
 
@@ -258,7 +264,7 @@ class FinancePlatformCaptureMixin:
         details = _all(cursor)
         by_id = {int(row["id"]): row for row in captures}
         waybill_shapes = {
-            capture_id: set(_json(row["request_profile_json"]).get("waybill_number_shapes") or [])
+            capture_id: list(_json(row["request_profile_json"]).get("waybill_number_shapes") or [])
             for capture_id, row in by_id.items()
         }
         items: dict[str, dict[str, Any]] = {}
@@ -288,8 +294,9 @@ class FinancePlatformCaptureMixin:
             if Decimal(str(row["amount"])) == 0:
                 entry["zero_rows"] += 1
                 zero_rows[capture_id] = zero_rows.get(capture_id, 0) + 1
-            shape = number_shape(row["waybill_no"])
-            is_waybill = shape in waybill_shapes[capture_id]
+            matched = waybill_pattern_match(row["waybill_no"], waybill_shapes[capture_id])
+            shape = matched or number_shape(row["waybill_no"])
+            is_waybill = matched is not None
             counted = entry["shapes"].setdefault(shape, {"rows": 0, "waybill": is_waybill})
             counted["rows"] += 1
             counted["waybill"] = counted["waybill"] or is_waybill
@@ -311,7 +318,7 @@ class FinancePlatformCaptureMixin:
                                 if row["billing_statement_net"] is not None else None),
                 "detail_row_count": int(row["detail_row_count"]),
                 "zero_row_count": zero_rows.get(capture_id, 0),
-                "waybill_number_shapes": [shape_label(shape) for shape in sorted(waybill_shapes[capture_id])],
+                "waybill_number_shapes": [shape_label(shape) for shape in waybill_shapes[capture_id]],
             })
         result = []
         for name, entry in sorted(items.items(), key=lambda pair: (pair[1]["settlement"], pair[0])):
@@ -454,7 +461,7 @@ class FinancePlatformCaptureMixin:
                 statement = _one(cursor) or {}
             finally:
                 cursor.close()
-        shapes = set(_json(capture["request_profile_json"]).get("waybill_number_shapes") or [])
+        shapes = list(_json(capture["request_profile_json"]).get("waybill_number_shapes") or [])
         detail_amount = Decimal(str(totals.get("amount") or 0))
         statement_amount = Decimal(str(statement.get("amount") or 0))
         has_statement = basis == "settlement" or capture["billing_statement_net"] is not None
@@ -470,8 +477,10 @@ class FinancePlatformCaptureMixin:
             "rows": [
                 {
                     "settled_at": _date_text(row["settled_at"]), "billed_at": _date_text(row["billed_at"]),
-                    "waybill_no": row["waybill_no"], "number_shape": shape_label(number_shape(row["waybill_no"])),
-                    "is_waybill_number": number_shape(row["waybill_no"]) in shapes,
+                    "waybill_no": row["waybill_no"],
+                    "number_shape": shape_label(waybill_pattern_match(row["waybill_no"], shapes)
+                                                or number_shape(row["waybill_no"])),
+                    "is_waybill_number": waybill_pattern_match(row["waybill_no"], shapes) is not None,
                     "order_no": row["order_no"], "amount": format_money(row["amount"]),
                     "before_balance": (format_money(row["before_balance"])
                                        if row["before_balance"] is not None else None),

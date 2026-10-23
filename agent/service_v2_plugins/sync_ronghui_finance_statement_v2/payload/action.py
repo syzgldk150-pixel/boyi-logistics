@@ -45,9 +45,9 @@ REQUEST_PROFILE = {
     "rows_pointer": "/data", "total_pointer": "/total", "page_fields": ["pageIndex", "pageSize"],
     "site_field": "SITE_NAME_CODE", "settlement_period_field": "BALANCE_DATE",
     "billing_period_field": "FINANCE_DATE",
-    # 2026-10 实测：R+11 位与 10 位数字是运单号；S 开头的系统单号、17 位充值单号、
-    # 19 位采购单号属于其他单据。只作为分类提示，归类仍由人工确认。
-    "waybill_number_shapes": ["R+11", "10"],
+    # 2026-10 实测并经用户确认：R+11 位、200 开头与 10 位数字是运单号；S 开头的系统
+    # 单号、17 位充值单号、19 位采购单号属于其他单据。只作为分类提示，归类仍由人工确认。
+    "waybill_number_shapes": ["R+11", "200*", "10"],
 }
 ERROR_MESSAGES = {
     "MONTH_INVALID": "月份格式应为 YYYY-MM。",
