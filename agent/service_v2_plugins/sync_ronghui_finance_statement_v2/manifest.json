@@ -1,0 +1,258 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "sync_ronghui_finance_statement_v2",
+  "name": "融辉财务统计抓取",
+  "version": "1.0.0",
+  "description": "按月抓取三个融辉财务账号的统计查询（结算日期、账单日期两种口径）和全部明细，宿主核对是本次真实返回后原样保存，再按结算日写入财务账本。只抓取数据，分类、确认和归档在财务模块完成。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "account_roles": [
+    {
+      "role": "finance_quote_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    },
+    {
+      "role": "finance_daxiang_s_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    },
+    {
+      "role": "finance_self_pickup_source",
+      "allowed_systems": [
+        "ronghui"
+      ],
+      "required": true
+    }
+  ],
+  "resource_roles": [],
+  "http_requests": [
+    {
+      "name": "statement_quote",
+      "account_role": "finance_quote_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findPageByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BALANCE_QRY_TJ_WST"
+      }
+    },
+    {
+      "name": "detail_quote",
+      "account_role": "finance_quote_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findPageByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BALANCE_QRY_TJ_DETAIL"
+      }
+    },
+    {
+      "name": "statement_daxiang_s",
+      "account_role": "finance_daxiang_s_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findPageByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BALANCE_QRY_TJ_WST"
+      }
+    },
+    {
+      "name": "detail_daxiang_s",
+      "account_role": "finance_daxiang_s_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findPageByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BALANCE_QRY_TJ_DETAIL"
+      }
+    },
+    {
+      "name": "statement_self_pickup",
+      "account_role": "finance_self_pickup_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findPageByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BALANCE_QRY_TJ_WST"
+      }
+    },
+    {
+      "name": "detail_self_pickup",
+      "account_role": "finance_self_pickup_source",
+      "action": "read_json",
+      "method": "POST",
+      "path": "/dataQuery/findPageByCallId",
+      "encoding": "form",
+      "referer": "/widget/home",
+      "query": {
+        "id": "FIND_BALANCE_QRY_TJ_DETAIL"
+      }
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json"
+      ],
+      "account_role": "finance_quote_source",
+      "resource_role": null
+    },
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json"
+      ],
+      "account_role": "finance_daxiang_s_source",
+      "resource_role": null
+    },
+    {
+      "name": "http.request",
+      "operations": [
+        "read_json"
+      ],
+      "account_role": "finance_self_pickup_source",
+      "resource_role": null
+    },
+    {
+      "name": "account.context",
+      "operations": [
+        "read"
+      ],
+      "account_role": "finance_quote_source",
+      "resource_role": null
+    },
+    {
+      "name": "account.context",
+      "operations": [
+        "read"
+      ],
+      "account_role": "finance_daxiang_s_source",
+      "resource_role": null
+    },
+    {
+      "name": "account.context",
+      "operations": [
+        "read"
+      ],
+      "account_role": "finance_self_pickup_source",
+      "resource_role": null
+    },
+    {
+      "name": "service.invoke",
+      "operations": [
+        "finalize_capture",
+        "publish_capture_day",
+        "write_platform_capture"
+      ],
+      "action_call_limits": {
+        "finalize_capture": 3,
+        "publish_capture_day": 93,
+        "write_platform_capture": 3
+      },
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.finance_quote_source@1",
+      "binding_kind": "account",
+      "account_role": "finance_quote_source"
+    },
+    {
+      "service": "connector.boyi.finance_daxiang_s_source@1",
+      "binding_kind": "account",
+      "account_role": "finance_daxiang_s_source"
+    },
+    {
+      "service": "connector.boyi.finance_self_pickup_source@1",
+      "binding_kind": "account",
+      "account_role": "finance_self_pickup_source"
+    }
+  ],
+  "provides": [
+    {
+      "service": "plugin.sync_ronghui_finance_statement_v2.capture@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "internal_write"
+        }
+      ]
+    }
+  ],
+  "contributes": {
+    "console": [
+      {
+        "id": "monthly_capture",
+        "title": "拉取融辉财务月度原始数据",
+        "service": "plugin.sync_ronghui_finance_statement_v2.capture@1",
+        "operation": "run",
+        "default_enabled": true,
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "month": {
+              "type": "string",
+              "minLength": 7,
+              "maxLength": 7,
+              "description": "要拉取的月份，格式 YYYY-MM，必须是已经结束的月份"
+            }
+          },
+          "required": [
+            "month"
+          ]
+        }
+      }
+    ],
+    "scheduler": [],
+    "webhook": [],
+    "feishu": [],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {},
+    "required": []
+  },
+  "storage": {
+    "collections": [],
+    "kv": false
+  },
+  "management": {
+    "purpose": "collector",
+    "module": "finance",
+    "dataset": "finance.transactions",
+    "version": "1"
+  }
+}

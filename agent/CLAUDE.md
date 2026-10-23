@@ -155,7 +155,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 三平台报价 | `service_v2_plugins/quote_prices_v2/` | `docs/three_platform_quote.md` | 独立 V2 包承载三平台真实报价；飞书与 Console 复用同一实例，线上状态以已安装版本与当前代次为准 |
 | 旧离线价格工程 | `legacy/price_quote/`、`price_scripts/` | `legacy/AGENTS.md`、`price_scripts/AGENTS.md` | 原系统报价工具及运行脚本已隔离为离线参考，不发布、不作为新插件回退 |
-| 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、月度清点与封账（`../shared/finance/periods.py`，迁移 062）、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
+| 财务工作台 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`agent/core.py`、`agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`、`tools/sync_finance_bills_tool.py`、`../console/finance_service.py` | `docs/finance_module.md` | 融辉逐笔账本、费用绑定、BI、月度清点与封账（`../shared/finance/periods.py`，迁移 062）、统计查询月度抓取与核对（`service_v2_plugins/sync_ronghui_finance_statement_v2/`、`../shared/finance/platform_capture*.py`，迁移 063）、00:10 同步与失败审计，以及不向 LLM 暴露、只允许飞书管理员绑定使用的确定性自然语言只读经营汇总；韵达财务未启用，并与旧 Excel ETL 隔离 |
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直接插件/reader / 预览确认 / 账号登录） |

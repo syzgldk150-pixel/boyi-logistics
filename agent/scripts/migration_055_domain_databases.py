@@ -36,6 +36,8 @@ LATER_WAYBILL_TABLES = ("boyi_waybill_edit_logs",)
 LATER_FINANCE_TABLES = (
     "finance_periods", "finance_period_item_reviews", "finance_period_closes",
     "finance_period_close_lines", "finance_period_events",
+    "finance_platform_captures", "finance_platform_statement_rows",
+    "finance_platform_detail_rows", "finance_platform_capture_days",
 )
 
 

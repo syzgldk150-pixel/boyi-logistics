@@ -30,6 +30,7 @@ from agent.automation_plugins.connector_registry import (
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.host_capability_registry import (
     HOST_CAPABILITY_API_VERSION,
+    MULTI_ACCOUNT_CAPABILITIES,
     HostCapabilityDescriptor,
     default_host_capability_registry,
 )
@@ -131,6 +132,11 @@ class CoreBrokerInvocationContext:
     generation: int = 0
     write_attempt_identity: Mapping[str, object] = field(default_factory=dict, repr=False)
     on_completion: Callable[[Callable[[], None]], None] | None = field(default=None, repr=False, compare=False)
+    # Completed Host calls of the same invocation (results as returned to the
+    # plugin); absent outside a Broker grant.
+    host_call_observations: Callable[[], tuple[Mapping[str, Any], ...]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 CoreBrokerHandler = Callable[
@@ -292,7 +298,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         if descriptor.requires_account_role:
             roles_valid = (
                 bool(signed_roles)
-                and (operation == "http.request" or len(signed_roles) == 1)
+                and (operation in MULTI_ACCOUNT_CAPABILITIES or len(signed_roles) == 1)
                 and account_declarations == signed_roles
                 and not resource_declarations
             )
@@ -695,6 +701,7 @@ class RegisteredCoreAutomationBrokerAdapter:
         context = CoreBrokerInvocationContext(
             automation_id=grant.automation_id,
             on_completion=grant.on_completion,
+            host_call_observations=getattr(grant, "host_call_observations", None),
             plugin_version=grant.plugin_version,
             tool_name=grant.tool_name,
             operation=operation,

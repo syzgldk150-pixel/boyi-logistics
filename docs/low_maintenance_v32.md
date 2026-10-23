@@ -2,7 +2,7 @@
 module: 项目维护
 type: 维护边界
 status: active
-updated: 2026-10-13
+updated: 2026-10-23
 ---
 
 # V3.2 第一轮维护边界
@@ -25,7 +25,7 @@ updated: 2026-10-13
 | 到货统计 | `agent/service_v2_plugins/sync_arrival_stats_v2/payload/` | 对应统计插件；继续核对扫描发布快照依赖 | 快照共享契约、金额/计数公共口径、整表写保护 |
 | 分批问题件 | 唯一业务源码 `agent/service_v2_plugins/split_pending_problem_upload_v2/payload/action.py`；v2 包由 `agent/service_v2_plugins/split_pending_problem_upload_v2/` 和共享打包器引用 | 当前实际安装的分批插件；局部候选筛选和判断连同测试，不另写 v2 算法副本 | 预览确认契约、共享问题件身份、Host 能力 |
 | 自提问题件 | 唯一业务源码 `agent/service_v2_plugins/self_pickup_problem_upload_v2/payload/action.py`；v2 包由 `agent/service_v2_plugins/self_pickup_problem_upload_v2/` 和共享打包器引用 | 当前实际安装的自提插件；局部业务判断连同测试，不另写 v2 算法副本 | 共享审批、结果核验或账号会话协议 |
-| 财务采集 | `agent/service_v2_plugins/sync_finance_bills_v2/payload/`；领域账本为 `shared/finance/` | 相容的字段适配/采集编排属于财务采集插件，公共账本保持核心 | 数据集、金额规则、成功发布条件、数据库迁移 |
+| 财务采集 | `agent/service_v2_plugins/sync_finance_bills_v2/payload/`、`agent/service_v2_plugins/sync_ronghui_finance_statement_v2/payload/`；领域账本为 `shared/finance/` | 相容的字段适配/采集编排属于财务采集插件，公共账本保持核心 | 数据集、金额规则、成功发布条件、数据库迁移 |
 | 客服采集 | `agent/service_v2_plugins/sync_customer_service_problems_v2/payload/action.py` | 包内筛选与采集编排独立更新 | `shared/ronghui_customer_problem_fields.py` 公共字段协议、来源业务键、人工字段权属、数据库 |
 | 账号 | 既有 Agent 账号库、SessionBroker 与默认账号设置桥 | 维护已有账号引用；多个插件复用 | 凭据存储、会话互斥和 Host 授权协议 |
 | 来源与历史 | `shared/data_sources.py`、`shared/customer_service_repository.py`、`shared/finance/publication.py` | 显式接续兼容生产者；暂停/卸载保留来源与业务历史 | 新数据集、来源等价关系、共享表结构 |
@@ -35,7 +35,7 @@ updated: 2026-10-13
 
 ## 产品入口与契约
 
-功能插件仍在 `/automations`。财务采集在 `/modules/finance/data-sources`，客服采集在 `/modules/customer-service/data-sources`，两者复用原安装、配置、启停、计划、执行和升级服务。业务来源查询直接读本地数据库，采集器停用或卸载不删除固定财务/客服页面。
+功能插件仍在 `/automations`。财务采集在 `/modules/finance/data-sources`，客服采集在 `/modules/customer-service/data-sources`，两者复用原安装、配置、启停、计划、执行和升级服务。三页顶部共用“功能插件 / 财务 / 客服”分类标签互相跳转（按当前身份可见模块显示），财务插件因此可从自动化页点“财务”进入，列表成员不变。业务来源查询直接读本地数据库，采集器停用或卸载不删除固定财务/客服页面。
 
 Manifest 可选 `management`，字段精确为 `purpose/module/dataset/version`。功能为 `action/automation/空/空`；财务为 `collector/finance/finance.transactions/1`；客服为 `collector/customer_service/customer_service.problems/1`。旧已签名清单不改字节；仅对已确认的两个旧采集 plugin_id 作固定归属映射。新包归属在上传检查及安装前验证；升级不能静默改变模块或数据契约。
 

@@ -68,6 +68,9 @@ class CaptureEvidence:
     known_fee_items: Iterable[FeeItemKey] = field(default_factory=tuple)
     previous_record_payloads: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
     extreme_abs_threshold: Decimal | str | None = None
+    # Required by PERIOD_STATEMENT: the verified platform capture this day
+    # was cut from.
+    period_statement_ref: str | None = None
 
 
 def _aggregate_transactions(
@@ -228,11 +231,27 @@ def validate_finance_capture(evidence: CaptureEvidence) -> ValidationReport:
     signed_net_summary_required = any(value != ZERO for value in detail_net_by_fee.values())
     summary_required = (
         remote_total > 0
+        and summary_semantics is not SummarySemantics.PERIOD_STATEMENT
         and (
             summary_semantics is not SummarySemantics.SIGNED_NET_BY_FEE
             or signed_net_summary_required
         )
     )
+    if summary_semantics is SummarySemantics.PERIOD_STATEMENT:
+        if not str(evidence.period_statement_ref or "").strip():
+            errors.append(
+                ValidationIssue(
+                    "PERIOD_STATEMENT_MISSING",
+                    "a period-statement day requires its verified platform capture",
+                )
+            )
+        if summaries:
+            errors.append(
+                ValidationIssue(
+                    "PERIOD_STATEMENT_DAY_SUMMARY",
+                    "a period-statement day carries no separate daily summary",
+                )
+            )
     if summary_required and not summaries:
         errors.append(
             ValidationIssue(
@@ -442,6 +461,11 @@ def validate_finance_capture(evidence: CaptureEvidence) -> ValidationReport:
                 else str(evidence.summary_semantics)
             ),
             "fee_summary_mismatch_count": fee_mismatches,
+            "period_statement_ref": (
+                str(evidence.period_statement_ref)
+                if summary_semantics is SummarySemantics.PERIOD_STATEMENT
+                else None
+            ),
             "new_fee_item_count": len(new_fee_items),
             "historical_revision_count": historical_revisions,
             "minimum_net_amount": minimum_amount,

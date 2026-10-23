@@ -7,7 +7,7 @@
 {% block main_class %}finance-main{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="/static/finance.css?v=20261023-period-close">
+<link rel="stylesheet" href="/static/finance.css?v=20261023-platform-capture">
 {% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
@@ -305,7 +305,7 @@
     <section class="finance-panel finance-mapping-intro">
       <div>
         <h2>月度清点与封账</h2>
-        <p>逐项核对当月出现的融辉费用项目归类，检查全部通过后由超级管理员封账；封账后该月报表读取快照，反结账须写明原因。这里汇总的是融辉账户收支，不是利润。</p>
+        <p>先在“自动化 → 财务”拉取该月的统计查询和全部明细，再对照原始数据逐项核对费用项目归类，检查全部通过后由超级管理员封账；封账后该月报表读取快照，反结账须写明原因。这里汇总的是融辉账户收支，不是利润。</p>
       </div>
       <span class="finance-pill" data-finance-period-badge>未查询</span>
     </section>
@@ -315,6 +315,30 @@
     </form>
     <div class="finance-table-state" data-finance-period-state aria-live="polite"></div>
     <div class="finance-period-body" data-finance-period-body hidden>
+      <section class="finance-panel finance-table-panel" aria-labelledby="finance-platform-title">
+        <div class="finance-panel-head">
+          <div>
+            <h2 id="finance-platform-title">平台原始数据</h2>
+            <p data-finance-platform-summary></p>
+          </div>
+          <div class="finance-row-actions">
+            <div class="finance-segmented" role="radiogroup" aria-label="日期口径">
+              <label><input type="radio" name="finance-platform-basis" value="settlement" checked data-finance-platform-basis><span>结算日期</span></label>
+              <label><input type="radio" name="finance-platform-basis" value="billing" data-finance-platform-basis><span>账单日期</span></label>
+            </div>
+            <a class="ghost-btn" href="/modules/finance/data-sources"><i data-feather="download-cloud" aria-hidden="true"></i><span>去拉取</span></a>
+          </div>
+        </div>
+        <ul class="finance-platform-sources" data-finance-platform-sources></ul>
+        <div class="finance-table-wrap">
+          <table class="finance-table finance-platform-table">
+            <caption class="visually-hidden">统计查询各费用项目与明细单号</caption>
+            <thead><tr><th scope="col">费用项目</th><th scope="col" data-finance-platform-amount-head>结算日期口径金额</th><th scope="col">各网点（点击看明细）</th><th scope="col">明细行数</th><th scope="col">单号格式</th><th scope="col">归类提示</th></tr></thead>
+            <tbody data-finance-platform-items></tbody>
+          </table>
+        </div>
+        <p class="finance-period-note">单号格式只是分类参考：写有运单号的一般是运单级，只有流水号或其他单号的一般是运营级；每个项目都需要在下方人工确认。零金额明细保留在原始数据中，不进入账本。</p>
+      </section>
       <section class="finance-panel" aria-labelledby="finance-period-check-title">
         <div class="finance-panel-head">
           <div><h2 id="finance-period-check-title">封账检查</h2><p data-finance-period-check-summary></p></div>
@@ -334,7 +358,7 @@
         <div class="finance-table-wrap">
           <table class="finance-table finance-period-table">
             <caption class="visually-hidden">本月费用项目清点</caption>
-            <thead><tr><th scope="col"><input type="checkbox" aria-label="全选可确认的项目" data-finance-period-select-all></th><th scope="col">项目</th><th scope="col">方向</th><th scope="col">本月笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th><th scope="col">上月净额</th><th scope="col">当前绑定</th><th scope="col">核对状态</th><th scope="col">操作</th></tr></thead>
+            <thead><tr><th scope="col"><input type="checkbox" aria-label="全选可确认的项目" data-finance-period-select-all></th><th scope="col">项目</th><th scope="col">方向</th><th scope="col">本月笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th><th scope="col">上月净额</th><th scope="col">当前绑定</th><th scope="col">平台提示</th><th scope="col">核对状态</th><th scope="col">操作</th></tr></thead>
             <tbody data-finance-period-item-body></tbody>
           </table>
         </div>
@@ -361,6 +385,28 @@
         <div class="finance-table-wrap"><table class="finance-table finance-table--compact finance-period-history-table"><caption class="visually-hidden">该月封账与反结账记录</caption><thead><tr><th scope="col">版本</th><th scope="col">状态</th><th scope="col">封账</th><th scope="col">笔数</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">净额</th><th scope="col">反结账</th></tr></thead><tbody data-finance-period-history></tbody></table></div>
       </section>
     </div>
+    <dialog class="finance-dialog finance-dialog--wide native-modal" aria-labelledby="finance-platform-dialog-title" data-finance-platform-dialog>
+      <form method="dialog" class="finance-dialog-card">
+        <div class="finance-dialog-head">
+          <div><h2 id="finance-platform-dialog-title" data-finance-platform-dialog-title></h2><p data-finance-platform-dialog-summary></p></div>
+          <button class="icon-btn" type="submit" value="cancel" aria-label="关闭"><i data-feather="x" aria-hidden="true"></i></button>
+        </div>
+        <div class="finance-table-state" data-finance-platform-dialog-state aria-live="polite"></div>
+        <div class="finance-table-wrap">
+          <table class="finance-table finance-table--compact finance-platform-detail-table">
+            <caption class="visually-hidden">平台返回的原始明细</caption>
+            <thead><tr><th scope="col">结算时间</th><th scope="col">账单日期</th><th scope="col">单号</th><th scope="col">流水号</th><th scope="col">金额</th><th scope="col">前余额</th><th scope="col">后余额</th><th scope="col">客户</th><th scope="col">物品</th><th scope="col">来源 / 备注</th><th scope="col">原始数据</th></tr></thead>
+            <tbody data-finance-platform-dialog-body></tbody>
+          </table>
+        </div>
+        <div class="finance-dialog-actions">
+          <span class="finance-pager-text" data-finance-platform-page></span>
+          <button class="ghost-btn" type="button" data-finance-platform-prev>上一页</button>
+          <button class="ghost-btn" type="button" data-finance-platform-next>下一页</button>
+          <button class="primary-btn" type="submit" value="cancel">关闭</button>
+        </div>
+      </form>
+    </dialog>
     <dialog class="finance-dialog native-modal" aria-labelledby="finance-period-dialog-title" data-finance-period-dialog>
       <form method="dialog" class="finance-dialog-card" data-finance-period-dialog-form>
         <div class="finance-dialog-head">
@@ -428,6 +474,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/finance.js?v=20261023-period-close"></script>
+<script src="/static/finance.js?v=20261023-platform-capture"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from agent.automation_plugins.errors import PluginConflictError, PluginExecutionError
 from agent.automation_plugins.host_capability_registry import (
     HOST_CAPABILITY_API_VERSION,
+    MULTI_ACCOUNT_CAPABILITIES,
     CapabilityEffect,
     default_host_capability_registry,
     governance_for_effect,
@@ -58,7 +59,7 @@ def project_read_runtime_permissions(value: object) -> dict[str, Any]:
         if (not isinstance(name, str) or not name or not isinstance(action, str) or not action
                 or not isinstance(roles, list) or not roles
                 or any(not isinstance(role, str) or not role for role in roles)
-                or len(set(roles)) != len(roles) or (len(roles) != 1 and name != "http.request")
+                or len(set(roles)) != len(roles) or (len(roles) != 1 and name not in MULTI_ACCOUNT_CAPABILITIES)
                 or (name, action) in seen):
             unavailable()
         seen.add((name, action))

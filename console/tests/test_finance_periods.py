@@ -7,7 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from console.app import LocalDocFlowApp
-from console.finance_service import FinancePeriodRequestError, FinanceService
+from console.finance_service import (
+    FinanceNotFoundError,
+    FinancePeriodRequestError,
+    FinanceService,
+    FinanceValidationError,
+)
 from console.routes import finance as finance_routes
 from shared.finance import FinancePeriodError
 from shared.identity_permissions import SUPER_ADMIN
@@ -89,6 +94,9 @@ class FinancePeriodConsoleTests(unittest.TestCase):
             self.assertTrue(finance_routes.handle_post(recorder, None, path, "", {}))
             self.assertEqual(("_handle_finance_period_post", (None, action, target)), recorder.calls[-1])
         self.assertEqual(("_handle_finance_period_get", (None, "2026-09")), recorder.calls[0])
+        query = {"capture": [REQUEST_UUID]}
+        self.assertTrue(finance_routes.handle_get(recorder, None, "/finance/periods/2026-09/platform-details", "", query))
+        self.assertEqual(("_handle_finance_period_details_get", (None, "2026-09", query)), recorder.calls[-1])
         self.assertFalse(finance_routes.handle_get(recorder, None, "/finance/periods/2026-9", "", {}))
         self.assertFalse(finance_routes.handle_post(recorder, None, "/finance/periods/2026-09/delete", "", {}))
 
@@ -98,6 +106,7 @@ class FinancePeriodConsoleTests(unittest.TestCase):
         self.assertEqual("finance.manage", console_permission("POST", "/finance/periods/2026-09/confirmations"))
         self.assertEqual("finance.manage", console_permission("POST", "/finance/anomalies/3/acknowledge"))
         self.assertEqual("finance.read", console_permission("GET", "/finance/periods/2026-09"))
+        self.assertEqual("finance.read", console_permission("GET", "/finance/periods/2026-09/platform-details"))
 
     def test_view_reports_whether_the_viewer_may_close(self):
         self.app._handle_finance_period_get(_Handler(role="admin"), "2026-09")
@@ -158,6 +167,33 @@ class FinancePeriodConsoleTests(unittest.TestCase):
             service.reopen_period("2026-09", {"request_id": REQUEST_UUID, "reason": "补录"}, actor="finance-admin")
         self.assertEqual(409, conflict.exception.http_status)
 
+    def test_platform_details_validate_the_query_before_reading(self):
+        calls = []
+
+        class Repository:
+            def get_summary(self, *_args, **_kwargs):
+                return {}
+
+            def platform_month_details(self, month, **kwargs):
+                calls.append((month, kwargs))
+                if kwargs["item_name"] == "不存在":
+                    raise LookupError("capture does not belong to this month")
+                return {"month": month, "rows": []}
+
+        service = FinanceService(Repository())
+        query = {"capture": [REQUEST_UUID], "item": ["派送费"], "basis": ["billing"], "offset": ["50"]}
+        self.assertEqual({"month": "2026-09", "rows": []}, service.get_period_platform_details("2026-09", query))
+        self.assertEqual(("2026-09", {"capture_key": REQUEST_UUID, "item_name": "派送费", "basis": "billing",
+                                      "offset": 50, "limit": 50}), calls[-1])
+        for bad in ({**query, "capture": ["not-a-uuid"]}, {**query, "capture": [REQUEST_UUID.upper()]},
+                    {**query, "item": [""]}, {**query, "basis": ["other"]}, {**query, "offset": ["-1"]},
+                    {**query, "item": ["a", "b"]}):
+            with self.assertRaises(FinanceValidationError):
+                service.get_period_platform_details("2026-09", bad)
+        self.assertEqual(1, len(calls))
+        with self.assertRaises(FinanceNotFoundError):
+            service.get_period_platform_details("2026-09", {**query, "item": ["不存在"]})
+
     def test_page_has_the_period_tab_dialog_and_uuid_requests(self):
         template = (CONSOLE_DIR / "templates" / "finance.html").read_text(encoding="utf-8")
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
@@ -167,6 +203,9 @@ class FinancePeriodConsoleTests(unittest.TestCase):
         self.assertIn('periods: "/finance/periods"', script)
         self.assertIn('"X-Browser-Request-UUID": requestId', script)
         self.assertIn("showModal()", script)
+        self.assertIn("data-finance-platform-dialog", template)
+        self.assertIn("data-finance-platform-basis", template)
+        self.assertIn("/platform-details?", script)
 
 
 if __name__ == "__main__":

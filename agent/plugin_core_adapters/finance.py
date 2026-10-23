@@ -1667,14 +1667,16 @@ def build_production_finance_handler_map(
     capture_port: CapturePort | None = None,
     capability_authorizer: CapabilityAuthorizer | None = None,
 ) -> dict[tuple[str, str], CoreBrokerHandler]:
-    handlers = _FinanceBrokerHandlers(
+    from plugin_core_adapters.finance_platform_capture import _FinancePlatformCaptureHandlers
+
+    handlers = _FinancePlatformCaptureHandlers(
         account_manager=account_manager or get_account_manager(),
         repository_factory=repository_factory or _default_repository_factory,
         capture_port=capture_port or _default_capture_port,
         cursor_secret=cursor_secret,
         capability_authorizer=capability_authorizer or authorize_target_capability,
     )
-    return handlers.handler_map()
+    return {**handlers.handler_map(), **handlers.platform_capture_handler_map()}
 
 
 __all__ = ["MARKED_WRITE_ACTION_KEYS", "build_production_finance_handler_map"]

@@ -1311,6 +1311,7 @@
       const [statusText, tone] = periodStatusText(data);
       const badge = $("[data-finance-period-badge]");
       if (badge) { badge.textContent = `${data.month} · ${statusText}`; badge.dataset.tone = tone; }
+      renderPlatform(data);
       renderPeriodChecks(data);
       renderPeriodActions(data);
       renderPeriodItems(data);
@@ -1318,6 +1319,168 @@
       renderPeriodComparison(data);
       renderPeriodDrift(data);
       renderPeriodHistory(data);
+    }
+
+    const platformDialog = $("[data-finance-platform-dialog]");
+
+    function basisLabel(basis) {
+      return basis === "billing" ? "账单日期口径" : "结算日期口径";
+    }
+
+    function suggestionPill(suggestion) {
+      if (!suggestion) return "—";
+      const tone = { waybill: "info", operating: "", mixed: "warning" }[suggestion.level] || "";
+      return `<span class="finance-pill" data-tone="${tone}">${escapeHtml(suggestion.label)}</span><small>${escapeHtml(suggestion.reason)}</small>`;
+    }
+
+    function renderPlatform(data) {
+      const platform = data.platform || { sources: [], items: [] };
+      const basis = state.platformBasis || "settlement";
+      const billing = basis === "billing";
+      const sources = platform.sources || [];
+      const summary = $("[data-finance-platform-summary]");
+      const sourcesNode = $("[data-finance-platform-sources]");
+      const body = $("[data-finance-platform-items]");
+      const head = $("[data-finance-platform-amount-head]");
+      if (head) head.textContent = `${basisLabel(basis)}金额`;
+      if (summary) {
+        summary.textContent = sources.length
+          ? `${sources.length} 个网点已拉取统计查询和全部明细，原样保存；结算日期口径净额 ${platform.settlement_net}，账单日期口径净额 ${platform.billing_net}。`
+          : "本月还没有拉取平台原始数据。请在“自动化 → 财务”运行“拉取融辉财务月度原始数据”。";
+      }
+      if (sourcesNode) {
+        sourcesNode.innerHTML = sources.map((source) => `<li>
+          <strong>${escapeHtml(source.site_name)}</strong><small>${escapeHtml(source.source)} · 网点编码 ${escapeHtml(source.site_code)}</small>
+          <dl>
+            <dt>拉取时间</dt><dd>${escapeHtml(displayText(source.captured_at))}</dd>
+            <dt>结算日期口径</dt><dd>${escapeHtml(source.statement_item_count)} 项 · 净额 ${escapeHtml(source.settlement_net)}</dd>
+            <dt>账单日期口径</dt><dd>${source.billing_net === null ? "未拉取" : `${escapeHtml(source.billing_statement_item_count)} 项 · 净额 ${escapeHtml(source.billing_net)}`}</dd>
+            <dt>明细</dt><dd>${escapeHtml(source.detail_row_count)} 行，其中零金额 ${escapeHtml(source.zero_row_count)} 行</dd>
+            <dt>运单号格式</dt><dd>${escapeHtml((source.waybill_number_shapes || []).join("、") || "未声明")}</dd>
+            <dt>抓取插件</dt><dd>${escapeHtml(source.plugin_version)}</dd>
+          </dl>
+        </li>`).join("");
+      }
+      if (!body) return;
+      const items = (platform.items || []).filter((item) => billing ? item.billing_amount !== "0.00" : item.detail_rows > 0 || item.settlement_amount !== "0.00");
+      if (!items.length) {
+        body.innerHTML = `<tr><td colspan="6" class="finance-empty-cell">${sources.length ? `${basisLabel(basis)}本月没有费用项目。` : "拉取后在这里逐项查看统计查询和明细。"}</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map((item) => {
+        const sites = (item.sources || []).map((source) => {
+          const amount = billing ? source.billing_amount : source.settlement_amount;
+          const rows = billing ? "" : `<small>${escapeHtml(source.rows)} 行</small>`;
+          return `<button class="finance-platform-site" type="button" data-finance-platform-site data-capture="${escapeHtml(source.capture_key)}" data-item="${escapeHtml(item.item_name)}" data-site="${escapeHtml(source.site_name)}">${escapeHtml(source.site_name)} ${escapeHtml(amount)}${rows}</button>`;
+        }).join("");
+        const shapes = (item.number_shapes || []).map((shape) => `<span class="finance-pill" data-tone="${shape.waybill ? "info" : ""}">${escapeHtml(shape.label)} ${escapeHtml(shape.rows)}</span>`).join("");
+        const zero = item.zero_only ? '<small>全部为零金额，不进入账本</small>' : item.zero_rows ? `<small>含零金额 ${escapeHtml(item.zero_rows)} 行</small>` : "";
+        return `<tr>
+          ${responsiveCell("费用项目", `${escapeHtml(item.item_name)}${zero}`)}
+          ${responsiveCell(`${basisLabel(basis)}金额`, escapeHtml(billing ? item.billing_amount : item.settlement_amount), "data-money")}
+          ${responsiveCell("各网点", sites || "—")}
+          ${responsiveCell("明细行数", escapeHtml(item.detail_rows))}
+          ${responsiveCell("单号格式", `<div class="finance-platform-shapes">${shapes || "—"}</div>`)}
+          ${responsiveCell("归类提示", suggestionPill(item.suggestion))}
+        </tr>`;
+      }).join("");
+    }
+
+    function openPlatformDetails(button) {
+      if (!platformDialog || !state.periodData) return;
+      state.platformDetail = {
+        capture: button.dataset.capture, item: button.dataset.item, site: button.dataset.site,
+        basis: state.platformBasis || "settlement", offset: 0, total: 0, limit: 50,
+      };
+      platformDialog.querySelector("[data-finance-platform-dialog-title]").textContent = `${button.dataset.site} · ${button.dataset.item}`;
+      platformDialog.querySelector("[data-finance-platform-dialog-body]").innerHTML = "";
+      if (!platformDialog.open) platformDialog.showModal();
+      if (window.feather) window.feather.replace();
+      loadPlatformDetails();
+    }
+
+    function rawFieldsHtml(raw) {
+      return `<dl>${Object.entries(raw || {}).map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value === null ? "null" : typeof value === "object" ? JSON.stringify(value) : value === "" ? "（空）" : value)}</dd></div>`).join("")}</dl>`;
+    }
+
+    function togglePlatformRaw(button) {
+      const row = button.closest("tr");
+      const open = row?.nextElementSibling?.matches("[data-finance-platform-raw-row]");
+      if (open) {
+        row.nextElementSibling.remove();
+      } else if (row) {
+        const raw = state.platformRows?.[Number(button.dataset.financePlatformRaw)]?.raw;
+        row.insertAdjacentHTML("afterend", `<tr class="finance-platform-raw-row" data-finance-platform-raw-row><td colspan="11">${rawFieldsHtml(raw)}</td></tr>`);
+      }
+      button.setAttribute("aria-expanded", open ? "false" : "true");
+      button.querySelector("span").textContent = open ? "展开" : "收起";
+    }
+
+    async function loadPlatformDetails() {
+      const detail = state.platformDetail;
+      const month = state.periodData?.month;
+      if (!detail || !month || !platformDialog) return;
+      const stateNode = platformDialog.querySelector("[data-finance-platform-dialog-state]");
+      const summary = platformDialog.querySelector("[data-finance-platform-dialog-summary]");
+      const body = platformDialog.querySelector("[data-finance-platform-dialog-body]");
+      const page = platformDialog.querySelector("[data-finance-platform-page]");
+      const prev = platformDialog.querySelector("[data-finance-platform-prev]");
+      const next = platformDialog.querySelector("[data-finance-platform-next]");
+      const request = (state.platformRequest || 0) + 1;
+      state.platformRequest = request;
+      prev.disabled = true;
+      next.disabled = true;
+      summary.textContent = basisLabel(detail.basis);
+      setPanelState(stateNode, "正在读取平台明细。", "");
+      const params = new URLSearchParams({ capture: detail.capture, item: detail.item, basis: detail.basis, offset: String(detail.offset) });
+      try {
+        const data = await fetchJson(`${ENDPOINTS.periods}/${month}/platform-details?${params}`);
+        if (request !== state.platformRequest) return;
+        detail.total = data.total;
+        detail.limit = data.limit;
+        const statement = data.statement_amount === null
+          ? "本次未拉取账单日期口径的统计查询"
+          : `统计查询 ${data.statement_amount}`;
+        const verdict = data.complete
+          ? "两者一致。"
+          : detail.basis === "billing"
+            ? "不一致：账单日期在本月、结算日期在相邻月份的明细，需要先拉取相邻月份。"
+            : "不一致，请重新拉取该月。";
+        summary.textContent = `${basisLabel(detail.basis)}：共 ${data.total} 行，明细合计 ${data.detail_amount}；${statement}。${verdict}`;
+        state.platformRows = data.rows;
+        body.innerHTML = data.rows.length ? data.rows.map((row, index) => `<tr>
+          ${responsiveCell("结算时间", escapeHtml(displayText(row.settled_at, "—")))}
+          ${responsiveCell("账单日期", escapeHtml(displayText(row.billed_at, "—")))}
+          ${responsiveCell("单号", `${escapeHtml(displayText(row.waybill_no, "—"))}<small>${escapeHtml(row.number_shape)}${row.is_waybill_number ? " · 运单号" : ""}</small>`)}
+          ${responsiveCell("流水号", escapeHtml(displayText(row.order_no, "—")))}
+          ${responsiveCell("金额", escapeHtml(row.amount), "data-money")}
+          ${responsiveCell("前余额", escapeHtml(displayText(row.before_balance, "—")), "data-money")}
+          ${responsiveCell("后余额", escapeHtml(displayText(row.after_balance, "—")), "data-money")}
+          ${responsiveCell("客户", escapeHtml(displayText(row.customer_name, "—")), 'class="finance-text-wrap"')}
+          ${responsiveCell("物品", escapeHtml(displayText(row.goods_name, "—")), 'class="finance-text-wrap"')}
+          ${responsiveCell("来源 / 备注", `${escapeHtml(displayText(row.source_type, "—"))}${row.remark ? `<small>${escapeHtml(row.remark)}</small>` : ""}`, 'class="finance-text-wrap"')}
+          ${responsiveCell("原始数据", `<button class="ghost-btn finance-row-action" type="button" aria-expanded="false" data-finance-platform-raw="${index}"><span>展开</span></button><small>${Object.keys(row.raw || {}).length} 个字段</small>`)}
+        </tr>`).join("") : '<tr><td colspan="11" class="finance-empty-cell">没有明细。</td></tr>';
+        const last = Math.min(detail.offset + data.limit, data.total);
+        page.textContent = data.total ? `第 ${detail.offset + 1}–${last} 行，共 ${data.total} 行` : "";
+        prev.disabled = detail.offset === 0;
+        next.disabled = last >= data.total;
+        setPanelState(stateNode, "", "");
+      } catch (error) {
+        if (request !== state.platformRequest) return;
+        body.innerHTML = "";
+        page.textContent = "";
+        setPanelState(stateNode, `读取失败：${error.message}`, "error");
+      }
+    }
+
+    function pagePlatformDetails(step) {
+      const detail = state.platformDetail;
+      if (!detail) return;
+      const offset = detail.offset + step * detail.limit;
+      if (offset < 0 || (step > 0 && offset >= detail.total)) return;
+      detail.offset = offset;
+      loadPlatformDetails();
     }
 
     function periodIssueHtml(check, issue, closed) {
@@ -1412,7 +1575,7 @@
       updatePeriodSelection();
       if (!body) return;
       if (!items.length) {
-        body.innerHTML = '<tr><td colspan="11">本月没有已发布的流水；请先在“同步记录”页同步或回溯该月日期。</td></tr>';
+        body.innerHTML = '<tr><td colspan="12">本月还没有账本数据；请先在“自动化 → 财务”拉取该月。</td></tr>';
         return;
       }
       body.innerHTML = items.map((item) => {
@@ -1441,6 +1604,7 @@
           ${responsiveCell("净额", escapeHtml(item.net_change), "data-money")}
           ${responsiveCell("上月净额", previous)}
           ${responsiveCell("当前绑定", mapping)}
+          ${responsiveCell("平台提示", item.platform_capture ? `${suggestionPill(item.platform_capture.suggestion)}<small>统计查询 ${escapeHtml(item.platform_capture.settlement_amount)}</small>` : "—")}
           ${responsiveCell("核对状态", periodReviewPill(item))}
           ${responsiveCell("操作", action)}
         </tr>`;
@@ -1739,6 +1903,12 @@
       if (reopenButton) { reopenPeriod(reopenButton); return; }
       const ackButton = event.target.closest("[data-finance-period-ack]");
       if (ackButton) { acknowledgeAnomaly(ackButton); return; }
+      const platformSite = event.target.closest("[data-finance-platform-site]");
+      if (platformSite) { openPlatformDetails(platformSite); return; }
+      if (event.target.closest("[data-finance-platform-prev]")) { pagePlatformDetails(-1); return; }
+      if (event.target.closest("[data-finance-platform-next]")) { pagePlatformDetails(1); return; }
+      const rawToggle = event.target.closest("[data-finance-platform-raw]");
+      if (rawToggle) { togglePlatformRaw(rawToggle); return; }
       const goReviews = event.target.closest("[data-finance-period-go-reviews]");
       if (goReviews) { activateTab("reviews"); return; }
       const editMapping = event.target.closest("[data-finance-period-edit-mapping]");
@@ -1754,6 +1924,11 @@
         const row = level.closest("[data-finance-mapping-row]");
         if (row) updateMappingLevel(row);
       }
+      if (event.target.matches("[data-finance-platform-basis]")) {
+        state.platformBasis = event.target.value === "billing" ? "billing" : "settlement";
+        if (state.periodData) renderPlatform(state.periodData);
+        return;
+      }
       if (event.target.matches("[data-finance-period-select-all]")) {
         $$("[data-finance-period-select]").forEach((box) => { if (!box.disabled) box.checked = event.target.checked; });
         updatePeriodSelection();
@@ -1762,7 +1937,7 @@
       }
     });
 
-    $$('table.finance-entry-table, table.finance-mapping-table, table.finance-review-table, table.finance-waybill-table, table.finance-sync-table, table.finance-period-table').forEach((table) => table.classList.add("finance-table--responsive"));
+    $$('table.finance-entry-table, table.finance-mapping-table, table.finance-review-table, table.finance-waybill-table, table.finance-sync-table, table.finance-period-table, table.finance-platform-table, table.finance-platform-detail-table').forEach((table) => table.classList.add("finance-table--responsive"));
     let restoredTab;
     try { restoredTab = restoreFinanceSelection(); }
     catch (error) { setStatus(error.message, "error"); return; }

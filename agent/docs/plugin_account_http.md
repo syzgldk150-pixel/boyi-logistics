@@ -2,7 +2,7 @@
 module: 独立插件账号请求
 type: 开发手册
 status: active
-updated: 2026-10-11
+updated: 2026-10-23
 ---
 
 # 插件拥有业务，宿主提供账号请求
@@ -46,7 +46,7 @@ GET 时 `body` 转为查询参数，POST 默认作为 JSON；声明 `encoding="f
 
 ## 非凭据账号上下文
 
-需要原页员工和网点字段的插件可声明 `account.context` / `read`，绑定一个精确 `account_role`、`resource_role=null`，调用 `broker_call("account.context", action="read", role="声明角色", arguments={})`。此能力不需要 `http_requests` 条目，不接受字段、账号 ID 或 Cookie 参数，不联网或触发登录。
+需要原页员工和网点字段的插件可声明 `account.context` / `read`，每条声明绑定一个精确 `account_role`、`resource_role=null`；与 `http.request` 一样，多个账号角色可各自声明（允许多账号的能力集中在 `host_capability_registry.MULTI_ACCOUNT_CAPABILITIES`，合同编译、Broker 与 Harness 共用），每次调用仍只读取一个精确角色的账号。调用 `broker_call("account.context", action="read", role="声明角色", arguments={})`。此能力不需要 `http_requests` 条目，不接受字段、账号 ID 或 Cookie 参数，不联网或触发登录。
 
 当前仅融辉账号适配此投影：宿主复用 SessionBroker 保存态和现有 `userInfo` 解析器，只返回 `loginEmpName/loginEmpCode/loginSiteName/loginSiteCode` 四个原名字段。插件不能读取凭据、登录用户名或任意保存态字段；缺少字段返回 `CONTEXT_DATA_MISSING`，存在冲突身份返回 `CONTEXT_DATA_AMBIGUOUS`，无保存态或正在登录返回 `BLOCKED_LOGIN`，不选择任意候选补齐。保存态投影不证明远端登录仍有效，后续实际请求仍独立判断登录状态。成功结果直接是四字段对象，`host_evidence_ref` 位于标准 Broker 信封，插件应保留在同次证据中。新增平台上下文须先审核其非凭据字段白名单，不能将业务公式或报价协议移入 Host。
 

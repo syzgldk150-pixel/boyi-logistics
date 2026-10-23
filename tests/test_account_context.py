@@ -181,3 +181,22 @@ def test_real_broker_returns_context_and_out_of_band_host_evidence(monkeypatch, 
     assert observations[0]["evidence_ref"] == result.host_evidence_ref
     assert observations[0]["result"] == PUBLIC
     assert observations[0]["write_started"] is False
+
+
+def test_several_accounts_each_declare_context_with_one_exact_role():
+    from agent.automation_plugins.harness_permissions import project_read_runtime_permissions
+
+    raw = _manifest()
+    raw["account_roles"] = [{"role": role, "required": True, "allowed_systems": ["ronghui"]}
+                            for role in ("first", "second")]
+    raw["capabilities"] = [{"name": "account.context", "operations": ["read"], "account_role": role,
+                            "resource_role": None} for role in ("first", "second")]
+    contract = ServiceV2ProjectContract.from_manifest(AutomationPluginManifestV2.from_mapping(raw))
+    operations = [item for item in contract.runtime_permissions["broker_operations"]
+                  if item["operation"] == "account.context"]
+    assert len(operations) == 1 and operations[0]["roles"] == ["first", "second"]
+    assert project_read_runtime_permissions(contract.runtime_permissions)["broker_operations"] == operations
+
+    raw["capabilities"].append(dict(raw["capabilities"][0]))
+    with pytest.raises(PluginManifestError, match="duplicate capability binding"):
+        ServiceV2ProjectContract.from_manifest(AutomationPluginManifestV2.from_mapping(raw))

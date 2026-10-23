@@ -16,6 +16,7 @@ from agent.automation_plugins.errors import PluginManifestError
 from agent.automation_plugins.host_capability_registry import (
     CapabilityEffect,
     HOST_CAPABILITY_API_VERSION,
+    MULTI_ACCOUNT_CAPABILITIES,
     default_host_capability_registry,
     effect_rank,
     governance_for_effect,
@@ -587,7 +588,7 @@ class ServiceV2ProjectContract:
                 if previous is not None:
                     # One Host action can be independently bound to several
                     # selected accounts. Each call still carries one exact role.
-                    if (name != "http.request" or str(bound_role) in previous["roles"]
+                    if (name not in MULTI_ACCOUNT_CAPABILITIES or str(bound_role) in previous["roles"]
                             or {key: value for key, value in previous.items() if key != "roles"}
                             != {key: value for key, value in broker_operation.items() if key != "roles"}):
                         raise PluginManifestError("duplicate Host capability operation")

@@ -3208,6 +3208,38 @@ body .line-haul-tool-btn {
 @media (prefers-reduced-motion: reduce) {
   .plugin-settings-frame { scroll-behavior: auto; }
 }
+/* Plugin categories share one management surface; finance and customer
+   service collectors keep their module data-source pages. */
+.automation-category-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.automation-category-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.automation-category-tabs a:hover { color: var(--text-strong); }
+.automation-category-tabs a[aria-current="page"] {
+  border-bottom-color: var(--text-strong);
+  color: var(--text-strong);
+}
+
+.automation-category-tabs a:focus-visible {
+  outline: 2px solid var(--focus-strong);
+  outline-offset: -2px;
+}
+
 .automation-filter-notice {
   display: flex;
   align-items: center;

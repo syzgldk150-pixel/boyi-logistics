@@ -16,6 +16,9 @@ FINANCE_OPERATIONS = {
     "acquire_batch": ("ledger.invoke", "finance.batch.acquire", "internal_write"),
     "write_snapshot": ("ledger.invoke", "finance.source_snapshot.write", "internal_write"),
     "commit_projection": ("ledger.invoke", "finance.projection.commit", "internal_write"),
+    "write_platform_capture": ("ledger.invoke", "finance.platform_capture.write", "internal_write"),
+    "publish_capture_day": ("ledger.invoke", "finance.platform_capture.publish_day", "internal_write"),
+    "finalize_capture": ("ledger.invoke", "finance.platform_capture.finalize", "internal_write"),
 }
 _REFERENCE_FIELDS = {"capture_ref", "source_context_ref", "run_ref"}
 
@@ -48,6 +51,17 @@ def _references(value, *, encode):
     return value
 
 
+def _json_value(depth):
+    """Any JSON up to ``depth`` levels; platform pages are kept exactly as returned."""
+    scalar={"oneOf":[TEXT,{"type":"number"},{"type":"null"},BOOL]}
+    if depth<=0:
+        return scalar
+    inner=_json_value(depth-1)
+    return {"oneOf":[scalar,{"type":"object","properties":{},"required":[],"additionalProperties":inner,
+                             "maxProperties":512,"propertyNames":{"type":"string","minLength":1,"maxLength":128}},
+                     {"type":"array","items":inner,"maxItems":5000}]}
+
+
 def build_finance_connectors(reviewed):
     raw = source_record_schema(depth=3)
     scalar = source_record_schema()
@@ -72,7 +86,21 @@ def build_finance_connectors(reviewed):
     commit_in=obj({**common,"batch_id":COUNT,"contract_sha256":TEXT,"outcomes":arr(raw)})
     commit_out=obj({**common,"committed":BOOL,"batch_id":COUNT,"contract_sha256":TEXT,"status":TEXT,
         "successful_runs":COUNT,"no_data_runs":COUNT,"failed_runs":COUNT,"written_record_count":COUNT})
+    page=obj({"request":TEXT,"body":scalar,"evidence_ref":TEXT,"response":_json_value(6)})
+    platform_in=obj({**common,"period_start":DATE,"period_end":DATE,"field_mapping":raw,"request_profile":raw,
+        "statement_pages":arr(page),"billing_statement_pages":arr(page),"detail_pages":arr(page)})
+    platform_out=obj({**common,"capture_key":TEXT,"batch_id":COUNT,"site_code":TEXT,"site_name":TEXT,
+        "days":arr(DATE),"content_sha256":TEXT,"metrics":scalar})
+    day_in=obj({**common,"capture_key":TEXT,"business_date":DATE})
+    day_out=obj({**common,"capture_key":TEXT,"business_date":DATE,"outcome":TEXT,"record_count":COUNT,
+        "new_fee_item_count":COUNT})
+    finalize_in=obj({**common,"capture_key":TEXT})
+    finalize_out=obj({**common,"capture_key":TEXT,"batch_id":COUNT,"status":TEXT,"published_days":COUNT,
+        "record_count":COUNT})
     specs=(
+        ("write_platform_capture",platform_in,platform_out),
+        ("publish_capture_day",day_in,day_out),
+        ("finalize_capture",finalize_in,finalize_out),
         ("capture_page",capture_in,capture_out),
         ("verify_totals",verify_in,verify_out),
         ("acquire_batch",batch_in,batch_out),

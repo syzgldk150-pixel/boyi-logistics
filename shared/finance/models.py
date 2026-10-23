@@ -51,6 +51,9 @@ class SummarySemantics(str, Enum):
 
     GROSS_BY_FEE_DIRECTION = "gross_by_fee_direction"
     SIGNED_NET_BY_FEE = "signed_net_by_fee"
+    # A day cut out of a stored platform capture whose statement query
+    # already closed the whole period's details item by item.
+    PERIOD_STATEMENT = "period_statement"
 
 
 class EarliestDateStatus(str, Enum):

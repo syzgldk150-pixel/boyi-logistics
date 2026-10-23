@@ -340,6 +340,24 @@ class MonitoringFinanceServiceMixin:
         data["viewer"] = {"can_close": str(user.get("control_plane_role") or "") == "super_admin"}
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
 
+    def _handle_finance_period_details_get(
+        self, handler: BaseHTTPRequestHandler, month: str, query: dict[str, list[str]]
+    ) -> None:
+        """Raw platform detail rows of one fee item, read-only."""
+
+        try:
+            data = self._get_finance_service().get_period_platform_details(month, query)
+        except FinanceError as exc:
+            self._send_finance_error(handler, exc)
+            return
+        except Exception as exc:
+            LOGGER.exception("Finance period details GET failed: %s", type(exc).__name__)
+            self._send_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False, "error_code": "FINANCE_INTERNAL_ERROR",
+                "message": "平台明细读取失败，请查看服务日志后重试。"})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
+
     def _handle_finance_period_post(self, handler: BaseHTTPRequestHandler, action: str, target: str) -> None:
         """Confirm items, acknowledge an anomaly, close or reopen one month."""
 

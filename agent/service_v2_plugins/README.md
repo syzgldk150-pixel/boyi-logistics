@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-21
+updated: 2026-10-23
 ---
 
 # 当前插件维护入口
@@ -54,7 +54,8 @@ updated: 2026-10-21
 | `clockin_daxiang_s_v2` | 网点打卡-大祥 S 站 | 后台“自动化” | [插件说明](clockin_daxiang_s_v2/README.md) |
 | `r7_vehicle_checkin_v2` | R7车线每日打卡 | 后台“自动化” | [R7 车线打卡](../docs/r7_vehicle_checkin.md) |
 | `quote_prices_v2` | 三平台价格查询 | 后台“自动化”（飞书与录单页共用实例） | [三平台报价](../docs/three_platform_quote.md) |
-| `sync_finance_bills_v2` | 财务账单采集 | 财务模块“数据源管理” | [财务模块](../docs/finance_module.md) |
+| `sync_finance_bills_v2` | 财务账单采集（逐日，2026-08 起由统计查询抓取取代） | 财务模块“数据源管理” | [财务模块](../docs/finance_module.md) |
+| `sync_ronghui_finance_statement_v2` | 拉取融辉财务月度原始数据 | 财务模块“数据源管理”（自动化页“财务”分类） | [统计查询月度抓取](../docs/finance_module.md#统计查询月度抓取) |
 | `sync_customer_service_problems_v2` | 客服问题件采集 | 客户服务“数据源管理” | [客服系统](../docs/customer_service/module_overview.md) |
 
 ## 源码归属
@@ -76,6 +77,8 @@ updated: 2026-10-21
 三平台报价 `quote_prices_v2` 使用通用账号 HTTP 与最小账号业务上下文；地址解析、产品选择和金额计算只在 ZIP 内。飞书与 Console 共享实例，系统工具报价入口已退役。使用及安装说明见[三平台报价](../docs/three_platform_quote.md)。
 
 融辉在途轨迹 `sync_ronghui_route_status_v2` 用实例选择的融辉账号经通用 `http.request` 批量读取快件跟踪，经宿主 `connector.boyi.ronghui_route_projection@1` 写回未签收单的状态文本；需配套含该 Connector 的核心版本。规则与验证见[寄件数据查询](../../docs/direct_waybill_query.md#融辉在途轨迹2026-10-15)。打包与 R7 相同，使用 `scripts.service_v2_plugin package`。
+
+融辉财务统计查询 `sync_ronghui_finance_statement_v2` 用三个财务账号经通用 `http.request` 按月读取统计查询和全部明细，经宿主财务连接器 `write_platform_capture` / `publish_capture_day` / `finalize_capture` 原样保存并按日入账；需配套含迁移 063 与这三个操作的核心版本。网页协议、字段对照和运单号格式都在包内，接口变化只升级 ZIP。打包使用 `scripts.service_v2_plugin package`，真实 ZIP 回归见仓库根 `tests/test_finance_statement_plugin_zip.py`。
 
 ## 测试与升级
 

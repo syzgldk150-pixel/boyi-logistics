@@ -417,6 +417,11 @@ class BrokerGrant:
     execution_resource_keys: tuple[tuple[str, ...], ...] = ()
     execution_action_scopes: Mapping[ActionKey, tuple[LockKey, ...]] = field(default_factory=dict)
     on_completion: Callable[[Callable[[], None]], None] | None = field(default=None, repr=False, compare=False)
+    # Read-only view of this grant's completed Host calls, for a reviewed
+    # primitive that must prove submitted data came from an earlier call.
+    host_call_observations: Callable[[], tuple[Mapping[str, Any], ...]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 @dataclass
@@ -548,6 +553,7 @@ class LocalBrokerCapabilityIssuer:
             execution_resource_keys=EXECUTION_RESOURCE_KEYS.get(),
             execution_action_scopes=dict(EXECUTION_ACTION_SCOPES.get()),
             on_completion=lambda callback: self._register_completion(digest, callback),
+            host_call_observations=lambda: self.broker_call_observations(token),
         )
         raw_limit = runtime_permissions.get("max_broker_calls")
         if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 0 <= raw_limit <= 1000:

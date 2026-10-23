@@ -75,6 +75,7 @@ def seed(repository, days, items, *, opening=Decimal("1000.0000"), skip=(), wayb
     batch_id = repository.create_batch(trigger_type="manual", start_date=days[0], end_date=days[-1],
                                        rescan_days=1, requested_by="period-test")
     balance = opening
+    run_ids = {}
     for day in days:
         rows, summaries = [], []
         for ordinal, (name, direction, amount) in enumerate(items):
@@ -106,8 +107,37 @@ def seed(repository, days, items, *, opening=Decimal("1000.0000"), skip=(), wayb
                                       source_site_name=SOURCE["name"], producer_instance_id=SOURCE["producer"],
                                       producer_generation=1)
         repository.commit_run_snapshot(run_id=run_id, transactions=rows, summaries=summaries, validation=validation)
+        run_ids[day] = run_id
     repository.finalize_batch(batch_id)
+    if days[0].day == 1 and len(days) == len(month_days(days[0].year, days[0].month)):
+        attest_month_capture(repository, days, run_ids)
     return balance
+
+
+def attest_month_capture(repository, days, run_ids):
+    """Mark the month's published runs as one verified full-month capture.
+
+    Capture verification itself is covered by the statement plugin tests;
+    here the close rules only need the ledger to be capture-backed.
+    """
+
+    with repository._connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO finance_platform_captures (capture_ref, platform, source_role, account_id, site_code, "
+            "site_name, period_start, period_end, statement_item_count, statement_net, detail_row_count, "
+            "detail_income, detail_expense, detail_net, field_mapping_json, request_profile_json, content_sha256, "
+            "automation_id, plugin_version, generation, published_at, created_at) VALUES "
+            "(%s, 'ronghui', 'finance_quote_source', %s, %s, %s, %s, %s, 0, 0, 0, 0, 0, 0, '{}', "
+            "'{\"waybill_number_shapes\": []}', %s, %s, '1.0.0', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
+            (str(uuid4()), SOURCE["account"], SOURCE["site"], SOURCE["name"], days[0], days[-1], "0" * 64,
+             SOURCE["producer"]),
+        )
+        capture_id = cursor.lastrowid
+        cursor.executemany(
+            "INSERT INTO finance_platform_capture_days (capture_id, business_date, run_id, outcome, record_count, "
+            "published_at) VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP(6))",
+            [(capture_id, day, run_id, "success", 0) for day, run_id in run_ids.items()],
+        )
 
 
 def bind(repository, view, *, month: str, level="operating"):
@@ -308,3 +338,15 @@ def test_missing_waybill_acknowledgement_survives_identical_rescans_only(reposit
     seed(repository, [day], (("缺单号派送费", "expense", Decimal("7.0000")),), opening=Decimal("982.0000"),
          waybill=False, tag="ack-changed")
     assert target["anomaly_id"] in open_ids()
+
+
+def test_close_requires_the_month_ledger_from_one_full_month_capture(repository):
+    items = (("抓取校验派送费", "expense", Decimal("3.0000")),)
+    seed(repository, month_days(2026, 2), items, tag="capture-backed")
+    assert check(repository.get_period_view("2026-02", today=TODAY), "platform_capture")["passed"]
+    # A later plain daily sync of one day replaces that day's visible run.
+    seed(repository, [dt.date(2026, 2, 9)], items, opening=Decimal("976.0000"), tag="capture-daily")
+    result = check(repository.get_period_view("2026-02", today=TODAY), "platform_capture")
+    assert not result["passed"]
+    assert result["issues"][0]["reason"] == "这些日期的账本不是来自整月统计抓取"
+    assert result["issues"][0]["dates"] == ["2026-02-09"]

@@ -18,6 +18,9 @@ from agent.tms_runtime.ronghui_user_context import RONGHUI_PUBLIC_CONTEXT_FIELDS
 
 
 HOST_CAPABILITY_API_VERSION = "2.0.0"
+# Account-bound capabilities one plugin may grant to several selected accounts.
+# Every call still names exactly one bound role; the Host resolves that account.
+MULTI_ACCOUNT_CAPABILITIES = frozenset({"http.request", "account.context"})
 
 
 def _freeze(value: object) -> object:

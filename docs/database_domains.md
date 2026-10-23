@@ -15,7 +15,7 @@ updated: 2026-10-23
 |---|---|
 | `agent_db` | Agent/Console 账号权限、会话、插件、调度、调用日志、来源配置及其他运行数据 |
 | `waybill_db` | 韵达 `yunda_waybills`、融辉 `ronghui_waybills`、博益 `boyi_waybills`；韵达 `yunda_receipts`、融辉 `ronghui_receipts`、博益 `boyi_receipts` |
-| `finance_db` | 055 迁入的 14 张 `finance_*` 表（交易、汇总、费用项目及映射、同步批次、审核分析与来源溯源），以及迁移 062 新建的 5 张月度清点与封账表 |
+| `finance_db` | 055 迁入的 14 张 `finance_*` 表（交易、汇总、费用项目及映射、同步批次、审核分析与来源溯源），迁移 062 新建的 5 张月度清点与封账表，以及迁移 063 新建的 4 张统计查询抓取表 |
 
 博益运单表也保存本地 OCR 录入，`source=manual/ocr` 保持可区分；平台同步只写对应平台表。
 博益回单表预留结构，目前没有启用采集或自动把“需要回单”转换成回单记录。
@@ -47,6 +47,8 @@ updated: 2026-10-23
 迁移 `060_platform_waybill_fields.sql` 给融辉、韵达实体表增加 `recorded_cost`、`to_pay_amount`、`sender_address`、`receipt_required`、`receipt_number`，重建运行视图并使旧平台覆盖证明失效。费用只由原页重新采集填入；Boyi 行的新平台专用费用与回单编号在联合视图中为 NULL，Boyi 已有地址和回单标记仍用原列。原始运费、代收货款、到付款和录单成本独立保存，字段来源见[寄件字段与金额](direct_waybill_query.md#寄件字段与金额2026-10-14)。
 
 迁移 `062_finance_period_close.sql` 在 `finance_db` 新建 `finance_periods`、`finance_period_item_reviews`、`finance_period_closes`、`finance_period_close_lines`、`finance_period_events`，并给 `finance_anomalies` 增加确认知悉的五列；`migration_055_domain_databases.py` 的 `LATER_FINANCE_TABLES` 在新表存在后把它们投影为 `agent_db` 同名视图，`finance_anomalies` 视图随重建带出新列。核对、封账和反结账由 Console 写入，发布前核验实际 Console 账号对这些实体表和视图的 SELECT、INSERT、UPDATE 权限；Agent 在批次发布时读取封账快照并写漂移异常（2026-10-23 核实 `agent@%` 对 `finance_db` 为库级权限）。规则见[财务模块说明](../agent/docs/finance_module.md#月度清点与封账)。
+
+迁移 `063_finance_platform_captures.sql` 在 `finance_db` 新建 `finance_platform_captures`、`finance_platform_statement_rows`、`finance_platform_detail_rows`、`finance_platform_capture_days`，同样由 `LATER_FINANCE_TABLES` 投影为 `agent_db` 视图。写入只由 Agent 的财务连接器完成，Console 只读；明细原始 JSON 含客户名称等业务资料，备份与导出按财务数据管理。规则见[财务模块说明](../agent/docs/finance_module.md#统计查询月度抓取)。
 
 同实例迁移或灾备必须覆盖三个库、跨库外键和视图，单独导出 `agent_db` 不再包含业务实体数据。
 

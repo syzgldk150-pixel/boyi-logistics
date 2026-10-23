@@ -19,6 +19,7 @@ _GET_ACTIONS = {
 
 
 _PERIOD_GET = re.compile(r"/finance/periods/(\d{4}-\d{2})")
+_PERIOD_DETAILS = re.compile(r"/finance/periods/(\d{4}-\d{2})/platform-details")
 _PERIOD_POST = re.compile(r"/finance/periods/(\d{4}-\d{2})/(confirmations|close|reopen)")
 _ANOMALY_ACKNOWLEDGE = re.compile(r"/finance/anomalies/(\d+)/acknowledge")
 
@@ -30,6 +31,10 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     match = _PERIOD_GET.fullmatch(path)
     if match:
         app._handle_finance_period_get(handler, match.group(1))
+        return True
+    match = _PERIOD_DETAILS.fullmatch(path)
+    if match:
+        app._handle_finance_period_details_get(handler, match.group(1), query)
         return True
     action = _GET_ACTIONS.get(path)
     if action:

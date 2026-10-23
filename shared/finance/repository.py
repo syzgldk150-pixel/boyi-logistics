@@ -48,6 +48,7 @@ from shared.finance.evolution import (
     _enabled_source_clause,
 )
 from shared.finance.periods import FinancePeriodMixin
+from shared.finance.platform_capture_repository import FinancePlatformCaptureMixin
 
 
 ConnectionFactory = Callable[[], Any]
@@ -136,7 +137,7 @@ def _managed_cursor(connection: Any) -> Iterator[Any]:
             close()
 
 
-class FinanceRepository(FinanceEvolutionMixin, FinancePeriodMixin):
+class FinanceRepository(FinanceEvolutionMixin, FinancePeriodMixin, FinancePlatformCaptureMixin):
     """Finance persistence over a caller-supplied DB-API connection factory."""
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:

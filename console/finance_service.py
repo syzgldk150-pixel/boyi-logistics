@@ -771,6 +771,38 @@ class FinanceService:
             operation="读取月度清点",
         )
 
+    def get_period_platform_details(self, month: str, query: Mapping[str, list[str]]) -> dict[str, Any]:
+        def one(name: str) -> str:
+            values = query.get(name) or [""]
+            return str(values[0] if len(values) == 1 else "").strip()
+
+        capture_key, item_name, basis = one("capture"), one("item"), one("basis") or "settlement"
+        try:
+            canonical_key = str(UUID(capture_key))
+        except ValueError:
+            canonical_key = ""
+        if canonical_key != capture_key:
+            raise FinanceValidationError("平台抓取标识无效，请刷新页面后重试。")
+        if not item_name or len(item_name) > 255:
+            raise FinanceValidationError("请选择要查看的费用项目。")
+        if basis not in {"settlement", "billing"}:
+            raise FinanceValidationError("日期口径只能是结算日期或账单日期。")
+        offset_text = one("offset") or "0"
+        if not offset_text.isdigit() or int(offset_text) > 1_000_000:
+            raise FinanceValidationError("分页参数无效。")
+        repository = self._require_repository()
+
+        def read() -> dict[str, Any]:
+            try:
+                return repository.platform_month_details(
+                    month, capture_key=capture_key, item_name=item_name, basis=basis,
+                    offset=int(offset_text), limit=50,
+                )
+            except LookupError as exc:
+                raise FinanceNotFoundError("该月没有这次平台抓取，请刷新页面后重试。") from exc
+
+        return self._ensure_mapping(self._repository_call("读取平台明细", read), operation="读取平台明细")
+
     def confirm_period_items(self, month: str, body: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
         items = body.get("items")
         if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):

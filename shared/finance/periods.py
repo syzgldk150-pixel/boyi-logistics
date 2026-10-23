@@ -196,6 +196,15 @@ class FinancePeriodMixin:
         reviews = self._period_reviews(cursor, month)
         previous = self._month_rows(cursor, _previous_month(month))
         items = self._items(rows, reviews, previous, closed=status == PERIOD_CLOSED)
+        platform = self._platform_month(cursor, month, end, labels)
+        captured = {entry["item_name"]: entry for entry in platform["items"]}
+        capture_platforms = {"ronghui"} if platform["sources"] else set()
+        for item in items:
+            entry = captured.get(str(item["primary_fee_name"])) if (
+                item["platform"] in capture_platforms and not item["secondary_fee_name"]) else None
+            item["platform_capture"] = None if entry is None else {
+                key: entry[key] for key in ("settlement_amount", "billing_amount", "detail_rows", "suggestion")
+            }
         comparison = self._comparison(cursor, rows, closes, status=status, current_close=current_close)
         return {
             "month": month.strftime("%Y-%m"),
@@ -212,6 +221,7 @@ class FinancePeriodMixin:
             "earliest_close_date": earliest_close_date.isoformat() if earliest_close_date else None,
             "comparison": comparison,
             "drift": self._open_drift(cursor, month, end, labels),
+            "platform": platform,
             "catalog_note": "费用项目目录 = 本月流水中实际出现的项目；融辉暂无已核实的独立项目字典接口。",
         }
 
@@ -603,7 +613,8 @@ class FinancePeriodMixin:
             "issues": [],
         }]
         coverage, rescan, earliest = self._coverage_checks(cursor, month, end, labels)
-        checks.extend([coverage, rescan, self._balance_chain_check(cursor, month, end, labels)])
+        checks.extend([coverage, rescan, self._balance_chain_check(cursor, month, end, labels),
+                       self._platform_capture_check(cursor, month, end, labels)])
         checks.extend(self._item_checks(cursor, month, end, rows))
         return checks, earliest
 
@@ -682,7 +693,7 @@ class FinancePeriodMixin:
                 f"{len(expected)} 个来源 × {day_count} 天均已同步并通过校验。"
                 if expected and not coverage_issues
                 else "没有已配置的财务数据源。" if not expected
-                else "部分日期缺少数据或校验未通过，请在“同步记录”页回溯这些日期。"
+                else "部分日期缺少数据或校验未通过，请在“自动化 → 财务”重新拉取该月。"
             ),
             "issues": coverage_issues,
         }
@@ -693,7 +704,7 @@ class FinancePeriodMixin:
             "summary": (
                 "每天的最新数据都取得于该日 7 天回扫之后。"
                 if not rescan_issues
-                else f"部分日期的数据可能还会被融辉修订；{earliest.isoformat()} 及以后重新同步这些日期即可。"
+                else f"部分日期的数据可能还会被融辉修订；{earliest.isoformat()} 及以后在“自动化 → 财务”重新拉取该月即可。"
                 if earliest else "部分日期缺少运行开始时间。"
             ),
             "issues": rescan_issues,

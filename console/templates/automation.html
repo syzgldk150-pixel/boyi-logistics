@@ -74,6 +74,20 @@
 {% block content %}
 {% include "_module_source_history.html" %}
 <section class="auto-page" data-reveal="tasks" data-management-module="{{ management_module|default('automation') }}">
+  {% set category_routes = (navigation_for_user() if navigation_for_user is defined else ()) | map(attribute='route') | list %}
+  {% set plugin_categories = [
+    ('automation', '/automations', '功能插件', '/automations'),
+    ('finance', '/modules/finance/data-sources', '财务', '/modules/finance'),
+    ('customer_service', '/modules/customer-service/data-sources', '客服', '/modules/customer-service'),
+  ] %}
+  {% set visible_categories = plugin_categories | selectattr('3', 'in', category_routes) | list %}
+  {% if visible_categories | length > 1 %}
+  <nav class="automation-category-tabs" aria-label="插件分类">
+    {% for key, url, label, _route in visible_categories %}
+    <a href="{{ url }}"{% if management_module|default('automation') == key %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  {% endif %}
   {% if automation_plugin_filter %}
   <div class="automation-filter-notice" role="status">
     <span>正在查看对应扩展的自动化实例</span>
