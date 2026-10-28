@@ -251,6 +251,22 @@ def _is_sensitive_field(value: object) -> bool:
     )
 
 
+_PHONE_FIELD_MARKERS = ("phone", "mobile")
+
+
+def _is_phone_field(value: object) -> bool:
+    """Return whether a result field carries an operator-entered phone value."""
+
+    field = _normalized_field(value)
+    if not field:
+        return False
+    if any(marker in field for marker in _PHONE_FIELD_MARKERS):
+        return True
+    if "电话" in field or "手机" in field:
+        return True
+    return "tel" in field.split("_")
+
+
 def validate_connector_public_text(value: object, *, subject: str) -> str:
     """Reject secrets, URI targets and absolute local paths in public text."""
 
@@ -392,6 +408,17 @@ def _reject_sensitive_result(
     reject_wrapped_identifiers: bool,
     business_field: str | None = None,
 ) -> None:
+    if (
+        business_field is not None
+        and _is_phone_field(business_field)
+        and not isinstance(value, (Mapping, list, tuple))
+    ):
+        # Phone cells are operator-entered business data: one cell may hold
+        # several numbers, a leading or trailing slash, or other free-form
+        # punctuation. The Host returns that exact value instead of applying
+        # the path, URI, credential and binding-identity rules that protect
+        # infrastructure identities elsewhere in a Connector result.
+        return
     if isinstance(value, Mapping):
         for key, nested in value.items():
             if not isinstance(key, str) or _is_sensitive_field(key):
@@ -435,15 +462,6 @@ def _reject_sensitive_result(
                 "Connector result contains sensitive data"
             )
         checked = value
-        # Ronghui phone cells can contain slash-separated digit groups, including
-        # repeated slashes. They are business text, not absolute file paths.
-        # Keep the source bytes and bound-identity checks; accept this shape only
-        # in the source/Feishu/waybill phone columns used by sending sync.
-        if business_field in {
-            "ACCEPT_MAN_PHONE", "SEND_MAN_PHONE", "收货电话", "寄件手机",
-            "receiver_phone", "sender_phone",
-        } and re.fullmatch(r"[0-9]+(?:/+[0-9]+)+", value):
-            checked = value.replace("/", " ")
         # Yunda uses a lone slash as an empty placeholder in the problem title
         # and its numbered user-defined detail fields (udf013). Preserve that
         # exact punctuation; paths and all other fields still pass through the
