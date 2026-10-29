@@ -413,7 +413,24 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                     "project committed generation differs from its immutable package"
                 )
             if committed_version.runtime_model is not PluginRuntimeModel.SERVICE_V2:
-                raise ValueError("only service-v2 plugin versions are supported")
+                # Pre-V2 projects stay in the database until migration 064.
+                # Return them unvalidated so the catalog hides them by runtime
+                # model; they are never compiled, listed or executed.
+                return PluginInstanceRecord(
+                    automation_id=automation_id,
+                    display_name=str(row.get("display_name") or ""),
+                    plugin_id=str(row.get("plugin_id") or ""),
+                    state=PluginProjectState(str(row.get("state") or "")),
+                    active_version=committed_version,
+                    enabled=row.get("enabled") is True or row.get("enabled") == 1,
+                    record_version=int(row.get("record_version") or 0),
+                    target_generation=int(row.get("target_generation") or 0),
+                    committed_generation=int(committed_generation),
+                    reconcile_state=RuntimeReconcileState(
+                        str(row.get("reconcile_state") or "")
+                    ),
+                    committed_snapshot=committed_snapshot,
+                )
             committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifestV2.from_mapping(
                 committed_version.manifest
             )
