@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from plugin_core_adapters.first_party import _scan_next_readback_state
+from plugin_core_adapters.host_primitives import _scan_next_readback_state
 from tests.v32_acceptance.daily_protocol import CHILD_CODE, LOGIN, STATION, DailyProtocol
 
 

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import subprocess
-import sys
-import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -134,18 +131,6 @@ def _install_activation_fakes(
     )
     monkeypatch.setattr(
         main,
-        "_automation_worker_dispatch_health",
-        lambda *, release_hold: events.append(
-            f"worker-{'held' if release_hold else 'running'}"
-        )
-        or {
-            "state": "held" if release_hold else "running",
-            "release_hold": release_hold,
-            "active_jobs": 0,
-        },
-    )
-    monkeypatch.setattr(
-        main,
         "consume_scheduler_release_hold",
         lambda _sha: events.append("marker-consumed")
         or {"state": "running", "release_hold": False, "jobs": 18},
@@ -245,19 +230,8 @@ def test_internal_health_accepts_plugin_execution_router_observability(
         "_automation_plugin_health",
         lambda: {"ok": True, "generations": {"healthy": True}},
     )
-    monkeypatch.setattr(
-        main,
-        "_automation_worker_dispatch_health",
-        lambda *, release_hold: {
-            "enabled": False,
-            "state": "disabled",
-            "release_hold": release_hold,
-            "active_jobs": 0,
-        },
-    )
     monkeypatch.setattr(main, "scheduler_release_hold_requested", lambda: True)
     monkeypatch.setattr(main, "get_session_broker", _HealthStatusProvider)
-    monkeypatch.setattr(main, "scheduled_task_approval_bootstrap", {})
 
     response = asyncio.run(main.internal_health())
 
@@ -309,22 +283,10 @@ def test_runner_concurrency_settings_are_positive_and_explicit(
             main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2)
 
 
-def test_windows_worker_is_not_mounted_or_queried_in_the_current_release_scope(
+def test_windows_worker_routes_are_not_mounted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _UnexpectedRepository:
-        def unit_of_work(self):
-            raise AssertionError("disabled Windows Worker must not query persistence")
-
-    monkeypatch.setattr(main, "orchestration_repository", _UnexpectedRepository())
-    worker_status = main._automation_worker_dispatch_health(release_hold=False)
-
-    assert worker_status == {
-        "enabled": False,
-        "state": "disabled",
-        "release_hold": False,
-        "active_jobs": 0,
-    }
+    assert not hasattr(main, "_automation_worker_dispatch_health")
     def mounted_route_paths(routes: list[Any]) -> set[str]:
         paths: set[str] = set()
         for route in routes:
@@ -342,38 +304,6 @@ def test_windows_worker_is_not_mounted_or_queried_in_the_current_release_scope(
     )
     assert "/internal/v1/automation/workers" not in mounted_paths
     assert "/internal/v1/automation/workers/pair" not in mounted_paths
-
-
-def test_disabled_release_does_not_import_windows_worker_runtime() -> None:
-    script = textwrap.dedent(
-        f"""
-        import builtins
-        import sys
-
-        sys.path.insert(0, {str(REPOSITORY_ROOT)!r})
-        sys.path.insert(0, {str(REPOSITORY_ROOT / 'agent')!r})
-        real_import = builtins.__import__
-
-        def guarded_import(name, *args, **kwargs):
-            if name == "agent.windows_worker" or name.startswith("agent.windows_worker."):
-                raise AssertionError(f"disabled Windows Worker was imported: {{name}}")
-            return real_import(name, *args, **kwargs)
-
-        builtins.__import__ = guarded_import
-        import main
-
-        assert main.WINDOWS_WORKER_RELEASE_ENABLED is False
-        """
-    )
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=REPOSITORY_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
 
 
 def test_main_wires_the_fixed_feishu_command_reservation_into_the_registry() -> None:

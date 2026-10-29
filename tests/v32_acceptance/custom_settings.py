@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 
 from agent.orchestration.models import Actor, ActorType
 from agent.automation_plugins.capability_proxy_v2 import build_service_v2_capability_handler_map, UNAVAILABLE_SERVICE_V2_HANDLER_KEYS
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from service_v2_plugins._shared.build_zip import build_plugin_zip
 from shared.contracts import api_success
 from shared.orchestration_repository import OrchestrationRepository
@@ -109,7 +109,7 @@ def main():
         clock_calls.append('unexpected clock operation')
         raise AssertionError('C04 settings must never invoke clock business operations')
 
-    reviewed = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+    reviewed = build_host_primitive_handler_map(HostPrimitivePorts(
         describe_account=accounts.require_active_binding_descriptor, clock_action=forbidden_clock_operation))
     handlers = build_service_v2_capability_handler_map(
         OrchestrationRepository(lambda: connect_owned(DATABASE)), reviewed_handlers=reviewed)

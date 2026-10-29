@@ -10,14 +10,9 @@ from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_ru
     calculate_system_sign_due,
     ledger_row_should_publish,
 )
-from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_pipeline import DailySignSyncError
-from tools import (
-    daily_sign_backfill_tool,
-    daily_sign_store,
-)
+from tools import daily_sign_store
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_readback, daily_sign_sync_tool
 from agent.execution_boundary import current_execution_capability, execution_capability_scope
-from agent.automation_plugins.first_party_handler_common import _encode_daily_sign_result
 from agent.tms_runtime.scripts import get_qianshou, get_scan, get_sign_records
 
 
@@ -150,62 +145,6 @@ class DailySignLedgerRulesTest(unittest.TestCase):
     self.assertEqual("派送", enriched[0]["delivery_method"])
     self.assertEqual("湖南省邵阳市大祥区测试路1号", enriched[0]["recipient_address"])
     self.assertEqual("/query_waybill_detail", call_detail.call_args.args[0])
-
- def test_broker_accepts_catalog_daily_sign_postcondition_name(self):
-    digest = "a" * 64
-    result = _encode_daily_sign_result(
-        {
-            "status": "SUCCESS",
-            "data": {},
-            "meta": {
-                "account_id": "multi_account",
-                "pagination_complete": True,
-                "evidence_refs": ["proof"],
-                "postconditions": {"0": True},
-                "postcondition_evidence": {
-                    "0": {
-                        "verified": True,
-                        "condition": "authoritative_snapshot_committed",
-                        "details": {
-                            "persistence_sha256": digest,
-                            "bitable_snapshot_sha256": digest,
-                            "sheet_snapshot_sha256": digest,
-                        },
-                    }
-                },
-            },
-            "warnings": [],
-            "error": None,
-        }
-    )
-
-    self.assertEqual("multi_account", result["meta"]["account_scope"])
-
- def test_broker_relies_on_verified_daily_sign_proof_instead_of_digest_shape(self):
-    result = _encode_daily_sign_result(
-        {
-            "status": "SUCCESS",
-            "data": {},
-            "meta": {
-                "account_id": "multi_account",
-                "pagination_complete": True,
-                "evidence_refs": ["proof"],
-                "postconditions": {"0": True},
-                "postcondition_evidence": {
-                    "0": {
-                        "verified": True,
-                        "condition": "authoritative_snapshot_committed",
-                        "evidence_ref": "proof",
-                        "details": {"source_run_id": "run"},
-                    }
-                },
-            },
-            "warnings": [],
-            "error": None,
-        }
-    )
-
-    self.assertTrue(result["meta"]["postconditions"]["0"])
 
  def test_bitable_readback_treats_omitted_empty_cells_as_blank(self):
     expected = [
@@ -1941,95 +1880,6 @@ class DailySignSourceCompletenessTest(unittest.TestCase):
         self.assertEqual(datetime(2026, 1, 31, 23, 59, 59), calls[0][1])
         self.assertEqual(calls[0][1] + timedelta(seconds=1), calls[1][0])
         self.assertEqual(datetime(2026, 3, 5, 12, 0, 0), calls[-1][1])
-
-    def test_r13_backfill_merge_preserves_sheet_fields_and_refreshes_r13_fields(self):
-        seed = daily_sign_backfill_tool._seed_row_from_sheet(
-            [
-                "R1",
-                "2026-08-12 23:59:59",
-                "2026-08-13 23:59:59",
-                "旧品名",
-                "纸箱",
-                2,
-                "旧地址",
-                "送货",
-                2,
-            ]
-        )
-        merged = daily_sign_backfill_tool._merge_r13_seed(
-            seed,
-            {
-                "billNumberMain": "R1",
-                "planSignTime": "2026-08-14 23:59:59",
-                "isSigns": "已签",
-            },
-            observed_at=datetime(2026, 8, 12, 12, 0, 0),
-        )
-
-        self.assertEqual("2026-08-14 23:59:59", merged["r13_plan_sign_at"])
-        self.assertEqual("2026-08-13 23:59:59", merged["system_sign_due_at"])
-        self.assertEqual("旧地址", merged["recipient_address"])
-        self.assertFalse(merged["tms_signed"])
-
-
-class DailySignBackfillTest(unittest.TestCase):
-    def test_shadow_backfill_rebuilds_union_and_only_removes_tms_signed_rows(self):
-        archive_values = [
-            [f"列{index}" for index in range(19)],
-            ["R1", "货物", "纸箱", "送货", 1, "", "", "", "", "邵阳大祥S站", "", "", "地址", "", "", "", "", "", 1],
-        ]
-        current_values = [
-            daily_sign_sync_tool.SHEET_HEADERS,
-            ["OLD", "2026-08-11 23:59:59", "", "旧货", "纸箱", 1, "旧地址", "送货", 1],
-        ]
-
-        def fake_feishu(_action, params):
-            values = current_values if params["spreadsheet_token"] == "current-token" else archive_values
-            return {"ok": True, "data": {"valueRange": {"values": values}}}
-
-        with (
-            patch("tools.daily_sign_backfill_tool.get_required_resource", return_value={"spreadsheet_token": "archive-token"}),
-            patch("tools.daily_sign_backfill_tool._spreadsheet_sheet_ref_map", return_value={"2026-08-12": "archive-id"}),
-            patch("tools.daily_sign_backfill_tool._spreadsheet_sheet_info", return_value={"row_count": 2}),
-            patch("tools.daily_sign_backfill_tool.get_workflow_resource", return_value={"spreadsheet_token": "current-token", "read_range": "sheet!A1:I200"}),
-            patch("tools.daily_sign_backfill_tool.feishu_operation", side_effect=fake_feishu),
-            patch("tools.daily_sign_backfill_tool.save_arrival_stat_snapshot", return_value={"ok": True, "skipped": True}),
-            patch(
-                "tools.daily_sign_backfill_tool._read_r13_history",
-                return_value=(
-                    [
-                        {"billNumberMain": "R1", "planSignTime": "2026-08-13 23:59:59"},
-                        {"billNumberMain": "R2", "planSignTime": "2026-08-13 23:59:59"},
-                    ],
-                    {"ok": True, "rows": 2},
-                ),
-            ),
-            patch("tools.daily_sign_backfill_tool._sync_manual_problem_events", return_value=([], {"ok": True, "complete": True})),
-            patch(
-                "tools.daily_sign_backfill_tool._sync_sign_events",
-                return_value=(
-                    [
-                        {
-                            "tracking_number": "OLD",
-                            "scanned_at": "2026-08-12 10:00:00",
-                            "scan_type": "签收",
-                        }
-                    ],
-                    {"ok": True, "complete": True},
-                ),
-            ),
-            patch("tools.daily_sign_backfill_tool._sync_r13_sign_conflicts", return_value=([], {"ok": True, "complete": True})),
-            patch("tools.daily_sign_backfill_tool.upsert_ledger_rows") as upsert,
-        ):
-            result = daily_sign_backfill_tool.run_daily_sign_backfill({"apply": False})
-
-        self.assertTrue(result["ok"])
-        self.assertEqual("shadow", result["mode"])
-        self.assertEqual(2, result["rebuilt_open_rows"])
-        self.assertEqual(1, result["removed_open_rows_with_tms_sign"])
-        self.assertFalse(result["published"])
-        upsert.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()

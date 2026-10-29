@@ -37,7 +37,7 @@ def record_generation_write_attempt_row(
     direct = "invocation_id" in receipt
     if direct:
         required = (required - {"orchestration_run_id", "step_id"}) | {"invocation_id"}
-    if not required <= set(receipt) or set(receipt) - required - {"scan_recovery_payload_json", "execution_resource_keys_json"}:
+    if not required <= set(receipt) or set(receipt) - required - {"execution_resource_keys_json"}:
         raise ValueError("write attempt receipt fields are invalid")
     resource_keys = receipt.get('execution_resource_keys_json')
     if resource_keys is not None:
@@ -46,13 +46,6 @@ def record_generation_write_attempt_row(
         resource_keys = closed_execution_keys(resource_keys)
         if not resource_keys:
             raise ValueError('original execution resource keys cannot be empty')
-    scan_payload = receipt.get("scan_recovery_payload_json")
-    if scan_payload is not None:
-        from shared.scan_snapshot_recovery import closed_scan_payload
-
-        scan_payload = closed_scan_payload(scan_payload)
-        if receipt["operation"] != "projection.invoke" or receipt["action"] != "scan.snapshot.replace" or _json_hash(scan_payload) != receipt["argument_sha256"]:
-            raise ValueError("scan recovery payload does not match its original receipt")
     automation_id = _required_text(receipt["automation_id"], "automation_id")
     generation = _positive_int(receipt["generation"], "generation")
     lease_id = _required_text(receipt["lease_id"], "lease_id")
@@ -187,13 +180,3 @@ def record_generation_write_attempt_row(
             stored_keys = _decode_row(_row_dict(cursor, cursor.fetchone()), ('execution_resource_keys_json',))
             if not stored_keys or _json_hash(stored_keys['execution_resource_keys_json']) != _json_hash(resource_keys):
                 raise IdempotencyConflict('original execution resource keys changed for a receipt')
-        if scan_payload is not None:
-            cursor.execute("SELECT plugin_id FROM automation_project_generations WHERE automation_id=%s AND generation=%s", (automation_id, generation))
-            generation_identity = _row_dict(cursor, cursor.fetchone())
-            if not generation_identity or generation_identity["plugin_id"] != "sync_scan_codes":
-                raise ValueError("scan recovery snapshot belongs to another signed plugin")
-            cursor.execute("UPDATE automation_write_attempt_receipts SET scan_recovery_payload_json=%s WHERE receipt_id=%s AND scan_recovery_payload_json IS NULL", (_json_param(scan_payload, {}), receipt_id))
-            cursor.execute("SELECT scan_recovery_payload_json FROM automation_write_attempt_receipts WHERE receipt_id=%s", (receipt_id,))
-            stored = _decode_row(_row_dict(cursor, cursor.fetchone()), ("scan_recovery_payload_json",))
-            if not stored or _json_hash(stored["scan_recovery_payload_json"]) != _json_hash(scan_payload):
-                raise IdempotencyConflict("scan recovery payload changed for an original receipt")

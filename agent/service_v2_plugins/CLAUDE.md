@@ -1,18 +1,18 @@
 # 当前 V2 插件源码规则
 
-自提/分批在预览中返回 `selection_limit`，查询提交完整问题件计划，Host 不保存类型、责任方或问题说明公式。分批数量分类唯一源码为 `split_pending_problem_upload_v2/payload/split_rules.py`，共享构建器将相同字节装入统计和分批两个独立 ZIP；修改此规则需同时升级这两个包。统计提交已分类快照及渲染行，Host 只落库、写表并核验。财务包决定重扫天数、目标集合、日期切块和页大小，Host 绑定计划、完整性与实际回读。财务包 2.0.2 的 Console `manual_run` 声明可选 `collection_request`，本次日期范围由包内解析，不修改保存配置或定时；未提供时仍使用实例设置。冻结 Host 的真实 ZIP 回归见 `tests/test_plugin_business_boundary.py`。
+自提/分批在预览中返回 `selection_limit`，查询提交完整问题件计划，Host 不保存类型、责任方或问题说明公式。分批数量分类唯一源码为 `split_pending_problem_upload_v2/payload/split_rules.py`，共享构建器将相同字节装入统计和分批两个独立 ZIP；修改此规则需同时升级这两个包。统计提交已分类快照及渲染行，Host 只落库、写表并核验。财务统计查询抓取包 `sync_ronghui_finance_statement_v2` 按月抓取三个账号的统计查询与明细，Host 核对是本次真实返回后原样保存并按结算日发布。冻结 Host 的真实 ZIP 回归见 `tests/test_plugin_business_boundary.py`。
 
-当前业务动作只维护在本目录对应插件的 `payload/`；每日应签规则、采集和渲染在 `sync_daily_should_sign_v2/payload/business/`。Host 不维护应签类型清单或覆盖插件提交的判断。公共字段协议在根目录 `shared/ronghui_*_fields.py`，修改公共协议需要核心更新。
+当前业务动作只维护在本目录对应插件的 `payload/`；每日应签规则、采集和渲染在 `sync_daily_should_sign_v2/payload/business/`。Host 不维护应签类型清单或覆盖插件提交的判断。公共字段协议在根目录 `shared/ronghui_customer_problem_fields.py`，修改公共协议需要核心更新。
 
-打包不得读取 `agent/legacy/` 或已退役的 `agent/first_party_automation_plugins/`。迁移历史、旧摘要和 SQL 保留用于离线回归，不能作为线上回退入口。维护与发布顺序见本目录 `README.md`；各插件现行版本以其 `manifest.json` 为准，线上版本以后台实例记录为准。
+核心发布只复制 `../scripts/release_scope.py` 列出的包。维护与发布顺序见本目录 `README.md`；各插件现行版本以其 `manifest.json` 为准，线上版本以后台实例记录为准。
 
 业务规则改动与 Host API/公共字段协议改动必须分别判断发布范围；使用既有合同的规则变化只升级受影响 ZIP，共享包内规则需核对全部消费包。核心与 ZIP 协同升级须按本目录 `README.md` 先暂停、排空，再发布、安装、回读版本和恢复原状态；不能用核心源码发布代替实例 ZIP 升级。验收说明必须区分隔离回归、线上只读预览和真实业务写入。
 
 ## 问题件判断的单一规则
 
 - 分批显式提交问题件登记的 `before_cutoff/postpones_sign`，复用每日应签包内 `problem_event_flags`；共享打包器把同一规则及值解析模块放入各自独立 ZIP，不复制业务公式。
-- 分批登记 Connector 严格要求显式分类字段，缺字段明确失败，不能用默认布尔值补齐。旧 Action V1 打包仅保持离线回归闭合，不恢复线上入口。
-- M02/M03 维护演练分别使用财务、自提 V2 基线/候选/回退 ZIP，在冻结宿主上验证实际字段/判断变化；准备结果不作为正式冻结证据。
+- 分批登记 Connector 严格要求显式分类字段，缺字段明确失败，不能用默认布尔值补齐。
+- M03 维护演练使用自提 V2 基线/候选/回退 ZIP，在冻结宿主上验证实际判断变化；准备结果不作为正式冻结证据。M02 字段变化演练原基于旧财务采集包，已随旧包退役，待在统计抓取包上重建。
 
 ## 每日应签
 

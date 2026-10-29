@@ -78,8 +78,8 @@ def test_custom_feishu_preview_is_not_reported_as_formal_completion(monkeypatch)
 
 @pytest.mark.parametrize("plugin_id,route,selection", [
     ("sync_scan_codes_v2", "builtin.scan_codes", ""),
-    ("self_pickup_problem_upload_v2", "builtin.self_pickup_problem_upload", "self_pickup_problem_upload"),
-    ("split_pending_problem_upload_v2", "builtin.split_pending_problem_upload", "split_pending_problem_upload"),
+    ("self_pickup_problem_upload_v2", "builtin.self_pickup_problem_upload", "self_pickup_problem_upload_v2"),
+    ("split_pending_problem_upload_v2", "builtin.split_pending_problem_upload", "split_pending_problem_upload_v2"),
 ])
 @pytest.mark.parametrize("trust_source", ["super_admin_upload", "builtin_bundle"])
 def test_installed_v2_chat_targets_keep_declared_commands_and_preview_route(monkeypatch, plugin_id, route, selection, trust_source):

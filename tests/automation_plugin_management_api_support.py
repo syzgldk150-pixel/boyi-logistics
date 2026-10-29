@@ -1,33 +1,25 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
 from agent.automation_plugins.management import (
     AutomationPluginManagementService,
-    MigrationPreparationPersistedError,
 )
 from agent.automation_plugins.management_api import (
     create_automation_plugin_management_router,
 )
 from agent.automation_plugins.models import (
-    AutomationProjectConfigRecord,
     PluginProjectState,
     PluginRuntimeModel,
     RuntimeReconcileState,
 )
 from agent.orchestration.models import Actor, ActorType
-from shared.orchestration_repository_support import IdempotencyConflict
 
 
 __all__ = [
@@ -58,7 +50,10 @@ def _entry(**overrides: Any) -> SimpleNamespace:
     values: dict[str, Any] = {
         "automation_id": "automation-1",
         "plugin_id": "example_action",
-        "runtime_model": PluginRuntimeModel.ACTION_V1.value,
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "plugin_api": "2.0.0",
+        "active_runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "active_version": "1.0.0",
         "display_name": "Example action",
         "installed_version": "1.0.0",
         "record_version": 3,
@@ -176,7 +171,6 @@ def _projection_service(
         catalog=catalog,
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -203,18 +197,6 @@ class _ApiService:
     def catalog_projection(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("catalog", kwargs))
         return self.catalog_result
-
-    def worker_projection(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("workers", kwargs))
-        return {"workers": []}
-
-    def pair_worker(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("pair", kwargs))
-        return {"device_id": kwargs["device_id"], "platform": "windows"}
-
-    def install(self, package: bytes, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("install", {"package": package, **kwargs}))
-        return {"automation_id": "server-generated"}
 
     def inspect_service_v2_upload(self, package: bytes, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("inspect-v2", {"package": package, **kwargs}))
@@ -253,42 +235,6 @@ class _ApiService:
         self.calls.append(("configuration", {"automation_id": automation_id, **kwargs}))
         return dict(self.configuration_result)
 
-    def create_migration_pair(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("migration-create", dict(kwargs)))
-        return {
-            "migration_pair_id": kwargs["migration_pair_id"],
-            "state": "TESTING",
-        }
-
-    def mark_migration_ready(self, migration_pair_id: str, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("migration-ready", {"migration_pair_id": migration_pair_id, **kwargs}))
-        return {"migration_pair_id": migration_pair_id, "state": "READY"}
-
-    def cutover_migration_pair(self, migration_pair_id: str, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("migration-cutover", {"migration_pair_id": migration_pair_id, **kwargs}))
-        return {"migration_pair_id": migration_pair_id, "state": "CUTOVER"}
-
-    def rollback_migration_pair(self, migration_pair_id: str, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("migration-rollback", {"migration_pair_id": migration_pair_id, **kwargs}))
-        return {"migration_pair_id": migration_pair_id, "state": "ROLLED_BACK"}
-
-    def complete_migration_pair(self, migration_pair_id: str, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("migration-complete", {"migration_pair_id": migration_pair_id, **kwargs}))
-        return {"migration_pair_id": migration_pair_id, "state": "COMPLETED"}
-
-    def recover_current_unknown_write(
-        self,
-        automation_id: str,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        self.calls.append(("recover-current", {"automation_id": automation_id, **kwargs}))
-        return {
-            "automation_id": automation_id,
-            "recovery_status": "APPLIED",
-            "transitioned": True,
-        }
-
-
 def _api_client(
     service: _ApiService,
     *,
@@ -311,7 +257,6 @@ def _configuration_request_payload() -> dict[str, Any]:
         "account_bindings": {},
         "resource_bindings": {},
         "enabled_entrypoints": ["scheduler"],
-        "device_id": None,
         "schedule": {
             "kind": "daily_times",
             "times": ["08:00"],

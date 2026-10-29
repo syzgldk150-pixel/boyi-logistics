@@ -12,14 +12,9 @@ import pytest
 
 from agent.automation_plugins import broker as broker_module
 from agent.automation_plugins.broker import (
-    VERIFIED_WRITE_NOOP_FIELD,
     LocalBrokerCapabilityIssuer,
     LocalCoreAutomationBroker,
     _assert_redacted,
-)
-from agent.automation_plugins.code_owned_fields import (
-    apply_scan_execution_boundary,
-    apply_selection_execution_boundary,
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.execution import PluginExecutionRouter
@@ -34,6 +29,32 @@ from agent.tool_registry import validate_schema_instance
 from service_v2_plugins._shared.boyi_plugin_sdk import (
     broker_call as service_v2_broker_call,
 )
+
+
+def _host_contract(operation: str, action: str, role: str, effect: CapabilityEffect) -> dict[str, object]:
+    """A signed static Host capability grant in the current V2 contract shape."""
+    governance = governance_for_effect(effect)
+    return {
+        "operation": operation,
+        "action": action,
+        "roles": [role],
+        "effect": governance.effect.value,
+        "broker_effect": governance.broker_effect,
+        "governance": governance.to_mapping(),
+        "dynamic_effect": False,
+    }
+
+
+async def _framed_call(socket_path: Path, request: Mapping[str, object]) -> dict[str, object]:
+    """Send one request the way the plugin SDK does: a compressed length-prefixed frame."""
+    compressed = zlib.compress(json.dumps(request, separators=(",", ":")).encode("utf-8"))
+    reader, writer = await asyncio.open_unix_connection(str(socket_path))
+    writer.write(broker_module._BROKER_FRAME_PREFIX + str(len(compressed)).encode("ascii") + b"\n" + compressed)
+    await writer.drain()
+    response = json.loads((await reader.read()).decode("utf-8"))
+    writer.close()
+    await writer.wait_closed()
+    return response
 
 
 @pytest.mark.parametrize(
@@ -59,81 +80,6 @@ def test_broker_allows_opaque_business_evidence_references() -> None:
             "business_accounting_state": "verified",
         }
     )
-
-
-def test_broker_accepts_signed_requests_larger_than_asyncio_default_limit(
-    tmp_path: Path,
-) -> None:
-    class LargeReadAdapter:
-        async def invoke(self, *, arguments, **_kwargs):
-            return {"observed_length": len(arguments["payload"])}
-
-    async def invoke() -> tuple[
-        dict[str, object],
-        tuple[Mapping[str, object], ...],
-        str,
-    ]:
-        socket_path = tmp_path / "broker.sock"
-        issuer = LocalBrokerCapabilityIssuer(socket_path)
-        broker = LocalCoreAutomationBroker(issuer=issuer, adapter=LargeReadAdapter())
-        await broker.start()
-        try:
-            capability = issuer.issue(
-                automation_id="instance-a",
-                plugin_version="1.0.0",
-                tool_name="automation.instance-a.run",
-                ttl_seconds=60,
-                runtime_permissions={
-                    "browser": True,
-                    "network": False,
-                    "office": False,
-                    "max_broker_calls": 1,
-                    "broker_operations": [
-                        {
-                            "operation": "browser.invoke",
-                            "action": "source.read",
-                            "roles": ["source"],
-                            "effect": "read",
-                        }
-                    ],
-                },
-                account_roles=({"role": "source"},),
-                resource_roles=(),
-                account_bindings={"source": "opaque-binding"},
-                resource_bindings={},
-            )
-            reader, writer = await asyncio.open_unix_connection(str(socket_path))
-            request_id = str(uuid.uuid4())
-            request = {
-                "schema_version": 1,
-                "request_id": request_id,
-                "capability": capability,
-                "operation": "browser.invoke",
-                "action": "source.read",
-                "role": "source",
-                "arguments": {"payload": "x" * 70_000},
-            }
-            writer.write((json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8"))
-            await writer.drain()
-            response = json.loads((await reader.readline()).decode("utf-8"))
-            writer.close()
-            await writer.wait_closed()
-            return response, issuer.broker_call_observations(capability), request_id
-        finally:
-            await broker.stop()
-
-    response, observations, request_id = asyncio.run(invoke())
-
-    assert response == {"ok": True, "data": {"observed_length": 70_000}}
-    assert len(observations) == 1
-    observation = observations[0]
-    assert observation["request_id"] == request_id
-    assert observation["operation"] == "browser.invoke"
-    assert observation["action"] == "source.read"
-    assert observation["role"] == "source"
-    assert observation["write_started"] is False
-    assert observation["result"] == {"observed_length": 70_000}
-    assert len(str(observation["arguments_sha256"])) == 64
 
 
 def test_service_invoke_receives_a_distinct_outer_host_evidence_ref(
@@ -187,7 +133,6 @@ def test_service_invoke_receives_a_distinct_outer_host_evidence_ref(
                 account_bindings={},
                 resource_bindings={},
             )
-            reader, writer = await asyncio.open_unix_connection(str(socket_path))
             request = {
                 "schema_version": 1,
                 "request_id": str(uuid.uuid4()),
@@ -201,15 +146,7 @@ def test_service_invoke_receives_a_distinct_outer_host_evidence_ref(
                     "arguments": {},
                 },
             }
-            writer.write(
-                (json.dumps(request, separators=(",", ":")) + "\n").encode(
-                    "utf-8"
-                )
-            )
-            await writer.drain()
-            response = json.loads((await reader.readline()).decode("utf-8"))
-            writer.close()
-            await writer.wait_closed()
+            response = await _framed_call(socket_path, request)
             return response, issuer.broker_call_observations(capability)
         finally:
             await broker.stop()
@@ -408,18 +345,11 @@ def test_sdk_compresses_and_broker_accepts_snapshot_larger_than_legacy_limit(
                 tool_name="automation.instance-a.run",
                 ttl_seconds=60,
                 runtime_permissions={
-                    "browser": True,
-                    "network": False,
+                    "browser": False,
+                    "network": True,
                     "office": False,
                     "max_broker_calls": 1,
-                    "broker_operations": [
-                        {
-                            "operation": "browser.invoke",
-                            "action": "source.read",
-                            "roles": ["source"],
-                            "effect": "read",
-                        }
-                    ],
+                    "broker_operations": [_host_contract("http.request", "read_json", "source", CapabilityEffect.READ)],
                 },
                 account_roles=({"role": "source"},),
                 resource_roles=(),
@@ -434,8 +364,8 @@ def test_sdk_compresses_and_broker_accepts_snapshot_larger_than_legacy_limit(
             broker_call = namespace["broker_call"]
             return await asyncio.to_thread(
                 broker_call,
-                "browser.invoke",
-                action="source.read",
+                "http.request",
+                action="read_json",
                 role="source",
                 arguments={"payload": "x" * (11 * 1024 * 1024)},
             )
@@ -550,18 +480,11 @@ def test_broker_cpu_heavy_frame_and_response_phases_keep_async_ticker_running(
                 tool_name="automation.instance-a.run",
                 ttl_seconds=60,
                 runtime_permissions={
-                    "browser": True,
-                    "network": False,
+                    "browser": False,
+                    "network": True,
                     "office": False,
                     "max_broker_calls": 1,
-                    "broker_operations": [
-                        {
-                            "operation": "browser.invoke",
-                            "action": "source.read",
-                            "roles": ["source"],
-                            "effect": "read",
-                        }
-                    ],
+                    "broker_operations": [_host_contract("http.request", "read_json", "source", CapabilityEffect.READ)],
                 },
                 account_roles=({"role": "source"},),
                 resource_roles=(),
@@ -572,8 +495,8 @@ def test_broker_cpu_heavy_frame_and_response_phases_keep_async_ticker_running(
                 "schema_version": 1,
                 "request_id": str(uuid.uuid4()),
                 "capability": capability,
-                "operation": "browser.invoke",
-                "action": "source.read",
+                "operation": "http.request",
+                "action": "read_json",
                 "role": "source",
                 "arguments": {"payload": "x" * 250_000},
             }
@@ -603,6 +526,7 @@ def test_broker_cpu_heavy_frame_and_response_phases_keep_async_ticker_running(
 
     response = asyncio.run(invoke())
 
+    assert str(response.pop("host_evidence_ref")).startswith("host-call:")
     assert response == {
         "ok": True,
         "data": {
@@ -645,18 +569,11 @@ def test_read_broker_failure_never_counts_as_a_started_write(tmp_path: Path) -> 
         tool_name="automation.instance-a.run",
         ttl_seconds=60,
         runtime_permissions={
-            "browser": True,
-            "network": False,
+            "browser": False,
+            "network": True,
             "office": False,
             "max_broker_calls": 1,
-            "broker_operations": [
-                {
-                    "operation": "browser.invoke",
-                    "action": "source.read",
-                    "roles": ["source"],
-                    "effect": "read",
-                }
-            ],
+            "broker_operations": [_host_contract("http.request", "read_json", "source", CapabilityEffect.READ)],
         },
         account_roles=({"role": "source"},),
         resource_roles=(),
@@ -666,8 +583,8 @@ def test_read_broker_failure_never_counts_as_a_started_write(tmp_path: Path) -> 
     issuer.consume(
         capability,
         request_id=str(uuid.uuid4()),
-        operation="browser.invoke",
-        action="source.read",
+        operation="http.request",
+        action="read_json",
         role="source",
     )
     assert issuer.started_mutating_call_count(capability) == 0
@@ -696,17 +613,10 @@ def test_write_receipt_persistence_does_not_hold_the_issuer_lock(tmp_path: Path)
         ttl_seconds=60,
         runtime_permissions={
             "browser": False,
-            "network": False,
+            "network": True,
             "office": False,
             "max_broker_calls": 1,
-            "broker_operations": [
-                {
-                    "operation": "projection.invoke",
-                    "action": "waybill.snapshot.replace",
-                    "roles": ["target"],
-                    "effect": "write",
-                }
-            ],
+            "broker_operations": [_host_contract("http.request", "write_json", "target", CapabilityEffect.EXTERNAL_WRITE)],
         },
         account_roles=({"role": "target"},),
         resource_roles=(),
@@ -725,8 +635,8 @@ def test_write_receipt_persistence_does_not_hold_the_issuer_lock(tmp_path: Path)
     issuer.consume(
         capability,
         request_id=request_id,
-        operation="projection.invoke",
-        action="waybill.snapshot.replace",
+        operation="http.request",
+        action="write_json",
         role="target",
         arguments={"records": [], "target_date": "2026-08-28"},
     )
@@ -763,311 +673,3 @@ def test_write_receipt_persistence_does_not_hold_the_issuer_lock(tmp_path: Path)
     assert marker.started() is True
     assert issuer.started_mutating_call_count(capability) == 1
 
-
-@pytest.mark.parametrize(
-    ("operation", "action"),
-    (
-        ("projection.invoke", "scan.snapshot.replace"),
-        ("browser.invoke", "ronghui.scan_next.submit"),
-        ("browser.invoke", "ronghui.scan_next.verify"),
-    ),
-)
-def test_scan_preview_broker_rejects_every_non_page_read_before_dispatch(
-    tmp_path: Path,
-    operation: str,
-    action: str,
-) -> None:
-    capability = apply_scan_execution_boundary(
-        {
-            "operation_type": "internal_projection_write",
-            "risk_level": "medium",
-            "_plugin_runtime": {
-                "automation_id": "scan_codes",
-                "plugin_id": "sync_scan_codes",
-                "trust_source": "ed25519_first_party",
-                "runtime_permissions": {
-                    "browser": True,
-                    "network": False,
-                    "office": False,
-                    "file_roles": [],
-                    "max_broker_calls": 10,
-                    "broker_operations": [
-                        {
-                            "operation": "browser.invoke",
-                            "action": "ronghui.scan.read_page",
-                            "roles": ["source"],
-                            "effect": "read",
-                        },
-                        {
-                            "operation": "projection.invoke",
-                            "action": "scan.snapshot.replace",
-                            "roles": ["source"],
-                            "effect": "write",
-                        },
-                        {
-                            "operation": "browser.invoke",
-                            "action": "ronghui.scan_next.submit",
-                            "roles": ["source"],
-                            "effect": "write",
-                        },
-                        {
-                            "operation": "browser.invoke",
-                            "action": "ronghui.scan_next.verify",
-                            "roles": ["source"],
-                            "effect": "read",
-                        },
-                    ],
-                },
-            },
-        },
-        {"dry_run": True},
-    )
-    issuer = LocalBrokerCapabilityIssuer(tmp_path / "broker.sock")
-    token = issuer.issue(
-        automation_id="scan_codes",
-        plugin_version="1.0.0",
-        tool_name="sync_scan_codes",
-        ttl_seconds=60,
-        runtime_permissions=capability["_plugin_runtime"]["runtime_permissions"],
-        account_roles=({"role": "source"},),
-        resource_roles=(),
-        account_bindings={"source": "opaque-binding"},
-        resource_bindings={},
-    )
-
-    with pytest.raises(PluginExecutionError) as raised:
-        issuer.consume(
-            token,
-            request_id=str(uuid.uuid4()),
-            operation=operation,
-            action=action,
-            role="source",
-        )
-
-    assert raised.value.code == "BROKER_OPERATION_DENIED"
-    assert issuer.started_mutating_call_count(token) == 0
-
-
-@pytest.mark.parametrize(
-    ("automation_id", "plugin_id", "expected_actions"),
-    (
-        (
-            "self_pickup_problem_upload",
-            "self_pickup_problem_upload",
-            {("network.request", "feishu.sheet.read_rows")},
-        ),
-        (
-            "split_pending_problem_upload",
-            "split_pending_problem_upload",
-            {
-                ("network.request", "feishu.sheet.read_rows"),
-                ("projection.invoke", "split_pending.snapshot.read"),
-            },
-        ),
-    ),
-)
-def test_selection_preview_boundary_keeps_only_exact_read_primitives(
-    automation_id: str,
-    plugin_id: str,
-    expected_actions: set[tuple[str, str]],
-) -> None:
-    capability = apply_selection_execution_boundary(
-        {
-            "operation_type": "external_write",
-            "risk_level": "high",
-            "_plugin_runtime": {
-                "automation_id": automation_id,
-                "plugin_id": plugin_id,
-                "trust_source": "ed25519_first_party",
-                "runtime_permissions": {
-                    "network": True,
-                    "browser": True,
-                    "office": False,
-                    "file_roles": [],
-                    "max_broker_calls": 100,
-                    "broker_operations": [
-                        {
-                            "operation": "network.request",
-                            "action": "feishu.sheet.read_rows",
-                            "roles": ["source"],
-                            "effect": "read",
-                        },
-                        {
-                            "operation": "projection.invoke",
-                            "action": "split_pending.snapshot.read",
-                            "roles": ["target"],
-                            "effect": "read",
-                        },
-                        {
-                            "operation": "browser.invoke",
-                            "action": "ronghui.problem.query",
-                            "roles": ["account_id"],
-                            "effect": "read",
-                        },
-                        {
-                            "operation": "browser.invoke",
-                            "action": "ronghui.problem.create",
-                            "roles": ["account_id"],
-                            "effect": "write",
-                        },
-                    ],
-                },
-            },
-        },
-        {
-            "dry_run": True,
-            "preview_fingerprint": "",
-            "selected_bill_codes": [],
-        },
-    )
-
-    permissions = capability["_plugin_runtime"]["runtime_permissions"]
-    actions = {
-        (item["operation"], item["action"])
-        for item in permissions["broker_operations"]
-    }
-    assert capability["operation_type"] == "read"
-    assert capability["risk_level"] == "low"
-    assert actions == expected_actions
-    assert permissions["max_broker_calls"] == len(expected_actions)
-    assert permissions["network"] is True
-    assert permissions["browser"] is False
-
-
-def test_broker_accepts_only_the_closed_verified_write_noop_contract(tmp_path: Path) -> None:
-    class VerifiedNoopAdapter:
-        def __init__(self, result: dict[str, object]) -> None:
-            self._result = result
-
-        async def invoke(self, **_kwargs):
-            return self._result
-
-    async def invoke(
-        result: dict[str, object],
-        *,
-        arguments: dict[str, object] | None = None,
-        tool_name: str = "sync_yunda_dispatch_forecast",
-        action: str = "feishu.bitable.append_yunda_dispatch_forecast",
-    ) -> dict[str, object]:
-        request_arguments = arguments or {
-            "records": [],
-            "target_date": "2026-08-16",
-            "ensure_fields": True,
-        }
-        socket_path = tmp_path / "broker.sock"
-        issuer = LocalBrokerCapabilityIssuer(socket_path)
-        broker = LocalCoreAutomationBroker(
-            issuer=issuer,
-            adapter=VerifiedNoopAdapter(result),
-        )
-        await broker.start()
-        try:
-            capability = issuer.issue(
-                automation_id="instance-a",
-                plugin_version="1.0.0",
-                tool_name=tool_name,
-                ttl_seconds=60,
-                runtime_permissions={
-                    "browser": False,
-                    "network": True,
-                    "office": False,
-                    "max_broker_calls": 1,
-                    "broker_operations": [
-                        {
-                            "operation": "network.request",
-                            "action": action,
-                            "roles": ["target"],
-                            "effect": "write",
-                        }
-                    ],
-                },
-                account_roles=({"role": "target"},),
-                resource_roles=(),
-                account_bindings={"target": "opaque-binding"},
-                resource_bindings={},
-            )
-            reader, writer = await asyncio.open_unix_connection(str(socket_path))
-            writer.write(
-                (
-                    json.dumps(
-                        {
-                            "schema_version": 1,
-                            "request_id": str(uuid.uuid4()),
-                            "capability": capability,
-                            "operation": "network.request",
-                            "action": action,
-                            "role": "target",
-                            "arguments": request_arguments,
-                        },
-                        separators=(",", ":"),
-                    )
-                    + "\n"
-                ).encode("utf-8")
-            )
-            await writer.drain()
-            payload = json.loads((await reader.readline()).decode("utf-8"))
-            writer.close()
-            await writer.wait_closed()
-            return payload
-        finally:
-            await broker.stop()
-
-    verified_result = {
-        VERIFIED_WRITE_NOOP_FIELD: True,
-        "committed": True,
-        "verified": True,
-        "record_count": 0,
-        "readback_count": 0,
-        "written": 0,
-        "readback_sha256": "a" * 64,
-        "evidence_ref": "opaque:evidence:verified-noop",
-    }
-    response = asyncio.run(invoke(verified_result))
-    assert response["ok"] is True
-    assert response["data"]["record_count"] == 0
-    assert VERIFIED_WRITE_NOOP_FIELD not in response["data"]
-
-    incomplete_result = dict(verified_result)
-    incomplete_result.pop("written")
-    rejected = asyncio.run(invoke(incomplete_result))
-    assert rejected["ok"] is False
-    assert rejected["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"
-
-    boolean_count_result = dict(verified_result)
-    boolean_count_result["record_count"] = False
-    rejected_boolean = asyncio.run(invoke(boolean_count_result))
-    assert rejected_boolean["ok"] is False
-    assert rejected_boolean["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"
-
-    rejected_nonempty = asyncio.run(
-        invoke(
-            verified_result,
-            arguments={
-                "records": [{"主单号": "YD-1"}],
-                "target_date": "2026-08-16",
-                "ensure_fields": True,
-            },
-        )
-    )
-    assert rejected_nonempty["ok"] is False
-    assert rejected_nonempty["error_code"] == "WRITE_ATTEMPT_START_NOT_RECORDED"
-
-    for action, arguments in (
-        (
-            "feishu.bitable.replace_snapshot",
-            {"records": [], "target_date": "2026-08-16"},
-        ),
-        (
-            "feishu.sheet.replace",
-            {"values": [], "target_date": "2026-08-16"},
-        ),
-    ):
-        site_response = asyncio.run(
-            invoke(
-                verified_result,
-                tool_name="sync_site_send_list",
-                action=action,
-                arguments=arguments,
-            )
-        )
-        assert site_response["ok"] is True

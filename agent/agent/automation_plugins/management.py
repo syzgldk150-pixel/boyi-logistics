@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import copy
 import hashlib
 import json
@@ -18,42 +16,29 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
-from agent.automation_plugins.code_owned_fields import first_party_code_owned_config_fields
+from agent.automation_plugins.code_owned_fields import code_owned_config_fields
 from agent.automation_plugins.configuration import AutomationProjectConfigurationService
 from agent.automation_plugins.errors import (
     PluginConflictError,
     PluginNotFoundError,
-    PluginPackageError,
 )
-from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
-from agent.automation_plugins.release_scope import DEFERRED_R7_PLUGIN_IDS
 from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.inspection_v2 import (
     service_v2_wizard_projection,
     validate_service_v2_install_contract,
 )
-from agent.automation_plugins.inspection_action_v1 import action_v1_wizard_projection
 from agent.automation_plugins.manifest_v2 import canonical_json_bytes
-from agent.automation_plugins.migration import PluginMigrationControlPlane
-from agent.automation_plugins.migration_entrypoint_ownership import (
-    migration_target_entrypoints_and_ownership,
-)
-from agent.automation_plugins.migration_binding_mapping import (
-    reviewed_migration_binding_mapping,
-)
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginInstanceRecord,
     PluginProjectState,
     PluginRuntimeModel,
-    PluginTrustSource,
     RuntimeReconcileState,
 )
 from agent.automation_plugins.ports import PluginStoragePort
 from agent.orchestration.models import Actor, ActorType
 from shared.plugin_management import management_for, settings_mode
 from shared.orchestration_repository_support import _json_hash
-from shared.redaction import redact_text
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -63,8 +48,6 @@ from shared.orchestration_repository_support import (
 logger = logging.getLogger("agent")
 
 
-_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-_DEVICE_KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
     {
@@ -112,25 +95,6 @@ _ACTIVE_CONTRIBUTION_FIELDS = (
 )
 
 
-class MigrationPreparationPersistedError(PluginConflictError):
-    """A create request failed after its non-runnable PREPARING hold committed."""
-
-    code = "PLUGIN_MIGRATION_PREPARATION_PENDING"
-
-    def __init__(self, *, migration_pair_id: str, phase: str, cause: Exception | None = None) -> None:
-        super().__init__(
-            "migration preparation is durable but target copy is incomplete; "
-            "retry the same request_id",
-            code=self.code,
-        )
-        self.migration_pair_id = migration_pair_id
-        self.phase = phase
-        self.blocking_reason = {
-            "code": str(getattr(cause, "code", type(cause).__name__)),
-            "message": redact_text(cause)[:400] if cause is not None else "迁移准备尚未完成",
-        }
-
-
 def _iso_datetime(value: object) -> str:
     if not isinstance(value, datetime):
         return ""
@@ -154,27 +118,6 @@ def _contribution_projection(
     }
 
 
-def classify_arrival_stats_recovery_readback(
-    evidence: Mapping[str, object],
-) -> str:
-    """Classify only the closed, safe readback contract for one recovery."""
-
-    expected = {
-        "arrival_stat_runs",
-        "arrival_stat_items",
-        "feishu_rows_created",
-    }
-    if set(evidence) != expected:
-        raise ValueError("arrival statistics recovery readback is incomplete")
-    values: list[int] = []
-    for field in sorted(expected):
-        value = evidence.get(field)
-        if type(value) is not int or value < 0:
-            raise ValueError("arrival statistics recovery readback count is invalid")
-        values.append(value)
-    return "NOT_APPLIED" if not any(values) else "WRITE_OUTCOME_UNKNOWN"
-
-
 class AutomationPluginManagementService:
     """Keep HTTP DTO handling outside lifecycle/configuration domain services."""
 
@@ -184,7 +127,6 @@ class AutomationPluginManagementService:
         catalog: PluginCatalog,
         lifecycle: AutomationPluginService,
         configuration: AutomationProjectConfigurationService,
-        worker_repository: Any,
         target_service: Any,
         package_repository: Any,
         storage: PluginStoragePort,
@@ -195,10 +137,8 @@ class AutomationPluginManagementService:
         self._catalog = catalog
         self._lifecycle = lifecycle
         self._configuration = configuration
-        self._workers = worker_repository
         self._targets = target_service
         self._packages = package_repository
-        self._migrations = PluginMigrationControlPlane(package_repository)
         self._storage = storage
         self._release_hold_provider = release_hold_provider or (lambda: False)
         self._resource_catalog_provider = resource_catalog_provider
@@ -237,40 +177,9 @@ class AutomationPluginManagementService:
                 code="PLUGIN_RELEASE_HOLD",
             )
 
-    def _require_no_open_migration_pair(self, automation_id: str) -> None:
-        """Keep ordinary project mutation from bypassing pair ownership.
-
-        Pair transitions are the only path allowed to move future automatic
-        entrypoints.  In particular, an ordinary config save/upgrade could
-        otherwise prepare a fresh generation whose scheduler materialization
-        races the durable CUTOVER or ROLLED_BACK owner.
-        """
-
-        finder = getattr(
-            self._packages,
-            "get_active_plugin_migration_pair_for_automation",
-            None,
-        )
-        if not callable(finder):
-            # The production repository always exposes this narrow query.  A
-            # legacy in-memory management double has no persisted migration
-            # table and therefore cannot own an entrypoint; keep that boundary
-            # compatible instead of treating a test-only port as a false pair.
-            return
-        pair = finder(automation_id)
-        if isinstance(pair, Mapping):
-            raise PluginConflictError(
-                "automation project is owned by an unfinished migration pair",
-                code="PLUGIN_MIGRATION_PROJECT_MUTATION_BLOCKED",
-            )
-
     @staticmethod
     def _instance_projection(instance: PluginInstanceRecord) -> dict[str, Any]:
-        runtime_model = getattr(
-            instance.active_version,
-            "runtime_model",
-            PluginRuntimeModel.ACTION_V1,
-        )
+        runtime_model = instance.active_version.runtime_model
         return {
             "automation_id": instance.automation_id,
             "plugin_id": instance.plugin_id,
@@ -557,12 +466,6 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         self._require_console_actor(actor, super_admin=False)
         projection = self._catalog.safe_projection(module=module) if module is not None else self._catalog.safe_projection()
-        projection["hidden_automation_ids"] = sorted(
-            {
-                *projection.get("hidden_automation_ids", []),
-                *DEFERRED_R7_PLUGIN_IDS,
-            }
-        )
         instances = projection.get("instances")
         if isinstance(instances, list):
             registry_records = None
@@ -674,331 +577,15 @@ class AutomationPluginManagementService:
         projection["resource_pool_problem"] = resource_pool_problem
         return projection
 
-    def recover_arrival_stats_not_applied(
-        self,
-        automation_id: str,
-        *,
-        generation: int,
-        lease_id: str,
-        evidence_sha256: str,
-        readback: Mapping[str, object],
-        request_id: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        del generation, lease_id, evidence_sha256, readback, request_id
-        self._require_console_actor(actor, super_admin=True)
-        raise PluginConflictError(
-            "actor-supplied arrival statistics readback is not recovery authority",
-            code="PLUGIN_RECOVERY_ACTOR_EVIDENCE_REJECTED",
-        )
-
-    def recover_unknown_write(
-        self,
-        automation_id: str,
-        *,
-        generation: int,
-        lease_id: str,
-        request_id: str,
-        actor: Actor,
-        resume_run: bool = True,
-        expected_run_id: str | None = None,
-        expected_work_item_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Resolve an unknown write using only server-owned durable evidence."""
-
-        self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        if type(resume_run) is not bool or (
-            not resume_run and (not expected_run_id or not expected_work_item_id)
-        ):
-            raise PluginConflictError("manual recovery requires exact work item and Run", code="PLUGIN_RECOVERY_IDENTITY_REQUIRED")
-        entry = self._catalog.require(automation_id)
-        # Scope is package identity, not the display/default instance id: a
-        # reviewed first-party package may be installed under another exact
-        # automation id and still has its own isolated receipt chain.
-        if entry.plugin_id not in frozenset(RECOVERABLE_WRITE_PROJECT_PLUGINS.values()):
-            raise PluginConflictError(
-                "recovery is not available for this automation project",
-                code="PLUGIN_RECOVERY_SCOPE_INVALID",
-            )
-        reader = getattr(self._targets, "recover_unknown_write", None)
-        if not callable(reader):
-            raise PluginConflictError(
-                "server recovery reader is unavailable",
-                code="PLUGIN_RECOVERY_UNAVAILABLE",
-            )
-        manual = {} if resume_run else {
-            "resume_run": False, "expected_run_id": expected_run_id,
-            "expected_work_item_id": expected_work_item_id,
-        }
-        result = reader(
-            automation_id=automation_id,
-            generation=generation,
-            lease_id=lease_id,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role="super_admin",
-            **manual,
-        )
-        if not isinstance(result, Mapping) or result.get("recovery_status") not in {
-            "APPLIED", "NOT_APPLIED", "UNKNOWN",
-        }:
-            raise PluginConflictError(
-                "server recovery reader returned invalid evidence",
-                code="PLUGIN_RECOVERY_UNAVAILABLE",
-            )
-        return {
-            **self._catalog_instance_projection(entry),
-            "recovery_status": str(result["recovery_status"]),
-            "reason": str(result.get("reason") or ""),
-            "run_id": str(result.get("run_id") or ""),
-            "step_id": str(result.get("step_id") or ""),
-            "transitioned": bool(result.get("transitioned")),
-            "idempotent": bool(result.get("idempotent")),
-            "evidence": dict(result.get("evidence") or {}),
-        }
-
-    def recover_current_unknown_write(
-        self,
-        automation_id: str,
-        *,
-        request_id: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        """Recover the exact current generation without actor-supplied identity."""
-
-        self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        entry = self._catalog.require(automation_id)
-        if entry.plugin_id not in frozenset(RECOVERABLE_WRITE_PROJECT_PLUGINS.values()):
-            raise PluginConflictError(
-                "recovery is not available for this automation project",
-                code="PLUGIN_RECOVERY_SCOPE_INVALID",
-            )
-        if (
-            entry.reconcile_state is not RuntimeReconcileState.BLOCKED_UNKNOWN_WRITE
-            or entry.committed_generation is None
-            or entry.target_generation != entry.committed_generation
-        ):
-            raise PluginConflictError(
-                "automation project is not blocked on one current unknown write",
-                code="PLUGIN_RECOVERY_STATE_INVALID",
-            )
-        reader = getattr(self._targets, "recover_current_unknown_write", None)
-        if not callable(reader):
-            raise PluginConflictError(
-                "server recovery reader is unavailable",
-                code="PLUGIN_RECOVERY_UNAVAILABLE",
-            )
-        result = reader(
-            automation_id=automation_id,
-            generation=int(entry.committed_generation),
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role="super_admin",
-        )
-        if not isinstance(result, Mapping) or result.get("recovery_status") not in {
-            "APPLIED", "NOT_APPLIED", "UNKNOWN",
-        }:
-            raise PluginConflictError(
-                "server recovery reader returned invalid evidence",
-                code="PLUGIN_RECOVERY_UNAVAILABLE",
-            )
-        refreshed = self._catalog.require(automation_id)
-        return {
-            **self._catalog_instance_projection(refreshed),
-            "recovery_status": str(result["recovery_status"]),
-            "reason": str(result.get("reason") or ""),
-            "run_id": str(result.get("run_id") or ""),
-            "step_id": str(result.get("step_id") or ""),
-            "transitioned": bool(result.get("transitioned")),
-            "idempotent": bool(result.get("idempotent")),
-            "evidence": dict(result.get("evidence") or {}),
-        }
-
-    def worker_projection(self, *, actor: Actor) -> dict[str, Any]:
-        self._require_console_actor(actor, super_admin=False)
-        workers: list[dict[str, Any]] = []
-        for row in self._workers.list_worker_devices():
-            device_id = str(row.get("device_id") or "").strip()
-            platform = str(row.get("platform") or "").strip().lower()
-            service_state = str(row.get("service_state") or "").strip().upper()
-            if not device_id or platform != "windows":
-                continue
-            workers.append(self._worker_row_projection(row))
-        return {"workers": sorted(workers, key=lambda item: item["device_id"])}
-
-    @staticmethod
-    def _worker_row_projection(row: Mapping[str, Any]) -> dict[str, Any]:
-        device_id = str(row.get("device_id") or "").strip()
-        service_state = str(row.get("service_state") or "").strip().upper()
-        return {
-            "device_id": device_id,
-            "worker_id": device_id,
-            "display_name": str(row.get("display_name") or device_id)[:120],
-            "platform": "windows",
-            "state": service_state,
-            "status": service_state,
-            "session_state": str(row.get("interactive_session_state") or "").upper(),
-            "online": service_state == "ONLINE",
-            "last_seen_at": _iso_datetime(row.get("last_seen_at")),
-        }
-
-    def pair_worker(
-        self,
-        *,
-        device_id: str,
-        display_name: str,
-        platform: str,
-        agent_version: str,
-        identity: Mapping[str, Any],
-        capabilities: Mapping[str, Any],
-        request_id: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        try:
-            uuid.UUID(str(request_id))
-        except (ValueError, TypeError, AttributeError) as exc:
-            raise PluginConflictError(
-                "Worker pairing request_id must be UUID",
-                code="PLUGIN_WORKER_PAIRING_REQUEST_INVALID",
-            ) from exc
-        normalized_device_id = str(device_id or "").strip()
-        normalized_name = str(display_name or "").strip()
-        normalized_platform = str(platform or "").strip().lower()
-        normalized_version = str(agent_version or "").strip()
-        if (
-            not _DEVICE_ID_RE.fullmatch(normalized_device_id)
-            or not normalized_name
-            or len(normalized_name) > 120
-            or normalized_platform != "windows"
-            or not re.fullmatch(r"\d+\.\d+\.\d+", normalized_version)
-        ):
-            raise PluginConflictError(
-                "Worker pairing descriptor is invalid",
-                code="PLUGIN_WORKER_PAIRING_REQUEST_INVALID",
-            )
-        closed_identity = dict(identity)
-        if set(closed_identity) != {
-            "device_key_id",
-            "ed25519_public_key_base64",
-            "tls_client_certificate_sha256",
-        }:
-            raise PluginConflictError(
-                "Worker public identity fields are invalid",
-                code="PLUGIN_WORKER_IDENTITY_INVALID",
-            )
-        key_id = str(closed_identity.get("device_key_id") or "")
-        public_text = str(closed_identity.get("ed25519_public_key_base64") or "")
-        certificate_sha256 = str(
-            closed_identity.get("tls_client_certificate_sha256") or ""
-        ).lower()
-        try:
-            public_key = base64.b64decode(public_text, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise PluginConflictError(
-                "Worker Ed25519 public key is invalid",
-                code="PLUGIN_WORKER_IDENTITY_INVALID",
-            ) from exc
-        if (
-            not _DEVICE_KEY_ID_RE.fullmatch(key_id)
-            or len(public_key) != 32
-            or base64.b64encode(public_key).decode("ascii") != public_text
-            or not _SHA256_RE.fullmatch(certificate_sha256)
-        ):
-            raise PluginConflictError(
-                "Worker public identity is invalid",
-                code="PLUGIN_WORKER_IDENTITY_INVALID",
-            )
-        closed_capabilities = dict(capabilities)
-        if set(closed_capabilities) != {"interactive"} or not isinstance(
-            closed_capabilities.get("interactive"),
-            bool,
-        ):
-            raise PluginConflictError(
-                "Worker capabilities are invalid",
-                code="PLUGIN_WORKER_CAPABILITY_INVALID",
-            )
-        persisted = self._workers.pair_worker_device(
-            {
-                "device_id": normalized_device_id,
-                "display_name": normalized_name,
-                "platform": normalized_platform,
-                "agent_version": normalized_version,
-                "identity_json": {
-                    "device_key_id": key_id,
-                    "ed25519_public_key_base64": public_text,
-                    "tls_client_certificate_sha256": certificate_sha256,
-                },
-                "paired_public_key_fingerprint": hashlib.sha256(public_key).hexdigest(),
-                "capabilities_json": closed_capabilities,
-            },
-            request_id=str(request_id),
-            actor_id=actor.actor_id,
-            actor_role=role,
-        )
-        return self._worker_row_projection(persisted)
-
     @staticmethod
     def _require_package_module(verified: Any, module: str | None, *, expected: Mapping[str, str] | None = None) -> None:
         if module is None and expected is None:
             return
-        ownership = management_for(verified.manifest.plugin_id, getattr(verified.manifest, "management", None))
+        ownership = management_for(getattr(verified.manifest, "management", None))
         if module is not None and ownership["module"] != module:
             raise PluginConflictError("package belongs to another module", code="PLUGIN_MODULE_MISMATCH")
         if expected is not None and ownership != dict(expected):
             raise PluginConflictError("dataset or module changes require a core migration", code="PLUGIN_DATASET_INCOMPATIBLE")
-
-    def install(
-        self,
-        package_bytes: bytes,
-        *,
-        instance_name: str,
-        request_id: str,
-        transport_package_sha256: str,
-        actor: Actor,
-        module: str | None = None,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        if module is not None:
-            self._require_package_module(self._lifecycle.inspect_upload(
-                package_bytes, transport_package_sha256=transport_package_sha256,
-            ), module)
-        # The legacy endpoint remains ACTION_V1-compatible, but service-v2
-        # packages must go through the wizard endpoint so every configuration
-        # and binding decision participates in one durable request identity.
-        try:
-            self._lifecycle.inspect_service_v2_upload(
-                package_bytes,
-                transport_package_sha256=transport_package_sha256,
-            )
-        except PluginPackageError as exc:
-            if getattr(exc, "code", "") != "PLUGIN_SERVICE_V2_REQUIRED":
-                raise
-            # A schema-v1 package is expected at this endpoint.  Its
-            # established verifier remains the installation authority.
-        else:
-            raise PluginConflictError(
-                "service-v2 packages require the closed installation wizard intent",
-                code="PLUGIN_SERVICE_V2_INSTALL_INTENT_REQUIRED",
-            )
-        instance = self._lifecycle.install_upload(
-            package_bytes,
-            instance_name=instance_name,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            request_id=request_id,
-            transport_package_sha256=transport_package_sha256,
-        )
-        if instance.active_version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-            raise PluginConflictError(
-                "plugin runtime classification changed during installation",
-                code="PLUGIN_RUNTIME_CLASSIFICATION_DRIFT",
-            )
-        return self._instance_projection(instance)
 
     @staticmethod
     def _service_v2_wizard_projection(verified: Any) -> dict[str, Any]:
@@ -1030,8 +617,6 @@ class AutomationPluginManagementService:
             transport_package_sha256=transport_package_sha256,
         )
         self._require_package_module(verified, module)
-        if verified.manifest.schema_version == 1:
-            return action_v1_wizard_projection(verified)
         validate_service_v2_install_contract(verified)
         return self._service_v2_wizard_projection(verified)
 
@@ -1047,7 +632,7 @@ class AutomationPluginManagementService:
                 code="PLUGIN_INSTALL_INTENT_INVALID",
             ) from exc
         if not isinstance(decoded, Mapping) or set(decoded) != _SERVICE_V2_INSTALL_INTENT_FIELDS:
-            forbidden = {"automation_id", "device_id", "manifest", "package_digest", "package_sha256"} & set(
+            forbidden = {"automation_id", "manifest", "package_digest", "package_sha256"} & set(
                 decoded if isinstance(decoded, Mapping) else ()
             )
             raise PluginConflictError(
@@ -1057,7 +642,6 @@ class AutomationPluginManagementService:
             )
         forbidden_keys = {
             "automation_id",
-            "device_id",
             "config",
             "account_bindings",
             "resource_bindings",
@@ -1117,8 +701,6 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         """Install a verified wizard package through its replayable intent.
 
-        The legacy method/route name remains compatible with existing v2
-        callers; the same closed intent now also admits signed ACTION_V1.
         """
 
         role = self._require_console_actor(actor, super_admin=True)
@@ -1129,8 +711,7 @@ class AutomationPluginManagementService:
             transport_package_sha256=transport_package_sha256,
         )
         self._require_package_module(verified, module)
-        if verified.manifest.schema_version != 1:
-            validate_service_v2_install_contract(verified)
+        validate_service_v2_install_contract(verified)
         intent_sha256 = hashlib.sha256(
             canonical_json_bytes(
                 {
@@ -1166,7 +747,6 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        self._require_no_open_migration_pair(automation_id)
         current = self._catalog.require(automation_id)
         # The repository owns the atomic CAS and request UUID idempotency.  Do
         # not reject a response-loss retry merely because the first attempt
@@ -1370,22 +950,10 @@ class AutomationPluginManagementService:
             "target_generation": entry.target_generation,
             "committed_generation": entry.committed_generation,
             "reconcile_state": entry.reconcile_state.value,
-            "runtime_model": getattr(
-                entry,
-                "runtime_model",
-                PluginRuntimeModel.ACTION_V1.value,
-            ),
-            "plugin_api": getattr(entry, "plugin_api", "1.0.0"),
-            "active_runtime_model": getattr(
-                entry,
-                "active_runtime_model",
-                PluginRuntimeModel.ACTION_V1.value,
-            ),
-            "active_version": getattr(
-                entry,
-                "active_version",
-                entry.installed_version,
-            ),
+            "runtime_model": entry.runtime_model,
+            "plugin_api": entry.plugin_api,
+            "active_runtime_model": entry.active_runtime_model,
+            "active_version": entry.active_version,
         }
 
     def _require_committed_ready(self, entry: PluginCatalogEntry) -> None:
@@ -1461,17 +1029,7 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        self._require_no_open_migration_pair(automation_id)
         entry = self._catalog.require(automation_id)
-        if enabled and entry.runtime_model == PluginRuntimeModel.ACTION_V1.value:
-            finder = getattr(self._packages, "get_authoritative_plugin_migration_pair_for_automation", None)
-            pair = finder(automation_id) if callable(finder) else None
-            if (pair and pair.get("source_automation_id") == automation_id
-                    and pair.get("state") == "COMPLETED" and pair.get("rolled_back_at") is None):
-                raise PluginConflictError(
-                    "the completed migration source is retired; enable its V2 target instead",
-                    code="PLUGIN_MIGRATION_SOURCE_RETIRED",
-                )
         if entry.record_version != expected_record_version:
             # A committed state change can outlive its HTTP response.  Let the
             # audited repository prove an exact retry before rejecting the
@@ -1587,17 +1145,6 @@ class AutomationPluginManagementService:
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        self._require_no_open_migration_pair(automation_id)
-        migration_uninstall_allowed = getattr(
-            self._packages, "source_project_migration_uninstall_allowed", None
-        )
-        if callable(migration_uninstall_allowed) and not migration_uninstall_allowed(
-            automation_id
-        ):
-            raise PluginConflictError(
-                "complete every migration pair before uninstalling its v1 source",
-                code="PLUGIN_MIGRATION_SOURCE_UNINSTALL_BLOCKED",
-            )
         current = self._catalog.require(automation_id)
         if (
             current.record_version != expected_record_version
@@ -1625,7 +1172,6 @@ class AutomationPluginManagementService:
             "automation_id": result.automation_id,
             "status": result.status.value,
             "purge_id": result.purge_id,
-            "pending_cleanup_count": len(result.pending_cleanup_commands),
         }
 
     def _reconcile_before_uninstall(
@@ -1727,425 +1273,6 @@ class AutomationPluginManagementService:
             "already_cleared": bool(result.get("already_cleared")),
         }
 
-    def migration_pair(self, migration_pair_id: str, *, actor: Actor) -> dict[str, Any]:
-        self._require_console_actor(actor, super_admin=True)
-        return self._migrations.get_pair(migration_pair_id)
-
-    @staticmethod
-    def _migration_role_signature(role: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-        """Compare the complete role contract independently of its role name."""
-
-        ignored = {"role"}
-        normalized: list[tuple[str, str]] = []
-        for key, value in role.items():
-            if key in ignored:
-                continue
-            if isinstance(value, list):
-                normalized_value = repr(tuple(sorted(repr(item) for item in value)))
-            else:
-                normalized_value = repr(value)
-            normalized.append((str(key), normalized_value))
-        return tuple(sorted(normalized))
-
-    @classmethod
-    def _map_migration_bindings(
-        cls,
-        *,
-        source_bindings: Mapping[str, Any],
-        source_roles: Sequence[Mapping[str, Any]],
-        target_roles: Sequence[Mapping[str, Any]],
-        source_to_target_roles: Mapping[str, str],
-        kind: str,
-        explicitly_consumed_source_bindings: frozenset[str] = frozenset(),
-    ) -> dict[str, Any]:
-        """Copy one reviewed role bijection without signature-based inference."""
-
-        source_by_name = {
-            str(role.get("role") or ""): role
-            for role in source_roles
-            if isinstance(role, Mapping) and str(role.get("role") or "")
-        }
-        if len(source_by_name) != len(source_roles) or not set(source_bindings) <= set(
-            source_by_name
-        ):
-            raise PluginConflictError(
-                f"migration source {kind} roles are not closed",
-                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-            )
-        if not explicitly_consumed_source_bindings <= set(source_bindings):
-            raise PluginConflictError(
-                f"migration explicitly consumed {kind} bindings are invalid",
-                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-            )
-        target_by_name: dict[str, Mapping[str, Any]] = {}
-        for target_role in target_roles:
-            if not isinstance(target_role, Mapping):
-                raise PluginConflictError(
-                    f"migration target {kind} role is invalid",
-                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-                )
-            target_name = str(target_role.get("role") or "")
-            if not target_name or target_name in target_by_name:
-                raise PluginConflictError(
-                    f"migration target {kind} roles are not closed",
-                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-                )
-            target_by_name[target_name] = target_role
-
-        if not isinstance(source_to_target_roles, Mapping) or any(
-            not isinstance(source_name, str)
-            or not source_name
-            or not isinstance(target_name, str)
-            or not target_name
-            for source_name, target_name in source_to_target_roles.items()
-        ):
-            raise PluginConflictError(
-                f"migration reviewed {kind} role map is invalid",
-                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-            )
-        reviewed_map = dict(source_to_target_roles)
-        if (
-            set(reviewed_map) - set(source_by_name)
-            or set(reviewed_map.values()) != set(target_by_name)
-            or len(set(reviewed_map.values())) != len(reviewed_map)
-            or set(reviewed_map) & set(explicitly_consumed_source_bindings)
-        ):
-            raise PluginConflictError(
-                f"migration reviewed {kind} role map is not a closed bijection",
-                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-            )
-        for source_name, target_name in reviewed_map.items():
-            if cls._migration_role_signature(
-                source_by_name[source_name]
-            ) != cls._migration_role_signature(target_by_name[target_name]):
-                raise PluginConflictError(
-                    f"migration reviewed {kind} role contracts are incompatible",
-                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-                )
-
-        result: dict[str, Any] = {}
-        consumed_bindings: set[str] = set(explicitly_consumed_source_bindings)
-        for source_name, target_name in reviewed_map.items():
-            target_role = target_by_name[target_name]
-            if source_name in source_bindings:
-                result[target_name] = copy.deepcopy(source_bindings[source_name])
-                consumed_bindings.add(source_name)
-            elif target_role.get("required") is True:
-                raise PluginConflictError(
-                    f"migration required {kind} binding is missing",
-                    code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-                )
-        if consumed_bindings != set(source_bindings):
-            raise PluginConflictError(
-                f"migration source {kind} binding has no target role",
-                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-            )
-        return result
-
-    def create_migration_pair(
-        self,
-        *,
-        migration_pair_id: str,
-        source_automation_id: str,
-        target_automation_id: str,
-        business_key_fields: tuple[str, ...],
-        business_key_namespace: str | None,
-        request_id: str,
-        reason: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        source = self._catalog.require(source_automation_id)
-        target = self._catalog.require(target_automation_id)
-        if (
-            getattr(source, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
-            != PluginRuntimeModel.ACTION_V1.value
-            or getattr(target, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
-            != PluginRuntimeModel.SERVICE_V2.value
-        ):
-            raise PluginConflictError(
-                "migration pair must bind ACTION_V1 to SERVICE_V2",
-                code="PLUGIN_MIGRATION_RUNTIME_MODEL_INVALID",
-            )
-        binding_mapping = reviewed_migration_binding_mapping(
-            source_automation_id=source_automation_id,
-            source_plugin_id=str(getattr(source, "plugin_id", "") or ""),
-            target_plugin_id=str(getattr(target, "plugin_id", "") or ""),
-        )
-        if binding_mapping is None:
-            raise PluginConflictError(
-                "migration pair has no reviewed binding map",
-                code="PLUGIN_MIGRATION_BINDING_MAPPING_UNAVAILABLE",
-            )
-        source_record = self._configuration.read(source_automation_id)
-        target_entrypoints, entrypoint_ownership, consumed_route_bindings = (
-            migration_target_entrypoints_and_ownership(
-                source=source,
-                target=target,
-                source_enabled_entrypoints=source_record.enabled_entrypoints,
-                source_schedule=source_record.schedule,
-                source_resource_bindings=source_record.resource_bindings,
-            )
-        )
-        copied_accounts = self._map_migration_bindings(
-            source_bindings=source_record.account_bindings,
-            source_roles=source.account_roles,
-            target_roles=target.account_roles,
-            source_to_target_roles=binding_mapping.account_roles,
-            kind="account",
-        )
-        copied_resources = self._map_migration_bindings(
-            source_bindings=source_record.resource_bindings,
-            source_roles=source.resource_roles,
-            target_roles=target.resource_roles,
-            source_to_target_roles=binding_mapping.resource_roles,
-            kind="resource",
-            explicitly_consumed_source_bindings=consumed_route_bindings,
-        )
-        # Persist the ownership gate *before* saving the target's copied
-        # scheduler intent.  If the copy/finalize step crashes, PREPARING is
-        # durable, the target's physical task stays disabled, and replaying
-        # this exact request continues instead of creating a second pair.
-        result = self._migrations.begin_pair_preparation(
-            migration_pair_id=migration_pair_id,
-            source_automation_id=source_automation_id,
-            target_automation_id=target_automation_id,
-            business_key_fields=business_key_fields,
-            business_key_namespace=business_key_namespace,
-            entrypoint_ownership=entrypoint_ownership,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            reason=reason,
-        )
-        if result.get("state") != "PREPARING":
-            return self._migration_pair_copy_projection(
-                result,
-                source_automation_id=source_automation_id,
-                target_automation_id=target_automation_id,
-                source_record=source_record,
-                target_entrypoints=target_entrypoints,
-            )
-        if target.reconcile_state is RuntimeReconcileState.ERROR:
-            self._targets.retry_disabled_route_preparation(
-                target_automation_id, request_id=str(uuid.uuid5(uuid.UUID(request_id), "repair-route-preparation")),
-                actor_id=actor.actor_id, actor_role=role,
-            )
-            target = self._catalog.require(target_automation_id)
-        # Read the source once more only after the durable ownership gate is
-        # in place.  Ordinary configuration mutation is now rejected for both
-        # sides, so this is the exact source snapshot copied into the new v2
-        # project rather than a pre-hold observation that could have raced a
-        # last legacy configuration save.
-        source_record = self._configuration.read(source_automation_id)
-        (
-            target_entrypoints,
-            refreshed_entrypoint_ownership,
-            refreshed_consumed_route_bindings,
-        ) = (
-            migration_target_entrypoints_and_ownership(
-                source=source,
-                target=target,
-                source_enabled_entrypoints=source_record.enabled_entrypoints,
-                source_schedule=source_record.schedule,
-                source_resource_bindings=source_record.resource_bindings,
-            )
-        )
-        if (
-            refreshed_entrypoint_ownership != entrypoint_ownership
-            or refreshed_consumed_route_bindings != consumed_route_bindings
-        ):
-            raise PluginConflictError(
-                "migration entrypoint ownership changed during preparation",
-                code="PLUGIN_MIGRATION_ENTRYPOINT_MAPPING_UNAVAILABLE",
-            )
-        copied_accounts = self._map_migration_bindings(
-            source_bindings=source_record.account_bindings,
-            source_roles=source.account_roles,
-            target_roles=target.account_roles,
-            source_to_target_roles=binding_mapping.account_roles,
-            kind="account",
-        )
-        copied_resources = self._map_migration_bindings(
-            source_bindings=source_record.resource_bindings,
-            source_roles=source.resource_roles,
-            target_roles=target.resource_roles,
-            source_to_target_roles=binding_mapping.resource_roles,
-            kind="resource",
-            explicitly_consumed_source_bindings=consumed_route_bindings,
-        )
-        copy_request_id = str(uuid.uuid5(uuid.UUID(request_id), "migration-target-copy"))
-        try:
-            self._configuration.save(
-                target_automation_id,
-                config=binding_mapping.copy_config(source_record.config),
-                account_bindings=copied_accounts,
-                resource_bindings=copied_resources,
-                enabled_entrypoints=target_entrypoints,
-                schedule=copy.deepcopy(source_record.schedule),
-                device_id=None,
-                actor_id=actor.actor_id,
-                actor_role=role,
-                request_id=copy_request_id,
-                expected_project_configuration_version=target.project_config_version,
-            )
-        except Exception as exc:  # durable PREPARING now requires same-request replay
-            raise MigrationPreparationPersistedError(
-                migration_pair_id=migration_pair_id,
-                phase="TARGET_COPY",
-                cause=exc,
-            ) from exc
-        try:
-            result = self._migrations.finalize_pair_preparation(
-                migration_pair_id,
-                request_id=str(uuid.uuid5(uuid.UUID(request_id), "migration-pair-finalize")),
-                actor_id=actor.actor_id,
-                actor_role=role,
-                reason=reason,
-            )
-        except Exception as exc:  # target config is staged but not yet immutable TESTING
-            raise MigrationPreparationPersistedError(
-                migration_pair_id=migration_pair_id,
-                phase="FINALIZE_TESTING",
-                cause=exc,
-            ) from exc
-        # The pair is durable before target preparation begins, so the
-        # generation-side scheduler gate can only materialize a disabled v2
-        # task during manual verification.  A coeffect failure leaves TESTING
-        # durable and explicitly non-runnable; the normal reconciler retries.
-        try:
-            self._targets.reconcile_project(target_automation_id)
-        except Exception:  # noqa: BLE001 - copied desired state is durable and safe
-            result = {**result, "target_preparation_state": "PREPARING"}
-        else:
-            refreshed_target = self._catalog.require(target_automation_id)
-            prepared = (
-                refreshed_target.committed_generation
-                == refreshed_target.target_generation
-                and refreshed_target.reconcile_state is RuntimeReconcileState.STABLE
-            )
-            result = {
-                **result,
-                "target_preparation_state": "PREPARED" if prepared else "PREPARING",
-            }
-        return self._migration_pair_copy_projection(
-            result,
-            source_automation_id=source_automation_id,
-            target_automation_id=target_automation_id,
-            source_record=source_record,
-            target_entrypoints=target_entrypoints,
-        )
-
-    @staticmethod
-    def _migration_pair_copy_projection(
-        result: Mapping[str, Any],
-        *,
-        source_automation_id: str,
-        target_automation_id: str,
-        source_record: AutomationProjectConfigRecord,
-        target_entrypoints: Sequence[str],
-    ) -> dict[str, Any]:
-        projection = dict(result)
-        projection["copied_configuration"] = {
-            "source_automation_id": source_automation_id,
-            "target_automation_id": target_automation_id,
-            "source_config_version": source_record.config_version,
-            "target_entrypoints": list(target_entrypoints),
-            "schedule": copy.deepcopy(source_record.schedule),
-        }
-        return projection
-
-    def mark_migration_ready(
-        self,
-        migration_pair_id: str,
-        *,
-        expected_record_version: int,
-        request_id: str,
-        reason: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        return self._migrations.mark_ready(
-            migration_pair_id,
-            expected_record_version=expected_record_version,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            reason=reason,
-        )
-
-    def cutover_migration_pair(
-        self,
-        migration_pair_id: str,
-        *,
-        expected_record_version: int,
-        request_id: str,
-        reason: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        result = self._migrations.cutover(
-            migration_pair_id,
-            expected_record_version=expected_record_version,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            reason=reason,
-        )
-        return self._reconcile_migration_ownership(result)
-
-    def rollback_migration_pair(
-        self,
-        migration_pair_id: str,
-        *,
-        expected_record_version: int,
-        request_id: str,
-        reason: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        result = self._migrations.rollback(
-            migration_pair_id,
-            expected_record_version=expected_record_version,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            reason=reason,
-        )
-        return self._reconcile_migration_ownership(result)
-
-    def _reconcile_migration_ownership(self, result: Mapping[str, Any]) -> dict[str, Any]:
-        """Withdraw the former owner's routes before activating its replacement."""
-        entries = [self._catalog.require(str(result[key]))
-                   for key in ("source_automation_id", "target_automation_id")]
-        for entry in sorted(entries, key=lambda item: (item.enabled, item.automation_id)):
-            self._targets.reconcile_project(entry.automation_id)
-        return dict(result)
-
-    def complete_migration_pair(
-        self,
-        migration_pair_id: str,
-        *,
-        expected_record_version: int,
-        request_id: str,
-        reason: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        role = self._require_console_actor(actor, super_admin=True)
-        self._require_mutation_allowed()
-        return self._migrations.complete(
-            migration_pair_id,
-            expected_record_version=expected_record_version,
-            request_id=request_id,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            reason=reason,
-        )
-
     def save_configuration(
         self,
         automation_id: str,
@@ -2155,14 +1282,12 @@ class AutomationPluginManagementService:
         resource_bindings: Mapping[str, Any],
         enabled_entrypoints: tuple[str, ...],
         schedule: Mapping[str, Any],
-        device_id: str | None,
         request_id: str,
         expected_project_configuration_version: int,
         actor: Actor,
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
-        self._require_no_open_migration_pair(automation_id)
         started = time.monotonic()
         record = self._configuration.save(
             automation_id,
@@ -2171,7 +1296,6 @@ class AutomationPluginManagementService:
             resource_bindings=resource_bindings,
             enabled_entrypoints=enabled_entrypoints,
             schedule=schedule,
-            device_id=device_id,
             actor_id=actor.actor_id,
             actor_role=role,
             request_id=request_id,
@@ -2182,7 +1306,7 @@ class AutomationPluginManagementService:
         # Saving desired state revokes prior authority immediately.  Reconcile
         # is attempted synchronously, but an unavailable coeffect remains a
         # visible non-runnable target rather than rolling back or using an old
-        # account/device.
+        # account.
         reconcile_failed = False
         saved = time.monotonic()
         try:
@@ -2229,8 +1353,7 @@ class AutomationPluginManagementService:
         self._require_console_actor(actor, super_admin=True)
         entry = self._catalog.require(automation_id)
         code_owned_fields = set(
-            first_party_code_owned_config_fields(
-                automation_id=entry.automation_id,
+            code_owned_config_fields(
                 plugin_id=entry.plugin_id,
                 trust_source=entry.trust_source,
             )
@@ -2256,7 +1379,7 @@ class AutomationPluginManagementService:
             "enabled": entry.enabled,
             "configured": entry.configured,
             "project_configuration_version": entry.project_config_version,
-            "management": management_for(entry.plugin_id, entry.management),
+            "management": management_for(entry.management),
             "settings_mode": settings_mode(
                 settings_ui=entry.settings_ui, account_roles=entry.account_roles,
                 resource_roles=entry.resource_roles, config_schema=config_schema,
@@ -2323,11 +1446,6 @@ class AutomationPluginManagementService:
             resource_bindings=resource_bindings,
             enabled_entrypoints=tuple(enabled_entrypoints),
             schedule=entry.project_schedule,
-            device_id=(
-                str(entry.device_binding.get("device_id") or "")
-                if entry.device_binding
-                else None
-            ),
             request_id=request_id,
             expected_project_configuration_version=expected_project_configuration_version,
             actor=actor,
@@ -2414,11 +1532,6 @@ class AutomationPluginManagementService:
             resource_bindings=entry.resource_bindings,
             enabled_entrypoints=tuple(sorted(enabled_entrypoints)),
             schedule=schedule,
-            device_id=(
-                str(entry.device_binding.get("device_id") or "")
-                if entry.device_binding
-                else None
-            ),
             request_id=request_id,
             expected_project_configuration_version=expected_project_configuration_version,
             actor=actor,
@@ -2446,7 +1559,6 @@ class AutomationPluginManagementService:
             or current.get("enabled") is not schedule.get("enabled")
         ):
             return None
-        self._require_no_open_migration_pair(entry.automation_id)
         try:
             result = self._configuration.save_schedule_times(
                 entry,
@@ -2544,11 +1656,6 @@ class AutomationPluginManagementService:
     ) -> None:
         """Apply a v2 enablement change to effects before returning control."""
 
-        if (
-            getattr(entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
-            != PluginRuntimeModel.SERVICE_V2.value
-        ):
-            return
         provided_services = tuple(getattr(entry, "provided_services", ()))
         if provided_services:
             reconcile_tree = getattr(
@@ -2686,11 +1793,6 @@ class AutomationPluginManagementService:
         self,
         entry: PluginCatalogEntry,
     ) -> tuple[str, ...]:
-        if (
-            getattr(entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value)
-            != PluginRuntimeModel.SERVICE_V2.value
-        ):
-            return ()
         provided_services = tuple(getattr(entry, "provided_services", ()))
         if not provided_services:
             return ()
@@ -2730,12 +1832,7 @@ class AutomationPluginManagementService:
         entry = self._catalog.require(automation_id)
         if provider_services is None:
             provider_services = tuple(getattr(entry, "provided_services", ()))
-            runtime_model = getattr(
-                entry, "runtime_model", PluginRuntimeModel.ACTION_V1.value
-            )
-        else:
-            runtime_model = PluginRuntimeModel.SERVICE_V2.value
-        if runtime_model != PluginRuntimeModel.SERVICE_V2.value or not provider_services:
+        if not provider_services:
             return
         reconcile_tree = getattr(self._targets, "reconcile_provider_dependency_tree", None)
         if not callable(reconcile_tree):
@@ -2786,48 +1883,6 @@ class AutomationPluginManagementService:
                 "READY" if ready else "BLOCKED_DEPENDENCY" if blocked else "PREPARING"
             ),
         }
-
-    def package_bytes(
-        self,
-        plugin_id: str,
-        version: str,
-        *,
-        expected_sha256: str,
-    ) -> bytes:
-        """Return only the exact original signed package for Worker delivery."""
-
-        record = self._packages.get_package_version(plugin_id, version)
-        if record is None:
-            raise PluginNotFoundError("automation plugin version is not installed")
-        digest = str(expected_sha256 or "").strip().lower()
-        if digest != record.package_sha256:
-            raise PluginConflictError(
-                "requested Worker package digest does not match the installed version",
-                code="PLUGIN_PACKAGE_DIGEST_MISMATCH",
-            )
-        if record.trust_source not in {
-            PluginTrustSource.ED25519_FIRST_PARTY,
-            PluginTrustSource.ED25519_UPLOAD,
-        }:
-            raise PluginConflictError(
-                "Worker delivery requires an Ed25519-signed package",
-                code="PLUGIN_PACKAGE_TRUST_INVALID",
-            )
-        metadata = dict(record.install_metadata)
-        if (
-            not record.install_root
-            or metadata.get("archive_sha256") != record.package_sha256
-            or not isinstance(metadata.get("archive_relative"), str)
-        ):
-            raise PluginConflictError(
-                "installed plugin version has no immutable signed archive",
-                code="PLUGIN_PACKAGE_ARCHIVE_MISSING",
-            )
-        return self._storage.read_verified_archive(
-            Path(record.install_root),
-            str(metadata["archive_relative"]),
-            expected_sha256=record.package_sha256,
-        )
 
 
 __all__ = ["AutomationPluginManagementService"]

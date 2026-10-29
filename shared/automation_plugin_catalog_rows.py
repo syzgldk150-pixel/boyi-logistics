@@ -6,12 +6,7 @@ The cache never supplies locks, execution authority or mutation operations.
 from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Sequence
-from copy import deepcopy
 from shared.automation_project_policy_repository import read_project_configuration_rows
-from shared.automation_plugin_v2_repository import (
-    _select_authoritative_migration_pair, read_active_plugin_migration_pairs,
-    read_plugin_migration_pair_history, unique_active_plugin_migration_pair,
-)
 
 from shared.orchestration_repository_support import (
     OrchestrationPersistenceError, _decode_row, _required_text, _rows,
@@ -39,8 +34,6 @@ class CatalogDisplayRows:
         self.configs: dict[str, dict[str, Any]] = {}
         self.generations: dict[tuple[str, int], dict[str, Any]] = {}
         self.schedules: dict[str, list[dict[str, Any]]] = {}
-        self.migration_pairs: dict[str, list[dict[str, Any]]] = {}
-        self.migration_history: dict[str, list[dict[str, Any]]] = {}
         # Keys read in this batch map to their row, or None when absent; keys
         # outside the batch are read individually by the caller.
         self.versions: dict[tuple[str, str], dict[str, Any] | None] = {}
@@ -67,12 +60,6 @@ class CatalogDisplayRows:
             self.generations = {
                 (str(row["automation_id"]), int(row["generation"])): row for row in _rows(cursor)
             }
-            for row in read_active_plugin_migration_pairs(cursor, values):
-                for identity in {row['source_automation_id'], row['target_automation_id']} & self.identities:
-                    self.migration_pairs.setdefault(identity, []).append(row)
-            for row in read_plugin_migration_pair_history(cursor, values):
-                for identity in {row['source_automation_id'], row['target_automation_id']} & self.identities:
-                    self.migration_history.setdefault(identity, []).append(row)
             version_keys = sorted(
                 {(str(row.get("plugin_id") or ""), str(row.get("plugin_version") or ""))
                  for row in (*self.projects.values(), *self.generations.values())}
@@ -85,14 +72,6 @@ class CatalogDisplayRows:
                 )
                 found = {(str(row["plugin_id"]), str(row["version"])): row for row in _rows(cursor)}
                 self.versions = {key: found.get(key) for key in version_keys}
-
-    def migration_pair(self, automation_id):
-        return deepcopy(unique_active_plugin_migration_pair(self.migration_pairs.get(automation_id, [])))
-
-    def authoritative_migration_pair(self, automation_id):
-        identity = _required_text(automation_id, "automation_id")
-        return deepcopy(_select_authoritative_migration_pair(
-            self.migration_history.get(identity, []), automation_id=identity))
 
     def version(self, repository, plugin_id: str, version: str):
         key = (plugin_id, version)

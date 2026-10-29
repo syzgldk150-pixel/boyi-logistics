@@ -4,15 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from scripts.plugin_maintenance import PLUGIN_TESTS, maintenance_scope, package_plugin, selected_tests
+from scripts.plugin_maintenance import PLUGIN_TESTS, maintenance_scope, selected_tests
 
 
 def test_local_test_map_references_real_tests_and_has_each_required_business() -> None:
+    packages = Path(__file__).resolve().parents[1] / "agent" / "service_v2_plugins"
     for plugin_id in PLUGIN_TESTS:
         assert selected_tests(plugin_id)
+        assert (packages / plugin_id / "manifest.json").is_file()
     assert {
-        "sync_scan_codes", "sync_arrival_stats", "self_pickup_problem_upload",
-        "split_pending_problem_upload", "sync_finance_bills", "sync_customer_service_problems",
+        "sync_scan_codes_v2", "sync_arrival_stats_v2", "self_pickup_problem_upload_v2",
+        "split_pending_problem_upload_v2", "sync_customer_service_problems_v2",
     } <= PLUGIN_TESTS.keys()
 
 
@@ -38,33 +40,6 @@ def test_core_or_unrelated_plugin_changes_cannot_be_classified_local() -> None:
     assert result['supporting_paths'] == support
 
 
-def test_test_only_v1_package_uses_real_payload_and_verifies_signature(tmp_path: Path) -> None:
-    from agent.automation_plugins.package import Ed25519TrustStore, verify_signed_plugin_zip
-
-    output = tmp_path / "customer-test.zip"
-    result = package_plugin("sync_customer_service_problems", output,
-        version="0.0.901", test_signing=True, signing_key_env=None, key_id=None)
-    assert result["trust"] == "TEST_ONLY"
-    verified = verify_signed_plugin_zip(output,
-        verifier=Ed25519TrustStore({result["key_id"]: bytes.fromhex(result["public_key_hex"])}))
-    assert verified.manifest.plugin_id == "sync_customer_service_problems"
-    assert {entry.path for entry in verified.files} >= {"payload/action.py", "payload/customer_problem_fields.py"}
-    assert not list(tmp_path.glob("*.pem"))
-    with pytest.raises(ValueError, match="new ZIP"):
-        package_plugin("sync_customer_service_problems", output,
-            version="0.0.902", test_signing=True, signing_key_env=None, key_id=None)
-
-
-def test_v1_missing_injected_key_fails_without_creating_artifact(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("ISOLATED_MISSING_SIGNER", raising=False)
-    output = tmp_path / "customer.zip"
-    with pytest.raises(ValueError, match="not injected"):
-        package_plugin("sync_customer_service_problems", output,
-            version="0.0.901", test_signing=False,
-            signing_key_env="ISOLATED_MISSING_SIGNER", key_id="isolated")
-    assert not output.exists()
-
-
 def test_v2_packaging_rejects_real_payload_change_after_test_snapshot(tmp_path: Path, monkeypatch) -> None:
     import shutil
     from scripts import plugin_maintenance as maintenance
@@ -85,6 +60,5 @@ def test_v2_packaging_rejects_real_payload_change_after_test_snapshot(tmp_path: 
     action.write_text(action.read_text() + '\n# actual changed candidate after testing\n')
     output = tmp_path / 'candidate.zip'
     with pytest.raises(ValueError, match='changed after testing'):
-        maintenance.package_plugin(plugin_id, output, version=None, test_signing=False,
-            signing_key_env=None, key_id=None, expected_material=tested)
+        maintenance.package_plugin(plugin_id, output, expected_material=tested)
     assert not output.exists()

@@ -44,12 +44,6 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
-    if path == "/finance/sync":
-        app._handle_finance_post(handler, "sync")
-        return True
-    if path == "/finance/backfill":
-        app._handle_finance_post(handler, "backfill")
-        return True
     if path == "/finance/reviews/analyze":
         app._handle_finance_post(handler, "analyze_reviews")
         return True
@@ -58,9 +52,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if re.fullmatch(r"/finance/review-cases/\d+/reject", path):
         app._handle_finance_post(handler, "reject_review", path=path)
-        return True
-    if re.fullmatch(r"/finance/sync-batches/\d+/retry", path):
-        app._handle_finance_post(handler, "retry_batch", path=path)
         return True
     match = _PERIOD_POST.fullmatch(path)
     if match:

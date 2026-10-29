@@ -29,7 +29,6 @@ from console.services.automation_catalog_projection import (
     AUTOMATION_PROJECT_COMMENT_MAX_CHARS as AUTOMATION_PROJECT_COMMENT_MAX_CHARS,
     AUTOMATION_PENDING_RISK_LABELS as AUTOMATION_PENDING_RISK_LABELS,
     AUTOMATION_PLUGIN_CATALOG_ENDPOINT as AUTOMATION_PLUGIN_CATALOG_ENDPOINT,
-    AUTOMATION_WORKERS_ENDPOINT as AUTOMATION_WORKERS_ENDPOINT,
     AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES as AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES,
     AUTOMATION_PLUGIN_STATE_LABELS as AUTOMATION_PLUGIN_STATE_LABELS,
     AUTOMATION_PLUGIN_STABLE_STATES as AUTOMATION_PLUGIN_STABLE_STATES,
@@ -39,20 +38,14 @@ from console.services.automation_catalog_projection import (
     AUTOMATION_PLUGIN_VERSION_RE as AUTOMATION_PLUGIN_VERSION_RE,
     AUTOMATION_PLUGIN_API_RE as AUTOMATION_PLUGIN_API_RE,
     AUTOMATION_PLUGIN_SERVICE_RE as AUTOMATION_PLUGIN_SERVICE_RE,
-    AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE as AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE,
     AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS as AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS,
     AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL as AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL,
     AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS as AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS,
     AUTOMATION_PLUGIN_DEPENDENCY_BLOCKING_STATES as AUTOMATION_PLUGIN_DEPENDENCY_BLOCKING_STATES,
-    AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS as AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS,
-    AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS as AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS,
     AUTOMATION_PLUGIN_BLOCK_REASON_COPY as AUTOMATION_PLUGIN_BLOCK_REASON_COPY,
-    AUTOMATION_WORKER_ID_RE as AUTOMATION_WORKER_ID_RE,
     AUTOMATION_PLUGIN_BINDING_ID_RE as AUTOMATION_PLUGIN_BINDING_ID_RE,
     AUTOMATION_PLUGIN_CONFIG_KEY_RE as AUTOMATION_PLUGIN_CONFIG_KEY_RE,
     AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE as AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE,
-    AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS as AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS,
-    AUTOMATION_PLUGIN_ENTRYPOINTS as AUTOMATION_PLUGIN_ENTRYPOINTS,
     AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS as AUTOMATION_PLUGIN_V2_ENTRYPOINT_KINDS,
     AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES as AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES,
     AUTOMATION_PLUGIN_ACTIVE_CONTRIBUTION_FIELDS as AUTOMATION_PLUGIN_ACTIVE_CONTRIBUTION_FIELDS,
@@ -62,9 +55,7 @@ from console.services.automation_catalog_projection import (
     AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES as AUTOMATION_PLUGIN_SCHEDULE_RUNTIME_STATES,
     AUTOMATION_PLUGIN_CONFIG_COPY as AUTOMATION_PLUGIN_CONFIG_COPY,
     AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS as AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS,
-    _valid_migration_business_key_field as _valid_migration_business_key_field,
     AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY as AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY,
-    AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY_BY_PLUGIN as AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY_BY_PLUGIN,
     AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY as AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY,
     AUTOMATION_RESOURCE_DISPLAY_NAMES as AUTOMATION_RESOURCE_DISPLAY_NAMES,
     _plain_role_copy as _plain_role_copy,
@@ -95,10 +86,8 @@ from console.services.automation_catalog_projection import (
     _normalize_plugin_provided_services as _normalize_plugin_provided_services,
     _normalize_plugin_dependency_state as _normalize_plugin_dependency_state,
     _normalize_plugin_blocking_reasons as _normalize_plugin_blocking_reasons,
-    _normalize_plugin_migration as _normalize_plugin_migration,
     AUTOMATION_PLUGIN_MISSING_REQUIREMENT_LABELS as AUTOMATION_PLUGIN_MISSING_REQUIREMENT_LABELS,
     normalize_automation_plugin_catalog as normalize_automation_plugin_catalog,
-    normalize_automation_workers as normalize_automation_workers,
     normalize_hidden_automation_ids as normalize_hidden_automation_ids,
     automation_plugin_block_warning as automation_plugin_block_warning,
 )
@@ -114,10 +103,6 @@ AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS = 12 * 3600.0
 class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, ModuleDataSourcesServiceMixin):
     _automation_plugin_max_package_bytes = AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES
     _automation_plugin_version_re = AUTOMATION_PLUGIN_VERSION_RE
-    _automation_plugin_migration_pair_id_re = AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE
-    _valid_migration_business_key_field = staticmethod(
-        _valid_migration_business_key_field
-    )
 
     def _clear_automation_plugin_catalog_cache(self) -> None:
         lock = getattr(self, "_automation_catalog_cache_lock", None)
@@ -226,8 +211,8 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                     # A known mutation invalidates the caller's response too,
                     # not just the stored cache. Never render a removed instance
                     # from the old in-flight request after an uninstall.
-                    result = ([], [], [], [], frozenset(), "插件目录已变化，请刷新后继续。", result[6])
-                elif not result[5]:
+                    result = ([], [], [], frozenset(), "插件目录已变化，请刷新后继续。", result[5])
+                elif not result[4]:
                     cache = getattr(self, "_automation_catalog_cache", {})
                     cache[cache_key] = (time.monotonic() + AUTOMATION_CATALOG_FRESH_SECONDS, copy.deepcopy(result))
                     self._automation_catalog_cache = cache
@@ -253,7 +238,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
     ) -> tuple[
         list[dict[str, Any]],
         list[dict[str, Any]],
-        list[dict[str, Any]],
         list[str],
         frozenset[str],
         str,
@@ -266,7 +250,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         )
         if principal is None:
             return (
-                [],
                 [],
                 [],
                 [],
@@ -294,7 +277,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         if not catalog_result.get("ok"):
             code = str(catalog_result.get("error_code") or "PLUGIN_CATALOG_UNAVAILABLE")
             return (
-                [],
                 [],
                 [],
                 [],
@@ -328,7 +310,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 [],
                 [],
                 [],
-                [],
                 frozenset(),
                 "插件目录返回无效，所有项目已阻断运行。",
                 can_manage,
@@ -349,52 +330,17 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
                 [],
                 [],
                 [],
-                [],
                 frozenset(),
                 "插件目录实例身份无法核验，暂不能展示新的运行状态。",
                 can_manage,
             )
 
-        requires_workers = any(
-            str(item.get("execution_platform") or "").strip().lower() == "windows"
-            or bool(item.get("worker_required"))
-            for item in [*packages, *instances]
-        )
-        if not requires_workers:
-            return (
-                packages,
-                instances,
-                [],
-                unsupported,
-                hidden_automation_ids,
-                "",
-                can_manage,
-            )
-
-        workers_result = self._agent_request(
-            "GET",
-            AUTOMATION_WORKERS_ENDPOINT,
-            timeout=12,
-            console_principal=principal,
-        )
-        workers = (
-            normalize_automation_workers(workers_result.get("data"))
-            if workers_result.get("ok")
-            else []
-        )
-        warning = ""
-        if not workers_result.get("ok") and any(
-            item.get("execution_platform") == "windows" for item in instances
-        ):
-            code = str(workers_result.get("error_code") or "WORKERS_UNAVAILABLE")
-            warning = f"工作节点列表当前不可用（{code}），相关项目已阻断。"
         return (
             packages,
             instances,
-            workers,
             unsupported,
             hidden_automation_ids,
-            warning,
+            "",
             can_manage,
         )
 
@@ -549,136 +495,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             str(result.get("error_code") or fallback_code)[:128],
             normalize_feedback_text(str(result.get("error") or fallback_message))[:1000],
             data=safe_data,
-        )
-
-    def _handle_automation_project_approval_policy(
-        self,
-        handler: BaseHTTPRequestHandler,
-        automation_id: str,
-    ) -> None:
-        automation_id = self._automation_project_id(automation_id)
-        if not automation_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_PROJECT_NOT_FOUND",
-                "自动化项目不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以修改项目运行权限。",
-            )
-            return
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        allowed_fields = {
-            "mode",
-            "request_id",
-            "comment",
-            "expected_policy_version",
-            "expected_project_configuration_version",
-        }
-        if set(values) - allowed_fields:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "UNSUPPORTED_POLICY_FIELDS",
-                "项目权限请求包含不支持的字段，请刷新后重试。",
-            )
-            return
-        mode = str(values.get("mode") or "").strip().upper()
-        if mode not in AUTOMATION_PROJECT_POLICY_MODES:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "INVALID_APPROVAL_POLICY_MODE",
-                "项目权限只能是完全自动或每次运行审批。",
-            )
-            return
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        comment = normalize_feedback_text(str(values.get("comment") or "")).strip()
-        expected_policy_version = values.get("expected_policy_version")
-        expected_project_configuration_version = values.get(
-            "expected_project_configuration_version"
-        )
-        if not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "BROWSER_REQUEST_UUID_REQUIRED",
-                "缺少有效且稳定的请求标识，项目权限未保存。",
-            )
-            return
-        if len(comment) > AUTOMATION_PROJECT_COMMENT_MAX_CHARS:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "COMMENT_TOO_LONG",
-                "理由不能超过 500 个字符。",
-            )
-            return
-        if any(
-            isinstance(version, bool) or not isinstance(version, int) or version < 1
-            for version in (
-                expected_policy_version,
-                expected_project_configuration_version,
-            )
-        ):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "PROJECT_POLICY_VERSION_REQUIRED",
-                "项目权限或配置版本已缺失，请刷新页面后重试。",
-            )
-            return
-        result = self._agent_request(
-            "POST",
-            f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/approval-policy",
-            payload={
-                "mode": mode,
-                "request_id": request_id,
-                "comment": comment,
-                "expected_policy_version": expected_policy_version,
-                "expected_project_configuration_version": expected_project_configuration_version,
-            },
-            timeout=20,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PROJECT_POLICY_UPDATE_FAILED",
-                fallback_message="项目权限保存失败。",
-            )
-            return
-        self._clear_automation_plugin_catalog_cache()
-        policy = self._automation_project_policy_from_result(result, automation_id)
-        if policy is None:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_GATEWAY,
-                "INVALID_PROJECT_POLICY_RESPONSE",
-                "智能服务未返回完整的项目权限结果。",
-            )
-            return
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": {"policy": build_automation_project_policy_view(automation_id, policy)},
-                "message": "项目权限已保存。",
-            },
         )
 
     def _handle_automation_project_pending_approvals_get(
@@ -877,7 +693,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             "account_bindings",
             "resource_bindings",
             "enabled_entrypoints",
-            "device_id",
             "schedule",
             "request_id",
             "expected_project_configuration_version",
@@ -902,12 +717,10 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         )
         enabled_entrypoints, entrypoints_valid = _normalize_plugin_entrypoints(
             values.get("enabled_entrypoints"),
-            # The Agent validates the submitted IDs against the project's signed
-            # v1 manifest or installed v2 contribution contract.
+            # The Agent validates the submitted IDs against the installed
+            # contribution contract.
             runtime_model="SERVICE_V2",
         )
-        raw_device_id = values.get("device_id")
-        device_id = str(raw_device_id or "").strip()
         raw_schedule = values.get("schedule")
         schedule: dict[str, Any] = {}
         schedule_valid = False
@@ -957,8 +770,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             or not resources_valid
             or not entrypoints_valid
             or not schedule_valid
-            or (raw_device_id is not None and not device_id)
-            or (device_id and not AUTOMATION_WORKER_ID_RE.fullmatch(device_id))
         ):
             self._control_plane_error(
                 handler,
@@ -973,7 +784,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             "account_bindings": account_bindings,
             "resource_bindings": resource_bindings,
             "enabled_entrypoints": enabled_entrypoints,
-            "device_id": device_id or None,
             "schedule": schedule,
             "request_id": request_id,
             "expected_project_configuration_version": expected_version,

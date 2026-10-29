@@ -17,7 +17,7 @@ from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.developer_v2 import build_service_v2_package
 from agent.automation_plugins.finance_connectors_v2 import build_finance_connectors
 from plugin_core_adapters import finance_platform_capture as capture_module
-from plugin_core_adapters.finance import build_production_finance_handler_map
+from plugin_core_adapters.finance_platform_capture import build_production_finance_statement_handler_map
 from shared.data_sources import DataSourceRepository
 from shared.finance import FinanceRepository
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
@@ -76,9 +76,8 @@ def packaged(tmp_path, monkeypatch, database, ronghui):  # noqa: F811
         host=database.host, port=database.port, user=database.user, password=database.password,
         database=database.database, charset="utf8mb4", autocommit=True,
         cursorclass=database.pymysql.cursors.DictCursor))
-    reviewed = build_production_finance_handler_map(
-        cursor_secret=b"f" * 32, account_manager=Manager(), repository_factory=lambda: repository,
-        capture_port=lambda *_: None, capability_authorizer=lambda *_: None)
+    reviewed = build_production_finance_statement_handler_map(
+        cursor_secret=b"f" * 32, account_manager=Manager(), repository_factory=lambda: repository)
     context = CoreBrokerInvocationContext(
         automation_id="isolated-finance-statement", plugin_version="1.0.0",
         tool_name="sync_ronghui_finance_statement_v2", operation="service.invoke", action="run",

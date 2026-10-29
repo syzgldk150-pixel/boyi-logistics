@@ -7,7 +7,7 @@ from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.delivery_connectors_v2 import build_delivery_connectors
 from agent.automation_plugins.delivery_site_handlers import build_delivery_site_handler_map
 from agent.automation_plugins.errors import PluginExecutionError
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from plugin_core_adapters import delivery_site
 from shared.invocation_summary import invocation_count_summary
 from tests.test_delivery_site_production_adapter import _Manager, _bitable_row, _exact_bitable_record, _projection_row
@@ -45,7 +45,7 @@ def test_zip_reports_missing_rows_and_updates_only_existing(tmp_path, monkeypatc
 
     monkeypatch.setattr(delivery_site, "_default_projection_read", read)
     manager = _Manager()
-    readers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+    readers = build_host_primitive_handler_map(HostPrimitivePorts(
         describe_account=manager.require_active_binding_descriptor,
         delivery_list_views=lambda *_: [{"view_id": "pending", "view_name": "未签收明细"}],
         delivery_list_records=lambda *_: {"items": [

@@ -31,46 +31,6 @@
 
 {% endblock %}
 
-{% macro render_visual_field(field, prefix) %}
-  {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
-  <label class="auto-field">
-    <span class="auto-field-label">{{ field.label }}</span>
-    {% if field.kind == "checkbox" %}
-    <div class="auto-checkbox-wrap">
-      <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-json-path="{{ field.path }}" {% if field.value %}checked{% endif %}>
-      <span class="auto-checkbox-label">{{ '已启用' if field.value else '未启用' }}</span>
-    </div>
-    {% elif field.kind == "list" %}
-    <textarea id="{{ input_id }}" class="review-input auto-list-input" data-json-path="{{ field.path }}" data-json-list="true" placeholder="每行一个值">{{ field.value }}</textarea>
-    {% else %}
-    <input id="{{ input_id }}" class="review-input compact-input" type="{{ 'password' if field.secret else 'date' if field.kind == 'date' else 'url' if field.kind == 'url' else 'number' if field.kind == 'number' else 'text' }}" value="{{ field.value }}" data-json-path="{{ field.path }}" {% if field.step %}step="{{ field.step }}"{% endif %} {% if field.empty_null %}data-empty-null="true"{% endif %} placeholder="{{ field.label }}">
-    {% endif %}
-    {% if field.hint %}
-    <span class="auto-field-hint">{{ field.hint }}</span>
-    {% endif %}
-  </label>
-{% endmacro %}
-
-{% macro render_resource_field(field, resource_key, prefix) %}
-  {% set input_id = prefix ~ '-' ~ field.path|replace('.', '-') %}
-  <label class="auto-field">
-    <span class="auto-field-label">{{ field.label }}</span>
-    {% if field.kind == "checkbox" %}
-    <div class="auto-checkbox-wrap">
-      <input id="{{ input_id }}" class="auto-toggle-checkbox" type="checkbox" data-resource-key="{{ resource_key }}" data-resource-path="{{ field.path }}" {% if field.value %}checked{% endif %}>
-      <span class="auto-checkbox-label">{{ '已启用' if field.value else '未启用' }}</span>
-    </div>
-    {% elif field.kind == "list" %}
-    <textarea id="{{ input_id }}" class="review-input auto-list-input" data-resource-key="{{ resource_key }}" data-resource-path="{{ field.path }}" data-resource-list="true" placeholder="每行一个值">{{ field.value }}</textarea>
-    {% else %}
-    <input id="{{ input_id }}" class="review-input compact-input" type="{{ 'password' if field.secret else 'date' if field.kind == 'date' else 'url' if field.kind == 'url' else 'number' if field.kind == 'number' else 'text' }}" value="{{ field.value }}" data-resource-key="{{ resource_key }}" data-resource-path="{{ field.path }}" {% if field.step %}step="{{ field.step }}"{% endif %} {% if field.empty_null %}data-empty-null="true"{% endif %} placeholder="{{ field.label }}">
-    {% endif %}
-    {% if field.hint %}
-    <span class="auto-field-hint">{{ field.hint }}</span>
-    {% endif %}
-  </label>
-{% endmacro %}
-
 {% block content %}
 {% include "_module_source_history.html" %}
 <section class="auto-page" data-reveal="tasks" data-management-module="{{ management_module|default('automation') }}">
@@ -204,29 +164,20 @@
       data-automation-provider="{{ task.provider | default('ronghui', true) }}"
       data-plugin-id="{{ task.plugin.plugin_id if task.plugin else '' }}"
     >
-      {% set is_scan_preview_workflow = task.plugin and ((task.task_id == 'scan_codes' and task.plugin.plugin_id == 'sync_scan_codes') or (task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.plugin_id == 'sync_scan_codes_v2')) %}
-      {% set is_selection_preview_workflow = task.plugin and (task.task_id in ['self_pickup_problem_upload', 'split_pending_problem_upload'] or (task.plugin.runtime_model == 'SERVICE_V2' and task.plugin.plugin_id in ['self_pickup_problem_upload_v2', 'split_pending_problem_upload_v2'])) %}
-      <form method="post" action="/automations/tasks/save" data-ui-submit class="js-automation-form js-automation-task-form" data-scan-preview-workflow="{{ 'true' if is_scan_preview_workflow else 'false' }}" data-selection-preview-workflow="{{ 'true' if is_selection_preview_workflow else 'false' }}">
+      {% set is_scan_preview_workflow = task.plugin and task.plugin.plugin_id == 'sync_scan_codes_v2' %}
+      {% set is_selection_preview_workflow = task.plugin and task.plugin.plugin_id in ['self_pickup_problem_upload_v2', 'split_pending_problem_upload_v2'] %}
+      <form method="post" data-ui-submit class="js-automation-form js-automation-task-form" data-scan-preview-workflow="{{ 'true' if is_scan_preview_workflow else 'false' }}" data-selection-preview-workflow="{{ 'true' if is_selection_preview_workflow else 'false' }}">
         <input type="hidden" name="task_id" value="{{ task.task_id }}">
         <input type="hidden" name="task_mode" value="{{ task.task_mode or 'scheduled' }}">
         <input type="hidden" name="name" value="{{ task.name_value }}">
         <input type="hidden" name="tool_name" value="{{ task.tool_name_value }}">
         <input type="hidden" name="cron_expression" value="{{ task.cron_expression_value }}" data-cron-hidden>
         <input type="hidden" name="schedule_times_json" value='{{ task.schedule_time_values | default([], true) | tojson }}' data-schedule-times-hidden>
-        <input type="hidden" name="resource_key" value="" data-resource-key-hidden>
-        <textarea name="config_json" hidden data-resource-json-hidden></textarea>
-        <textarea name="resources_json" hidden data-resources-json-hidden></textarea>
         <textarea name="tool_params_json" hidden>{{ task.tool_params_json }}</textarea>
         {% if task.plugin %}<input type="hidden" name="project_plugin_instance" value="true">{% endif %}
         <button type="submit" hidden data-save-trigger></button>
 
         {% set has_schedule = task.is_schedulable and task.schedule_supported %}
-        {% set has_params = [] if task.plugin else task.tool_param_fields %}
-        {% set has_webhook = false if task.plugin else task.has_webhook %}
-        {% set has_resources = task.resource_bindings if not task.plugin else [] %}
-        {% set has_plugin_resource_roles = [] %}
-        {% set has_account_roles = [] if task.plugin else task.account_role_bindings %}
-        {% set is_webhook = task.task_mode == 'webhook' %}
         {% set can_save = task.can_save | default(true) %}
         {% set can_run_now = task.can_run_now | default(true) %}
         {% set run_disabled_reason = task.run_disabled_reason | default('当前不可执行') %}
@@ -235,7 +186,7 @@
           {% set run_disabled_reason = '未声明后台手动入口' %}
         {% endif %}
         {% set plugin_schedule_locked = task.plugin and (not can_manage_plugins or not task.plugin.configured or not task.plugin_schedule_supported or not task.plugin.lifecycle_actions_allowed) %}
-        {% set has_expandable_settings = can_save and ((has_schedule) if task.plugin else (has_webhook or task.is_schedulable or has_params or has_resources or has_account_roles)) %}
+        {% set has_expandable_settings = can_save and task.plugin and has_schedule %}
 
         {# ── 卡片主行 ── #}
         <div class="auto-card-row">
@@ -382,9 +333,7 @@
           class="auto-project-governance auto-project-governance--{{ policy.effective_status | default('unavailable', true) | lower }}"
           data-automation-project-governance
           data-automation-id="{{ task.task_id }}"
-          data-project-policy="{{ policy | tojson | forceescape }}"
-          data-can-manage="{{ 'true' if can_manage_approval_policies else 'false' }}"
-          aria-label="{{ task.name_value }}运行权限与待审批"
+          aria-label="{{ task.name_value }}运行权限"
         >
           <div class="auto-project-governance-row">
             <div class="auto-project-governance-copy">
@@ -395,63 +344,8 @@
               <strong data-project-policy-label>{{ policy.label | default('权限状态不可用', true) }}</strong>
               <p data-project-policy-summary>{{ policy.summary | default('未取得项目权限，请稍后刷新。', true) }}</p>
             </div>
-            <button
-              class="ghost-btn auto-project-policy-toggle"
-              type="button"
-              data-project-policy-toggle
-              aria-expanded="false"
-              aria-controls="project-policy-{{ task.task_id }}"
-            >
-              <i data-feather="sliders"></i>
-              权限设置
-            </button>
           </div>
-
-          <div class="auto-project-policy-panel" id="project-policy-{{ task.task_id }}" data-project-policy-panel hidden>
-            <fieldset {% if not (policy.available and can_manage_approval_policies) %}disabled{% endif %}>
-              <legend>选择项目的运行方式</legend>
-              <label class="auto-project-policy-option">
-                <input type="radio" name="project-policy-{{ task.task_id }}" value="REQUIRE_EACH_RUN" data-project-policy-mode {% if policy.configured_mode == 'REQUIRE_EACH_RUN' %}checked{% endif %}>
-                <span>
-                  <strong>仅允许手动操作</strong>
-                  <small>写入操作由具备插件权限的管理员在后台手动触发；读取仍按权限执行。</small>
-                </span>
-              </label>
-              <label class="auto-project-policy-option">
-                <input type="radio" name="project-policy-{{ task.task_id }}" value="PROJECT_FULL_AUTO" data-project-policy-mode {% if policy.configured_mode == 'PROJECT_FULL_AUTO' %}checked{% endif %}>
-                <span>
-                  <strong>完全自动</strong>
-                  <small>项目清单允许的定时、后台、飞书与外部验签入口按已保存配置执行。</small>
-                </span>
-              </label>
-            </fieldset>
-            {% if policy.available and can_manage_approval_policies %}
-            <div class="auto-project-policy-actions">
-              <button class="primary-btn" type="button" data-project-policy-save>保存权限</button>
-              <button class="ghost-btn" type="button" data-project-policy-cancel>取消</button>
-            </div>
-            {% else %}
-            <p class="auto-project-policy-readonly">当前账号只读，需超级管理员修改。</p>
-            {% endif %}
-            <p class="auto-project-policy-feedback" data-project-policy-feedback role="status" aria-live="polite" hidden></p>
-          </div>
-
-          <p class="sr-only" data-governance-live role="status" aria-live="polite"></p>
         </section>
-        {% endif %}
-
-        {% if task.control_plane_only %}
-        <div class="auto-resource-alert">
-          <i data-feather="shield"></i>
-          <span>{{ task.control_plane_notice }} 当前任务：{{ '已启用' if task.enabled_value else '已停用' }}。</span>
-        </div>
-        {% endif %}
-
-        {% if task.resource_blocked %}
-        <div class="auto-resource-alert">
-          <i data-feather="alert-triangle"></i>
-          <span>缺少运行资源：{{ task.missing_required_resource_labels | default(task.missing_required_resources, true) | join('、') }}。展开设置后补齐资源配置，再执行。</span>
-        </div>
         {% endif %}
 
         {# ── 历史执行反馈默认隐藏；刷新进入保持干净，只由 JS 展示本次执行结果 ── #}
@@ -535,206 +429,6 @@
         {% if has_expandable_settings %}
         <div id="task-settings-{{ task.task_id }}" class="auto-settings{% if task.is_open %} is-open{% endif %}" {% if not task.is_open %}hidden{% endif %}>
 
-          {% if has_webhook %}
-          {# Webhook 链接展示 #}
-          <div class="auto-settings-section">
-            <div class="auto-settings-label">
-              <i data-feather="link" class="auto-settings-icon"></i>
-              外部调用地址
-              <span class="auto-settings-label-hint">复制到飞书自动化的请求地址</span>
-            </div>
-            <div class="auto-webhook-url-wrap">
-              <code
-                class="auto-webhook-url"
-                data-webhook-url
-                data-webhook-masked="{{ task.webhook_masked_url }}"
-                data-webhook-full="{{ task.webhook_full_url }}"
-                data-webhook-path="{{ task.webhook_path }}"
-              >{{ task.webhook_masked_url }}</code>
-              <button class="ghost-btn auto-webhook-copy" type="button" data-toggle-webhook title="暂时显示真实地址">
-                <i data-feather="eye"></i>
-              </button>
-              <button class="ghost-btn auto-webhook-copy" type="button" data-copy-webhook title="复制链接">
-                <i data-feather="copy"></i>
-              </button>
-            </div>
-            <p class="auto-webhook-note">默认仅显示掩码地址，点击眼睛后会短暂显示真实地址 15 秒，便于复制但不会长期明文暴露。</p>
-            {% if task.webhook_token_enabled %}
-            <div class="auto-signing-hint auto-signing-hint--secure">
-              <i data-feather="shield"></i>
-              <div>
-                <strong>已启用静态外部调用密钥校验</strong>
-                <span>请求必须带上 <code>{{ task.webhook_header_name }}</code> 请求头，值需与服务器配置的固定 Token 一致。</span>
-              </div>
-            </div>
-            {% else %}
-            <div class="auto-signing-hint auto-signing-hint--warning">
-              <i data-feather="alert-triangle"></i>
-              <div>
-                <strong>服务器尚未检测到静态外部调用密钥</strong>
-                <span>请先在服务器配置外部调用密钥，再由系统管理员完成飞书自动化请求头设置。</span>
-              </div>
-            </div>
-            {% endif %}
-            <div class="auto-signing-hint auto-signing-hint--secure">
-              <i data-feather="key"></i>
-              <div>
-                <strong>飞书自动化请求头</strong>
-                <span>Header 名称固定为 <code>{{ task.webhook_header_name }}</code>，值使用服务器配置的固定 Token。</span>
-              </div>
-            </div>
-            <div class="auto-webhook-body-section">
-              <div class="auto-settings-label auto-settings-label--spaced">
-                <i data-feather="send" class="auto-settings-icon"></i>
-                请求内容
-                <span class="auto-settings-label-hint">填入飞书请求体</span>
-              </div>
-              <div class="auto-webhook-url-wrap">
-                <pre class="auto-webhook-body" data-webhook-body>{{ task.webhook_body_json }}</pre>
-                <button class="ghost-btn auto-webhook-copy" type="button" data-copy-webhook-body title="复制请求体">
-                  <i data-feather="copy"></i>
-                </button>
-              </div>
-            </div>
-          </div>
-          {% endif %}
-
-          {% if has_account_roles %}
-          <div class="auto-settings-section auto-account-binding">
-            <div class="auto-settings-label">
-              <i data-feather="user-check" class="auto-settings-icon"></i>
-              任务使用哪个账号
-            </div>
-            <div class="auto-account-role-stack">
-              {% for role in task.account_role_bindings %}
-              {% set account_input_id = 'account-role-' ~ task.task_id ~ '-' ~ role.field %}
-              <div class="auto-account-role-row">
-                <label class="auto-account-role-label" for="{{ account_input_id }}">
-                  <span class="auto-setting-title-line">
-                    <strong>{{ role.label }}</strong>
-                    <span class="auto-requirement-badge">{{ '必选' if role.required else '可选' }}</span>
-                  </span>
-                  <small>{{ role.hint or '选择任务实际使用的业务账号。' }}</small>
-                </label>
-                <select
-                  id="{{ account_input_id }}"
-                  class="review-input compact-input auto-account-select"
-                  name="{{ 'plugin_account_role__' if task.plugin else 'account_role__' }}{{ role.field }}"
-                  {% if task.plugin %}data-plugin-account-role="{{ role.field }}"{% else %}data-json-path="{{ role.field }}"{% endif %}
-                  data-plugin-account-required="{{ 'true' if role.required else 'false' }}"
-                  data-plugin-account-cardinality="{{ role.binding_cardinality | default('one', true) }}"
-                  {% if task.plugin and role.binding_cardinality == 'many' %}multiple size="5"{% endif %}
-                >
-                  {% if not (task.plugin and role.binding_cardinality == 'many') %}
-                  <option value="" {% if not role.selected_account_id %}selected{% endif %}>{{ '请选择账号' if role.required else '暂不使用' }}</option>
-                  {% endif %}
-                  {% for account in role.options %}
-                  <option value="{{ account.account_id }}" {% if account.account_id in role.selected_account_ids | default([role.selected_account_id], true) %}selected{% endif %} {% if not account.binding_usable %}disabled{% endif %}>
-                    {{ account.name }} · {{ account.status_label or '未知' }}
-                  </option>
-                  {% endfor %}
-                </select>
-                {% if task.plugin and role.binding_cardinality == 'many' %}<small class="auto-setting-help">可选择多个账号。</small>{% endif %}
-                {% if role.blocked_reason %}<small class="auto-account-blocked">{{ role.blocked_reason }}</small>{% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            <p class="auto-webhook-note">账号停用或登录失效时任务会暂停，不会改用其他账号。</p>
-          </div>
-          {% endif %}
-
-          {% if has_resources %}
-          <div class="auto-settings-section">
-            <div class="auto-settings-label">
-              <i data-feather="database" class="auto-settings-icon"></i>
-              运行资源
-            </div>
-            <div class="auto-resource-toolbar">
-              <button class="ghost-btn auto-save-btn" type="button" data-resource-save-all>
-                <i data-feather="save"></i>
-                保存本任务资源
-              </button>
-              <span class="auto-resource-status" data-resource-save-status></span>
-            </div>
-            <div class="auto-resource-stack">
-              {% for resource in task.resource_bindings %}
-              <div class="auto-resource-card{% if resource.missing %} auto-resource-card--missing{% endif %}" data-resource-card="{{ resource.resource_key }}" data-resource-label="{{ resource.display_name or resource.note or '运行资源' }}">
-                <div class="auto-resource-head">
-                  <div class="auto-resource-copy">
-                    <strong>{{ resource.display_name or '运行资源' }}</strong>
-                    {% if resource.note %}
-                    <p>{{ resource.note }}</p>
-                    {% endif %}
-                  </div>
-                  <span class="auto-resource-chip auto-resource-chip--{{ 'missing' if resource.missing else 'ready' }}">
-                    {% if resource.missing %}{{ '缺失' if resource.required else '未配置' }}{% else %}已配置{% endif %}
-                  </span>
-                </div>
-                {% if resource.missing %}
-                <p class="auto-resource-note" data-resource-note>
-                  {% if resource.required %}这是执行必需资源。{% else %}这是可选资源；缺失时只会跳过后续触发。{% endif %}
-                  填写下方字段后保存。
-                </p>
-                <div class="auto-resource-form">
-                  <textarea data-resource-json-input="{{ resource.resource_key }}" hidden>{{ resource.editor_json }}</textarea>
-                  <div class="auto-resource-field-grid">
-                    {% for field in resource.visual_fields %}
-                    {{ render_resource_field(field, resource.resource_key, 'resource-' ~ resource.resource_key|replace('.', '-') ~ '-' ~ loop.index) }}
-                    {% endfor %}
-                  </div>
-                  <div class="auto-resource-actions">
-                    <button
-                      class="ghost-btn auto-save-btn"
-                      type="submit"
-                      formaction="/automations/resources/save"
-                      formmethod="post"
-                      data-resource-save
-                      data-resource-key="{{ resource.resource_key }}"
-                    >
-                      <i data-feather="save"></i>
-                      保存资源
-                    </button>
-                  </div>
-                </div>
-                {% else %}
-                <div class="auto-resource-meta">
-                  <span>来源：{{ resource.source|default('unknown', true) }}</span>
-                  {% if resource.updated_at %}
-                  <span>更新于 {{ resource.updated_at }}</span>
-                  {% endif %}
-                </div>
-                <details class="auto-resource-edit">
-                  <summary>重新配置</summary>
-                  <p class="auto-resource-note" data-resource-note>当前已配置，可修改下方字段后覆盖保存。</p>
-                  <div class="auto-resource-form">
-                    <textarea data-resource-json-input="{{ resource.resource_key }}" hidden>{{ resource.editor_json }}</textarea>
-                    <div class="auto-resource-field-grid">
-                      {% for field in resource.visual_fields %}
-                      {{ render_resource_field(field, resource.resource_key, 'resource-' ~ resource.resource_key|replace('.', '-') ~ '-' ~ loop.index) }}
-                      {% endfor %}
-                    </div>
-                    <div class="auto-resource-actions">
-                      <button
-                        class="ghost-btn auto-save-btn"
-                        type="submit"
-                        formaction="/automations/resources/save"
-                        formmethod="post"
-                        data-resource-save
-                        data-resource-key="{{ resource.resource_key }}"
-                      >
-                        <i data-feather="save"></i>
-                        覆盖保存
-                      </button>
-                    </div>
-                  </div>
-                </details>
-                {% endif %}
-              </div>
-              {% endfor %}
-            </div>
-          </div>
-          {% endif %}
-
           {# 定时设置 #}
           {% if has_schedule %}
           <div class="auto-settings-section">
@@ -774,22 +468,6 @@
           </div>
           {% endif %}
 
-          {# 可视化参数 #}
-          {% if has_params and not task.plugin %}
-          <div class="auto-settings-section">
-            <div class="auto-settings-label">
-              <i data-feather="sliders" class="auto-settings-icon"></i>
-              参数
-              <span class="auto-settings-count">{{ task.tool_param_fields|length }}</span>
-            </div>
-            <div class="auto-param-grid">
-              {% for field in task.tool_param_fields %}
-              {{ render_visual_field(field, 'task-' ~ task.task_id) }}
-              {% endfor %}
-            </div>
-          </div>
-          {% endif %}
-
           <div class="auto-settings-footer">
             {% if task.plugin %}
             {% set plugin_settings_feedback_id = 'plugin-settings-feedback-' ~ task.task_id %}
@@ -798,11 +476,6 @@
               保存定时计划
             </button>
             <p id="{{ plugin_settings_feedback_id }}" class="automation-plugin-feedback automation-plugin-settings-feedback" data-plugin-settings-feedback role="status" aria-live="polite" hidden></p>
-            {% else %}
-            <button class="ghost-btn auto-save-btn" type="submit">
-              <i data-feather="check"></i>
-              保存设置
-            </button>
             {% endif %}
           </div>
         </div>
@@ -1099,15 +772,6 @@
     card?.classList.remove("is-mobile-expanded");
   }
 
-  function taskSubmitPath(form, submitter) {
-    const rawAction = submitter?.getAttribute("formaction") || form.getAttribute("action") || "";
-    try {
-      return new URL(rawAction, window.location.origin).pathname;
-    } catch (_) {
-      return rawAction;
-    }
-  }
-
   const AUTOMATION_PROVIDER_KEY = "shipnow:automation-provider";
   const AUTOMATION_PROVIDERS = new Set(["ronghui", "yunda"]);
 
@@ -1158,22 +822,6 @@
     if (!list) return;
     const rows = Array.from(list.querySelectorAll("[data-automation-task-row]"));
     updateAutomationStats(rows, currentAutomationProvider());
-  }
-
-  /* ── toggle 自动保存 ── */
-  async function autoSaveToggle(form) {
-    if (form.querySelector('input[name="project_plugin_instance"]')) return;
-    serializeForm(form);
-    const fd = new FormData(form);
-    const body = new URLSearchParams();
-    fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
-    try {
-      await fetch("/automations/tasks/save", {
-        method: "POST",
-        headers: { "X-Requested-With": "XMLHttpRequest", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-        body: body.toString(),
-      });
-    } catch {}
   }
 
   /* ── 初始化每个表单 ── */
@@ -1379,9 +1027,9 @@
       return /[\u3400-\u9fff]/u.test(String(value || "")) ? String(value).trim() : "状态未知";
     }
 
-    function selectionMeta(candidate, automationId) {
+    function selectionMeta(candidate) {
       const pluginId = form.closest("[data-automation-task-row]")?.dataset.pluginId;
-      if (automationId === "self_pickup_problem_upload" || pluginId === "self_pickup_problem_upload_v2") {
+      if (pluginId === "self_pickup_problem_upload_v2") {
         return [
           candidate.source_name,
           candidate.destination_site,
@@ -1435,7 +1083,7 @@
         const bill = document.createElement("strong");
         bill.textContent = checkbox.value;
         const meta = document.createElement("small");
-        meta.textContent = selectionMeta(candidate, preview.automation_id)
+        meta.textContent = selectionMeta(candidate)
           .map(value => String(value ?? "").trim())
           .filter(Boolean)
           .join(" · ");
@@ -1599,262 +1247,14 @@
       runTimer = setInterval(tick, 200);
     }
 
-    const resourceEditors = Array.from(form.querySelectorAll("[data-resource-json-input]"));
-    resourceEditors.forEach(editor => {
-      editor.dataset.resourceInitial = editor.value;
-      editor.addEventListener("input", () => {
-        editor.dataset.resourceDirty = "true";
-      });
-    });
-
-    function setResourceSaveStatus(message, kind = "") {
-      const status = form.querySelector("[data-resource-save-status]");
-      if (!status) return;
-      status.textContent = message || "";
-      status.dataset.kind = kind;
-    }
-
-    function parseResourceFieldValue(input) {
-      if (input.type === "checkbox") return input.checked;
-      if (input.dataset.resourceList === "true") {
-        return input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-      }
-      if (input.type === "number") {
-        if (input.value === "") return input.dataset.emptyNull === "true" ? null : "";
-        return input.step === "1" ? parseInt(input.value, 10) : parseFloat(input.value);
-      }
-      if (input.dataset.emptyNull === "true" && input.value.trim() === "") return null;
-      return input.value;
-    }
-
-    function syncResourceCard(card, { markDirty = true } = {}) {
-      if (!card) return null;
-      const editor = card.querySelector("[data-resource-json-input]");
-      if (!editor) return null;
-      let payload = {};
-      try { payload = JSON.parse(editor.value || "{}"); } catch {}
-      card.querySelectorAll("[data-resource-path]").forEach(input => {
-        const path = input.dataset.resourcePath || "";
-        if (!path) return;
-        setDeep(payload, path, parseResourceFieldValue(input));
-      });
-      editor.value = JSON.stringify(payload, null, 2);
-      if (markDirty) editor.dataset.resourceDirty = "true";
-      return editor;
-    }
-
-    function syncAllResourceCards({ markDirty = false } = {}) {
-      form.querySelectorAll(".auto-resource-card").forEach(card => {
-        syncResourceCard(card, { markDirty });
-      });
-    }
-
-    function refreshResourceAlert() {
-      const alert = form.querySelector(".auto-resource-alert");
-      if (!alert) return;
-      const missingKeys = Array.from(form.querySelectorAll(".auto-resource-card--missing"))
-        .map(card => card.dataset.resourceLabel || "")
-        .filter(Boolean);
-      if (!missingKeys.length) {
-        alert.hidden = true;
-        return;
-      }
-      const text = alert.querySelector("span");
-      if (text) {
-        text.textContent = `缺少运行资源：${missingKeys.join("、")}。展开设置后补齐资源配置，再执行。`;
-      }
-    }
-
-    function foldResourceCardAsConfigured(card, resourceKey, editor) {
-      if (!card) return;
-      card.classList.remove("auto-resource-card--missing");
-
-      const directNote = Array.from(card.children).find(child => child.classList.contains("auto-resource-note"));
-      if (directNote) directNote.remove();
-
-      let meta = card.querySelector(":scope > .auto-resource-meta");
-      if (!meta) {
-        meta = document.createElement("div");
-        meta.className = "auto-resource-meta";
-        card.appendChild(meta);
-      }
-      meta.innerHTML = "<span>来源：后台手动</span><span>刚刚保存</span>";
-
-      let details = card.querySelector(":scope > .auto-resource-edit");
-      if (!details) {
-        details = document.createElement("details");
-        details.className = "auto-resource-edit";
-        details.innerHTML = '<summary>重新配置</summary><p class="auto-resource-note" data-resource-note>当前已配置，可修改下方字段后覆盖保存。</p>';
-        card.appendChild(details);
-      }
-      details.open = false;
-
-      const resourceForm = card.querySelector(":scope > .auto-resource-form");
-      if (resourceForm && resourceForm.parentElement !== details) {
-        details.appendChild(resourceForm);
-      }
-
-      let actions = resourceForm?.querySelector(":scope > .auto-resource-actions")
-        || Array.from(card.children).find(child => child.classList.contains("auto-resource-actions"));
-      if (actions) {
-        const saveButton = actions.querySelector("[data-resource-save]");
-        const label = saveButton?.querySelector("span") || saveButton;
-        if (label) label.textContent = "覆盖保存";
-      }
-
-      if (editor) {
-        editor.dataset.resourceInitial = editor.value;
-        editor.dataset.resourceDirty = "false";
-      }
-    }
-
-    function markResourceSaved(resourceKey) {
-      form.querySelectorAll("[data-resource-json-input]").forEach(editor => {
-        if (editor.getAttribute("data-resource-json-input") !== resourceKey) return;
-        editor.dataset.resourceInitial = editor.value;
-        editor.dataset.resourceDirty = "false";
-        const card = editor.closest(".auto-resource-card");
-        if (!card) return;
-        const chip = card.querySelector(".auto-resource-chip");
-        if (chip) {
-          chip.textContent = "已配置";
-          chip.classList.remove("auto-resource-chip--missing");
-          chip.classList.add("auto-resource-chip--ready");
-        }
-        foldResourceCardAsConfigured(card, resourceKey, editor);
-      });
-      refreshResourceAlert();
-    }
-
-    form.querySelectorAll("[data-resource-path]").forEach(input => {
-      const card = input.closest(".auto-resource-card");
-      const sync = () => syncResourceCard(card);
-      input.addEventListener("input", sync);
-      input.addEventListener("change", sync);
-    });
-
-    async function saveResourcePayload(payload, btn) {
-      if (!Object.keys(payload).length) {
-        setResourceSaveStatus("没有修改的资源。", "warning");
-        return;
-      }
-
-      setButtonLoading(btn, true);
-      setResourceSaveStatus("保存中…", "info");
-      try {
-        const body = new URLSearchParams();
-        body.set("task_id", form.querySelector('input[name="task_id"]')?.value || "");
-        body.set("resources_json", JSON.stringify(payload));
-        const res = await fetch("/automations/resources/save", {
-          method: "POST",
-          headers: {
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          },
-          body: body.toString(),
-        });
-        const result = await res.json();
-        if (!res.ok || !result.ok) {
-          setResourceSaveStatus(result.message || "资源保存失败。", "error");
-          return;
-        }
-        (result.saved || []).forEach(markResourceSaved);
-        setResourceSaveStatus(result.message || "资源已保存。", "success");
-        if (!hasMissingResourceCards(form)) {
-          closeAutomationTaskPanels(form);
-        }
-      } catch (err) {
-        setResourceSaveStatus(err instanceof Error ? err.message : "资源保存失败。", "error");
-      } finally {
-        setButtonLoading(btn, false);
-      }
-    }
-
-    form.querySelectorAll("[data-resource-save]").forEach(btn => {
-      btn.addEventListener("click", async event => {
+    form.addEventListener("submit", event => {
+      // Instance settings save through their own buttons; an implicit submit
+      // (Enter in a field) must neither save nor start the task.
+      if (!event.submitter?.getAttribute("formaction")) {
         event.preventDefault();
-        const resourceKey = btn.getAttribute("data-resource-key") || "";
-        const card = btn.closest(".auto-resource-card");
-        const editor = syncResourceCard(card) || card?.querySelector(`[data-resource-json-input="${resourceKey}"]`) || form.querySelector(`[data-resource-json-input="${resourceKey}"]`);
-        const value = editor ? editor.value.trim() : "";
-        if (!resourceKey || !value) {
-          setResourceSaveStatus("请至少填写一个资源字段。", "warning");
-          return;
-        }
-        await saveResourcePayload({ [resourceKey]: value }, btn);
-      });
-    });
-
-    form.querySelector("[data-resource-save-all]")?.addEventListener("click", async btnEvent => {
-      const btn = btnEvent.currentTarget;
-      const payload = {};
-      syncAllResourceCards({ markDirty: false });
-      resourceEditors.forEach(editor => {
-        const resourceKey = editor.getAttribute("data-resource-json-input") || "";
-        const value = editor.value.trim();
-        const initial = (editor.dataset.resourceInitial || "").trim();
-        const dirty = editor.dataset.resourceDirty === "true" || value !== initial;
-        if (resourceKey && value && dirty) {
-          payload[resourceKey] = value;
-        }
-      });
-
-      await saveResourcePayload(payload, btn);
-    });
-
-    form.addEventListener("submit", async event => {
-      const submitter = event.submitter;
-      if (taskSubmitPath(form, submitter) !== "/automations/tasks/save") {
-        serializeForm(form);
         return;
       }
-
-      event.preventDefault();
       serializeForm(form);
-      setButtonLoading(submitter, true);
-      try {
-        const fd = new FormData(form);
-        const body = new URLSearchParams();
-        fd.forEach((v, k) => { if (typeof v === "string") body.append(k, v); });
-        const res = await fetch("/automations/tasks/save", {
-          method: "POST",
-          headers: {
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          },
-          body: body.toString(),
-        });
-        const result = await res.json();
-        if (!res.ok) {
-          renderFeedback(form, {
-            kind: "error",
-            title: "保存失败",
-            message: result.message || "任务设置保存失败。",
-          });
-          return;
-        }
-        if (result.ok === false) {
-          renderFeedback(form, {
-            kind: "warning",
-            title: "设置已保存",
-            message: result.message || "任务设置已保存，智能服务重载后生效。",
-          });
-        } else {
-          hideRunFeedback(form);
-        }
-        closeAutomationTaskPanels(form);
-      } catch (err) {
-        renderFeedback(form, {
-          kind: "error",
-          title: "保存失败",
-          message: "未能提交任务设置。",
-          body: "",
-        });
-      } finally {
-        setButtonLoading(submitter, false);
-      }
     });
 
     // 图形化设置面板 展开/收起
@@ -2476,7 +1876,6 @@
     if (toggle) {
       toggle.addEventListener("change", () => {
         syncEnabledCount();
-        autoSaveToggle(form);
       });
       toggle.addEventListener("automation:schedule-toggle-reverted", syncEnabledCount);
     }
@@ -3102,5 +2501,5 @@
   window.ConsoleUI.refreshIcons(pageRoot);
 })();
 </script>
-<script src="/static/automation_approval_policy.js?v=20261013-schedule-times" defer></script>
+<script src="/static/automation_plugin_schedule.js?v=20261024-v2-only" defer></script>
 {% endblock %}

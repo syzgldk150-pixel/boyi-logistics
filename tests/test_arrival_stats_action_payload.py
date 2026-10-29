@@ -3,15 +3,15 @@ from __future__ import annotations
 import pytest
 
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-from agent.automation_plugins.first_party_handlers import (
-    FirstPartyCoreHandlerPorts,
-    build_first_party_core_handler_map,
+from agent.automation_plugins.host_primitive_handlers import (
+    HostPrimitivePorts,
+    build_host_primitive_handler_map,
 )
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
 
 def test_empty_source_clears_snapshots_without_creating_archive() -> None:
-    action_module = load_first_party_action("sync_arrival_stats")
+    action_module = load_plugin_action("sync_arrival_stats")
     calls: list[str] = []
     cleared_sheet_slots: set[str] = set()
     evidence_index = 0
@@ -91,7 +91,7 @@ def test_empty_source_clears_snapshots_without_creating_archive() -> None:
 
 
 def test_dry_run_counts_fresh_scan_without_mutating_the_snapshot() -> None:
-    action_module = load_first_party_action("sync_arrival_stats")
+    action_module = load_plugin_action("sync_arrival_stats")
     main = "R12345678901"
     child = f"{main}0001"
     calls: list[str] = []
@@ -161,7 +161,7 @@ def test_dry_run_counts_fresh_scan_without_mutating_the_snapshot() -> None:
 
 
 def test_scan_only_detail_keeps_closed_shape_through_core_handler() -> None:
-    action_module = load_first_party_action("sync_arrival_stats")
+    action_module = load_plugin_action("sync_arrival_stats")
     main = "R12345678901"
     calls: list[str] = []
     projected: list[dict[str, object]] = []
@@ -171,8 +171,8 @@ def test_scan_only_detail_keeps_closed_shape_through_core_handler() -> None:
         assert target_date == "2026-08-24"
         return {"ok": True, "verified": True, "record_count": len(records)}
 
-    core_handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    core_handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=lambda account_id: {
                 "account_id": account_id,
                 "system": "ronghui",
@@ -186,7 +186,7 @@ def test_scan_only_detail_keeps_closed_shape_through_core_handler() -> None:
     waybill_context = CoreBrokerInvocationContext(
         automation_id="instance-sync-arrival-stats",
         plugin_version="1.0.22",
-        tool_name="sync_arrival_stats",
+        tool_name="arrival_stats",
         operation="projection.invoke",
         action="waybill.snapshot.replace",
         role="account_id",
@@ -262,7 +262,7 @@ def test_scan_only_detail_keeps_closed_shape_through_core_handler() -> None:
 
 
 def test_broker_budget_fails_before_detail_reads_or_writes() -> None:
-    action_module = load_first_party_action("sync_arrival_stats")
+    action_module = load_plugin_action("sync_arrival_stats")
     mains = [f"R{index:011d}" for index in range(986)]
     calls: list[str] = []
 

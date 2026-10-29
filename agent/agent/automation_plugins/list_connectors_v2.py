@@ -1,8 +1,9 @@
 """Arrival-list and site-send infrastructure operations; filtering stays in ZIPs."""
+from agent.connector_namespaces import ARRIVE_LIST_TOOL, SITE_SEND_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorInvocationError, ConnectorOperation
 from agent.automation_plugins.connector_schemas import TEXT, DATE, BOOL, COUNT, CELL, CURSOR, object_schema as obj, array_schema as arr, record_schema as record
-from agent.automation_plugins.first_party_handler_support import _ARRIVE_FIELDS, _SITE_FIELDS
+from agent.automation_plugins.host_primitive_support import _ARRIVE_FIELDS, _SITE_FIELDS
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
 
@@ -25,9 +26,9 @@ def encode_arrive_page_result(result):
 def build_list_connectors(reviewed):
     descriptors = []
     for tool, prefix, fields, resources in (
-        ("sync_arrive_list", "arrive_list", _ARRIVE_FIELDS,
+        (ARRIVE_LIST_TOOL, "arrive_list", _ARRIVE_FIELDS,
          {"arrive_primary_sheet": "feishu_sheet", "arrive_secondary_sheet": "feishu_sheet"}),
-        ("sync_site_send_list", "site_send", _SITE_FIELDS,
+        (SITE_SEND_TOOL, "site_send", _SITE_FIELDS,
          {"site_send_bitable": "feishu_bitable", "site_send_sheet": "feishu_sheet"}),
     ):
         account_role = f"{prefix}_ronghui"

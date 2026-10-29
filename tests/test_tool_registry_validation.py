@@ -392,29 +392,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing required fields"):
                 ToolRegistry(registry_path=registry_path, project_root=Path(root))
 
-    def test_production_catalog_includes_scheduler_only_customer_problem_sync(self):
-        registry = ToolRegistry()
-        capability = registry.get_capability("sync_customer_service_problems")
-
-        self.assertIsNotNone(capability)
-        self.assertEqual(capability["operation_type"], "read")
-        self.assertEqual(capability["risk_level"], "low")
-        self.assertFalse(capability["llm_exposed"])
-        self.assertEqual(capability["approval"], {"mode": "none"})
-        self.assertEqual(capability["retry"], {"safe": True, "max_attempts": 3})
-        self.assertEqual(
-            capability["evidence"]["required_fields"],
-            ["pagination_complete", "account", "source"],
-        )
-        self.assertEqual(
-            capability["input_schema"]["required"],
-            ["direction", "account_ids"],
-        )
-        self.assertNotIn(
-            "sync_customer_service_problems",
-            [item["function"]["name"] for item in registry.get_llm_tools()],
-        )
-
     def test_business_finance_query_is_read_only_and_not_yet_llm_exposed(self):
         registry = ToolRegistry()
         capability = registry.get_capability("query_business_finance")
@@ -444,15 +421,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
         registry = ToolRegistry()
         internal_syncs = {
             "receipts_sync",
-            "sync_daily_send_orders",
-            "sync_delivery_status",
-            "sync_daily_should_sign",
-            "sync_site_send_list",
-            "sync_arrive_list",
-            "sync_arrival_stats",
-            "sync_yunda_dispatch_forecast",
-            "sync_yunda_send_waybills",
-            "init_waybills_sql_from_feishu",
         }
         external_writes = {
             "customer_service_problem_mark_read",
@@ -460,10 +428,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
             "customer_service_problem_reply",
             "customer_service_problem_upload_attachment",
             "receipts_audit",
-            "self_pickup_problem_upload",
-            "split_pending_problem_upload",
-            "r7_departure_checkin",
-            "sync_scan_codes",
         }
 
         for name in internal_syncs:
@@ -488,41 +452,17 @@ class ToolRegistryValidationTests(unittest.TestCase):
                 {"mode": "required", "required_role": "super_admin"},
             )
 
-        clock = registry.get_capability("clock_in_dual")
-        self.assertEqual(clock["operation_type"], "external_write")
-        self.assertEqual(clock["risk_level"], "high")
-        self.assertEqual(
-            clock["approval"],
-            {"mode": "schedule_allowlist", "required_role": "super_admin"},
-        )
-
-        r7_arrival = registry.get_capability("r7_arrival_checkin")
-        self.assertEqual(r7_arrival["operation_type"], "external_write")
-        self.assertEqual(r7_arrival["risk_level"], "high")
-        self.assertEqual(
-            r7_arrival["approval"],
-            {"mode": "schedule_allowlist", "required_role": "super_admin"},
-        )
-        self.assertEqual(
-            r7_arrival["postconditions"],
-            [{"name": "third_party_r7_arrival_state_confirmed"}],
-        )
-
-        backfill = registry.get_capability("backfill_daily_sign_ledger")
-        self.assertEqual(backfill["operation_type"], "internal_projection_write")
-        self.assertEqual(backfill["risk_level"], "high")
-        self.assertEqual(
-            backfill["approval"],
-            {"mode": "required", "required_role": "super_admin"},
-        )
-
-        finance_sync = registry.get_capability("sync_finance_bills")
-        self.assertEqual(finance_sync["operation_type"], "internal_projection_write")
-        self.assertEqual(finance_sync["risk_level"], "high")
-        self.assertEqual(
-            finance_sync["approval"],
-            {"mode": "schedule_allowlist", "required_role": "super_admin"},
-        )
+        for retired in (
+            "clock_in_dual",
+            "r7_arrival_checkin",
+            "backfill_daily_sign_ledger",
+            "sync_finance_bills",
+            "sync_scan_codes",
+        ):
+            self.assertIsNone(
+                registry.get_capability(retired),
+                f"retired V1 plugin tool {retired} must not re-enter the catalog",
+            )
         finance_analysis = registry.get_capability("analyze_finance_reviews")
         self.assertEqual(
             finance_analysis["operation_type"],
@@ -559,31 +499,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
         destructive = registry.get_capability("feishu_operation")
         self.assertEqual(destructive["risk_level"], "extreme")
         self.assertEqual(destructive["approval"], {"mode": "disabled"})
-
-    def test_daily_sign_uses_one_explicit_tms_account_for_all_tms_reads(self):
-        registry = ToolRegistry()
-
-        for name, version in (
-            ("sync_daily_should_sign", "2.1.0"),
-            ("backfill_daily_sign_ledger", "1.1.0"),
-        ):
-            capability = registry.get_capability(name)
-            self.assertIsNotNone(capability)
-            self.assertEqual(capability["version"], version)
-            self.assertEqual(
-                capability["account_scope"],
-                {"required": True, "allow_implicit_default": False},
-            )
-            properties = capability["input_schema"]["properties"]
-            self.assertIn("r13_account_id", properties)
-            self.assertIn("account_id", properties)
-            self.assertNotIn("problem_account_id", properties)
-            self.assertNotIn("sign_account_id", properties)
-            self.assertNotIn("detail_account_id", properties)
-            self.assertEqual(
-                set(capability["input_schema"]["required"]),
-                {"r13_account_id", "account_id"},
-            )
 
     def test_production_tms_compatibility_tool_cannot_address_write_targets(self):
         registry = ToolRegistry()
@@ -708,56 +623,6 @@ class ToolRegistryValidationTests(unittest.TestCase):
                     },
                 },
             )
-
-    def test_clock_in_scheduler_exception_keeps_a_closed_high_risk_contract(self):
-        registry = ToolRegistry()
-        capability = registry.get_capability("clock_in_dual")
-
-        self.assertEqual(capability["version"], "1.1.0")
-        self.assertEqual(capability["operation_type"], "external_write")
-        self.assertEqual(
-            capability["approval"],
-            {"mode": "schedule_allowlist", "required_role": "super_admin"},
-        )
-        self.assertEqual(capability["permissions"]["required_roles"], ["super_admin"])
-        self.assertEqual(capability["account_scope"]["required"], True)
-        self.assertEqual(capability["retry"], {"safe": False, "max_attempts": 1})
-        self.assertEqual(
-            capability["postconditions"],
-            [{"name": "both_third_party_clock_ins_confirmed"}],
-        )
-        self.assertIn("account_id", capability["input_schema"]["required"])
-        with self.assertRaisesRegex(ValueError, "missing required properties"):
-            registry.validate_arguments("clock_in_dual", {})
-        registry.validate_arguments(
-            "clock_in_dual",
-            {
-                "account_id": "ronghui_default",
-                "sitecode": "7390004",
-                "sitefbcode": "73901",
-                "sitename": "邵阳大祥站",
-                "sitefbname": "邵阳操作场",
-                "first_type": "交件到港",
-                "second_type": "接件离港",
-                "delay_seconds": 2,
-            },
-        )
-        with self.assertRaisesRegex(ValueError, "unknown properties.*extra"):
-            registry.validate_arguments(
-                "clock_in_dual",
-                {
-                    "account_id": "ronghui_default",
-                    "sitecode": "7390004",
-                    "sitefbcode": "73901",
-                    "sitename": "邵阳大祥站",
-                    "sitefbname": "邵阳操作场",
-                    "first_type": "交件到港",
-                    "second_type": "接件离港",
-                    "delay_seconds": 2,
-                    "extra": "not-approved",
-                },
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

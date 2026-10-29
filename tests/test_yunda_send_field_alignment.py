@@ -5,7 +5,7 @@ import pytest
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.tms_runtime.scripts import yunda_send_waybills as runtime
-from plugin_core_adapters import first_party as adapters
+from plugin_core_adapters import host_primitives as adapters
 from service_v2_plugins.sync_yunda_send_waybills_v2.payload.yunda_send_fields import (
     FIELD_NAMES,
     normalize_record,

@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-23
+updated: 2026-10-29
 ---
 
 # 当前插件维护入口
@@ -54,7 +54,6 @@ updated: 2026-10-23
 | `clockin_daxiang_s_v2` | 网点打卡-大祥 S 站 | 后台“自动化” | [插件说明](clockin_daxiang_s_v2/README.md) |
 | `r7_vehicle_checkin_v2` | R7车线每日打卡 | 后台“自动化” | [R7 车线打卡](../docs/r7_vehicle_checkin.md) |
 | `quote_prices_v2` | 三平台价格查询 | 后台“自动化”（飞书与录单页共用实例） | [三平台报价](../docs/three_platform_quote.md) |
-| `sync_finance_bills_v2` | 财务账单采集（逐日，2026-08 起由统计查询抓取取代） | 财务模块“数据源管理” | [财务模块](../docs/finance_module.md) |
 | `sync_ronghui_finance_statement_v2` | 拉取融辉财务月度原始数据 | 财务模块“数据源管理”（自动化页“财务”分类） | [统计查询月度抓取](../docs/finance_module.md#统计查询月度抓取) |
 | `sync_customer_service_problems_v2` | 客服问题件采集 | 客户服务“数据源管理” | [客服系统](../docs/customer_service/module_overview.md) |
 
@@ -62,7 +61,7 @@ updated: 2026-10-23
 
 每个 `<plugin_id>_v2/payload/action.py` 是对应业务编排的唯一源码。每日应签的采集、计算、顺延类型、截止时间和表格渲染位于 `sync_daily_should_sign_v2/payload/business/`。融辉网点打卡的共同实现位于 `_shared/clock_runtime.py`；公共包内结果协议位于 `_shared/result.py`。
 
-构建器 `_shared/build_zip.py` 只从当前插件及明确的共享协议文件取源码，不读取旧 V1 目录。共享的原页字段协议位于仓库根 `shared/ronghui_finance_fields.py`、`shared/ronghui_customer_problem_fields.py`，由 Host 和 ZIP 同源引用；修改这些公共协议仍需要核心更新。`_shared/` 的改动也须检查所有受影响包。
+构建器 `_shared/build_zip.py` 只从当前插件及明确的共享协议文件取源码。共享的原页字段协议位于仓库根 `shared/ronghui_customer_problem_fields.py`，由 Host 和 ZIP 同源引用；修改这些公共协议仍需要核心更新。`_shared/` 的改动也须检查所有受影响包。
 
 每日应签向 Host 明确提交 `upload_complete/before_cutoff/postpones_sign` 布尔判断。Host 只验证类型、身份和持久化回读，不维护问题件类型清单或重新计算截止时间，缺少判断时明确拒绝，绝不静默回退。新增顺延类型只修改插件规则并升级该 ZIP。
 
@@ -89,8 +88,8 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.plugin_maintenance package sync_scan_codes_v2 --output .task_tmp/scan.zip --report .task_tmp/scan-report.json
 ```
 
-迁移而来的现有插件替换插件 ID 即可测试和打包。新建通用包 `r7_vehicle_checkin_v2` 使用 `scripts.service_v2_plugin` 打包，页面接口、参数及核验规则应全部在包内，通过通用 `http.request` 复用账号登录态，详见 [通用账号请求](../docs/plugin_account_http.md)。账号、定时、原站协议与局部测试命令见 [R7车线每日打卡](../docs/r7_vehicle_checkin.md)。V2 由超级管理员安装，保留原配置和入口；不使用旧 V1 签名包格式。现有实例后续维护使用升级入口，不重新执行历史迁移。真实隔离 ZIP、MySQL 和两类飞书表回读测试见 `tests/test_daily_sign_v2_packaged_protocol.py`，其中包含只改包内顺延类型、Host 不变的场景。
+现有插件替换插件 ID 即可测试和打包。新建通用包 `r7_vehicle_checkin_v2` 使用 `scripts.service_v2_plugin` 打包，页面接口、参数及核验规则应全部在包内，通过通用 `http.request` 复用账号登录态，详见 [通用账号请求](../docs/plugin_account_http.md)。账号、定时、原站协议与局部测试命令见 [R7车线每日打卡](../docs/r7_vehicle_checkin.md)。V2 由超级管理员安装；现有实例后续维护使用升级入口，保留原配置和入口。真实隔离 ZIP、MySQL 和两类飞书表回读测试见 `tests/test_daily_sign_v2_packaged_protocol.py`，其中包含只改包内顺延类型、Host 不变的场景。
 
-## 历史边界
+## 发布边界
 
-生产发布要求 Service-V2-only 退役索引及全部权威 COMPLETED 迁移记录。`agent/legacy/first_party_automation_plugins/` 只保留离线迁移回归所需的 V1 传输、两种旧适配器、摘要、分批1.0.26的固定规则字节及扫描 V1 的固定 action 字节，不进入 ECS 发布清单。该固定快照只重建已有历史摘要，不维护或执行当前算法；V2仍只从本目录读取现行规则。旧版本身份和已执行 SQL 仅用于解释历史事实。发布器将服务器旧源码树移入当次回滚材料，当前运行目录不再保留旧导入树。
+核心发布只复制 `../scripts/release_scope.py` 显式列出的包、`_shared/` 与根说明文件；新增包必须同时加入该清单（`tests/test_release_scope.py` 核对清单与目录一致）。V1 动作包、迁移材料和 `agent/legacy/` 已于 2026-10 删除；已执行 SQL 仅用于解释历史事实。

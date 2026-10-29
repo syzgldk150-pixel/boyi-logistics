@@ -173,7 +173,7 @@ def test_tracking_port_keeps_scan_facts_without_ui_descriptions():
     tms = Mock(return_value=source)
     handlers = build_daily_sign_port_handlers(account_manager=accounts, tms=tms)
     context = CoreBrokerInvocationContext(automation_id="isolated", plugin_version="2.0.1",
-        tool_name="sync_daily_should_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
+        tool_name="daily_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
         role="daily_sign_tms", account_ids=("isolated-tms",))
     value = handlers[("daily_sign.port",context.action)](context,{"values":{"params":{"tracking_number":"R00021000001"}}})["value"]
     assert source == original
@@ -200,7 +200,7 @@ def test_tracking_port_accepts_real_scans_when_customer_detail_is_masked(monkeyp
     handlers = build_daily_sign_port_handlers(account_manager=accounts,
         tms=lambda _endpoint, request: tracking.query_ronghui_tms_tracking(request["params"]))
     context = CoreBrokerInvocationContext(automation_id="isolated", plugin_version="2.0.3",
-        tool_name="sync_daily_should_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
+        tool_name="daily_sign", operation="daily_sign.port", action="daily_sign_tms.read_tracking",
         role="daily_sign_tms", account_ids=("isolated-tms",))
     result = handlers[("daily_sign.port", context.action)](context,
         {"values":{"params":{"tracking_number":"R00021000001", "decrypt_masked":True}}})["value"]

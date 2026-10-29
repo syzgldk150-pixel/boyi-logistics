@@ -921,7 +921,7 @@ def test_restart_does_not_reserve_disabled_committed_feishu_command(enabled) -> 
         project_enabled=lambda _automation_id: enabled,
     )
     if enabled:
-        with pytest.raises(PluginConflictError, match="conflicts with an Action V1 command"):
+        with pytest.raises(PluginConflictError, match="reserved for another plugin"):
             driver.restore_from_repository(_GenerationRepository(generation))
     else:
         driver.restore_from_repository(_GenerationRepository(generation))
@@ -1767,7 +1767,6 @@ def test_unavailable_managed_backend_blocks_before_effect_registration(
             return []
 
     coeffects = ProductionRuntimeCoeffectProvider(
-        core_catalog=_CoreCatalog(),
         broker_handler_keys=(),
         account_manager=_Accounts(),
     ).observe(snapshot)
@@ -1904,11 +1903,6 @@ def test_manifest_webhook_mount_does_not_require_a_legacy_route_resource() -> No
         desired_config_row=desired,
         policy_row=policy,
         generation=1,
-        core_catalog=SimpleNamespace(
-            get_capability=lambda _name: pytest.fail(
-                "service-v2 must not use the legacy core route registry"
-            )
-        ),
     )
 
     plan = next(

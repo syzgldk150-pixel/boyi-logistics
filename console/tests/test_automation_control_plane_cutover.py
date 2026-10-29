@@ -14,6 +14,8 @@ from console.services.automation import (
 )
 
 
+SCAN_ID = "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f"
+
 class _Repository:
     def __init__(self) -> None:
         self.runtime_updates: list[dict] = []
@@ -62,7 +64,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
     def _selection_projection(invocation_id):
         return {
             "contract_version": 3,
-            "automation_id": "self_pickup_problem_upload",
+            "automation_id": "87911cef-3773-4273-b644-030108c43678",
             "title": "自提到货问题件",
             "preview_invocation_id": invocation_id,
             "observed_at": "2026-08-27T07:00:00Z",
@@ -89,7 +91,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {
             "contract_version": 3,
-            "automation_id": "scan_codes",
+            "automation_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
             "preview_invocation_id": invocation_id,
             "target_date": "2026-08-24",
             "observed_at": "2026-08-24T03:58:00Z",
@@ -107,18 +109,21 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             normalize_scan_preview_projection(
                 projection,
                 expected_invocation_id=invocation_id,
+                expected_automation_id=SCAN_ID,
             ),
         )
         self.assertIsNone(
             normalize_scan_preview_projection(
                 {**projection, "selection_sha256": "1" * 64},
                 expected_invocation_id=invocation_id,
+                expected_automation_id=SCAN_ID,
             )
         )
         self.assertIsNone(
             normalize_scan_preview_projection(
                 projection,
                 expected_invocation_id="22222222-2222-4222-8222-222222222222",
+                expected_automation_id=SCAN_ID,
             )
         )
 
@@ -130,21 +135,21 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             projection,
             normalize_selection_preview_projection(
                 projection,
-                expected_automation_id="self_pickup_problem_upload",
+                expected_automation_id="87911cef-3773-4273-b644-030108c43678",
                 expected_invocation_id=invocation_id,
             ),
         )
         self.assertIsNone(
             normalize_selection_preview_projection(
                 {**projection, "preview_fingerprint": "f" * 64},
-                expected_automation_id="self_pickup_problem_upload",
+                expected_automation_id="87911cef-3773-4273-b644-030108c43678",
                 expected_invocation_id=invocation_id,
             )
         )
         self.assertIsNone(
             normalize_selection_preview_projection(
                 projection,
-                expected_automation_id="split_pending_problem_upload",
+                expected_automation_id="5d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
                 expected_invocation_id=invocation_id,
             )
         )
@@ -165,7 +170,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "_console_principal": {"actor_id": "17"}
         }
         app._parse_urlencoded_form = lambda _handler: {
-            "task_id": "self_pickup_problem_upload"
+            "task_id": "87911cef-3773-4273-b644-030108c43678"
         }
 
         app._handle_selection_preview_start(
@@ -175,7 +180,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         self.assertEqual(
             (
                 "POST",
-                "/internal/v1/automation-projects/self_pickup_problem_upload/"
+                "/internal/v1/automation-projects/87911cef-3773-4273-b644-030108c43678/"
                 "selection-previews",
                 {"request_id": request_id},
             ),
@@ -200,7 +205,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "_console_principal": {"actor_id": "17"}
         }
         app._parse_urlencoded_form = lambda _handler: {
-            "task_id": "self_pickup_problem_upload",
+            "task_id": "87911cef-3773-4273-b644-030108c43678",
             "preview_invocation_id": preview_invocation_id,
             "selected_bill_codes_json": '["R0002"]',
         }
@@ -211,7 +216,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
         _method, endpoint, payload, _timeout, _principal = app.calls[0]
         self.assertEqual(
-            "/internal/v1/automation-projects/self_pickup_problem_upload/"
+            "/internal/v1/automation-projects/87911cef-3773-4273-b644-030108c43678/"
             f"selection-previews/{preview_invocation_id}/confirm",
             endpoint,
         )
@@ -371,7 +376,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "_console_principal": {"actor_id": "17"}
         }
         app._parse_urlencoded_form = lambda _handler: {
-            "task_id": "scan_codes",
+            "task_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
             "preview_invocation_id": preview_invocation_id,
         }
 
@@ -382,7 +387,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         method, endpoint, payload, _timeout, _principal = app.calls[0]
         self.assertEqual("POST", method)
         self.assertEqual(
-            "/internal/v1/automation-projects/scan_codes/invoke",
+            "/internal/v1/automation-projects/4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f/invoke",
             endpoint,
         )
         self.assertEqual(
@@ -405,7 +410,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "_console_principal": {"actor_id": "17"}
         }
         app._parse_urlencoded_form = lambda _handler: {
-            "task_id": "scan_codes",
+            "task_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
             "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
         }
 
@@ -432,7 +437,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             "_console_principal": {"actor_id": "17"}
         }
         app._parse_urlencoded_form = lambda _handler: {
-            "task_id": "scan_codes",
+            "task_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
             "preview_invocation_id": "11111111-1111-4111-8111-111111111111",
             "dry_run": "false",
         }
@@ -521,7 +526,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
         invocation_id = "11111111-1111-4111-8111-111111111111"
         projection = {
             "contract_version": 3,
-            "automation_id": "scan_codes",
+            "automation_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
             "preview_invocation_id": invocation_id,
             "target_date": "2026-08-24",
             "observed_at": "2026-08-24T03:58:00Z",
@@ -539,7 +544,8 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                     "ok": True,
                     "status": 200,
                     "data": {
-                            "invocation_id": invocation_id, "automation_id": "scan_codes",
+                            "invocation_id": invocation_id, "automation_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
+                            "plugin_id": "sync_scan_codes_v2",
                             "invocation_phase": "preview",
                             "status": "COMPLETED",
                             "finished_at": "2026-08-24 12:00:00", "next_poll_after_ms": 0},
@@ -552,7 +558,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             object(),
             {
                 "invocation_id": [invocation_id],
-                "task_id": ["scan_codes"],
+                "task_id": ["4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f"],
                 "scan_phase": ["preview"],
                 "offset": ["0"],
             },
@@ -560,7 +566,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
         self.assertEqual(
             (
-                "/internal/v1/automation-projects/scan_codes/scan-previews/"
+                "/internal/v1/automation-projects/4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f/scan-previews/"
                 + invocation_id
             ),
             app.calls[1][1],
@@ -575,7 +581,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "ok": True,
                 "status": 200,
                 "data": {
-                        "invocation_id": invocation_id, "automation_id": "scan_codes",
+                        "invocation_id": invocation_id, "automation_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f",
                         "invocation_phase": "formal",
                         "status": "COMPLETED",
                         "finished_at": "2026-08-24 12:00:00", "next_poll_after_ms": 0},
@@ -586,7 +592,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             object(),
             {
                 "invocation_id": [invocation_id],
-                "task_id": ["scan_codes"],
+                "task_id": ["4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f"],
                 "scan_phase": ["formal"],
                 "offset": ["0"],
             },
@@ -681,7 +687,8 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
                 "ok": True,
                 "status": 200,
                 "data": {
-                        "invocation_id": "run-self-pickup-preview", "automation_id": "self_pickup_problem_upload",
+                        "invocation_id": "run-self-pickup-preview", "automation_id": "87911cef-3773-4273-b644-030108c43678",
+                        "plugin_id": "self_pickup_problem_upload_v2",
                         "invocation_phase": "preview",
                         "status": "FAILED",
                         "updated_at": "2026-09-03 01:00:00",
@@ -694,7 +701,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
             object(),
             {
                 "invocation_id": ["run-self-pickup-preview"],
-                "task_id": ["self_pickup_problem_upload"],
+                "task_id": ["87911cef-3773-4273-b644-030108c43678"],
                 "selection_phase": ["preview"],
                 "offset": ["0"],
             },
@@ -713,7 +720,7 @@ class AutomationControlPlaneCutoverTests(unittest.TestCase):
 
 class InvocationCardOwnershipTests(unittest.TestCase):
     def test_other_cards_invocation_is_never_persisted_or_cancelled(self):
-        response = {"ok": True, "data": {"invocation_id": "same-id", "automation_id": "scan_codes", "status": "COMPLETED"}}
+        response = {"ok": True, "data": {"invocation_id": "same-id", "automation_id": "4b3f6c1e-8d2a-4f5b-9c7e-1a2b3c4d5e6f", "status": "COMPLETED"}}
         app = _App(response)
         app._handle_automation_task_output(object(), {"invocation_id": ["same-id"], "task_id": ["daily_sign"]})
         self.assertEqual("INVALID_INVOCATION_RESULT", app.sent[1]["error_code"])

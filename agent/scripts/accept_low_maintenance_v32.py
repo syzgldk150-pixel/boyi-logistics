@@ -21,7 +21,7 @@ from uuid import uuid4
 import xml.etree.ElementTree as ET
 import zipfile
 
-from scripts.first_party_release_scope import quality_files, test_files
+from scripts.release_scope import quality_files, test_files
 from scripts.acceptance_evidence import validate_probe
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -222,7 +222,6 @@ def run_business_acceptance(output: Path, checks: list[dict[str, Any]], cases: l
         ("unknown_resource_scope", "scan_recovery", "v32_recovery_test", "reliability/unknown-resource-scope.json", ("--physical-scope",)),
         ("scan_cancel_recovery", "scan_recovery", "v32_scan_cancel_test", "reliability/scan-cancel-recovery.json", ("--cancel-only",)),
         ("customer_collection_flow", "customer_collection_flow", "v32_customer_flow_test", "customer-flow/evidence.json", ("--reset-owned-fixture",)),
-        ("finance_source_state", "finance_source_state", "v32_m02_test", "m02/source-state.json", ("--reset-owned-fixture",)),
     )
     for name, module, database, artifact, arguments in fixtures:
         started_ns = time.time_ns()
@@ -234,7 +233,6 @@ def run_business_acceptance(output: Path, checks: list[dict[str, Any]], cases: l
 
 def run_maintenance_acceptance(output, checks, cases, *, host_freeze):
     fixtures = (
-        ('field_maintenance', 'finance_maintenance', 'v32_m02_test', 'm02/maintenance-evidence.json', ('--reset-owned-fixture',)),
         ('decision_maintenance', 'decision_maintenance', 'v32_m03_test', 'm03/maintenance-evidence.json', ('--prepare',)),
     )
     for name, module, database, artifact, arguments in fixtures:
@@ -291,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report["environment"] = isolated_environment()
         py = sys.executable
-        quality = [str(path) for path in quality_files(PROJECT_ROOT, scope="gate")]
+        quality = [str(path) for path in quality_files(PROJECT_ROOT)]
         if not quality:
             raise RuntimeError("current production quality selection is empty")
         commands = [
@@ -310,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, command in commands:
             report["checks"].append(run_check(name, command, output))
         for suite in ("root", "agent", "console"):
-            paths = {path.relative_to(PROJECT_ROOT).as_posix() for path in test_files(PROJECT_ROOT, scope="gate", suite=suite)} if suite != "console" else {"console/tests"}
+            paths = {path.relative_to(PROJECT_ROOT).as_posix() for path in test_files(PROJECT_ROOT, suite=suite)} if suite != "console" else {"console/tests"}
             prefix = {"root": "tests/", "agent": "agent/tests/", "console": "console/tests/"}[suite]
             if suite != "console":
                 paths.update(reference.split("::", 1)[0] for row in matrix["groups"] for reference in row["tests"] if reference.startswith(prefix) and (PROJECT_ROOT / reference.split("::", 1)[0]).is_file())

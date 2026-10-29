@@ -18,33 +18,22 @@ from typing import Any
 
 from agent.orchestration.approval_service import APPROVAL_TTL
 from agent.orchestration.models import (
-    Actor,
-    ActorType,
     Command,
-    EntityRef,
     OperationType,
     OrchestrationError,
     Plan,
-    new_id,
     sha256_json,
 )
 from shared.automation_project_authorization import (
-    AutomationProjectInvocation,
     canonical_sha256,
 )
-from shared.orchestration_repository_support import IdempotencyConflict
 from shared.automation_preview_contract import preview_observation_too_far_ahead
-from agent.orchestration.signed_preview_maintenance import signed_preview_contract_compatible
 
 
-SCAN_PROJECT_ID = "scan_codes"
 SCAN_PLUGIN_ID = "sync_scan_codes"
 SCAN_PREVIEW_CONTEXT_KEY = "scan_preview"
 SCAN_PREVIEW_PAYLOAD_BINDING_FIELD = "_scan_preview_binding"
-SCAN_PREVIEW_CONSUMED_EVENT = "automation.scan_preview.consumed"
 SCAN_PREVIEW_CONTRACT_VERSION = 1
-SCAN_FORMAL_PLUGIN_VERSION = "1.0.23"
-SCAN_FORMAL_POSTCONDITION = "scan_formal_execution_verified"
 SCAN_PREVIEW_PUBLIC_FIELDS = frozenset(
     {
         "contract_version",
@@ -75,12 +64,6 @@ class ScanPreviewExpectation:
 
 
 @dataclass(frozen=True)
-class ScanPreviewResolution:
-    context: Mapping[str, Any]
-    formal_arguments: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
 class _PersistedScanPreview:
     run_id: str
     step: Mapping[str, Any]
@@ -92,200 +75,30 @@ class _PersistedScanPreview:
 
 
 def is_scan_preview_project(entry: Any) -> bool:
-    """Match only the reviewed first-party scan project identity."""
+    """Match only an uploaded Service V2 scan plugin."""
 
-    if getattr(entry, "runtime_model", None) == "SERVICE_V2":
-        from agent.automation_plugins.models import PluginTrustSource
+    from agent.automation_plugins.models import PluginTrustSource
 
-        return (
-            getattr(entry, "plugin_id", None) == "sync_scan_codes_v2"
-            and getattr(entry, "trust_source", None) in {
-                PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
-                PluginTrustSource.BUILTIN_BUNDLE.value,
-            }
-        )
     return (
-        str(getattr(entry, "automation_id", "") or "").strip()
-        == SCAN_PROJECT_ID
-        and str(getattr(entry, "plugin_id", "") or "").strip()
-        == SCAN_PLUGIN_ID
-        and (
-            str(getattr(entry, "trust_source", "") or "").strip() == "ed25519_first_party"
-            or signed_preview_contract_compatible(entry)
-        )
+        getattr(entry, "runtime_model", None) == "SERVICE_V2"
+        and getattr(entry, "plugin_id", None) == "sync_scan_codes_v2"
+        and getattr(entry, "trust_source", None) in {
+            PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+            PluginTrustSource.BUILTIN_BUNDLE.value,
+        }
     )
 
 
 def require_scan_formal_governance(entry: Any) -> None:
-    """Keep the binding dormant until the signed scan tool is formally safe."""
+    """A formal scan needs the plugin's declared preview/confirm entrypoint."""
 
-    if is_scan_preview_project(entry) and getattr(entry, "runtime_model", None) == "SERVICE_V2":
+    if is_scan_preview_project(entry):
         # The V2 catalog validates the signed service effects and generation.
-        # Invocation policy then enforces this instance's live permissions;
-        # the V1 release-number gate is not a V2 authorization mechanism.
+        # Invocation policy then enforces this instance's live permissions.
         from agent.orchestration.selection_preview_binding import selection_preview_contribution
         if any(selection_preview_contribution(entry, kind) is not None for kind in ("console", "feishu")):
             return
-        raise _error("SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED", "扫描插件未声明预览确认入口")
-    anchor = getattr(entry, "governance_anchor", None)
-    if not is_scan_preview_project(entry) or not isinstance(anchor, Mapping):
-        raise _error(
-            "SCAN_PREVIEW_PROJECT_INVALID",
-            "A scan preview can only be bound to the signed scan automation project",
-        )
-    approval = anchor.get("approval")
-    permissions = anchor.get("permissions")
-    required_roles = (
-        permissions.get("required_roles")
-        if isinstance(permissions, Mapping)
-        else None
-    )
-    postconditions = anchor.get("postconditions")
-    snapshot = getattr(entry, "committed_snapshot", None)
-    package_sha256 = str(getattr(entry, "package_sha256", "") or "").strip()
-    manifest_sha256 = str(getattr(entry, "manifest_sha256", "") or "").strip()
-    installed_version = str(getattr(entry, "installed_version", "") or "").strip()
-    committed_generation = getattr(entry, "committed_generation", None)
-    target_generation = getattr(entry, "target_generation", None)
-    governance_anchor_sha256 = str(
-        getattr(entry, "governance_anchor_sha256", "") or ""
-    ).strip()
-    ready = (
-        anchor.get("operation_type") == "external_write"
-        and anchor.get("risk_level") == "high"
-        and isinstance(approval, Mapping)
-        and approval.get("mode") == "required"
-        and approval.get("required_role") == "super_admin"
-        and isinstance(required_roles, list)
-        and "super_admin" in required_roles
-        and anchor.get("project_full_auto_allowed") is True
-        and getattr(entry, "project_full_auto_allowed", False) is True
-        and governance_anchor_sha256 == canonical_sha256(anchor)
-        and isinstance(postconditions, list)
-        and postconditions == [{"name": SCAN_FORMAL_POSTCONDITION}]
-        and (
-            installed_version == SCAN_FORMAL_PLUGIN_VERSION
-            or signed_preview_contract_compatible(entry)
-        )
-        and bool(_HEX_SHA256.fullmatch(package_sha256))
-        and bool(_HEX_SHA256.fullmatch(manifest_sha256))
-        and isinstance(committed_generation, int)
-        and not isinstance(committed_generation, bool)
-        and committed_generation > 0
-        and committed_generation == target_generation
-        and snapshot is not None
-        and getattr(snapshot, "generation", None) == committed_generation
-        and getattr(snapshot, "plugin_id", None) == SCAN_PLUGIN_ID
-        and getattr(snapshot, "plugin_version", None) == installed_version
-        and getattr(snapshot, "package_sha256", None) == package_sha256
-        and getattr(snapshot, "manifest_sha256", None) == manifest_sha256
-        and getattr(snapshot, "governance_anchor_sha256", None)
-        == governance_anchor_sha256
-        and str(
-            getattr(
-                getattr(snapshot, "trust_source", None),
-                "value",
-                getattr(snapshot, "trust_source", ""),
-            )
-        )
-        == str(getattr(entry, "trust_source", "") or "").strip()
-    )
-    if not ready:
-        raise _error(
-            "SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED",
-            "The signed scan plugin is not yet approved for formal external writes",
-        )
-
-
-def resolve_scan_preview(
-    uow: Any,
-    *,
-    preview_run_id: str,
-    expectation: ScanPreviewExpectation,
-    formal_arguments: Mapping[str, Any],
-    now: datetime,
-    for_update: bool,
-) -> ScanPreviewResolution:
-    """Resolve and fully validate one persisted, completed preview run."""
-
-    checked_now = _aware_utc(now, "now")
-    persisted = _load_persisted_scan_preview(
-        uow,
-        preview_run_id=preview_run_id,
-        expectation=expectation,
-        now=checked_now,
-        for_update=for_update,
-    )
-    if checked_now >= persisted.expires_at:
-        raise _error("SCAN_PREVIEW_EXPIRED", "The scan preview is older than fifteen minutes")
-
-    bound_formal_arguments = _bind_formal_arguments(
-        persisted.preview_arguments,
-        formal_arguments,
-        target_date=str(persisted.evidence["target_date"]),
-    )
-    context: dict[str, Any] = {
-        "contract_version": SCAN_PREVIEW_CONTRACT_VERSION,
-        "plugin_id": SCAN_PLUGIN_ID,
-        "preview_run_id": persisted.run_id,
-        "preview_step_id": str(persisted.step.get("step_id") or "").strip(),
-        "preview_result_sha256": persisted.result_digest,
-        "project_instance_id": expectation.project_instance_id,
-        "generation": expectation.generation,
-        "contract_digest": expectation.contract_digest,
-        "configuration_version": expectation.configuration_version,
-        "target_date": persisted.evidence["target_date"],
-        "observed_at": _iso_utc(persisted.observed_at),
-        "expires_at": _iso_utc(persisted.expires_at),
-        "source_page_count": persisted.evidence["source_page_count"],
-        "normalized_record_count": persisted.evidence["normalized_record_count"],
-        "source_snapshot_sha256": persisted.evidence["source_snapshot_sha256"],
-        "source_evidence_count": len(persisted.evidence["source_evidence_refs"]),
-        "source_evidence_refs_sha256": canonical_sha256(
-            persisted.evidence["source_evidence_refs"]
-        ),
-        "selection_count": persisted.evidence["selection_count"],
-        "selection_sha256": persisted.evidence["selection_sha256"],
-        "batch_count": persisted.evidence["batch_count"],
-        "batch_plan_sha256": persisted.evidence["batch_plan_sha256"],
-        "formal_arguments_sha256": canonical_sha256(bound_formal_arguments),
-    }
-    context["context_sha256"] = canonical_sha256(context)
-    return ScanPreviewResolution(
-        context=context,
-        formal_arguments=bound_formal_arguments,
-    )
-
-
-def scan_preview_public_projection(
-    uow: Any,
-    *,
-    preview_run_id: str,
-    expectation: ScanPreviewExpectation,
-    now: datetime,
-) -> dict[str, Any]:
-    """Return the one bounded entrypoint-safe projection of a preview Run."""
-
-    checked_now = _aware_utc(now, "now")
-    persisted = _load_persisted_scan_preview(
-        uow,
-        preview_run_id=preview_run_id,
-        expectation=expectation,
-        now=checked_now,
-        for_update=False,
-    )
-    return {
-        "contract_version": SCAN_PREVIEW_CONTRACT_VERSION,
-        "preview_run_id": persisted.run_id,
-        "target_date": persisted.evidence["target_date"],
-        "observed_at": _iso_utc(persisted.observed_at),
-        "expires_at": _iso_utc(persisted.expires_at),
-        "source_page_count": persisted.evidence["source_page_count"],
-        "normalized_record_count": persisted.evidence["normalized_record_count"],
-        "selection_count": persisted.evidence["selection_count"],
-        "batch_count": persisted.evidence["batch_count"],
-        "can_confirm": checked_now < persisted.expires_at,
-    }
+    raise _error("SCAN_PREVIEW_FORMAL_EXECUTION_DISABLED", "扫描插件未声明预览确认入口")
 
 
 def scan_preview_recovery_projection(
@@ -636,146 +449,6 @@ def validate_scan_preview_context(value: Any) -> dict[str, Any]:
     return context
 
 
-def ensure_scan_preview_active(value: Any, *, now: datetime) -> None:
-    """Recheck expiry after the caller has acquired the preview Run lock."""
-
-    context = validate_scan_preview_context(value)
-    checked_now = _aware_utc(now, "now")
-    expires_at = _parse_timestamp(context["expires_at"], "expires_at")
-    if checked_now >= expires_at:
-        raise _error("SCAN_PREVIEW_EXPIRED", "The scan preview is older than fifteen minutes")
-
-
-def restore_scan_preview_replay(
-    uow: Any,
-    *,
-    source: str,
-    idempotency_key: str,
-    actor: Actor,
-    trusted_context: Mapping[str, Any],
-    project_instance_id: str,
-    request_id: str,
-    preview_run_id: str,
-    expected_generation: int | None,
-    expected_configuration_version: int | None,
-) -> Command | None:
-    """Restore the exact accepted Command so a replay also works after expiry."""
-
-    persisted = uow.commands.get_by_idempotency(
-        source,
-        idempotency_key,
-        for_update=False,
-    )
-    if persisted is None:
-        return None
-    try:
-        if (
-            str(persisted.get("command_type") or "") != "automation.project.invoke"
-            or str(persisted.get("source") or "") != source
-            or str(persisted.get("idempotency_key") or "") != idempotency_key
-            or str(persisted.get("actor_type") or "") != actor.actor_type.value
-            or str(persisted.get("actor_id") or "") != actor.actor_id
-        ):
-            raise ValueError("persisted command identity differs")
-        roles = persisted.get("actor_roles_json", persisted.get("actor_roles"))
-        if not isinstance(roles, list) or tuple(sorted(roles)) != actor.roles:
-            raise ValueError("persisted command actor differs")
-        parameters = _row_mapping(persisted, "parameters_json", "parameters")
-        execution_context = parameters.get("execution_context")
-        preview_context = (
-            execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
-            if isinstance(execution_context, Mapping)
-            else None
-        )
-        validated_context = validate_scan_preview_context(preview_context)
-        persisted_transport = {
-            name: value
-            for name, value in execution_context.items()
-            if name
-            not in {
-                "project_request_id",
-                "entrypoint",
-                "occurred_at",
-                SCAN_PREVIEW_CONTEXT_KEY,
-            }
-        }
-        if persisted_transport != dict(trusted_context):
-            raise ValueError("persisted trusted transport context differs")
-        if validated_context["preview_run_id"] != normalize_preview_run_id(preview_run_id):
-            raise ValueError("persisted preview identity differs")
-        invocation = AutomationProjectInvocation.from_mapping(
-            _row_mapping(
-                persisted,
-                "automation_invocation_json",
-                "automation_invocation",
-            )
-        )
-        if (
-            invocation.automation_id != project_instance_id
-            or invocation.request_id != request_id
-            or invocation.entrypoint.value != source
-        ):
-            raise ValueError("persisted project invocation differs")
-        if (
-            expected_generation is not None
-            and invocation.automation_generation != expected_generation
-        ) or (
-            expected_configuration_version is not None
-            and invocation.project_configuration_version
-            != expected_configuration_version
-        ):
-            raise OrchestrationError(
-                "PROJECT_INVOCATION_STALE",
-                "Automation project generation or configuration changed before replay",
-            )
-        raw_refs = persisted.get("entity_refs_json", persisted.get("entity_refs"))
-        if not isinstance(raw_refs, list):
-            raise ValueError("persisted entity references are invalid")
-        refs = tuple(
-            EntityRef(
-                entity_type=str(ref["entity_type"]),
-                entity_id=str(ref["entity_id"]),
-                source_system=str(ref.get("source_system") or ""),
-                relation_type=str(ref.get("relation_type") or "subject"),
-                metadata=(
-                    dict(ref.get("metadata") or {})
-                    if isinstance(ref, Mapping)
-                    else {}
-                ),
-            )
-            for ref in raw_refs
-            if isinstance(ref, Mapping)
-        )
-        if len(refs) != len(raw_refs):
-            raise ValueError("persisted entity references are invalid")
-        requested_at = persisted.get("requested_at")
-        if not isinstance(requested_at, datetime):
-            raise ValueError("persisted request time is invalid")
-        if requested_at.tzinfo is None:
-            requested_at = requested_at.replace(tzinfo=timezone.utc)
-        return Command(
-            command_type="automation.project.invoke",
-            source=source,
-            actor=Actor(
-                ActorType(str(persisted["actor_type"])),
-                str(persisted["actor_id"]),
-                tuple(roles),
-            ),
-            parameters=parameters,
-            idempotency_key=idempotency_key,
-            entity_refs=refs,
-            automation_invocation=invocation,
-            command_id=str(persisted["command_id"]),
-            correlation_id=str(persisted["correlation_id"]),
-            requested_at=requested_at.astimezone(timezone.utc),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise OrchestrationError(
-            "REQUEST_ID_REUSED",
-            "Request id was already used for a different scan command",
-        ) from exc
-
-
 def build_scan_preview_impact(
     *,
     command: Command,
@@ -875,59 +548,6 @@ def scan_preview_payload_binding(
     ):
         raise _error("SCAN_PREVIEW_CONTEXT_INVALID", "Scan preview does not match the signed command")
     return context
-
-
-def consume_scan_preview(
-    uow: Any,
-    *,
-    context: Mapping[str, Any],
-    command: Command,
-    occurred_at: datetime,
-) -> None:
-    """Consume once, while allowing the same command idempotency retry."""
-
-    validated = validate_scan_preview_context(context)
-    existing = uow.commands.get_by_idempotency(
-        command.source,
-        command.idempotency_key,
-        for_update=True,
-    )
-    if existing is not None:
-        return
-    event_time = _aware_utc(occurred_at, "occurred_at").replace(tzinfo=None)
-    try:
-        uow.events.append_with_outbox(
-            {
-                "event_id": new_id(),
-                "event_type": SCAN_PREVIEW_CONSUMED_EVENT,
-                "schema_version": 1,
-                "source_system": "automation_project",
-                "source_event_id": validated["preview_run_id"],
-                "entity_type": "agent_run",
-                "entity_id": validated["preview_run_id"],
-                "run_id": validated["preview_run_id"],
-                "step_id": validated["preview_step_id"],
-                "occurred_at": event_time,
-                "observed_at": event_time,
-                "correlation_id": command.correlation_id,
-                "causation_id": command.command_id,
-                "payload": {
-                    "command_source": command.source,
-                    "command_idempotency_key": command.idempotency_key,
-                    "context_sha256": validated["context_sha256"],
-                    "selection_count": validated["selection_count"],
-                    "selection_sha256": validated["selection_sha256"],
-                    "batch_count": validated["batch_count"],
-                    "batch_plan_sha256": validated["batch_plan_sha256"],
-                },
-            },
-            (),
-        )
-    except IdempotencyConflict as exc:
-        raise _error(
-            "SCAN_PREVIEW_ALREADY_CONSUMED",
-            "The scan preview was already consumed by another command",
-        ) from exc
 
 
 def normalize_preview_run_id(value: Any) -> str:

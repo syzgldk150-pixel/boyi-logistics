@@ -4,7 +4,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 ## 当前身份与统一对话边界
 
-统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`。所有原业务实例已完成迁移并只运行 V2；Host 审核原语仍由 V2 Connector 复用，不能当作 V1 遗留删除。细节见[维护说明](../../docs/identity_and_unified_chat.md)。
+统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`。系统只运行 V2；Connector 复用的已审核 Host 原语（`automation_plugins/host_primitive_*.py`、`reviewed_primitives.py`）是当前能力，不是遗留代码。细节见[维护说明](../../docs/identity_and_unified_chat.md)。
 
 当前调用架构见 [直接业务与插件说明](../../docs/architecture_direct_invocation.md)。`direct_readers.py` 管理固定查询的参数、角色与临时能力；`automation_plugins/direct_invocation.py` 管理插件独立调用，`orchestration/workflow_runner.py` 在主系统不启用领取。
 
@@ -14,7 +14,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
 - 扫描批次计划由已安装插件独立生成；Host 校验预览结构、候选集合及批次数量约束，原样绑定插件提交的批次数与计划摘要，不按宿主默认值重新分批。插件在首个写入前重读来源并校验完整计划，Host 仍核验实际写回执与独立读后证据。
-- 预览生成与确认的 UTC 时钟允许共享合同中的 3 秒短时回拨容差；超出该窗口的未来时间及真正到期的预览仍拒绝。隔离复现见 `../../tests/test_direct_preview_state.py`、`../../tests/test_scan_preview_binding.py`。
+- 预览生成与确认的 UTC 时钟允许共享合同中的 3 秒短时回拨容差；超出该窗口的未来时间及真正到期的预览仍拒绝。隔离复现见 `../../tests/test_direct_preview_state.py`。
 - 融辉打卡的只读能力检查只接受已核验的“交接任务管理”精确菜单名称，仍要求唯一入口与真实页面标记（`FIND_TAB_SHIFT_HANDOVER_TASK`/`TAB_SHIFT_HANDOVER_TASK_UPT`）；不使用包含匹配或任意首条菜单。
 
 ## 目录职责
@@ -23,13 +23,13 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 ## 修改入口
 
-- 全部原实例完成迁移后，`automation_plugins/first_party_retirement.py` 校验仅含退役元数据的发布索引及数据库归属；启动不再加载或补建 V1 包。完成迁移的旧实例退出日常列表且不可重新启用，历史查询仍保留。未完成迁移的宿主继续使用签名 V1 发布门禁，不能用空包绕过。见 `../../docs/plugin-platform-v2.md`。
+- 启动只按持久 committed generation 恢复 Service V2 注册；目录、执行和调度只投影 `runtime_model=SERVICE_V2` 的实例，数据库中残留的旧插件行在迁移 064 删除前被忽略。见 `../../docs/plugin-platform-v2.md`。
 
-- `automation_plugins/production.py` 重建 Service V2 入口前读取当前实例启停状态；停用、撤回实例只恢复不可调度的持久化证据，不保留命令或路由占用。不能先激活所有已提交代次再停用，避免旧迁移阻断启动。
+- `automation_plugins/production.py` 重建 Service V2 入口前读取当前实例启停状态；停用实例只恢复不可调度的持久化证据，不保留命令或路由占用。不能先激活所有已提交代次再停用。生产组合只保留 `reviewed_primitives.py` 列出的 Host 原语，插件存储根来自 `release_config.py`。
 
-- 插件迁移撤回/切换后由 `automation_plugins/management.py` 先释放旧入口再同步新入口；准备失败也可撤回 TESTING 并卸载。启动安装及健康检查按 `../../shared/automation_plugin_migration_ownership.py` 排除已移交的旧实例。到货统计和到货清单共用 `automation_plugins/list_connectors_v2.py` 的固定列转换。详见[迁移手册](../../docs/plugin-platform-v2.md)。
+- 固定飞书命令与既有 Webhook 的插件归属写死在 `automation_plugins/fixed_entrypoints.py`，只发往对应插件唯一启用的实例。到货统计和到货清单共用 `automation_plugins/list_connectors_v2.py` 的固定列转换。
 
-- 首方版本升级：`automation_plugins/mysql_repository.py` 在同一 Unit of Work 内准备目标合同配置并暂存版本，失败整体回滚，已提交代次保持不变；`../../shared/automation_plugin_configuration_contract.py` 统一配置 witness 与精确升级目标校验。真实 MySQL 回归见 `../../tests/test_first_party_upgrade_configuration_mysql.py`。
+- 插件版本升级：`automation_plugins/mysql_repository.py` 在同一 Unit of Work 内准备目标合同配置并暂存版本，失败整体回滚，已提交代次保持不变；`../../shared/automation_plugin_configuration_contract.py` 统一配置 witness 与精确升级目标校验。真实 MySQL 回归见 `../../tests/test_service_v2_optional_console_upgrade_mysql.py`。
 - Service V2 升级仅在旧合同与保存模板一致时接纳新增的可选 Console 运行时输入；原调用参数、治理、目标、绑定和定时不变，目标模板与升级在同一事务提交。兼容边界见 `../../docs/plugin-platform-v2.md`。
 - 改直接调用、权限、执行记录和历史查询：
   - 当前入口为 `automation_plugins/direct_invocation.py`、`orchestration/direct_project_invocation.py` 与 `tms_runtime/direct_business.py`；`../docs/control_plane_v1.md` 仅供旧控制平面历史/离线核验。
@@ -41,7 +41,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
   - 当前直接执行受有界并发与实际资源控制；已受理请求遇临时资源忙时，仅在当前进程内有界等待，默认最多 30 秒且可取消；超时、过载、登录、数据或业务错误明确终结，无持久等待队列和自动补跑。调用生命周期持有实际账号使用登记，取消/超时后等线程或子进程真正结束及必要业务落库完成才释放。旧 Runner 心跳/领取参数不影响当前路径。
   - `orchestration/execution_resources.py` 只从 `workflow_resource_store.get_saved_workflow_resource` 的宿主完整性校验记录归一已审核 Sheet/Bitable 写范围。已知同表别名跨插件／角色／凭据互斥，缺少子表 ID 或创建归档表时持有整个父资源；未知动作、URL-only、未知 locator 保留同账号保守锁，并与该账号已知资源双向冲突。无权威物理身份的跨凭据范围及多个独立服务进程之间的资源协调仍是明确限制，不可描述为已覆盖。
   - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。签名唯一声明可选、绑定键完全缺失且无账号歧义的资源角色可排除，Broker 仍在写前拒绝该角色。Direct 调用冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。历史收据只读投影和明确限制见 `../../docs/historical_write_recovery.md`。
-  - `orchestration/signed_preview_maintenance.py` 核验固定扫描／自提／分批实例的 V1 签名 ZIP 维护兼容：版本与 payload 可变，Host 工具、调用、治理、Broker 和角色契约必须与宿主审核来源一致，且 committed 快照身份及摘要一致；不把 `ed25519_upload` 改写为首发信任。内部配置拒写与预览只读裁剪继续由 `automation_plugins/code_owned_fields.py` 统一执行；财务／客服新签名实例的内部字段不可编辑，也不因此获得启动补采或额外计划字段权限。
+  - 内部配置拒写与预览只读裁剪由 `automation_plugins/code_owned_fields.py` 统一执行；客服采集的内部字段不可编辑，也不因此获得额外计划字段权限。
   - Session 登录使用按 profile 隔离、默认 120 秒的 staged 子进程；token/epoch 防止迟到提交，同 profile 登录中直接 `BLOCKED_LOGIN`。业务适配器不得先跑全系统鉴权，只打开保存态并以实际目标响应判断登录；完整 capability 矩阵仅供后台监控。
 - 改 HTTP API、健康检查、Webhook 入口：
   - `../main.py`
@@ -67,18 +67,17 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
   - `automation_plugins/service_v2_projection.py` 只维护全局 exact command digest、整代冲突和 active generation；不得导入飞书或业务工具。DRAINING 旧代不接流量、不占命令，权威空 generation 必须原子清 active map。
   - `orchestration/automation_project_entrypoints.py` 的 `ServiceV2FeishuDispatcher` 从 Registry 取得项目/代际/contribution，接收 verified event/sender/chat，以及当前 contribution `input_schema` 明确声明的本次业务输入；`automation_project_policy_service.py` 在 Invocation 接受事务内再次核对 exact `COMMITTED/READY` identity。service、operation、账号和资源不得来自消息。Console 同样只接收声明的 `runtime_inputs`，本次输入不得覆盖项目保存配置；未声明输入的旧 contribution 仍只使用保存配置。
   - `orchestration/automation_run_supersession.py` 只供历史/离线状态验证；046 结清旧队列，主进程不领取或复活历史 Run。当前是否运行只认 Direct 调用的实际生命周期，停止历史 UNKNOWN 不阻新请求。
-  - 历史 `sync_scan_codes` 未知写恢复读取原正式 lease、Command、已验签 preview 与原代际账号，在独立外部账本精确证明 APPLIED / NOT_APPLIED；041 保存原快照和原资源键，APPLIED 仅按原日期所有者 CAS 补齐投影与结果，显式人工核验不唤醒原 Run；停止历史的不确定结果保留 UNKNOWN，不阻止新请求。历史紧凑上下文缺失时仍须验证同 Run 的完整 Plan hash 和原预览结果摘要，不得猜测。实现索引、保留/回滚与隔离验收边界见 `../../docs/scan_recovery_v32.md`。
-  - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定 Action v1 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
+  - 扫描投影写入仍由 `shared/scan_snapshot_recovery.py` 维护日期所有者 head 与写入身份（迁移 041 的表）；历史扫描未知写只读保留，不再提供核验或恢复入口，停止历史的 UNKNOWN 不阻止新请求。保留边界见 `../../docs/scan_recovery_v32.md`。
+  - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定命令 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
 - 改 AI 会话、插件选择、只读 Tool Catalog 或受限 sidecar：
   - 发货与知识局部入口为 `shipment_queries.py`、`shipment_conversation.py`、`knowledge_answers.py`，计算合同在 `shared/shipment_metrics.py`；来源未核实明确不可用，过期查询条件不从旧文本猜测。范围见 `../../docs/shipment_knowledge_queries.md`。
   - `plugin_conversations.py` 从启用且配置完成的 committed 插件生成不含账号资源的选择句柄；网页 AI 和已绑定管理员的飞书自然对话复用各自入口，执行前复核版本、设置及完全自动权限。模型无权确认预览或提供业务参数；同一请求只重读原 Invocation。实现与隔离验证见 `../../docs/architecture_direct_invocation.md`。
   - `harness/` 只放无环境、数据库、网络、文件、TMS 和飞书依赖的领域模型、内存 Session、Catalog、协议与 fail-closed launcher；`harness_application.py` 绑定真实签名 MySQL 管理员、可信项目调用 adapter 和组合根注入的只读处理器；`harness_api.py` 只承载闭合内部 HTTP 请求、响应投影和错误映射。
   - 动态工具只从 `ManagedContributionRegistry` 的 immutable active snapshot 读取，并在调用前重解 exact active generation。贡献必须绑定 generation 中真实签名的闭合 `runtime_permissions`，只接受 `read/compute + harness_allowed=true + broker_effect=read`，权限由 `automation_plugins/harness_permissions.py` 按 Host 精确操作统一投影：保留 read/compute 操作及受调用 effect ceiling 限制的 service.invoke，浏览器只开放逐项受审的只读 action；Catalog、贡献注册和实际只读调用发放权限复用此规则。缺字段、伪造治理或无对应操作的权限标志均拒绝，正式提交不进入只读授权。
   - `harness_runtime.py` 复用当前启用的 LLM；固定网关由组合根注册，只返回真实查询数据，财务汇总不触发采集。动态插件能力按当前 committed generation 和签名声明开放；调用使用真实 Invocation，内部账号/资源身份不交给模型。历史离线 sidecar 测试不作为当前生产能力声明。
-- 改 Service v2 Webhook/Event 进程入口：`service_v2_process_runtime.py` 在 composition root 启动时绑定唯一 `orchestration/service_v2_managed_ingress.py`，只暴露 `dispatch_verified_webhook(method, route, source_event_id)` 和 `dispatch_verified_event(event_name, source_event_id)` 两个闭合调用。只有持久注册与当前进程绑定同时有效才可投影 `READY`；绑定失败阻止启动，未绑定返回 `PROJECT_RUNTIME_PROJECTION_STALE`，关机先撤销 availability 再解绑。不得新增公网/内部 HTTP 路由、接管 Action v1、`shared/runtime_events.py` 或 Outbox；真实验签、外部事件源和 ACK/retry/replay 仍为 `PRODUCTION_GATED`。
+- 改 Service v2 Webhook/Event 进程入口：`service_v2_process_runtime.py` 在 composition root 启动时绑定唯一 `orchestration/service_v2_managed_ingress.py`，只暴露 `dispatch_verified_webhook(method, route, source_event_id)` 和 `dispatch_verified_event(event_name, source_event_id)` 两个闭合调用。只有持久注册与当前进程绑定同时有效才可投影 `READY`；绑定失败阻止启动，未绑定返回 `PROJECT_RUNTIME_PROJECTION_STALE`，关机先撤销 availability 再解绑。不得新增公网/内部 HTTP 路由、接管 `shared/runtime_events.py` 或 Outbox；真实验签、外部事件源和 ACK/retry/replay 仍为 `PRODUCTION_GATED`。
 - 改调度任务、热重载、启停：
   - `scheduler.py`
-  - `task_templates.py`
 - 改 TMS 兼容接口、短信验证码登录态、共享 cookies / storage state：
   - `tms_runtime/routes.py`
   - `tms_runtime/session_broker.py`
@@ -86,7 +85,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
   - `tms_runtime/dispatch.py`
   - `tms_runtime/scripts/`
   - `tms_runtime/scripts/scan_next.py` 不打开浏览器，按真实发件扫描页（2026-10-21 采集）的接口直接提交：使用调度器所选账号的精确 `session_profile` 读取共享登录态，不得固定落到默认会话；扫描员/网点只取原页 `$Z.user.getUserInfo()` 所读 `userInfo` Cookie 中的 `loginUserName/loginUserAccount/loginSiteName/loginSiteCode`，缺字段或员工编码超过 20 字节显式停止，禁止页头文字或默认网点。请求头 `authenticationKey/pageId` 取自菜单中唯一且含 `TAB_SCAN_SEND_ADD` 的“发件扫描”页；单号规则 `FIND_TMS_SYS_SHARE_SET`（含 VehicleCode）每次调用只读一次，不符合即失败；`FIND_WAYBILL_SIGN_STATE` 有记录则跳过该单，本网点今日已发件扫描到同一下一站的单也跳过，避免中断后重扫重复记录，两者响应结构异常均显式失败；发件账本 `FIND_SEND_SCAN_RECORD` 只按“扫描记录查询”页的单号方式查询（逗号拼接 `BILL_CODE` 加 `LOGIN_SITE_CODE`，每次 100 单且须单页取全）：该接口忽略 `searchOrderInput`，按日期查会返回全网点记录，超过一页时分页不稳定（行重复或遗漏），写前跳过与写后核验共用 `query_send_scan_records`；下一站使用页面 init 的同一查询（分拨中心 `FIND_SCAN_SEND_SITE_COMBOBOX_BY_CEN1`，其他 `FIND_SCAN_SEND_SITE_COMBOBOX_NEW`）且同名只接受唯一网点编号（接口重复返回同一网点视为一个）；上传行与页面表单 `getData()` 加录入处理一致（快件类型 `汽运`、14 位清单编号），每个连续下一站一次 `saveTables` `TAB_SCAN_SEND_ADD`，`success` 非真即失败，成功仍以扫描账本回读为准。首页登录提醒弹窗不再影响扫描；Broker 动作名沿用 `browser.invoke`/`ronghui.scan_next.submit`，不代表使用浏览器。每批最多 200 单，不同主单的子单可同批录入。
-  - `tms_runtime/scripts/` 中与 `price_scripts/` 旧离线脚本重名的模块（如 `login_manager`、`address_utils`、`get_price`、`browser_address_resolver`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager` / `import get_price`，避免旧脚本目录或 `sys.modules` 缓存串线。
+  - `tms_runtime/scripts/` 中的模块（如 `login_manager`）必须使用 `agent.tms_runtime.scripts...` 包内导入，不得裸 `import login_manager`，避免工作目录或 `sys.modules` 缓存串线。
   - `SessionBroker` 是对旧调用方的统一门面；融辉/韵达验证码及百世微信扫码流程分别经 provider adapter，文件状态只由 state store 管理。融辉图片验证码必须点击真实登录页 `newLogin()` 入口，保留原页密码加密和 `userInfo` 写入回调；`userInfo` 必须保持 JavaScript 可读，且四个页面身份字段完整后才能标记 authenticated。历史错误 `httpOnly=true` 状态只允许由共享状态迁移器修正，不得在扫描脚本中从页头或默认值补身份。调度器不得访问 broker 私有状态或按目录顺序加载脚本。
 - 融辉、韵达、R7、R13、百世快运全部通过 `/admin/accounts/{account_id}/*` 使用同一账号管理契约；密码类凭据只来自后台账号管理保存值；百世扫码会话由 `session_best_adapter.py` 保存，菜单接口验证通过才记为已登录，多账号要求明确选择，失效后重新扫码。报价使用 `quote_prices_v2` 项目明确绑定的各平台账号，后台登录与飞书报价复用该账号的保存态；`/admin/tms/session/*`、`/admin/tms/price-session/*`、`/admin/tms/yunda-session/*` 只保留旧调用兼容。不同账号仍按 `account_id` 隔离 Cookie/Token，R7/R13 使用可持久和在线校验的 SSO Token/Cookie，韵达登录态继续服务报表、查单、寄件同步、报价、录单原页代理和问题件接口
   - 所有签名项目自动化账号只来自项目当前提交的精确角色绑定；后台改绑后下一次运行使用新账号，Broker 和脚本不得按默认标记、列表顺序或固定 ID 猜测。R13 业务查询在该精确账号登录后按原页协议调用 `/gateway/public/aurora/auth` 读取真实站点范围，请求使用 R13 同源 `Origin` 与 `aurora-token`，不得继承 SSO `Origin` 或附加 Bearer；中心账号传空站点列表，其他账号传其 `siteCode`。账号上下文缺失、刷新后范围漂移或请求体尝试覆盖站点时均 fail closed。
@@ -120,7 +119,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
   - 韵达新增：`韵达登录/韵达发验证码` 走 `yunda` 登录态；`切换到融辉自动化/切换到韵达自动化/当前自动化状态` 管理当前 Profile；`韵达派件预测/网点派件量预测主单表` 触发韵达派件预测同步
   - 含 `is_confirm_text` / `is_cancel_text` / `parse_verify_code` 用于 pending 状态机
   - TMS 工具返回登录态错误时必须顶层包含 `error_code=AUTH_REQUIRED` / `AUTH_PENDING_CODE`，不能只返回“格式异常”；共享解析在 `../tools/phase7_sync_common.py`
-  - 自提问题件两个来源分别使用项目当前显式绑定的 `self_pickup_primary` 与 `self_pickup_daxiang_s` 角色账号（旧 V1 工具对应 `account_id` 与 `daxiang_s_account_id`）；Broker 从精确绑定账号解析会话与站点，后台改绑后下一次运行使用新账号，禁止固定账号、固定站点、默认 profile 或 `price_default` 回落。
+  - 自提问题件两个来源分别使用项目当前显式绑定的 `self_pickup_primary` 与 `self_pickup_daxiang_s` 角色账号；Broker 从精确绑定账号解析会话与站点，后台改绑后下一次运行使用新账号，禁止固定账号、固定站点、默认 profile 或 `price_default` 回落。
 - 改"先预览-后确认"或"登录恢复"等多轮交互的待确认状态：
   - `pending_actions.py`（登录等兼容 pending 保留带 TTL 的存储；扫描、自提/分批预览确认使用 persist=False 的进程内状态，重启后不恢复执行）
   - 与 `feishu/message_handler.py` 的选择、登录恢复和验证码 pending 配合；自提/分批选择状态仅保存 `preview_invocation_id`、候选/选择和到期时间，不保存账号或指纹
@@ -136,7 +135,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 - `../docs/project_overview.md`
 - `../docs/control_plane_v1.md`（历史/离线规范）
 
-- `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `split_pending_ronghui` 角色（旧 V1 为 `account_id`）显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
+- `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `split_pending_ronghui` 角色显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
 - 少货/分批直接复用 `agent.tms_runtime.scripts.ronghui_problem_upload` 的真实“问题件录入”能力，固定登记“少货/分批 / 交接异常”，内容为 `应到XX件 实际到XX件`，并从登记问题件列表权威回读；不得调用 `ronghui_split_complaint` 或恢复投诉 target。
 
 - 韵达原页通过 `tms_runtime/session_broker.py` 的 `request_original_page` 延续同账号的上游会话更新；只原子更新变化的保存态，保留 origins 与登录元数据，登录代际变化拒绝旧响应。账号隔离、并发和真实 HTTP 协议回归见 `../tests/test_yunda_proxy_session_state.py`，维护说明见 `../../docs/original_page_read_requests.md`。
@@ -146,7 +145,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - `automation_plugins/production_coeffects.py` 负责读取插件所依赖的账号、资源与接口状态；`production.py` 负责运行时组合与切换。
 - V2 预览与正式调用在准入和代次绑定后均按已安装包声明的具体操作确定权限与读写类型，不能用包中正式操作的写权限代替预览权限。
-- 现有扫描、统计、签收状态回调迁移后直接调用当前 V2 入口，参数只来自入口声明及已保存设置。
+- 扫描、统计、签收状态 Webhook 直接调用当前 V2 入口（归属见 `automation_plugins/fixed_entrypoints.py`），参数只来自入口声明及已保存设置。
 
 ## Direct 写入与资源协调
 

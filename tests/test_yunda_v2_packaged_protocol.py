@@ -5,7 +5,7 @@ import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.yunda_connectors_v2 import build_yunda_connectors
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
@@ -46,13 +46,13 @@ def _host(tmp_path,plugin,*,empty=False,special_flags=()):
     def projection(records,day,account):
         result=write("projection",records,day,False)
         return {**result,"upserted":len(records),"deleted_stale":0}
-    ports = FirstPartyCoreHandlerPorts(describe_account=lambda account:{"account_id":account,"system":"yunda","session_profile":"isolated"},
+    ports = HostPrimitivePorts(describe_account=lambda account:{"account_id":account,"system":"yunda","session_profile":"isolated"},
         yunda_dispatch_read_page=page([] if empty else [dispatch]),yunda_send_read_page=page([normal]),yunda_special_line_read_page=page(special),
         yunda_tracking_detail_read=tracking_detail,
         yunda_original_data_read=lambda _,bill:{"Sender_Name":"寄件人","Sender_Phone":"07310000000","Buyer_Name":"收货人","Buyer_Mobile":"13800000000","Buyer_Address":"测试地址"},
         yunda_renderer_detail_read=lambda _account,bill,_dot:{"Logistics_Id":bill,"price":{"Total":"81.85"}},append_yunda_dispatch_bitable=write,
         replace_yunda_send_bitable=write,replace_yunda_send_sheet=write,replace_yunda_waybill_projection=projection)
-    registry=ConnectorRegistry(build_yunda_connectors(build_first_party_core_handler_map(ports)))
+    registry=ConnectorRegistry(build_yunda_connectors(build_host_primitive_handler_map(ports)))
     dispatch_plugin=plugin=="sync_yunda_dispatch_forecast_v2"
     prefix="yunda_dispatch" if dispatch_plugin else "yunda_send"
     resources={"dispatch_forecast_bitable":"feishu_bitable"} if dispatch_plugin else {"send_waybills_bitable":"feishu_bitable","send_waybills_sheet":"feishu_sheet"}

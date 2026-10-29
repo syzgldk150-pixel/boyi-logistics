@@ -17,7 +17,7 @@ from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
 from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
 from tests.v32_acceptance.service_v2_artifacts import build_artifact
-from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
+from plugin_core_adapters.host_primitives import build_production_host_primitive_handler_map
 from shared.service_identity import build_console_identity_headers
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, CHILD_CODE, DailyAccounts, DailyProtocol
 from tests.v32_acceptance.management_fixture import ManagementFixture
@@ -80,7 +80,7 @@ def setup_scan(management, artifact=None):
         'target_date': datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(), 'batch_size': 1, 'max_batches': 2,
     }, account_bindings={'scan_ronghui' if artifact else 'account_id': [ACCOUNT_ID]}, resource_bindings={},
         enabled_entrypoints=('execute_console',) if artifact else ('console',),
-        schedule={'kind': 'none', 'times': [], 'enabled': False}, device_id=None,
+        schedule={'kind': 'none', 'times': [], 'enabled': False},
         actor_id=ACTOR.actor_id, actor_role='super_admin', request_id=str(uuid4()),
         expected_project_configuration_version=entry.project_config_version)
     management.targets.reconcile_project(automation_id)
@@ -88,10 +88,7 @@ def setup_scan(management, artifact=None):
     management.management.set_enabled(automation_id, enabled=True, request_id=str(uuid4()),
         expected_record_version=entry.record_version, actor=ACTOR)
     management.targets.reconcile_project(automation_id)
-    policy = management.policy.list_policies(automation_ids=(automation_id,))['items'][0]
     entry = management.catalog.require(automation_id)
-    management.policy.update_policy(automation_id, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()), comment='isolated A01 only',
-        expected_policy_version=policy['policy_version'], expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
     return automation_id
 
 
@@ -125,7 +122,7 @@ def main():
     account_manager = DailyAccounts()
     artifacts = {plugin: build_artifact(plugin, RUNTIME / 'artifacts') for plugin in ('sync_scan_codes_v2',)}
     with DailyProtocol() as boundary, boundary.authentication_boundaries():
-        handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
+        handlers = build_production_host_primitive_handler_map(cursor_secret=secrets.token_bytes(32),
             account_manager=account_manager, capability_authorizer=boundary.authorize)
         connectors = ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers)))
         with ManagementFixture(connection_factory=connect, runtime_root=RUNTIME, account_manager=account_manager,

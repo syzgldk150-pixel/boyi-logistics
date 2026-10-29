@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import threading
 import uuid
@@ -10,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from agent.automation_plugins.code_owned_fields import apply_scan_execution_boundary, apply_selection_execution_boundary
 from agent.orchestration.execution_resources import canonical_resource_write_locks, connector_write_locks, execution_keys_conflict, EXECUTION_ACTION_SCOPES, HOST_OPERATION_RESOURCE_KEYS
 from agent.orchestration.models import OperationType, OrchestrationError
 from shared.automation_project_authorization import canonical_sha256
@@ -346,7 +346,7 @@ class DirectPluginInvocationService:
             return self._public(stored)
 
     def start(self, *, invocation, capability: Mapping, arguments: Mapping, source: str, actor_id: str, request_key: str, preview_invocation_id: str | None = None, admission_guard=None) -> dict:
-        resolved = apply_selection_execution_boundary(apply_scan_execution_boundary(capability, arguments), arguments)
+        resolved = copy.deepcopy(dict(capability))
         metadata = resolved["_plugin_runtime"]
         row = self._row(operation=str(resolved["name"]), source=source, actor_id=actor_id, request_id=invocation.request_id, request_key=request_key, arguments=arguments)
         row.update(automation_id=invocation.automation_id, plugin_id=metadata["plugin_id"], plugin_version=metadata["version"], generation=invocation.automation_generation, invocation_json=invocation.to_dict(), preview_invocation_id=preview_invocation_id)

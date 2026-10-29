@@ -391,7 +391,7 @@ class ManagedContributionRegistry:
         *,
         lock: Any | None = None,
         reserved_feishu_command: Callable[[str], bool] | None = None,
-        migration_reserved_feishu_target: (
+        reserved_feishu_owner: (
             Callable[[str, int, str, str], bool] | None
         ) = None,
         backend_availability: RuntimeContributionBackendAvailability | None = None,
@@ -400,15 +400,12 @@ class ManagedContributionRegistry:
             reserved_feishu_command
         ):
             raise TypeError("reserved_feishu_command must be callable")
-        if migration_reserved_feishu_target is not None and not callable(
-            migration_reserved_feishu_target
-        ):
-            raise TypeError("migration_reserved_feishu_target must be callable")
+        if reserved_feishu_owner is not None and not callable(reserved_feishu_owner):
+            raise TypeError("reserved_feishu_owner must be callable")
         self._lock = lock or RLock()
         self._reserved_feishu_command = reserved_feishu_command
-        self._migration_reserved_feishu_target = (
-            migration_reserved_feishu_target
-        )
+        # A reserved host command may be declared only by its fixed owner plugin.
+        self._reserved_feishu_owner = reserved_feishu_owner
         if (
             backend_availability is not None
             and not isinstance(
@@ -797,10 +794,10 @@ class ManagedContributionRegistry:
                             "reserved Feishu command check returned an invalid result",
                             code="CONTRIBUTION_ROUTE_CONFLICT",
                         )
-                    migration_allowed = False
-                    if is_reserved and self._migration_reserved_feishu_target is not None:
+                    owner_allowed = False
+                    if is_reserved and self._reserved_feishu_owner is not None:
                         try:
-                            migration_allowed = self._migration_reserved_feishu_target(
+                            owner_allowed = self._reserved_feishu_owner(
                                 candidate.automation_id,
                                 candidate.generation,
                                 candidate.contribution_id,
@@ -808,17 +805,17 @@ class ManagedContributionRegistry:
                             )
                         except Exception as exc:
                             raise PluginConflictError(
-                                "migration Feishu ownership check failed",
+                                "fixed Feishu command ownership check failed",
                                 code="CONTRIBUTION_ROUTE_CONFLICT",
                             ) from exc
-                        if not isinstance(migration_allowed, bool):
+                        if not isinstance(owner_allowed, bool):
                             raise PluginConflictError(
-                                "migration Feishu ownership check returned an invalid result",
+                                "fixed Feishu command ownership check returned an invalid result",
                                 code="CONTRIBUTION_ROUTE_CONFLICT",
                             )
-                    if is_reserved and not migration_allowed:
+                    if is_reserved and not owner_allowed:
                         raise PluginConflictError(
-                            "managed Feishu command conflicts with an Action V1 command",
+                            "managed Feishu command is reserved for another plugin",
                             code="CONTRIBUTION_ROUTE_CONFLICT",
                         )
         with self._lock:

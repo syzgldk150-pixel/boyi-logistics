@@ -13,7 +13,7 @@ from service_v2_plugins._shared.build_zip import build_plugin_zip
 from console.services.automation_catalog_projection import normalize_automation_plugin_catalog
 from agent.automation_plugins.service_v2_projection import _contribution_backend
 from agent.automation_plugins.errors import PluginExecutionError
-from agent.automation_plugins.first_party_handler_support import _ARRIVE_FIELDS
+from agent.automation_plugins.host_primitive_support import _ARRIVE_FIELDS
 from tests.direct_invocation_fixture import DirectFixture
 from tests.test_arrival_connectors_v2 import _setup
 from tests.test_v2_maintenance_mysql import ACTOR, database  # noqa: F401
@@ -64,7 +64,7 @@ def test_statistics_settings_survive_generation_and_catalog_round_trip(database,
         host.configuration.save(project, config=config,
             account_bindings={"arrival_stats_tms": [ACCOUNTS["account_id"]]},
             resource_bindings={role: role for role in resources}, enabled_entrypoints=console_entries,
-            schedule={"kind": "none", "times": [], "enabled": False}, device_id=None,
+            schedule={"kind": "none", "times": [], "enabled": False},
             actor_id=ACTOR.actor_id, actor_role="super_admin", request_id=str(uuid4()),
             expected_project_configuration_version=entry.project_config_version)
         assert host.configuration.read(project).config == config

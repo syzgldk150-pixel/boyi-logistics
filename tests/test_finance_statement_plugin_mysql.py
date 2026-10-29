@@ -119,7 +119,7 @@ class FakeHost:
     def _context(self, role, action):
         accounts = {item: (acct,) for item, (acct, *_rest) in SITES.items()}
         return CoreBrokerInvocationContext(
-            automation_id=AUTOMATION_ID, plugin_version="1.0.0", tool_name="sync_finance_bills",
+            automation_id=AUTOMATION_ID, plugin_version="1.0.0", tool_name="finance_statement",
             operation="ledger.invoke", action=action, role=role, account_ids=accounts[role],
             account_bindings=accounts, generation=1, write_attempt_identity={"invocation_id": "inv-test"},
             host_call_observations=lambda: tuple(copy.deepcopy(self.observations)),
@@ -174,8 +174,7 @@ def host(database, monkeypatch):  # noqa: F811
                                                          "plugin_version": "1.0.0", "package_sha256": "a" * 64,
                                                          "manifest_sha256": "b" * 64})
     handlers = _FinancePlatformCaptureHandlers(
-        account_manager=Manager(), repository_factory=lambda: repository, capture_port=lambda *_: None,
-        cursor_secret=b"s" * 32, capability_authorizer=lambda *_args, **_kwargs: None,
+        account_manager=Manager(), repository_factory=lambda: repository, cursor_secret=b"s" * 32,
     )
     return repository, handlers
 

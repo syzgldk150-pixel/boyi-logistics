@@ -34,6 +34,8 @@ from shared.waybill_entry_extensions import (
 HOST_API_VERSION = "2.0.0"
 SYSTEM_CAPABILITY_ROLE = "__system__"
 SERVICE_INVOKE_PER_CALL_LIMIT = 64
+SELECTION_PHASE_PREVIEW = "PREVIEW"
+SELECTION_PHASE_FORMAL = "FORMAL"
 SELECTION_ARGUMENT_FIELDS = frozenset(
     {"dry_run", "selected_bill_codes", "preview_fingerprint"}
 )
@@ -151,7 +153,7 @@ def resolve_service_v2_selection_phase(arguments: Mapping[str, Any]) -> str:
     if dry_run is True:
         if selected not in (None, []) or fingerprint not in (None, ""):
             raise ValueError("selection preview arguments are invalid")
-        return "PREVIEW"
+        return SELECTION_PHASE_PREVIEW
     if dry_run is False:
         if (
             not isinstance(selected, list)
@@ -168,7 +170,7 @@ def resolve_service_v2_selection_phase(arguments: Mapping[str, Any]) -> str:
             or _HEX_SHA256.fullmatch(fingerprint) is None
         ):
             raise ValueError("selection execute arguments are invalid")
-        return "FORMAL"
+        return SELECTION_PHASE_FORMAL
     raise ValueError("selection phase is invalid")
 
 
@@ -680,6 +682,8 @@ __all__ = [
     "HOST_API_VERSION",
     "SELECTION_ARGUMENT_FIELDS",
     "SELECTION_MAX_SELECTED_BILL_CODES",
+    "SELECTION_PHASE_FORMAL",
+    "SELECTION_PHASE_PREVIEW",
     "SERVICE_INVOKE_PER_CALL_LIMIT",
     "SERVICE_V2_CONTRIBUTION_KINDS",
     "SYSTEM_CAPABILITY_ROLE",

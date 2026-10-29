@@ -1,39 +1,18 @@
 from __future__ import annotations
 
-import asyncio
-import copy
-import hashlib
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest import TestCase
-from unittest.mock import patch
 
 from agent.automation_plugins.errors import PluginConflictError
-from agent.automation_plugins.manifest import canonical_json_bytes
-from agent.orchestration.automation_project_policy_service import (
-    AutomationProjectPolicyService,
-)
 from agent.orchestration.models import (
     Actor,
     ActorType,
-    CommandReceipt,
-    OperationType,
     OrchestrationError,
-    Plan,
-    PlanStep,
-    RiskLevel,
-    RunStatus,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
-    AutomationProjectInvocation,
-    CompiledAutomationProjectContract,
     InvocationArgumentContract,
-    canonical_sha256,
 )
-from shared.account_execution_locks import AccountExecutionLockUnavailable
-from shared.orchestration_repository import InvalidStateError
 from shared.waybill_entry_extensions import (
     WAYBILL_ENTRY_DRAFT_FIELDS,
     WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID,
@@ -49,21 +28,6 @@ MANIFEST_HASH = "d" * 64
 from tests.automation_project_policy_service_support import (
     _admin,
     _contract,
-    _contract_for,
-    _invocation,
-    _plan,
-    _pending,
-    _State,
-    _AutomationProjects,
-    _AutomationPlugins,
-    _Approvals,
-    _Events,
-    _Runs,
-    _Commands,
-    _Uow,
-    _Repository,
-    _Catalog,
-    _Gateway,
     _ContributionRegistry,
     _ModuleSlotRegistry,
     AutomationProjectPolicyServiceTestBase,
@@ -72,6 +36,7 @@ from tests.automation_project_policy_service_support import (
 
 class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestBase):
     def test_service_v2_harness_and_scheduler_require_runtime_projection(self):
+        self.service._contribution_registry = None  # no runtime projection injected
         self.entry.runtime_model = "SERVICE_V2"
         cases = (
             (
@@ -167,6 +132,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
         )
 
     def test_service_v2_feishu_requires_an_injected_runtime_projection(self):
+        self.service._contribution_registry = None  # no runtime projection injected
         self._set_service_v2_feishu_contract()
 
         with self.assertRaises(OrchestrationError) as raised:
@@ -350,22 +316,6 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
         self.assertEqual("PROJECT_ENTRYPOINT_DISABLED", raised.exception.code)
         self.assertIsNone(self.direct.call)
 
-    def test_action_v1_feishu_invocation_does_not_require_managed_projection(self):
-        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
-        self.entry.runtime_model = "ACTION_V1"
-        self.contract = _contract_for(AutomationEntrypoint.FEISHU)
-
-        receipt = self.service.invoke_trusted(
-            AUTOMATION_ID,
-            entrypoint=AutomationEntrypoint.FEISHU,
-            request_id="event-action-v1",
-            actor=self._verified_feishu_actor(),
-            trusted_context={"event_id": "event-action-v1", "chat_id": "chat-one"},
-            expected_automation_generation=1,
-        )
-
-        self.assertIn("invocation_id", receipt)
-
     def test_service_v2_webhook_revalidates_exact_projection_at_acceptance(self):
         self._set_service_v2_webhook_contract()
         registry = _ContributionRegistry()
@@ -426,6 +376,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
         self.assertIsNone(self.direct.call)
 
     def test_service_v2_webhook_requires_matching_projection_and_uow_recheck(self):
+        self.service._contribution_registry = None  # no runtime projection injected
         self._set_service_v2_webhook_contract()
         context = {
             "route_id": "route-owner-digest",
@@ -643,6 +594,7 @@ class AutomationProjectPolicyEntrypointTests(AutomationProjectPolicyServiceTestB
         self.assertEqual("PROJECT_RUNTIME_PROJECTION_STALE", raised.exception.code)
         self.assertEqual(1, len(registry.calls))
 
+        self.service._contribution_registry = None  # no runtime projection injected
         with self.assertRaises(OrchestrationError) as raised:
             self.service.invoke_trusted(
                 AUTOMATION_ID,

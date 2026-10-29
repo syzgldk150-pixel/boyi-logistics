@@ -64,14 +64,6 @@ def test_composed_production_catalog_uses_shared_validation_contract(source):
     query.assert_not_called()
 
 
-def test_composed_catalog_blocked_reader_never_reaches_handler():
-    catalog = CompositeToolRegistry(ToolRegistry(), SimpleNamespace(get_capability=lambda _: None),
-                                    blocked_core_tool_names=("track_waybill",))
-    query = Mock(side_effect=AssertionError("must not execute"))
-    assert invoke(query, catalog=catalog)["error_code"] == "DIRECT_READ_NOT_AVAILABLE"
-    query.assert_not_called()
-
-
 def test_llm_cannot_call_nonexposed_finance_reader():
     query = Mock(side_effect=AssertionError("must not execute"))
     assert invoke(query, name="query_business_finance", llm_selected=True)["error_code"] == "LLM_TOOL_NOT_ALLOWED"

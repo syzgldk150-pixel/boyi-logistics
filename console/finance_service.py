@@ -327,9 +327,7 @@ class FinanceService:
         agent_request: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.source_repository = repository
-        # Reserved for read/analysis-only finance-brain APIs. Manual sync,
-        # backfill, and retry use the Console business endpoint and the exact
-        # installed collector contribution.
+        # Reserved for read/analysis-only finance-brain APIs.
         self.agent_request = agent_request
         if callable(getattr(repository, "get_summary", None)):
             self.repository = repository
@@ -876,68 +874,6 @@ class FinanceService:
         payload["page_size"] = pagination.page_size
         return payload
 
-    def build_sync_arguments(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        """Validate one manual sync request without executing it."""
-
-        params: dict[str, Any] = {
-            "mode": "sync",
-            "rescan_days": _bounded_int(body.get("rescan_days", 7), field_name="重扫天数", minimum=1, maximum=31),
-        }
-        target_date = str(body.get("target_date") or "").strip()
-        if target_date:
-            params["target_date"] = _parse_date(target_date, field_name="目标日期").isoformat()
-        self._append_safe_sync_scope(params, body)
-        return params
-
-    def build_backfill_arguments(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        """Validate one historical backfill request without executing it."""
-
-        start_text = _required_text(body.get("start_date"), field_name="回溯开始日期", max_length=10)
-        end_text = _required_text(body.get("end_date"), field_name="回溯结束日期", max_length=10)
-        start_date = _parse_date(start_text, field_name="回溯开始日期")
-        end_date = _parse_date(end_text, field_name="回溯结束日期")
-        if end_date < start_date:
-            raise FinanceValidationError("回溯结束日期不能早于开始日期。")
-        params: dict[str, Any] = {
-            "mode": "backfill",
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-        }
-        self._append_safe_sync_scope(params, body)
-        return params
-
-    def build_retry_arguments(self, batch_id: int, body: Mapping[str, Any]) -> dict[str, Any]:
-        """Build the exact selector for a persisted failed sync batch."""
-
-        if batch_id < 1:
-            raise FinanceValidationError("同步批次 ID 必须是正整数。")
-        params = {"mode": "retry", "batch_id": batch_id}
-        self._append_safe_sync_scope(params, body)
-        return params
-
-    @staticmethod
-    def _append_safe_sync_scope(params: dict[str, Any], body: Mapping[str, Any]) -> None:
-        forbidden = {
-            "login_account",
-            "session_profile",
-            "password",
-            "cookie",
-            "cookies",
-            "token",
-        }
-        if forbidden.intersection(body):
-            raise FinanceValidationError("同步请求不能包含登录账号、登录态或凭据字段。")
-        params["automation_id"] = _required_text(
-            body.get("automation_id"), field_name="财务采集器", max_length=160,
-        )
-        platform = _optional_filter(str(body.get("platform") or ""), field_name="平台", max_length=32)
-        account_id = _optional_filter(str(body.get("account_id") or ""), field_name="账号", max_length=96)
-        _validate_enabled_finance_platform(platform)
-        _validate_enabled_finance_account(account_id, platform=platform)
-        if platform:
-            params["platform"] = platform
-        if account_id:
-            params["account_id"] = account_id
 
 def _required_text(value: Any, *, field_name: str, max_length: int = 160) -> str:
     text = str(value or "").strip()
@@ -957,12 +893,3 @@ def _valid_month(value: str) -> bool:
         return False
     return parsed.strftime("%Y-%m") == value
 
-
-def _bounded_int(value: Any, *, field_name: str, minimum: int, maximum: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError) as exc:
-        raise FinanceValidationError(f"{field_name}必须是整数。") from exc
-    if number < minimum or number > maximum:
-        raise FinanceValidationError(f"{field_name}必须在 {minimum} 到 {maximum} 之间。")
-    return number

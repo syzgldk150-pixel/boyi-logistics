@@ -1,11 +1,11 @@
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
 
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
-from plugin_core_adapters.first_party import (
-    build_production_first_party_core_handler_map,
+from plugin_core_adapters.host_primitives import (
+    build_production_host_primitive_handler_map,
 )
 
 
@@ -35,7 +35,7 @@ def _context(
     return CoreBrokerInvocationContext(
         automation_id="site-instance",
         plugin_version="1.0.0",
-        tool_name="sync_site_send_list",
+        tool_name="site_send",
         operation="browser.invoke" if action.startswith("ronghui.") else "network.request",
         action=action,
         role=role,
@@ -99,11 +99,7 @@ def test_production_site_source_uses_exact_page_and_detail_primitives(monkeypatc
         "agent.tms_runtime.scripts.get_wangdiansendlist.parse_bill_info_html",
         lambda html: {"运单编号": "WB-1", "包装类型": "纸箱"},
     )
-    monkeypatch.setattr(
-        "tools.site_send_list_sync_tool.run_site_send_list_sync",
-        lambda params: (_ for _ in ()).throw(AssertionError("whole-tool fallback")),
-    )
-    handlers = build_production_first_party_core_handler_map(
+    handlers = build_production_host_primitive_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
     )
@@ -201,7 +197,7 @@ def test_production_site_resource_handlers_use_exact_bound_resource_ids(monkeypa
     monkeypatch.setattr("tools.feishu_cli_tool.feishu_operation", feishu)
     monkeypatch.setattr("tools.phase7_sync_common.sync_bitable_snapshot", bitable)
     monkeypatch.setattr("tools.phase7_sync_common.sync_sheet_snapshot", sheet)
-    handlers = build_production_first_party_core_handler_map(
+    handlers = build_production_host_primitive_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
     )
@@ -272,7 +268,7 @@ def test_production_site_resource_handlers_use_exact_bound_resource_ids(monkeypa
     ],
 )
 def test_site_bitable_handler_rejects_untrusted_resource_context(role, resource_id):
-    handlers = build_production_first_party_core_handler_map(
+    handlers = build_production_host_primitive_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
     )
@@ -300,7 +296,7 @@ def test_site_source_fails_closed_when_package_type_detail_is_unavailable(monkey
         "agent.tms_runtime.scripts.get_wangdiansendlist.fetch_bill_info_html",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("source down")),
     )
-    handlers = build_production_first_party_core_handler_map(
+    handlers = build_production_host_primitive_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
     )
@@ -333,7 +329,7 @@ def test_site_source_rejects_package_type_detail_for_another_waybill(monkeypatch
         "agent.tms_runtime.scripts.get_wangdiansendlist.parse_bill_info_html",
         lambda html: {"运单编号": "WB-2", "包装类型": "纸箱"},
     )
-    handlers = build_production_first_party_core_handler_map(
+    handlers = build_production_host_primitive_handler_map(
         account_manager=_Manager(),
         cursor_secret=_SECRET,
     )

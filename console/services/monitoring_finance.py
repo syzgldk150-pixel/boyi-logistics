@@ -2,7 +2,6 @@
 
 from console.app_support import *  # noqa: F403
 from shared.finance.sources import enabled_finance_source_specs
-from console.services.business_calls import call_business
 
 
 class MonitoringFinanceServiceMixin:
@@ -233,23 +232,9 @@ class MonitoringFinanceServiceMixin:
         path: str = "",
     ) -> None:
         service = self._get_finance_service()
-        command_actions = {"sync", "backfill", "retry_batch"}
-        trusted_context = None
-        if action in command_actions:
-            trusted_context = self._control_plane_write_context(handler)
-            if trusted_context is None:
-                return
-            body = self._read_control_plane_json(handler)
-            if body is None:
-                return
-        else:
-            body = self._parse_json_body(handler)
+        body = self._parse_json_body(handler)
         try:
-            if action == "sync":
-                arguments = service.build_sync_arguments(body)
-            elif action == "backfill":
-                arguments = service.build_backfill_arguments(body)
-            elif action == "analyze_reviews":
+            if action == "analyze_reviews":
                 data = service.analyze_review_cases(body)
             elif action == "save_mapping":
                 match = re.fullmatch(r"/finance/fee-mappings/(\d+)", path)
@@ -269,11 +254,6 @@ class MonitoringFinanceServiceMixin:
                 if not changed_by:
                     raise FinanceValidationError("administrator identity is unavailable")
                 data = service.reject_review_case(int(match.group(1)), body, changed_by=changed_by)
-            elif action == "retry_batch":
-                match = re.fullmatch(r"/finance/sync-batches/(\d+)/retry", path)
-                if not match:
-                    raise FinanceValidationError("同步批次 ID 无效。")
-                arguments = service.build_retry_arguments(int(match.group(1)), body)
             else:
                 self._send_json(
                     handler,
@@ -296,19 +276,7 @@ class MonitoringFinanceServiceMixin:
                 },
             )
             return
-        if action not in command_actions:
-            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
-            return
-
-        result = call_business(self, "finance-collect", arguments,
-            trusted_context=trusted_context,
-            request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""),
-            timeout_sec=600, write=True)
-        success = result.get("ok") is True
-        self._send_json(handler, HTTPStatus.OK if success else HTTPStatus.BAD_GATEWAY,
-            {"ok": success, "data": result.get("data") or {},
-             "message": "财务采集完成。" if success else str(result.get("error") or "财务采集未完成。"),
-             "error_code": result.get("error_code")})
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": data})
 
     def _send_finance_error(self, handler: BaseHTTPRequestHandler, error: FinanceError) -> None:
         try:

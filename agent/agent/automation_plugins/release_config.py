@@ -1,4 +1,4 @@
-"""Strict production release configuration for signed plugin artifacts."""
+"""Production plugin storage configuration written by the release for its own SHA."""
 
 from __future__ import annotations
 
@@ -10,17 +10,25 @@ from typing import Mapping
 from agent.automation_plugins.errors import PluginPackageError
 
 
-ARTIFACT_ROOT_ENV = "BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT"
-TRUST_ROOT_ENV = "BOYI_AUTOMATION_PLUGIN_TRUST_ROOT"
-VERIFIED_RELEASE_SHA_ENV = "BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA"
+PLUGIN_ROOT_ENV = "BOYI_AUTOMATION_PLUGIN_ROOT"
+RELEASE_SHA_ENV = "BOYI_AUTOMATION_PLUGIN_RELEASE_SHA"
 _RELEASE_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
 
 @dataclass(frozen=True)
 class ProductionPluginReleaseConfig:
-    artifact_root: Path
-    trust_root: Path
-    verified_release_sha: str
+    plugin_root: Path
+    release_sha: str
+
+    @property
+    def storage_root(self) -> Path:
+        """Installed plugin versions and their isolated environments."""
+        return self.plugin_root / "installed"
+
+    @property
+    def runtime_root(self) -> Path:
+        """Broker sockets of the running Agent."""
+        return self.plugin_root / "runtime"
 
 
 def load_production_plugin_release_config(
@@ -30,40 +38,22 @@ def load_production_plugin_release_config(
 ) -> ProductionPluginReleaseConfig:
     """Require the release-written EnvironmentFile contract with no fallback."""
 
-    missing = [
-        name
-        for name in (ARTIFACT_ROOT_ENV, TRUST_ROOT_ENV, VERIFIED_RELEASE_SHA_ENV)
-        if not str(environ.get(name) or "").strip()
-    ]
+    missing = [name for name in (PLUGIN_ROOT_ENV, RELEASE_SHA_ENV) if not str(environ.get(name) or "").strip()]
     if missing:
-        raise PluginPackageError(
-            "signed plugin release configuration is missing: " + ", ".join(missing)
-        )
-    verified = str(environ[VERIFIED_RELEASE_SHA_ENV]).strip().lower()
+        raise PluginPackageError("plugin release configuration is missing: " + ", ".join(missing))
+    release_sha = str(environ[RELEASE_SHA_ENV]).strip().lower()
     runtime = str(runtime_release_sha or "").strip().lower()
-    if not _RELEASE_SHA_RE.fullmatch(verified) or verified != runtime:
+    if not _RELEASE_SHA_RE.fullmatch(release_sha) or release_sha != runtime:
         raise PluginPackageError("plugin release SHA does not match the running release")
-    artifact = Path(str(environ[ARTIFACT_ROOT_ENV])).resolve()
-    trust = Path(str(environ[TRUST_ROOT_ENV])).resolve()
-    if not artifact.is_absolute() or artifact.name.lower() != verified:
-        raise PluginPackageError("plugin artifact root is not bound to the verified release SHA")
-    if artifact.is_symlink() or not artifact.is_dir():
-        raise PluginPackageError("plugin artifact root does not exist or is unsafe")
-    if trust.is_symlink() or not trust.is_dir():
-        raise PluginPackageError("plugin trust root does not exist or is unsafe")
-    if artifact == trust or artifact in trust.parents or trust in artifact.parents:
-        raise PluginPackageError("plugin artifact and trust roots must be independent")
-    return ProductionPluginReleaseConfig(
-        artifact_root=artifact,
-        trust_root=trust,
-        verified_release_sha=verified,
-    )
+    raw_root = Path(str(environ[PLUGIN_ROOT_ENV]))
+    if not raw_root.is_absolute() or raw_root.is_symlink() or not raw_root.is_dir():
+        raise PluginPackageError("plugin root does not exist or is unsafe")
+    return ProductionPluginReleaseConfig(plugin_root=raw_root.resolve(), release_sha=release_sha)
 
 
 __all__ = [
-    "ARTIFACT_ROOT_ENV",
+    "PLUGIN_ROOT_ENV",
     "ProductionPluginReleaseConfig",
-    "TRUST_ROOT_ENV",
-    "VERIFIED_RELEASE_SHA_ENV",
+    "RELEASE_SHA_ENV",
     "load_production_plugin_release_config",
 ]

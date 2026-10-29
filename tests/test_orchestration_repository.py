@@ -369,22 +369,21 @@ class _StubOutbox:
 class OrchestrationRepositoryTests(unittest.TestCase):
     def test_schema_requires_persisted_write_scope_and_legacy_quarantine_columns(self):
         for column in ("execution_resource_keys_json", "legacy_scope_quarantined_at"):
-            for include_windows_worker in (True, False):
-                with self.subTest(column=column, include_windows_worker=include_windows_worker):
-                    missing = ("automation_write_attempt_receipts", column)
+            with self.subTest(column=column):
+                missing = ("automation_write_attempt_receipts", column)
 
-                    class SchemaCursor(_Cursor):
-                        def execute(self, sql, params=None):
-                            super().execute(sql, params)
-                            if "information_schema.TABLES" in sql:
-                                self.rows = [{"TABLE_NAME": name} for name in REQUIRED_TABLES]
-                            else:
-                                self.rows = [{"TABLE_NAME": table, "COLUMN_NAME": name}
-                                             for table, name in REQUIRED_COLUMNS if (table, name) != missing]
+                class SchemaCursor(_Cursor):
+                    def execute(self, sql, params=None):
+                        super().execute(sql, params)
+                        if "information_schema.TABLES" in sql:
+                            self.rows = [{"TABLE_NAME": name} for name in REQUIRED_TABLES]
+                        else:
+                            self.rows = [{"TABLE_NAME": table, "COLUMN_NAME": name}
+                                         for table, name in REQUIRED_COLUMNS if (table, name) != missing]
 
-                    with OrchestrationUnitOfWork(lambda: _Connection(SchemaCursor())) as uow:
-                        with self.assertRaisesRegex(RuntimeError, "automation_write_attempt_receipts[.]" + column):
-                            uow.validate_schema(include_windows_worker=include_windows_worker)
+                with OrchestrationUnitOfWork(lambda: _Connection(SchemaCursor())) as uow:
+                    with self.assertRaisesRegex(RuntimeError, "automation_write_attempt_receipts[.]" + column):
+                        uow.validate_schema()
 
     def test_unit_of_work_disables_autocommit_and_requires_explicit_commit(self):
         first = _Connection(_Cursor())

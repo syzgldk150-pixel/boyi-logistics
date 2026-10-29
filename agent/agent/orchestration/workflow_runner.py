@@ -93,18 +93,7 @@ class _ExecutionSlot:
 # explicit and separate from the registry's ``heavy`` resource hint: OCR and
 # database backfills may be heavy without opening Chromium, while these tools
 # can enter a real Playwright/browser-backed path.
-CORE_BROWSER_TOOL_NAMES = frozenset(
-    {
-        "clock_in_dual",
-        "r7_arrival_checkin",
-        "r7_departure_checkin",
-        "sync_arrival_stats",
-        "sync_daily_should_sign",
-        "sync_finance_bills",
-        "sync_scan_codes",
-        "track_waybill",
-    }
-)
+CORE_BROWSER_TOOL_NAMES = frozenset({"track_waybill"})
 CORE_BROWSER_TMS_ENDPOINTS = frozenset(
     {
         "ronghui_tms_tracking",

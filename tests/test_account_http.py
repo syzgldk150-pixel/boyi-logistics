@@ -49,7 +49,6 @@ def test_http_package_dependencies_are_ready_in_production_registration():
     # Production removes unavailable placeholders before observing dependencies.
     available = set(handlers) - set(UNAVAILABLE_SERVICE_V2_HANDLER_KEYS)
     provider = ProductionRuntimeCoeffectProvider(
-        core_catalog=SimpleNamespace(),
         broker_handler_keys=tuple(available),
         account_manager=SimpleNamespace(list_accounts=lambda **_: [
             {"account_id": "selected-r7", "system": "r7", "is_active": True},

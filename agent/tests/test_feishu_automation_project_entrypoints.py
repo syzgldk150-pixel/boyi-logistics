@@ -11,6 +11,14 @@ import pytest
 from agent.orchestration.models import OrchestrationError
 from feishu import message_handler
 from feishu.invocation_results import InvocationResultFollower
+from _feishu_dispatch_support import EntrypointDispatcher
+
+
+@pytest.fixture(autouse=True)
+def _plugin_dispatcher():
+    # Fixed commands reach their owning plugin through the Service V2 dispatcher.
+    with patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", EntrypointDispatcher()):
+        yield
 
 
 class _FakeProjectEntrypoints:
@@ -387,35 +395,6 @@ def test_service_v2_post_acceptance_wait_failure_never_claims_not_submitted():
     assert "重试" not in replies[-1][0]
 
 
-def test_fixed_action_v1_command_wins_without_calling_dynamic_dispatcher():
-    service = _FakeProjectEntrypoints()
-    dispatcher = _FakeServiceV2FeishuDispatcher(
-        error=AssertionError("dynamic dispatcher must not run")
-    )
-    agent = _FakeAgent()
-    request = {
-        "tool_name": "sync_arrival_stats",
-        "params": {},
-        "mode": "automation_project",
-        "automation_route_key": "builtin.arrival_stats",
-        "dynamic_inputs": {},
-    }
-    with (
-        patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
-        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
-        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
-        patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
-        patch.object(message_handler, "get_pending", return_value=None),
-        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder([])),
-    ):
-        _run_verified_text("统计", event_id="event-fixed-one")
-
-    assert len(service.calls) == 1
-    assert dispatcher.calls == []
-    assert agent.chat_calls == []
-
-
 def test_service_v2_feishu_match_without_verified_context_stops_before_agent():
     dispatcher = _FakeServiceV2FeishuDispatcher(
         error=OrchestrationError(
@@ -597,7 +576,7 @@ def test_direct_project_post_acceptance_wait_failure_reports_background_run(wait
         ):
             asyncio.run(
                 message_handler._invoke_automation_project_and_reply(
-                    route_key="builtin.arrival_stats",
+                    route_key="builtin.split_pending_problem_upload",
                     dynamic_inputs={},
                     receive_id="chat-one",
                 )
@@ -855,7 +834,7 @@ def test_direct_feishu_project_explains_blocked_data_reason():
         ):
             asyncio.run(
                 message_handler._invoke_automation_project_and_reply(
-                    route_key="builtin.arrival_stats",
+                    route_key="builtin.split_pending_problem_upload",
                     dynamic_inputs={},
                     receive_id="chat-one",
                 )
@@ -864,7 +843,7 @@ def test_direct_feishu_project_explains_blocked_data_reason():
         message_handler._COMMAND_CONTEXT.reset(token)
 
     assert "每日到货表写后读回不一致" in replies[-1][0]
-    assert "统计到货数据任务执行失败" in replies[-1][0]
+    assert "分批问题件任务执行失败" in replies[-1][0]
     assert "run-blocked-data" not in replies[-1][0]
     assert "Run" not in replies[-1][0]
 
@@ -1234,7 +1213,8 @@ def test_fixed_and_dynamic_commands_follow_results_after_initial_wait(dynamic):
     with (
         patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
         patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
-        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher if dynamic else None),
+        # Fixed and dynamic commands both reach their plugin through the dispatcher.
+        patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "_INVOCATION_RESULTS", InvocationResultFollower(retry_delay=0)),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=request),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -1913,22 +1893,3 @@ def test_account_override_and_unverified_generic_text_cannot_forge_project_conte
     assert service.calls == []
     assert "PROJECT_ACCOUNT_OVERRIDE_FORBIDDEN" in replies[-1][0]
 
-
-def test_signed_custom_menu_route_is_typed_and_never_resolved_by_tool_id():
-    service = _FakeProjectEntrypoints()
-    replies = []
-    with (
-        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
-        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
-    ):
-        asyncio.run(
-            message_handler._handle_menu_action(
-                event_key="automation:tenant.scan.second",
-                receive_id="user-one",
-                receive_id_type="open_id",
-                event_id="event-menu",
-            )
-        )
-
-    assert service.calls[0]["route_key"] == "tenant.scan.second"
-    assert service.calls[0]["event_id"] == "event-menu"

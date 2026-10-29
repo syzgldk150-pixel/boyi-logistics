@@ -6,13 +6,13 @@ from uuid import uuid4
 import pytest
 
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.models import GenerationVerificationContext
 from agent.customer_collection_business import prepare_customer_rechecks, publish_verified_customer_collection
 from agent.orchestration.models import ToolResult
 from shared.customer_service_repository import CustomerServiceRepository
 from shared.data_sources import DataSourceError, DataSourceRepository
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 from tests.test_module_data_sources_mysql import database  # noqa: F401
 
 
@@ -54,19 +54,19 @@ def _collector(producer, account, organization):
                 "REVERSION_STATUS": "未回复", "REVERSION": "", "REVERSION_DATE": "2026-09-09 10:00:00"}}]
         return {"ok": True, "source_site_code": organization, "rows": rows,
             "stats": {"total": len(rows), "returned": len(rows), "total_authoritative": True}}
-    handlers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(HostPrimitivePorts(
         describe_account=lambda value: {"account_id": value, "system": "ronghui", "session_profile": "synthetic"},
         customer_action=protocol), cursor_secret=b"synthetic-business-protocol-secret")
     def collect(refs):
         calls.clear()
         def broker(operation, *, action, role, arguments):
             context = CoreBrokerInvocationContext(automation_id=producer, plugin_version="1.0.0",
-                generation=1, tool_name="sync_customer_service_problems", operation=operation,
+                generation=1, tool_name="customer_problem", operation=operation,
                 action=action, role=role, account_ids=(account,), account_bindings={role: (account,)})
             response = handlers[(operation, action)](context, arguments)
             calls.append({"action": action, "result": response})
             return response
-        raw = load_first_party_action("sync_customer_service_problems").run_action(
+        raw = load_plugin_action("sync_customer_service_problems").run_action(
             {"direction": "received", "recheck_items": refs}, broker)
         assert raw["status"] == "SUCCESS"
         call_id = str(uuid4())

@@ -16,14 +16,12 @@ from typing import Any, Mapping, Sequence
 
 from agent.automation_plugins.catalog import project_capability_from_snapshot
 from agent.automation_plugins.manifest import (
-    AutomationPluginManifest,
     canonical_json_bytes,
-    runtime_descriptor_matches_signed_installation,
+    runtime_descriptor_matches,
 )
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
-    DeviceBinding,
     PluginInstanceRecord,
     PluginProjectState,
     PluginRuntimeModel,
@@ -414,33 +412,20 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                 raise ValueError(
                     "project committed generation differs from its immutable package"
                 )
-            if committed_version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-                committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifestV2.from_mapping(
-                    committed_version.manifest
-                )
-                projected = ServiceV2ProjectContract.from_manifest(
-                    committed_manifest
-                )
-                committed_manifest_mapping = committed_manifest.to_mapping()
-                expected_tool_contract = projected.tool_contract
-                expected_runtime_permissions = projected.runtime_permissions
-                expected_account_roles = projected.account_roles
-                expected_resource_roles = projected.resource_roles
-                expected_governance_anchor = projected.governance_anchor
-            else:
-                committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifest.from_mapping(
-                    committed_version.manifest
-                )
-                committed_manifest_mapping = committed_manifest.to_signed_mapping()
-                expected_tool_contract = committed_manifest.tool_contract
-                expected_runtime_permissions = committed_manifest_mapping[
-                    "runtime_permissions"
-                ]
-                expected_account_roles = committed_manifest.account_roles
-                expected_resource_roles = committed_manifest.resource_roles
-                expected_governance_anchor = committed_manifest.to_mapping()[
-                    "governance_anchor"
-                ]
+            if committed_version.runtime_model is not PluginRuntimeModel.SERVICE_V2:
+                raise ValueError("only service-v2 plugin versions are supported")
+            committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifestV2.from_mapping(
+                committed_version.manifest
+            )
+            projected = ServiceV2ProjectContract.from_manifest(
+                committed_manifest
+            )
+            committed_manifest_mapping = committed_manifest.to_mapping()
+            expected_tool_contract = projected.tool_contract
+            expected_runtime_permissions = projected.runtime_permissions
+            expected_account_roles = projected.account_roles
+            expected_resource_roles = projected.resource_roles
+            expected_governance_anchor = projected.governance_anchor
             if (
                 committed_manifest.plugin_id != committed_version.plugin_id
                 or committed_manifest.version != committed_version.version
@@ -483,16 +468,9 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
                         "_plugin_runtime": dict(committed_runtime),
                     }
                 )
-                or (
-                    not runtime_descriptor_matches_signed_installation(
-                        observed_runtime_descriptor,
-                        expected_runtime_descriptor,
-                        schema_version=committed_manifest.schema_version,
-                    )
-                    if committed_version.runtime_model
-                    is PluginRuntimeModel.ACTION_V1
-                    else canonical_json_bytes(observed_runtime_descriptor)
-                    != canonical_json_bytes(expected_runtime_descriptor)
+                or not runtime_descriptor_matches(
+                    observed_runtime_descriptor,
+                    expected_runtime_descriptor,
                 )
                 or canonical_json_bytes(
                     committed_snapshot.execution_metadata.get("governance_anchor")
@@ -559,10 +537,8 @@ class MySQLAutomationProjectConfigurationReadAdapter:
             )
         if not isinstance(row.get("schedule"), Mapping):
             raise ValueError("persisted project config field is invalid: schedule")
-        device_id = str(row.get("device_id") or "")
-        device_name = str(row.get("device_name") or "")
-        if bool(device_id) != bool(device_name):
-            raise ValueError("persisted project device binding is incomplete")
+        if row.get("device_id") not in (None, ""):
+            raise ValueError("persisted project config binds a retired Worker device")
         return AutomationProjectConfigRecord(
             automation_id=str(row.get("automation_id") or ""),
             config=dict(row["config_json"]),
@@ -580,11 +556,6 @@ class MySQLAutomationProjectConfigurationReadAdapter:
             device_binding_sha256=str(row.get("device_binding_sha256") or ""),
             enabled_entrypoints=tuple(
                 str(item) for item in row["enabled_entrypoints_json"]
-            ),
-            device_binding=(
-                DeviceBinding(device_id=device_id, device_name=device_name)
-                if device_id
-                else None
             ),
         )
 
@@ -985,386 +956,6 @@ class MySQLAutomationPluginRuntimeAdapter:
         """Persist one broker-started write; the caller provides digests only."""
 
         self._write("record_generation_write_attempt_row", dict(receipt))
-
-    def check_finance_startup_occurrence(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        configuration_version: int,
-        occurrence: str,
-        idempotency_key: str,
-    ) -> dict[str, bool | str]:
-        """Return Agent-owned, exact evidence for one startup occurrence."""
-
-        with self._orchestration.unit_of_work() as uow:
-            reader = getattr(
-                uow.automation_plugins,
-                "finance_startup_occurrence_gate_row",
-                None,
-            )
-            if not callable(reader):
-                raise ValueError("finance startup occurrence gate is unavailable")
-            result = reader(
-                automation_id=automation_id,
-                generation=generation,
-                configuration_version=configuration_version,
-                occurrence=occurrence,
-                idempotency_key=idempotency_key,
-            )
-        if not isinstance(result, Mapping):
-            raise ValueError("finance startup occurrence gate returned invalid evidence")
-        return dict(result)
-
-    def inspect_unknown_write_recovery(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        lease_id: str,
-    ) -> dict[str, Any]:
-        """Read locked durable identity evidence; never resolves a lease."""
-
-        with self._orchestration.unit_of_work() as uow:
-            reader = getattr(
-                uow.automation_plugins,
-                "unknown_write_recovery_snapshot_row",
-                None,
-            )
-            if not callable(reader):
-                raise ValueError("unknown-write recovery evidence is unavailable")
-            result = reader(
-                automation_id=automation_id,
-                generation=generation,
-                lease_id=lease_id,
-            )
-        if not isinstance(result, Mapping):
-            raise ValueError("unknown-write recovery evidence is invalid")
-        return dict(result)
-
-    def inspect_current_unknown_write_recovery(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-    ) -> dict[str, Any]:
-        """Inspect the sole current unknown lease without accepting its identity."""
-
-        with self._orchestration.unit_of_work() as uow:
-            candidate_reader = getattr(
-                uow.automation_plugins,
-                "unique_unknown_write_recovery_lease_row",
-                None,
-            )
-            snapshot_reader = getattr(
-                uow.automation_plugins,
-                "unknown_write_recovery_snapshot_row",
-                None,
-            )
-            if not callable(candidate_reader) or not callable(snapshot_reader):
-                raise ValueError("unknown-write recovery evidence is unavailable")
-            candidate = candidate_reader(
-                automation_id=automation_id,
-                generation=generation,
-            )
-            if not isinstance(candidate, Mapping):
-                raise ValueError("unknown-write recovery candidate is invalid")
-            state = str(candidate.get("state") or "")
-            if state != "FOUND":
-                return {
-                    "state": (
-                        "RECOVERY_LEASE_AMBIGUOUS"
-                        if state == "AMBIGUOUS"
-                        else "RECOVERY_LEASE_MISSING"
-                    ),
-                    "receipt_count": 0,
-                }
-            result = snapshot_reader(
-                automation_id=automation_id,
-                generation=generation,
-                lease_id=str(candidate.get("lease_id") or ""),
-            )
-        if not isinstance(result, Mapping):
-            raise ValueError("unknown-write recovery evidence is invalid")
-        return dict(result)
-
-    def inspect_current_unknown_write_recoveries(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-    ) -> dict[str, Any]:
-        """Inspect a bounded sibling set without accepting actor identities."""
-
-        with self._orchestration.unit_of_work() as uow:
-            candidate_reader = getattr(
-                uow.automation_plugins,
-                "bounded_unknown_write_recovery_lease_rows",
-                None,
-            )
-            snapshot_reader = getattr(
-                uow.automation_plugins,
-                "unknown_write_recovery_snapshot_row",
-                None,
-            )
-            if not callable(candidate_reader) or not callable(snapshot_reader):
-                raise ValueError("unknown-write recovery evidence is unavailable")
-            candidates = candidate_reader(
-                automation_id=automation_id,
-                generation=generation,
-                limit=_UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT + 1,
-            )
-            if not isinstance(candidates, list):
-                raise ValueError("unknown-write recovery candidates are invalid")
-            if not candidates:
-                return {
-                    "state": "RECOVERY_LEASE_MISSING",
-                    "lease_count": 0,
-                    "snapshots": [],
-                }
-            if len(candidates) > _UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT:
-                return {
-                    "state": "RECOVERY_LEASE_LIMIT_EXCEEDED",
-                    "lease_count": len(candidates),
-                    "snapshots": [],
-                }
-            snapshots: list[dict[str, Any]] = []
-            for candidate in candidates:
-                if not isinstance(candidate, Mapping):
-                    raise ValueError("unknown-write recovery candidate is invalid")
-                snapshot = snapshot_reader(
-                    automation_id=automation_id,
-                    generation=generation,
-                    lease_id=str(candidate.get("lease_id") or ""),
-                )
-                if not isinstance(snapshot, Mapping):
-                    raise ValueError("unknown-write recovery evidence is invalid")
-                snapshots.append(dict(snapshot))
-        return {
-            "state": "RECOVERY_LEASES_IDENTIFIED",
-            "lease_count": len(snapshots),
-            "snapshots": snapshots,
-        }
-
-    def resolve_unknown_write_not_applied(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        lease_id: str,
-        evidence_sha256: str,
-        request_id: str,
-        actor_id: str,
-        actor_role: str,
-    ) -> dict[str, Any]:
-        """Resolve one externally read-back, pre-write failure atomically."""
-
-        with self._orchestration.unit_of_work() as uow:
-            resolver = getattr(
-                uow.automation_plugins,
-                "resolve_unknown_generation_write_not_applied_row",
-                None,
-            )
-            if not callable(resolver):
-                raise ValueError("runtime unknown-write recovery is unavailable")
-            result = resolver(
-                automation_id,
-                generation,
-                lease_id,
-                evidence_sha256=evidence_sha256,
-            )
-            event_id = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"boyi:automation-plugin-generation-recovery:{request_id}",
-                )
-            )
-            uow.events.append_with_outbox(
-                {
-                    "event_id": event_id,
-                    "event_type": "automation_plugin.generation_recovered",
-                    "schema_version": 1,
-                    "source_system": "agent",
-                    "source_event_id": f"plugin-generation-recovery:{request_id}",
-                    "entity_type": "automation_project",
-                    "entity_id": automation_id,
-                    "correlation_id": request_id,
-                    "payload": {
-                        "automation_id": automation_id,
-                        "generation": generation,
-                        "lease_id": lease_id,
-                        "outcome": "NOT_APPLIED",
-                        "evidence_sha256": evidence_sha256,
-                        "actor_id": actor_id,
-                        "actor_role": actor_role,
-                    },
-                },
-                (
-                    {
-                        "consumer_name": "orchestration.audit",
-                        "topic": "automation_plugin.generation_recovered",
-                        "partition_key": automation_id,
-                        "max_attempts": 10,
-                    },
-                ),
-            )
-            uow.commit()
-        if not isinstance(result, Mapping):
-            raise ValueError("runtime generation recovery did not persist")
-        return dict(result)
-
-    def resolve_unknown_write_recovery(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        lease_id: str,
-        request_id: str,
-        actor_id: str,
-        actor_role: str,
-        authoritative_applied_proof: Mapping[str, object] | None = None,
-        authoritative_not_applied_proof: Mapping[str, object] | None = None,
-        scan_applied_recovery: Mapping[str, object] | None = None,
-        resume_run: bool = True,
-        expected_run_id: str | None = None,
-        expected_work_item_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Run the server-owned receipt recovery as one orchestration UoW."""
-
-        with self._orchestration.unit_of_work() as uow:
-            resolver = getattr(uow, "recover_unknown_automation_write", None)
-            if not callable(resolver):
-                raise ValueError("transactional unknown-write recovery is unavailable")
-            manual = {} if resume_run else {
-                "resume_run": False, "expected_run_id": expected_run_id,
-                "expected_work_item_id": expected_work_item_id,
-            }
-            result = resolver(
-                automation_id=automation_id,
-                generation=generation,
-                lease_id=lease_id,
-                request_id=request_id,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                authoritative_applied_proof=authoritative_applied_proof,
-                authoritative_not_applied_proof=authoritative_not_applied_proof,
-                scan_applied_recovery=scan_applied_recovery,
-                **manual,
-            )
-            uow.commit()
-        if not isinstance(result, Mapping):
-            raise ValueError("transactional unknown-write recovery returned invalid data")
-        return dict(result)
-
-    def resolve_unknown_writes_not_applied(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        recoveries: Sequence[Mapping[str, object]],
-        actor_id: str,
-        actor_role: str,
-    ) -> dict[str, Any]:
-        """Resolve a bounded empty-readback sibling set in one transaction."""
-
-        rows = [dict(item) for item in recoveries]
-        if not rows or len(rows) > _UNKNOWN_WRITE_RECOVERY_BATCH_LIMIT:
-            raise ValueError("unknown-write recovery batch is invalid")
-        results: list[dict[str, Any]] = []
-        with self._orchestration.unit_of_work() as uow:
-            resolver = getattr(uow, "recover_unknown_automation_write", None)
-            if not callable(resolver):
-                raise ValueError("transactional unknown-write recovery is unavailable")
-            for row in rows:
-                if set(row) != {
-                    "lease_id",
-                    "request_id",
-                    "authoritative_not_applied_proof",
-                }:
-                    raise ValueError("unknown-write recovery batch row is invalid")
-                result = resolver(
-                    automation_id=automation_id,
-                    generation=generation,
-                    lease_id=str(row["lease_id"]),
-                    request_id=str(row["request_id"]),
-                    actor_id=actor_id,
-                    actor_role=actor_role,
-                    authoritative_not_applied_proof=row[
-                        "authoritative_not_applied_proof"
-                    ],
-                )
-                if (
-                    not isinstance(result, Mapping)
-                    or str(result.get("recovery_status") or "") != "NOT_APPLIED"
-                ):
-                    raise ValueError(
-                        "unknown-write recovery batch was not authoritatively empty"
-                    )
-                results.append(dict(result))
-            uow.commit()
-        return {
-            "recovery_status": "NOT_APPLIED",
-            "transitioned": any(item.get("transitioned") is True for item in results),
-            "results": results,
-        }
-
-    def resolve_current_unknown_write_recovery(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        request_id: str,
-        actor_id: str,
-        actor_role: str,
-        authoritative_applied_proof: Mapping[str, object] | None = None,
-        authoritative_not_applied_proof: Mapping[str, object] | None = None,
-    ) -> dict[str, Any]:
-        """Recover only when the current generation has one unresolved lease."""
-
-        with self._orchestration.unit_of_work() as uow:
-            reader = getattr(
-                uow.automation_plugins,
-                "unique_unknown_write_recovery_lease_row",
-                None,
-            )
-            resolver = getattr(uow, "recover_unknown_automation_write", None)
-            if not callable(reader) or not callable(resolver):
-                raise ValueError("transactional unknown-write recovery is unavailable")
-            candidate = reader(
-                automation_id=automation_id,
-                generation=generation,
-            )
-            if not isinstance(candidate, Mapping):
-                raise ValueError("unknown-write recovery candidate is invalid")
-            state = str(candidate.get("state") or "")
-            if state != "FOUND":
-                return {
-                    "recovery_status": "UNKNOWN",
-                    "reason": (
-                        "RECOVERY_LEASE_AMBIGUOUS"
-                        if state == "AMBIGUOUS"
-                        else "RECOVERY_LEASE_MISSING"
-                    ),
-                    "run_id": "",
-                    "step_id": "",
-                    "transitioned": False,
-                    "idempotent": False,
-                    "evidence": {},
-                }
-            result = resolver(
-                automation_id=automation_id,
-                generation=generation,
-                lease_id=str(candidate.get("lease_id") or ""),
-                request_id=request_id,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                authoritative_applied_proof=authoritative_applied_proof,
-                authoritative_not_applied_proof=authoritative_not_applied_proof,
-            )
-            uow.commit()
-        if not isinstance(result, Mapping):
-            raise ValueError("transactional unknown-write recovery returned invalid data")
-        return dict(result)
 
     def finalize_generation_write(
         self,

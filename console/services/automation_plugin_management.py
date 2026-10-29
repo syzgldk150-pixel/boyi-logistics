@@ -1,6 +1,5 @@
 """Console-side ZIP plugin upload and lifecycle management helpers."""
 
-import uuid
 from shared.plugin_management import MODULE_PATHS, management_for
 
 from console.app_support import *  # noqa: F403
@@ -54,32 +53,6 @@ _SERVICE_V2_FORBIDDEN_BROWSER_AUTHORITY = frozenset(
 
 
 class AutomationPluginManagementServiceMixin:
-    def _render_plugin_maintenance(self, handler: BaseHTTPRequestHandler) -> None:
-        """Expose existing migration operations to a real super-admin session."""
-        context = self._control_plane_read_context(handler)
-        if context is None:
-            return
-        if "super_admin" not in list(context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler, HTTPStatus.FORBIDDEN, "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以管理插件迁移。",
-            )
-            return
-        # Maintenance must see current ownership/CAS, never the list-page cache.
-        _, instances, _, _, hidden, warning, can_manage = (
-            self._load_automation_plugin_catalog_uncached(handler, summary=True)
-        )
-        visible = [
-            {**item, "module_url": MODULE_PATHS[item["management"]["module"]]}
-            for item in instances if item["automation_id"] not in hidden
-        ]
-        template = self.template_env.get_template("plugin_maintenance.html")
-        self._send_html(handler, template.render(
-            app_title=self.settings.app_title,
-            instances=visible if can_manage and not warning else [],
-            warning=warning,
-        ))
-
     def _automation_plugin_settings_bridge_token(
         self,
         automation_id: str,
@@ -196,9 +169,9 @@ class AutomationPluginManagementServiceMixin:
             configured=data.get("configured") is True,
             bridge_session=bridge_session,
             settings_mode=mode,
-            return_url=MODULE_PATHS[management_for(str(data.get("plugin_id") or ""), data.get("management"))["module"]],
+            return_url=MODULE_PATHS[management_for(data.get("management"))["module"]],
             return_label={"automation": "自动化", "finance": "财务数据源", "customer_service": "客服数据源"}[
-                management_for(str(data.get("plugin_id") or ""), data.get("management"))["module"]
+                management_for(data.get("management"))["module"]
             ],
         )
         self._send_html(handler, body)
@@ -572,9 +545,9 @@ class AutomationPluginManagementServiceMixin:
         version = str(value.get("version") or "").strip()
         host_api = value.get("host_api")
         runtime_model = value.get("runtime_model", "SERVICE_V2")
-        if runtime_model not in {"ACTION_V1", "SERVICE_V2"}:
+        if runtime_model != "SERVICE_V2":
             return None
-        host_api_valid = host_api is None if runtime_model == "ACTION_V1" else (
+        host_api_valid = (
             isinstance(host_api, dict)
             and set(host_api) == {"minimum", "maximum_exclusive"}
             and all(_SERVICE_V2_VERSION_RE.fullmatch(str(host_api.get(key) or ""))
@@ -800,7 +773,7 @@ class AutomationPluginManagementServiceMixin:
             "plugin_id": plugin_id,
             "name": name,
             "version": version,
-            "host_api": None if runtime_model == "ACTION_V1" else {
+            "host_api": {
                 "minimum": str(host_api["minimum"]),
                 "maximum_exclusive": str(host_api["maximum_exclusive"]),
             },
@@ -814,7 +787,7 @@ class AutomationPluginManagementServiceMixin:
                 "default_schedule": dict(default_schedule),
             },
             "settings_ui": dict(settings_ui) if settings_ui is not None else None,
-            "management": management_for(plugin_id, value.get("management")),
+            "management": management_for(value.get("management")),
             "settings_mode": str(value.get("settings_mode") or "none"),
             "runtime_model": runtime_model,
         }
@@ -1424,277 +1397,5 @@ class AutomationPluginManagementServiceMixin:
                     "disable": "自动化实例已停用。",
                     "uninstall": "自动化实例已卸载。",
                 }[action],
-            },
-        )
-    def _handle_automation_plugin_migration_action(
-        self,
-        handler: BaseHTTPRequestHandler,
-        migration_pair_id: str,
-        action: str,
-    ) -> None:
-        if action not in {"create", "resume", "ready", "cutover", "rollback", "complete"}:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "PLUGIN_MIGRATION_ACTION_NOT_FOUND",
-                "迁移操作不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以管理插件迁移。",
-            )
-            return
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        if not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "PLUGIN_MIGRATION_REQUEST_INVALID",
-                "缺少安全请求标识，请刷新后重试。",
-            )
-            return
-
-        if action == "create":
-            source_id = self._automation_project_id(values.get("source_automation_id"))
-            target_id = self._automation_project_id(values.get("target_automation_id"))
-            raw_fields = values.get("business_key_fields")
-            namespace = values.get("business_key_namespace")
-            fields = (
-                [str(field or "").strip() for field in raw_fields]
-                if isinstance(raw_fields, list)
-                else []
-            )
-            namespace = str(namespace or "").strip() or None
-            if (
-                set(values)
-                != {
-                    "source_automation_id",
-                    "target_automation_id",
-                    "business_key_fields",
-                    "business_key_namespace",
-                    "request_id",
-                }
-                or not source_id
-                or not target_id
-                or source_id == target_id
-                or not 1 <= len(fields) <= 8
-                or len(fields) != len(set(fields))
-                or any(not self._valid_migration_business_key_field(field) for field in fields)
-                or (namespace is not None and len(namespace) > 96)
-            ):
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "PLUGIN_MIGRATION_CREATE_INVALID",
-                    "请选择一个旧项目、一个 v2 项目，并明确防重复业务字段。",
-                )
-                return
-            endpoint = "/internal/v1/automation/migrations"
-            payload = {
-                "migration_pair_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:plugin-migration:{request_id}")),
-                "source_automation_id": source_id,
-                "target_automation_id": target_id,
-                "business_key_fields": fields,
-                "business_key_namespace": namespace,
-                "request_id": request_id,
-                "reason": "超级管理员在自动化页面创建并行迁移验证",
-            }
-            automation_id = target_id
-        else:
-            pair_id = str(migration_pair_id or "").strip()
-            expected_record_version = values.get("expected_record_version")
-            if (
-                not self._automation_plugin_migration_pair_id_re.fullmatch(pair_id)
-                or set(values) != {"request_id", "expected_record_version", "confirm"}
-                or isinstance(expected_record_version, bool)
-                or not isinstance(expected_record_version, int)
-                or expected_record_version < 1
-                or values.get("confirm") is not True
-            ):
-                self._control_plane_error(
-                    handler,
-                    HTTPStatus.BAD_REQUEST,
-                    "PLUGIN_MIGRATION_OPERATION_INVALID",
-                    "迁移状态快照已失效，请刷新后重试。",
-                )
-                return
-            endpoint = (
-                f"/internal/v1/automation/migrations/{quote(pair_id, safe='')}/{action}"
-            )
-            payload = {
-                "expected_record_version": expected_record_version,
-                "request_id": request_id,
-                "reason": {
-                    "resume": "超级管理员继续未完成的迁移准备",
-                    "ready": "超级管理员确认 v2 真跑证据并标记迁移就绪",
-                    "cutover": "超级管理员接管自动执行入口",
-                    "rollback": "超级管理员将后续入口回滚到旧项目",
-                    "complete": "超级管理员确认完成迁移",
-                }[action],
-                "confirm": True,
-            }
-            automation_id = ""
-
-            if action == "resume":
-                read = self._agent_request("GET", f"/internal/v1/automation/migrations/{quote(pair_id, safe='')}",
-                                           console_principal=trusted_context["_console_principal"])
-                pair = read.get("data") if read.get("ok") else None
-                original_request = self._normalize_browser_request_uuid(pair.get("create_request_id")) if isinstance(pair, dict) else None
-                if (not isinstance(pair, dict) or pair.get("migration_pair_id") != pair_id
-                        or pair.get("state") != "PREPARING" or pair.get("record_version") != expected_record_version
-                        or not original_request):
-                    self._control_plane_error(handler, HTTPStatus.CONFLICT, "PLUGIN_MIGRATION_RESUME_UNAVAILABLE",
-                                              "迁移准备状态已变化或原请求无法确认，请刷新后核对。")
-                    return
-                contract = pair.get("business_key_contract") or {}
-                endpoint = "/internal/v1/automation/migrations"
-                payload = {"migration_pair_id": pair_id, "source_automation_id": pair["source_automation_id"],
-                           "target_automation_id": pair["target_automation_id"], "business_key_fields": contract.get("fields"),
-                           "business_key_namespace": contract.get("namespace"), "request_id": original_request,
-                           "reason": "超级管理员在自动化页面创建并行迁移验证"}
-                automation_id = pair["target_automation_id"]
-
-        result = self._agent_request(
-            "POST",
-            endpoint,
-            payload=payload,
-            timeout=30,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PLUGIN_MIGRATION_ACTION_FAILED",
-                fallback_message="插件迁移操作失败。",
-            )
-            return
-        self._clear_automation_plugin_catalog_cache()
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        if data.get("state") == "PREPARING":
-            reason = data.get("blocking_reason") or {}
-            self._send_json(handler, HTTPStatus.ACCEPTED, {"ok": True, "data": data,
-                "message": "迁移准备尚未完成：" + str(reason.get("message") or "请继续同一次迁移准备。")})
-            return
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": result.get("data") if isinstance(result.get("data"), dict) else {},
-                "message": {
-                    "create": "迁移对已创建，v2 项目只开放手动验证入口。",
-                    "resume": "迁移准备已完成，v2 项目只开放手动验证入口。",
-                    "ready": "真实执行证据已通过，迁移可以接管自动执行。",
-                    "cutover": "自动执行入口已原子切换到 v2 项目。",
-                    "rollback": "后续自动执行入口已恢复到旧项目。",
-                    "complete": "迁移已完成，旧项目现在可以单独卸载。",
-                }[action],
-            },
-        )
-
-    def _handle_automation_plugin_unknown_write_recovery(
-        self,
-        handler: BaseHTTPRequestHandler,
-        automation_id: str,
-    ) -> None:
-        automation_id = self._automation_project_id(automation_id)
-        if not automation_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_PLUGIN_INSTANCE_NOT_FOUND",
-                "插件实例不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以恢复未知写入项目。",
-            )
-            return
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        if set(values) != {"request_id"} or not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "PLUGIN_RECOVERY_REQUEST_INVALID",
-                "未知写入恢复请求无效。",
-            )
-            return
-        result = self._agent_request(
-            "POST",
-            (
-                f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
-                "/generation/recover-current-unknown-write"
-            ),
-            payload={"request_id": request_id},
-            timeout=30,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PLUGIN_UNKNOWN_WRITE_RECOVERY_FAILED",
-                fallback_message="未知写入恢复失败。",
-            )
-            return
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        recovery_status = str(data.get("recovery_status") or "").strip().upper()
-        if recovery_status == "UNKNOWN":
-            self._control_plane_error(
-                handler,
-                HTTPStatus.CONFLICT,
-                "PLUGIN_RECOVERY_EVIDENCE_UNRESOLVED",
-                (
-                    "系统仍无法确认上次是否已经保存。任务会继续暂停，也没有重复执行。"
-                    "请先到对应业务表格核对实际结果。"
-                ),
-            )
-            return
-        if recovery_status not in {"APPLIED", "NOT_APPLIED"}:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_GATEWAY,
-                "PLUGIN_RECOVERY_RESPONSE_INVALID",
-                "智能服务返回了无法识别的恢复结果。",
-            )
-            return
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": {
-                    "automation_id": automation_id,
-                    "recovery_status": recovery_status,
-                    "transitioned": bool(data.get("transitioned")),
-                },
-                "message": (
-                    "已确认上次保存成功，任务已恢复。"
-                    if recovery_status == "APPLIED"
-                    else "已确认上次没有保存，任务已进入安全重试状态。"
-                ),
             },
         )

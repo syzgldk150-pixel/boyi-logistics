@@ -9,7 +9,7 @@ import zipfile
 BUSINESS_PROBES = frozenset({'daily_scan_statistics', 'daily_problems', 'daily_concurrency',
     'settings_effective', 'custom_settings', 'catalog_delivery', 'scan_recovery',
     'unknown_resource_scope', 'scan_cancel_recovery', 'customer_collection_flow',
-    'finance_source_state', 'field_maintenance', 'decision_maintenance', 'plugin_cli_batch', 'run_acceptance'})
+    'decision_maintenance', 'plugin_cli_batch', 'run_acceptance'})
 
 
 def _require(condition, reason):
@@ -87,7 +87,7 @@ def validate_probe(name, data, *, root):
         _require(set(data['results']) == {'scan_codes', 'arrival_stats', 'self_pickup_problem_upload', 'split_pending_problem_upload'}
                  and data['failure']['status'] == 'FAILED' and data['legacy_counts_before'] == data['legacy_counts_after'],
                  'four actual independent V2 chains or failure isolation missing')
-    elif name in {'field_maintenance', 'decision_maintenance'}:
+    elif name == 'decision_maintenance':
         _require(data['host_before'].get('status') == 'PASS' and data['host_before'] == data['host_after']
                  and data['startup_before'] == data['startup_after'], 'Host freeze or process continuity failed')
         for artifact in data['artifacts'].values():
@@ -95,18 +95,11 @@ def validate_probe(name, data, *, root):
         _require(set(data['artifacts']) == {'baseline', 'candidate'}, 'maintenance package pair missing')
         baseline, candidate = (data['artifacts'][key] for key in ('baseline', 'candidate'))
         _require(baseline['sha256'] != candidate['sha256'], 'maintenance candidate did not change')
-        if name == 'field_maintenance':
-            steps = {row['phase']: row for row in data['steps']}
-            _require(set(steps) == {'baseline', 'baseline_source_changed', 'candidate', 'rollback'}, 'field maintenance phase missing')
-            _require(steps['baseline_source_changed']['run']['status'] == 'FAILED'
-                     and steps['rollback']['changed_source_failure']['status'] == 'FAILED', 'old field package failure was not demonstrated')
-            _require(steps['candidate']['unrelated_while_held']['status'] == 'COMPLETED', 'unrelated work did not finish during maintenance')
-        else:
-            _require(len(data['phases']) == 3 and len(data['unrelated_runs']) >= 2
-                     and all(row['status'] == 'COMPLETED' for row in data['unrelated_runs']), 'decision upgrade/rollback or independent work missing')
+        _require(len(data['phases']) == 3 and len(data['unrelated_runs']) >= 2
+                 and all(row['status'] == 'COMPLETED' for row in data['unrelated_runs']), 'decision upgrade/rollback or independent work missing')
     elif name == 'plugin_cli_batch':
         expected = {'sync_scan_codes_v2', 'sync_arrival_stats_v2', 'self_pickup_problem_upload_v2',
-                    'split_pending_problem_upload_v2', 'sync_finance_bills_v2', 'sync_customer_service_problems_v2'}
+                    'split_pending_problem_upload_v2', 'sync_customer_service_problems_v2'}
         _require(set(data['plugins']) == expected and all(row['status'] == 'PASS' for row in data['plugins'].values()), 'current CLI package coverage incomplete')
         _require(data['host_freeze'].get('status') == 'PASS' and data['host_freeze'] == data['host_after'], 'CLI Host freeze missing')
         for entry in data['plugins'].values():

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 
+from agent.connector_namespaces import SELF_PICKUP_PROBLEM_TOOL, SPLIT_PENDING_PROBLEM_TOOL
 from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
@@ -42,8 +43,8 @@ ProblemEventUpsertPort = Callable[
 CapabilityAuthorizationPort = Callable[[Mapping[str, Any], str], None]
 
 
-_SELF_TOOL = "self_pickup_problem_upload"
-_SPLIT_TOOL = "split_pending_problem_upload"
+_SELF_TOOL = SELF_PICKUP_PROBLEM_TOOL
+_SPLIT_TOOL = SPLIT_PENDING_PROBLEM_TOOL
 _SELF_SOURCE_ROLE = "self_pickup_source_sheet"
 _SPLIT_SOURCE_ROLE = "split_pending_source_sheet"
 _SPLIT_TARGET_ROLE = "split_pending_target_sheet"

@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import patch
 
 from feishu import message_handler
+from _feishu_dispatch_support import EntrypointDispatcher
 
 
 class FeishuSelfPickupPendingTests(unittest.TestCase):
@@ -70,6 +71,7 @@ class FeishuSelfPickupPendingTests(unittest.TestCase):
                 "_AUTOMATION_PROJECT_ENTRYPOINTS",
                 FakeProjectEntrypoints(),
             ),
+            patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", EntrypointDispatcher()),
         ):
             token = message_handler._COMMAND_CONTEXT.set(
                 message_handler.FeishuCommandContext(

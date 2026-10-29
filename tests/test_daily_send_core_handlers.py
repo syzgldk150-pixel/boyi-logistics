@@ -82,7 +82,7 @@ def _context(operation: str, action: str, role: str) -> CoreBrokerInvocationCont
     return CoreBrokerInvocationContext(
         automation_id="daily-send-instance",
         plugin_version="1.0.0",
-        tool_name="sync_daily_send_orders",
+        tool_name="daily_send",
         operation=operation,
         action=action,
         role=role,

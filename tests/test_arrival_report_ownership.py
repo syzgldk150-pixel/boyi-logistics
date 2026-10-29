@@ -11,7 +11,7 @@ from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent import workflow_resource_store
 from plugin_core_adapters import arrival, arrival_report
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 from tests.test_arrival_production_adapter import _stats_record
 
 
@@ -24,7 +24,7 @@ def _publication(*, resource_id=RESOURCE, account_id=ACCOUNT, count=1, day=DAY,
                  sheet_id="Daily", run_id="run-statistics", finished_at=None):
     role = "arrival_stats_primary_sheet"
     target, digest = _extract_write_target_ref(
-        automation_id="statistics-instance", plugin_id="sync_arrival_stats",
+        automation_id="statistics-instance",
         operation="network.request", action="feishu.sheet.replace", role=role,
         binding=resource_id, request_id="fixture-request",
         arguments={"records": [_stats_record()] * count,
@@ -152,7 +152,7 @@ def test_fresh_statistics_repairs_earlier_publication_identity(publication_sourc
 
 
 def test_plugin_keeps_statistics_but_refreshes_forecast_from_current_list():
-    action = load_first_party_action("sync_arrive_list")
+    action = load_plugin_action("sync_arrive_list")
     calls = []
 
     def broker(operation, *, action, role, arguments):
@@ -177,7 +177,7 @@ def test_plugin_keeps_statistics_but_refreshes_forecast_from_current_list():
 
 
 def test_secondary_preflight_failure_is_before_all_mutations():
-    action = load_first_party_action("sync_arrive_list")
+    action = load_plugin_action("sync_arrive_list")
     calls = []
 
     def broker(operation, *, action, role, arguments):

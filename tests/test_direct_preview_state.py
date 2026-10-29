@@ -20,17 +20,17 @@ def selection_projection(*, consumed=False, expired=False, observed_at=None):
     identity = str(uuid4())
     observed = observed_at or datetime.now(timezone.utc) - timedelta(minutes=20 if expired else 1)
     row = {
-        "status": "COMPLETED", "automation_id": "self_pickup_problem_upload", "generation": 1,
+        "status": "COMPLETED", "automation_id": "87911cef-3773-4273-b644-030108c43678", "generation": 1,
         "invocation_json": {"contract_hash": "contract", "project_configuration_version": 1},
         "arguments_json": {"dry_run": True}, "preview_consumed_by": str(uuid4()) if consumed else None,
         "result_json": {"status": "SUCCESS", "meta": {"observed_at": observed.isoformat()},
-            "data": {"dry_run": True, "candidate_count": 1, "preview_fingerprint": "a" * 64,
+            "data": {"dry_run": True, "candidate_count": 1, "preview_fingerprint": "a" * 64, "selection_limit": 250,
                 "candidates": [{"bill_code": "TEST-BILL", "arrival_count": 2, "goods_count": 2,
                     "delivery_method": "自提", "destination_site": "测试网点", "row_number": 2,
                     "source_id": "test-source", "source_name": "测试来源"}]}},
     }
     projection = project_preview(SimpleNamespace(get=lambda _identity: row), identity,
-        entry=SimpleNamespace(automation_id=row["automation_id"], runtime_model="ACTION_V1", display_name="自提到货问题件"),
+        entry=SimpleNamespace(automation_id=row["automation_id"], plugin_id="self_pickup_problem_upload_v2", runtime_model="SERVICE_V2", display_name="自提到货问题件"),
         contract=SimpleNamespace(automation_generation=1, contract_hash="contract", project_configuration_version=1), scan=False)
     assert row["status"] == "COMPLETED"
     return projection
@@ -71,12 +71,10 @@ def test_invalid_or_conflicting_confirmation_state_is_rejected(state, confirm):
     assert not valid_preview_state({"preview_state": state, "can_confirm": confirm})
 
 
-@pytest.mark.parametrize("service_v2", [False, True])
-def test_browser_used_selection_stays_disabled_and_never_shows_expired(service_v2):
+def test_browser_used_selection_stays_disabled_and_never_shows_expired():
     def preview(**kwargs):
         value = selection_projection(**kwargs)
-        if service_v2:
-            value["automation_id"] = "87911cef-3773-4273-b644-030108c43678"
+        value["automation_id"] = "87911cef-3773-4273-b644-030108c43678"
         return value
 
     template = (Path(__file__).resolve().parents[1] / "console/templates/automation.html").read_text()
@@ -111,7 +109,7 @@ def test_browser_used_selection_stays_disabled_and_never_shows_expired(service_v
             let selectionConfirmationRetryOnly = false, selectionPreviewCanConfirm = false;
             function syncRunButtonVisual() {}
         ''' + '\n'.join(functions))
-        page.evaluate("v => taskRow.dataset.pluginId = v", "self_pickup_problem_upload_v2" if service_v2 else "self_pickup_problem_upload")
+        page.evaluate("v => taskRow.dataset.pluginId = v", "self_pickup_problem_upload_v2")
         page.evaluate("p => renderSelectionPreview(p)", preview())
         assert "到货 2 / 应到 2" in page.locator('#list').inner_text()
         page.locator('#list input').check()

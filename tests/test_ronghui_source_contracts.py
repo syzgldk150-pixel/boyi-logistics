@@ -4,7 +4,7 @@ import pytest
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.tms_runtime.scripts import fetch_dispatch, get_scan
-from plugin_core_adapters import first_party
+from plugin_core_adapters import host_primitives
 
 
 @pytest.mark.parametrize(
@@ -50,7 +50,7 @@ def test_arrive_adapter_maps_malformed_success_payload_to_source_invalid(
     monkeypatch.setattr(fetch_dispatch, "fetch_dispatch_records", lambda *_args, **_kwargs: {})
 
     with pytest.raises(PluginExecutionError) as exc:
-        first_party._arrive_list_read_page(
+        host_primitives._arrive_list_read_page(
             {"session_profile": "source-profile"},
             "2026-08-24",
             0,
@@ -70,7 +70,7 @@ def test_scan_adapter_maps_malformed_success_payload_to_source_invalid(
     monkeypatch.setattr(get_scan, "fetch_page", lambda *_args: {"data": None})
 
     with pytest.raises(PluginExecutionError) as exc:
-        first_party._scan_read_page(
+        host_primitives._scan_read_page(
             {"session_profile": "source-profile"},
             "2026-08-24",
             0,

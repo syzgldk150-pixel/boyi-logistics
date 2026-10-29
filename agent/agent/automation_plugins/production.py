@@ -60,15 +60,8 @@ from agent.automation_plugins.execution import (
     FilesystemPluginIntegrityVerifier,
     PluginExecutionRouter,
 )
-from agent.automation_plugins.first_party import (
-    SignedFirstPartyPackageProvider,
-    bootstrap_first_party_plugins,
-    deferred_first_party_automation_plugins,
-    deferred_first_party_plugin_ids,
-    release_first_party_automation_ids,
-    release_first_party_broker_action_keys,
-    resolve_release_first_party_manifests,
-)
+from agent.automation_plugins.fixed_entrypoints import FixedEntrypointOwnership
+from agent.automation_plugins.reviewed_primitives import REVIEWED_HOST_PRIMITIVES
 from agent.automation_plugins.generation import (
     AutomationRuntimeReconciler,
     RuntimeGenerationHealth,
@@ -77,19 +70,14 @@ from agent.automation_plugins.generation import (
 )
 from agent.automation_plugins.manifest import (
     canonical_json_bytes,
-    runtime_descriptor_matches_signed_installation,
+    runtime_descriptor_matches,
 )
 from agent.automation_plugins.lifecycle import AutomationPluginService
 from agent.automation_plugins.management import AutomationPluginManagementService
 from agent.automation_plugins.management_repository import (
     MySQLAutomationPluginManagementRepository,
 )
-from agent.automation_plugins.migration import PluginMigrationRuntimeCoordinator
-from agent.automation_plugins.migration_entrypoint_ownership import (
-    MigrationEntrypointOwnershipResolver,
-)
 from agent.automation_plugins.models import (
-    BootstrapResult,
     PluginRuntimeModel,
     PluginTrustSource,
     RuntimeActivationPhase,
@@ -103,15 +91,10 @@ from agent.automation_plugins.models import (
 from agent.automation_plugins.mysql_repository import (
     MySQLAutomationPluginRepositoryAdapter,
 )
-from agent.automation_plugins.package import load_ed25519_trust_store
 from agent.automation_plugins.ports import RuntimeEffectPlan
 from agent.automation_plugins.production_snapshot import (
     build_runtime_generation_snapshot,
     _required_policy_generation,
-)
-from agent.automation_plugins.production_write_recovery import (
-    recover_unknown_write as _recover_unknown_write,
-    recover_current_unknown_write as _recover_current_unknown_write,
 )
 from agent.automation_plugins.production_projection_identity import ProjectionIdentityJournal, project_projection_identity
 from agent.automation_plugins.release_config import (
@@ -160,7 +143,6 @@ from agent.automation_plugins.storage import (
     FilesystemPluginStorage,
     LockedVirtualEnvironmentBuilder,
 )
-from shared.finance.sources import enabled_finance_account_ids
 from shared.redaction import redact_text
 
 
@@ -1466,7 +1448,6 @@ class MySQLRuntimeTargetService:
         *,
         orchestration_repository: Any,
         catalog: PluginCatalog,
-        core_catalog: Any,
         runtime_repository: MySQLAutomationPluginRuntimeAdapter,
         reconciler: AutomationRuntimeReconciler,
         wake_runner: Callable[[str], None] | None = None,
@@ -1474,7 +1455,6 @@ class MySQLRuntimeTargetService:
     ) -> None:
         self._orchestration = orchestration_repository
         self._catalog = catalog
-        self._core_catalog = core_catalog
         self._runtime = runtime_repository
         self._reconciler = reconciler
         self._wake_runner = wake_runner
@@ -1501,8 +1481,6 @@ class MySQLRuntimeTargetService:
     def _same_material(
         current: RuntimeGenerationSnapshot,
         desired: RuntimeGenerationSnapshot,
-        *,
-        manifest_schema_version: int,
     ) -> bool:
         fields = (
             "plugin_id",
@@ -1552,11 +1530,7 @@ class MySQLRuntimeTargetService:
             metadata["schedule"] = schedule_generation_shape(metadata.get("schedule"))
         if canonical_json_bytes(current_without_descriptor) != canonical_json_bytes(desired_without_descriptor):
             return False
-        return runtime_descriptor_matches_signed_installation(
-            current_descriptor,
-            desired_descriptor,
-            schema_version=manifest_schema_version,
-        )
+        return runtime_descriptor_matches(current_descriptor, desired_descriptor)
 
     def _reconcile_uninstalling_project(
         self,
@@ -1624,8 +1598,6 @@ class MySQLRuntimeTargetService:
             for entry in sorted(entries, key=lambda item: item.automation_id):
                 automation_id = str(entry.automation_id)
                 if automation_id == provider_automation_id or automation_id in affected:
-                    continue
-                if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
                     continue
                 if not pending_services.intersection(entry.required_services):
                     continue
@@ -1753,8 +1725,8 @@ class MySQLRuntimeTargetService:
             raise PluginConflictError("failed upgrade preparation is unavailable")
         config, policy = self._desired_rows(automation_id)
         candidate = build_runtime_generation_snapshot(entry, desired_config_row=config, policy_row=policy,
-            generation=target.snapshot.generation, core_catalog=self._core_catalog)
-        if not self._same_material(target.snapshot, candidate, manifest_schema_version=entry.manifest_schema_version):
+            generation=target.snapshot.generation)
+        if not self._same_material(target.snapshot, candidate):
             raise PluginConflictError("failed preparation no longer matches saved settings")
         self._runtime.retry_disabled_route_preparation(target.snapshot, **identity)
         self._reconciler.resume_project(automation_id)
@@ -1818,18 +1790,13 @@ class MySQLRuntimeTargetService:
                         desired_config_row=config,
                         policy_row=policy,
                         generation=target.snapshot.generation,
-                        core_catalog=self._core_catalog,
                     )
                 except PluginConflictError as exc:
                     raise PluginConflictError(
                         "runtime target no longer matches current signed desired state",
                         code="RUNTIME_TARGET_MATERIAL_MISMATCH",
                     ) from exc
-                if not self._same_material(
-                    target.snapshot,
-                    target_candidate,
-                    manifest_schema_version=entry.manifest_schema_version,
-                ):
+                if not self._same_material(target.snapshot, target_candidate):
                     raise PluginConflictError(
                         "runtime target no longer matches current signed desired state",
                         code="RUNTIME_TARGET_MATERIAL_MISMATCH",
@@ -1893,20 +1860,13 @@ class MySQLRuntimeTargetService:
                     desired_config_row=config,
                     policy_row=policy,
                     generation=runtime.committed_generation,
-                    core_catalog=self._core_catalog,
                 )
-                if self._same_material(
-                    committed.snapshot,
-                    committed_candidate,
-                    manifest_schema_version=entry.manifest_schema_version,
-                ):
-                    if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value:
-                        return self._reconciler.reconcile_committed_projection(
-                            committed,
-                            project_enabled=entry.enabled,
-                            defer_scheduler_enable=defer_scheduler_enable,
-                        )
-                    return None
+                if self._same_material(committed.snapshot, committed_candidate):
+                    return self._reconciler.reconcile_committed_projection(
+                        committed,
+                        project_enabled=entry.enabled,
+                        defer_scheduler_enable=defer_scheduler_enable,
+                    )
             elif policy_generation != next_generation:
                 raise PluginConflictError(
                     "project policy is not bound to the desired runtime generation",
@@ -1918,7 +1878,6 @@ class MySQLRuntimeTargetService:
             desired_config_row=config,
             policy_row=policy,
             generation=next_generation,
-            core_catalog=self._core_catalog,
         )
         request_id = str(
             uuid.uuid5(
@@ -1933,267 +1892,6 @@ class MySQLRuntimeTargetService:
             expected_committed_generation=(runtime.committed_generation if runtime is not None else None),
             request_id=request_id,
         )
-
-    def resolve_unknown_write_not_applied(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        lease_id: str,
-        evidence_sha256: str,
-        request_id: str,
-        actor_id: str,
-        actor_role: str,
-    ) -> dict[str, Any]:
-        """Use the shared recovery transaction for a verified empty readback."""
-
-        return self._runtime.resolve_unknown_write_not_applied(
-            automation_id=automation_id,
-            generation=generation,
-            lease_id=lease_id,
-            evidence_sha256=evidence_sha256,
-            request_id=request_id,
-            actor_id=actor_id,
-            actor_role=actor_role,
-        )
-
-    # Share the exact evidence recovery implementation without changing the
-    # public bound methods or the Runner wake boundary.
-    recover_unknown_write = _recover_unknown_write
-    recover_current_unknown_write = _recover_current_unknown_write
-
-    def recover_unknown_writes_not_applied(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        recoveries: Sequence[Mapping[str, object]],
-        actor_id: str,
-        actor_role: str,
-    ) -> dict[str, Any]:
-        """Resolve one bounded sibling set only from exact empty readback."""
-
-        result = self._runtime.resolve_unknown_writes_not_applied(
-            automation_id=automation_id,
-            generation=generation,
-            recoveries=recoveries,
-            actor_id=actor_id,
-            actor_role=actor_role,
-        )
-        if self._wake_runner:
-            for recovered in result.get("results", ()):
-                if not isinstance(recovered, Mapping):
-                    continue
-                run_id = str(recovered.get("run_id") or "")
-                if recovered.get("transitioned") is True and run_id:
-                    self._wake_runner(run_id)
-        return result
-
-    def inspect_current_unknown_write(
-        self, *, automation_id: str, generation: int,
-    ) -> dict[str, Any]:
-        """Return the sole current receipt locator for server readback."""
-        return self._runtime.inspect_current_unknown_write_recovery(
-            automation_id=automation_id,
-            generation=generation,
-        )
-
-    def inspect_current_unknown_writes(
-        self, *, automation_id: str, generation: int,
-    ) -> dict[str, Any]:
-        """Return a bounded current sibling set for exact server readback."""
-        return self._runtime.inspect_current_unknown_write_recoveries(
-            automation_id=automation_id,
-            generation=generation,
-        )
-
-    def inspect_scan_unknown_write_candidates(
-        self,
-        *,
-        automation_id: str,
-        limit: int = 100,
-    ) -> dict[str, Any]:
-        """Inspect unresolved scan leases across committed and archived generations."""
-
-        if type(limit) is not int or not 1 <= limit <= 100:
-            raise ValueError("scan recovery candidate limit is invalid")
-        candidates: list[dict[str, Any]] = []
-        generations = sorted(
-            self._runtime.list_project_generations(automation_id),
-            key=lambda item: item.snapshot.generation,
-        )
-        for item in generations:
-            generation = int(item.snapshot.generation)
-            batch = self._runtime.inspect_current_unknown_write_recoveries(
-                automation_id=automation_id,
-                generation=generation,
-            )
-            state = str(batch.get("state") or "")
-            if state == "RECOVERY_LEASE_LIMIT_EXCEEDED":
-                return {
-                    "state": "RECOVERY_LEASE_LIMIT_EXCEEDED",
-                    "candidate_count": int(batch.get("lease_count") or 0),
-                    "candidates": [],
-                }
-            if state == "RECOVERY_LEASE_MISSING":
-                continue
-            snapshots = batch.get("snapshots")
-            if (
-                state != "RECOVERY_LEASES_IDENTIFIED"
-                or not isinstance(snapshots, list)
-                or any(not isinstance(snapshot, Mapping) for snapshot in snapshots)
-            ):
-                return {
-                    "state": "RECOVERY_CANDIDATES_INVALID",
-                    "candidate_count": 0,
-                    "candidates": [],
-                }
-            for snapshot in snapshots:
-                candidates.append({"generation": generation, "snapshot": dict(snapshot)})
-                if len(candidates) > limit:
-                    return {
-                        "state": "RECOVERY_LEASE_LIMIT_EXCEEDED",
-                        "candidate_count": len(candidates),
-                        "candidates": [],
-                    }
-        return {
-            "state": (
-                "RECOVERY_CANDIDATES_IDENTIFIED"
-                if candidates
-                else "RECOVERY_LEASE_MISSING"
-            ),
-            "candidate_count": len(candidates),
-            "candidates": candidates,
-        }
-
-    def inspect_scan_unknown_write_context(
-        self,
-        *,
-        automation_id: str,
-        generation: int,
-        lease_id: str,
-    ) -> dict[str, Any]:
-        """Match the original lease, Command, completed preview and account."""
-
-        with self._orchestration.unit_of_work() as uow:
-            runtime_context = (
-                uow.automation_plugins.lock_unknown_write_recovery_context_row(
-                    automation_id=automation_id,
-                    generation=generation,
-                    lease_id=lease_id,
-                )
-            )
-            lease = runtime_context.get("lease")
-            if not isinstance(lease, Mapping):
-                raise ValueError("scan recovery lease context is invalid")
-            run_id = str(lease.get("orchestration_run_id") or "").strip()
-            run = uow.runs.get(run_id, for_update=False) if run_id else None
-            if not isinstance(run, Mapping):
-                raise ValueError("scan recovery run is unavailable")
-            command_id = str(run.get("command_id") or "").strip()
-            command = uow.commands.get(command_id, for_update=False) if command_id else None
-            if not isinstance(command, Mapping):
-                raise ValueError("scan recovery command is unavailable")
-            parameters = command.get("parameters_json", command.get("parameters"))
-            if not isinstance(parameters, Mapping):
-                raise ValueError("scan recovery command parameters are invalid")
-            execution_context = parameters.get("execution_context")
-            preview_context = (
-                execution_context.get(SCAN_PREVIEW_CONTEXT_KEY)
-                if isinstance(execution_context, Mapping)
-                else None
-            )
-            if isinstance(preview_context, Mapping):
-                preview_run_id = normalize_preview_run_id(
-                    preview_context.get("preview_run_id")
-                )
-                preview = scan_preview_recovery_projection(
-                    uow,
-                    preview_run_id=preview_run_id,
-                    trusted_context=preview_context,
-                    now=datetime.now(timezone.utc),
-                )
-            else:
-                plan = run.get("plan_json")
-                invocation = command.get("automation_invocation_json")
-                if not isinstance(plan, Mapping) or not isinstance(
-                    invocation, Mapping
-                ):
-                    raise ValueError("scan recovery legacy plan binding is unavailable")
-                legacy_plan = plan_from_mapping(plan)
-                invocation_generation = invocation.get("automation_generation")
-                configuration_version = invocation.get(
-                    "project_configuration_version"
-                )
-                contract_digest = str(invocation.get("contract_hash") or "").strip()
-                if (
-                    invocation.get("automation_id") != automation_id
-                    or invocation_generation != generation
-                    or type(configuration_version) is not int
-                    or configuration_version <= 0
-                    or legacy_plan.automation_id != automation_id
-                    or legacy_plan.automation_generation != generation
-                    or legacy_plan.automation_contract_hash != contract_digest
-                ):
-                    raise ValueError("scan recovery legacy plan identity is invalid")
-                preview = scan_preview_recovery_plan_projection(
-                    uow,
-                    plan=legacy_plan,
-                    expected_plan_hash=str(run.get("plan_hash") or ""),
-                    expectation=ScanPreviewExpectation(
-                        project_instance_id=automation_id,
-                        generation=generation,
-                        contract_digest=contract_digest,
-                        configuration_version=configuration_version,
-                    ),
-                    now=datetime.now(timezone.utc),
-                )
-            steps = uow.steps.list_for_run(run_id)
-            if len(steps) != 1 or not isinstance(steps[0], Mapping):
-                raise ValueError("scan recovery step identity is invalid")
-            step = steps[0]
-            from agent.automation_plugins.scan_recovery_context import original_scan_account
-
-            original_account = original_scan_account(runtime_context)
-
-        started_at = next(
-            (
-                value
-                for value in (
-                    step.get("started_at"),
-                    step.get("created_at"),
-                    run.get("started_at"),
-                    run.get("created_at"),
-                    command.get("requested_at"),
-                )
-                if isinstance(value, datetime)
-            ),
-            None,
-        )
-        finished_at = next(
-            (
-                value
-                for value in (
-                    step.get("completed_at"),
-                    step.get("updated_at"),
-                    run.get("completed_at"),
-                    run.get("updated_at"),
-                )
-                if isinstance(value, datetime)
-            ),
-            started_at,
-        )
-        if not isinstance(started_at, datetime) or not isinstance(finished_at, datetime):
-            raise ValueError("scan recovery attempt timestamps are unavailable")
-        return {
-            "state": "SCAN_RECOVERY_CONTEXT_IDENTIFIED",
-            "run_id": run_id, "target_date": str(preview["target_date"]),
-            "account_id": original_account,
-            "preview": dict(preview),
-            "items": [dict(item) for item in preview["items"]],
-            "attempt_started_at": started_at,
-            "attempt_finished_at": finished_at,
-        }
 
     def _reconciliation_automation_ids(self) -> tuple[str, ...]:
         """Discover project identities without compiling every catalog entry.
@@ -2436,7 +2134,6 @@ class ProductionServiceV2ProviderExecutor:
 @dataclass
 class ProductionAutomationPluginRuntime:
     release: ProductionPluginReleaseConfig
-    bootstrap: BootstrapResult
     repository: MySQLAutomationPluginRepositoryAdapter
     runtime_repository: MySQLAutomationPluginRuntimeAdapter
     catalog: PluginCatalog
@@ -2444,12 +2141,10 @@ class ProductionAutomationPluginRuntime:
     issuer: LocalBrokerCapabilityIssuer
     broker: LocalCoreAutomationBroker
     execution_router: PluginExecutionRouter
-    migration_runtime: PluginMigrationRuntimeCoordinator
-    migration_entrypoint_ownership: MigrationEntrypointOwnershipResolver
+    fixed_entrypoints: FixedEntrypointOwnership
     target_service: MySQLRuntimeTargetService
     storage: FilesystemPluginStorage
     environments: LockedVirtualEnvironmentBuilder
-    upload_signature_verifier: Any
     management_repository: MySQLAutomationPluginManagementRepository
     binding_resolver: ProductionProjectBindingResolver
     service_registry: ServiceRegistry
@@ -2460,8 +2155,6 @@ class ProductionAutomationPluginRuntime:
     lifecycle_service: AutomationPluginService
     configuration_service: AutomationProjectConfigurationService
     management: AutomationPluginManagementService
-    required_first_party_ids: frozenset[str]
-    _bootstrap_first_party: Callable[[], BootstrapResult]
     _sandbox_canary: SandboxCanaryResult | None = None
     _health_snapshot: dict[str, Any] | None = None
     _started: bool = False
@@ -2484,28 +2177,10 @@ class ProductionAutomationPluginRuntime:
         self._started = False
 
     def reconcile(self) -> tuple[object, ...]:
-        if not self.bootstrap.ok:
-            raise PluginConflictError("first-party plugin bootstrap was rejected")
         service_driver = getattr(self, "service_effect_driver", None)
         if isinstance(service_driver, ProductionRuntimeEffectDriver):
             service_driver.restore_from_repository(self.runtime_repository)
-        first_pass = self.target_service.reconcile_all()
-
-        # A release bootstrap deliberately does not replace an in-flight
-        # generation.  Finish that exact signed generation first, then let the
-        # same release bootstrap observe the newly stable lineage and stage
-        # any newer signed package before a second reconciliation pass.  This
-        # closes the normal recovery-and-upgrade path in one Agent startup
-        # without inventing a generation or relying on an operator restart.
-        # A target still waiting on a real coeffect remains unavailable and is
-        # retried by the next explicit reconciliation after that dependency is
-        # restored.
-        refreshed = self._bootstrap_first_party()
-        if not refreshed.ok:
-            raise PluginConflictError("first-party plugin bootstrap was rejected")
-        self.bootstrap = refreshed
-        second_pass = self.target_service.reconcile_all()
-        return first_pass + second_pass
+        return tuple(self.target_service.reconcile_all())
 
     def reconcile_after_dependency_change(
         self,
@@ -2524,13 +2199,10 @@ class ProductionAutomationPluginRuntime:
         """
 
         del account_id, service
-        if not self.bootstrap.ok:
-            raise PluginConflictError("first-party plugin bootstrap was rejected")
         return tuple(self.target_service.reconcile_all())
 
     def health(self) -> dict[str, Any]:
-        required_ids = self.required_first_party_ids - set(
-            self.repository.superseded_first_party_ids(tuple(self.required_first_party_ids)))
+        required_ids: frozenset[str] = frozenset()
         # Catalog, exclusion and generation reads share one snapshot connection
         # instead of opening a cross-region connection per project lookup.
         read_scope = getattr(self.runtime_repository, "read_scope", None)
@@ -2552,7 +2224,7 @@ class ProductionAutomationPluginRuntime:
             "ok": bool(catalog.get("ok") is True and self._started and sandbox_ready),
             "runnable": runnable,
             "runtime_status": "READY" if runnable else "UNAVAILABLE",
-            "release_sha": self.release.verified_release_sha,
+            "release_sha": self.release.release_sha,
             "broker": {"state": "running" if self._started else "stopped"},
             "sandbox": {
                 "state": "ready" if sandbox_ready else "unavailable",
@@ -2582,7 +2254,7 @@ class ProductionAutomationPluginRuntime:
                 "ok": False,
                 "runnable": False,
                 "runtime_status": "UNAVAILABLE",
-                "release_sha": self.release.verified_release_sha,
+                "release_sha": self.release.release_sha,
                 "broker": {"state": "running" if self._started else "stopped"},
                 "sandbox": {"state": "unavailable", "code": "NOT_CHECKED", "checked_at": None},
                 "catalog": {"ok": False, "runnable": False, "runtime_status": "UNAVAILABLE"},
@@ -2606,21 +2278,6 @@ class ProductionAutomationPluginRuntime:
             )
         return health
 
-    def package_bytes(
-        self,
-        plugin_id: str,
-        version: str,
-        *,
-        expected_sha256: str,
-    ) -> bytes:
-        """Return exact signed archive bytes for an authenticated Worker route."""
-
-        return self.management.package_bytes(
-            plugin_id,
-            version,
-            expected_sha256=expected_sha256,
-        )
-
 
 def _cursor_secret(environ: Mapping[str, str]) -> bytes:
     value = str(environ.get(CURSOR_SECRET_ENV) or "")
@@ -2628,53 +2285,6 @@ def _cursor_secret(environ: Mapping[str, str]) -> bytes:
     if len(encoded) < 32 or len(encoded) > 4096:
         raise PluginPackageError(f"{CURSOR_SECRET_ENV} must contain from 32 to 4096 UTF-8 bytes")
     return encoded
-
-
-def _migration_account_bindings(
-    *,
-    core_catalog: Any,
-    account_manager: Any,
-) -> dict[str, Mapping[str, Any]]:
-    manifests = resolve_release_first_party_manifests(core_catalog)
-    result: dict[str, Mapping[str, Any]] = {}
-    finance = manifests.get("sync_finance_bills")
-    if finance is not None:
-        if len(finance.account_roles) != len(enabled_finance_account_ids()):
-            raise PluginPackageError("finance first-party role contract is incomplete")
-        finance_bindings = {
-            str(role["role"]): account_id
-            for role, account_id in zip(
-                finance.account_roles,
-                enabled_finance_account_ids(),
-                strict=True,
-            )
-        }
-        result["finance_bills"] = finance_bindings
-        result["finance_startup_catchup"] = finance_bindings
-
-    customer = manifests.get("sync_customer_service_problems")
-    if customer is not None:
-        if len(customer.account_roles) != 1:
-            raise PluginPackageError("customer first-party role contract is incomplete")
-        role = customer.account_roles[0]
-        allowed = set(str(item) for item in role.get("allowed_systems", ()))
-        accounts = tuple(
-            sorted(
-                str(item.get("account_id") or "")
-                for item in account_manager.list_accounts(
-                    include_status=False,
-                    validate=False,
-                )
-                if isinstance(item, Mapping)
-                and item.get("is_active") is True
-                and str(item.get("system") or "") in allowed
-                and str(item.get("account_id") or "")
-            )
-        )
-        if not accounts:
-            raise PluginPackageError("customer first-party migration has no active account binding")
-        result["customer_problems_shadow"] = {str(role["role"]): accounts}
-    return result
 
 
 def build_production_automation_plugin_runtime(
@@ -2698,52 +2308,15 @@ def build_production_automation_plugin_runtime(
         environment,
         runtime_release_sha=runtime_release_sha,
     )
-    from agent.automation_plugins.first_party_retirement import read_retired_release, require_completed_migrations
-    retired_release = read_retired_release(release.artifact_root, runtime_release_sha)
-    if retired_release is not None:
-        require_completed_migrations(orchestration_repository)
-    if release.artifact_root.parent.name != "releases":
-        raise PluginPackageError("plugin artifact root must be inside the releases directory")
-    base = release.artifact_root.parent.parent.resolve()
-    storage_root = (base / "installed").resolve()
-    runtime_root = (base / "runtime").resolve()
-    if storage_root in release.artifact_root.parents or release.artifact_root in storage_root.parents:
-        raise PluginPackageError("plugin storage and release artifacts must be independent")
+    storage_root = release.storage_root.resolve()
+    runtime_root = release.runtime_root.resolve()
     runtime_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     storage = FilesystemPluginStorage(storage_root)
     environments = LockedVirtualEnvironmentBuilder()
-    trust = load_ed25519_trust_store(release.trust_root)
-    provider = SignedFirstPartyPackageProvider(
-        artifact_root=release.artifact_root,
-        signature_verifier=trust,
-        storage=storage,
-        environments=environments,
-    )
     repository = MySQLAutomationPluginRepositoryAdapter(
         orchestration_repository,
-        migration_account_bindings={} if retired_release is not None else _migration_account_bindings(
-            core_catalog=core_catalog,
-            account_manager=account_manager,
-        ),
         release_hold_provider=release_hold_provider,
     )
-
-    def _bootstrap_first_party() -> BootstrapResult:
-        return bootstrap_first_party_plugins(
-            repository,
-            core_catalog=core_catalog,
-            current_release_sha=runtime_release_sha,
-            expected_release_sha=release.verified_release_sha,
-            package_provider=provider,
-            package_materializer=provider,
-            superseded_automation_ids=repository.superseded_first_party_ids(tuple(release_first_party_automation_ids())),
-        )
-
-    bootstrap = _bootstrap_first_party()
-    if not bootstrap.ok:
-        raise PluginPackageError(
-            "signed first-party bootstrap failed: " + ", ".join(sorted(bootstrap.rejected.values()))
-        )
     catalog_repository = MySQLAutomationPluginCatalogRepositoryAdapter(orchestration_repository)
     config_repository = MySQLAutomationProjectConfigurationReadAdapter(orchestration_repository)
     catalog_account_resolver = AccountManagerSessionResolver(account_manager)
@@ -2769,10 +2342,6 @@ def build_production_automation_plugin_runtime(
     catalog = PluginCatalog(
         catalog_repository,
         config_repository,
-        excluded_automation_plugins=deferred_first_party_automation_plugins(),
-        excluded_plugin_ids=deferred_first_party_plugin_ids(),
-        allowed_execution_platforms=("server",),
-        migration_pair_provider=repository.get_catalog_migration_pair,
         account_binding_ready=lambda account_id, allowed_systems: bool(
             catalog_account_resolver.require_active_binding_descriptor(
                 account_id=account_id,
@@ -2793,19 +2362,18 @@ def build_production_automation_plugin_runtime(
     binding_resolver = ProductionProjectBindingResolver(
         account_manager=account_manager,
         resource_provider=resource_provider,
-        worker_repository=management_repository,
     )
-    release_handler_keys = release_first_party_broker_action_keys(core_catalog)
-    missing_handler_keys = release_handler_keys - set(broker_handlers)
+    missing_handler_keys = REVIEWED_HOST_PRIMITIVES - set(broker_handlers)
     if missing_handler_keys:
         raise PluginPackageError(
-            "release-scoped first-party Broker handlers are incomplete: "
+            "reviewed Host primitives are incomplete: "
             + ", ".join(f"{operation}/{action}" for operation, action in sorted(missing_handler_keys))
         )
-    scoped_broker_handlers = {key: handler for key, handler in broker_handlers.items() if key in release_handler_keys}
+    scoped_broker_handlers = {key: handler for key, handler in broker_handlers.items()
+                              if key in REVIEWED_HOST_PRIMITIVES}
     runtime_projection_lock = RLock()
-    migration_entrypoint_ownership = MigrationEntrypointOwnershipResolver(
-        repository
+    fixed_entrypoints = FixedEntrypointOwnership(
+        project_plugin_id=lambda automation_id: _project_plugin_id(catalog, automation_id),
     )
     service_registry = ServiceRegistry(
         lock=runtime_projection_lock,
@@ -2814,9 +2382,7 @@ def build_production_automation_plugin_runtime(
     contribution_registry = ManagedContributionRegistry(
         lock=runtime_projection_lock,
         reserved_feishu_command=reserved_feishu_command,
-        migration_reserved_feishu_target=(
-            migration_entrypoint_ownership.allow_reserved_feishu_target
-        ),
+        reserved_feishu_owner=fixed_entrypoints.allow_reserved_feishu_command,
         backend_availability=contribution_backend_availability,
     )
     service_executor = ProductionServiceV2ProviderExecutor(
@@ -2833,7 +2399,7 @@ def build_production_automation_plugin_runtime(
     conflicting_platform_handlers = set(scoped_broker_handlers) & set(platform_v2_handlers)
     if conflicting_platform_handlers:
         raise PluginPackageError(
-            "service-v2 platform Broker handlers conflict with release handlers: "
+            "service-v2 platform Broker handlers conflict with reviewed Host primitives: "
             + ", ".join(f"{operation}/{action}" for operation, action in sorted(conflicting_platform_handlers))
         )
     scoped_broker_handlers.update(platform_v2_handlers)
@@ -2841,7 +2407,6 @@ def build_production_automation_plugin_runtime(
     unavailable_handler_keys.discard(SERVICE_V2_SERVICE_INVOKE_HANDLER_KEY)
     handler_keys = tuple(sorted(set(scoped_broker_handlers) - unavailable_handler_keys))
     coeffects = ProductionRuntimeCoeffectProvider(
-        core_catalog=core_catalog,
         broker_handler_keys=handler_keys,
         account_manager=account_manager,
         binding_resolver=binding_resolver,
@@ -2865,7 +2430,6 @@ def build_production_automation_plugin_runtime(
     target_service = MySQLRuntimeTargetService(
         orchestration_repository=orchestration_repository,
         catalog=catalog,
-        core_catalog=core_catalog,
         runtime_repository=runtime_repository,
         reconciler=reconciler,
         catalog_repository=repository,
@@ -2874,9 +2438,6 @@ def build_production_automation_plugin_runtime(
         repository=repository,
         storage=storage,
         environments=environments,
-        upload_signature_verifier=trust,
-        allowed_execution_platforms=("server",),
-        blocked_plugin_ids=deferred_first_party_plugin_ids(),
     )
     configuration_service = AutomationProjectConfigurationService(
         catalog=catalog,
@@ -2887,7 +2448,6 @@ def build_production_automation_plugin_runtime(
         catalog=catalog,
         lifecycle=lifecycle_service,
         configuration=configuration_service,
-        worker_repository=management_repository,
         target_service=target_service,
         package_repository=repository,
         storage=storage,
@@ -2907,13 +2467,11 @@ def build_production_automation_plugin_runtime(
         connector_registry=connector_registry,
     )
     broker = LocalCoreAutomationBroker(issuer=issuer, adapter=core_adapter)
-    migration_runtime = PluginMigrationRuntimeCoordinator(repository)
     execution_router = PluginExecutionRouter(
         core_executor=core_executor,
         capability_issuer=issuer,
         sandbox_launcher=BubblewrapPluginSandbox(bubblewrap_path),
         generation_leases=runtime_repository,
-        migration_runtime=migration_runtime,
         release_hold_provider=release_hold_provider,
     )
     service_executor.bind_router(execution_router)
@@ -2923,24 +2481,17 @@ def build_production_automation_plugin_runtime(
     _cursor_secret(environment)
     return ProductionAutomationPluginRuntime(
         release=release,
-        bootstrap=bootstrap,
         repository=repository,
         runtime_repository=runtime_repository,
         catalog=catalog,
-        composite_catalog=CompositeToolRegistry(
-            core_catalog,
-            catalog,
-            blocked_core_tool_names=deferred_first_party_plugin_ids(),
-        ),
+        composite_catalog=CompositeToolRegistry(core_catalog, catalog),
         issuer=issuer,
         broker=broker,
         execution_router=execution_router,
-        migration_runtime=migration_runtime,
-        migration_entrypoint_ownership=migration_entrypoint_ownership,
+        fixed_entrypoints=fixed_entrypoints,
         target_service=target_service,
         storage=storage,
         environments=environments,
-        upload_signature_verifier=trust,
         management_repository=management_repository,
         binding_resolver=binding_resolver,
         service_registry=service_registry,
@@ -2951,9 +2502,14 @@ def build_production_automation_plugin_runtime(
         lifecycle_service=lifecycle_service,
         configuration_service=configuration_service,
         management=management,
-        required_first_party_ids=release_first_party_automation_ids(),
-        _bootstrap_first_party=_bootstrap_first_party,
     )
+
+
+def _project_plugin_id(catalog: PluginCatalog, automation_id: str) -> str | None:
+    try:
+        return str(catalog.require(automation_id).plugin_id)
+    except Exception:
+        return None
 
 
 def production_cursor_secret(environ: Mapping[str, str] | None = None) -> bytes:

@@ -71,37 +71,3 @@ def test_arrival_cutover_inserts_only_authoritative_base_account_and_disables_co
     assert "$.arrive_list_request_body.params.account_id" in sql
     assert "last_message = CASE" in sql
 
-
-def test_single_account_schedule_registry_requires_explicit_top_level_account() -> None:
-    import yaml
-
-    manifest = yaml.safe_load(
-        (ROOT / "agent" / "tools" / "registry.yaml").read_text(encoding="utf-8")
-    )
-    tools = {tool["name"]: tool for tool in manifest["tools"]}
-
-    for name in (
-        "sync_daily_send_orders",
-        "sync_delivery_status",
-        "sync_site_send_list",
-        "sync_arrive_list",
-        "sync_arrival_stats",
-        "sync_yunda_dispatch_forecast",
-        "sync_yunda_send_waybills",
-    ):
-        tool = tools[name]
-        assert tool["account_scope"] == {
-            "required": True,
-            "allow_implicit_default": False,
-        }
-        expected_required = (
-            ["account_id", "dest_brch"]
-            if name == "sync_yunda_dispatch_forecast"
-            else (
-                ["account_id", "target_date"]
-                if name == "sync_site_send_list"
-                else ["account_id"]
-            )
-        )
-        assert tool["input_schema"]["required"] == expected_required
-        assert tool["input_schema"]["properties"]["account_id"]["minLength"] == 1

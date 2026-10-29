@@ -1,13 +1,14 @@
 """Real Broker dispatch must coordinate resolved effects, not service ceilings."""
 import asyncio
 import json
+import zlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from agent.automation_plugins.broker import LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
+from agent.automation_plugins.broker import _BROKER_FRAME_PREFIX, LocalBrokerCapabilityIssuer, LocalCoreAutomationBroker
 from agent.automation_plugins.capability_proxy_v2 import build_service_v2_capability_handler_map
 from agent.automation_plugins.connector_registry import ConnectorBindingKind, ConnectorDescriptor, ConnectorOperation, ConnectorRegistry
 from agent.automation_plugins.core_adapter import RegisteredCoreAutomationBrokerAdapter
@@ -71,11 +72,12 @@ def test_broker_read_bypasses_writer_but_actual_writes_wait_before_receipt(tmp_p
 
         async def call():
             reader, writer = await asyncio.open_unix_connection(str(issuer.broker_socket_path))
-            writer.write(json.dumps({"schema_version": 1, "request_id": str(uuid4()), "capability": capability,
+            compressed = zlib.compress(json.dumps({"schema_version": 1, "request_id": str(uuid4()), "capability": capability,
                 "operation": "service.invoke", "action": "query", "role": SYSTEM_CAPABILITY_ROLE,
-                "arguments": {"service": service, "operation": "query", "arguments": {"value": "actual-result"}}}).encode() + b"\n")
+                "arguments": {"service": service, "operation": "query", "arguments": {"value": "actual-result"}}}).encode())
+            writer.write(_BROKER_FRAME_PREFIX + str(len(compressed)).encode("ascii") + b"\n" + compressed)
             await writer.drain()
-            result = json.loads(await reader.readline())
+            result = json.loads(await reader.read())
             writer.close()
             await writer.wait_closed()
             return result

@@ -27,7 +27,7 @@ def test_compiled_generation_commits_latest_host_times(database, tmp_path, monke
         compiled = build_runtime_generation_snapshot(
             entry, desired_config_row=config,
             policy_row=dict(policy, project_generation=entry.committed_generation + 1),
-            generation=entry.committed_generation + 1, core_catalog=host.core_catalog,
+            generation=entry.committed_generation + 1, 
         )
         _save(host, project, ["09:30", "18:00"], expected=entry.project_schedule)
         assert compiled.execution_metadata["schedule"]["times"] == ["08:00"]

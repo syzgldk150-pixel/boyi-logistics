@@ -1,109 +1,37 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
 import uuid
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
-from agent.automation_plugins.management import (
-    AutomationPluginManagementService,
-    MigrationPreparationPersistedError,
-)
-from agent.automation_plugins.management_api import (
-    create_automation_plugin_management_router,
-)
+from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.management import AutomationPluginManagementService
 from agent.automation_plugins.models import (
-    AutomationProjectConfigRecord,
-    PluginProjectState,
     PluginRuntimeModel,
-    RuntimeReconcileState,
 )
 from agent.orchestration.models import Actor, ActorType
-from shared.orchestration_repository_support import IdempotencyConflict
 
 from tests.automation_plugin_management_api_support import (
     _console_actor,
-    _entry,
     _Catalog,
     _ContributionRegistry,
     _ProjectionCatalog,
     _committed_service_entry,
     _projection_service,
-    _ApiService,
-    _api_client,
-    _configuration_request_payload,
-    _service_v2_install_intent,
 )
 
 
-def test_worker_pair_dto_rejects_private_identity_material() -> None:
-    service = _ApiService()
-    client = _api_client(service)
-    public_key = base64.b64encode(b"p" * 32).decode("ascii")
-    payload = {
-        "device_id": "windows-season-1",
-        "display_name": "Season desktop",
-        "platform": "windows",
-        "agent_version": "1.0.0",
-        "identity_json": {
-            "device_key_id": "device-key-1",
-            "ed25519_public_key_base64": public_key,
-            "tls_client_certificate_sha256": "a" * 64,
-        },
-        "capabilities_json": {"interactive": True},
-        "request_id": str(uuid.uuid4()),
-    }
-    accepted = client.post("/internal/v1/automation/workers/pair", json=payload)
-    assert accepted.status_code == 200
-    assert service.calls[-1][0] == "pair"
-
-    payload["identity_json"]["ed25519_private_key_base64"] = public_key
-    rejected = client.post("/internal/v1/automation/workers/pair", json=payload)
-    assert rejected.status_code == 422
-    assert public_key not in rejected.text
-    assert len([item for item in service.calls if item[0] == "pair"]) == 1
-
-
-def test_management_identity_and_worker_projection_are_fail_closed() -> None:
-    workers = SimpleNamespace(
-        list_worker_devices=lambda: (
-            {
-                "device_id": "worker-1",
-                "display_name": "Dispatch desktop",
-                "platform": "windows",
-                "service_state": "ONLINE",
-                "interactive_session_state": "UNLOCKED",
-                "last_seen_at": datetime(2026, 8, 15, tzinfo=timezone.utc),
-                "identity_json": {"device_key_id": "must-not-leak"},
-                "paired_public_key_fingerprint": "f" * 64,
-                "capabilities_json": {"interactive": True},
-            },
-        )
-    )
+def test_management_identity_is_fail_closed() -> None:
     service = AutomationPluginManagementService(
         catalog=_Catalog(),  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=workers,
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
     )
-    projection = service.worker_projection(actor=_console_actor(super_admin=False))
-    serialized = repr(projection)
-    assert projection["workers"][0]["online"] is True
-    assert "identity_json" not in serialized
-    assert "fingerprint" not in serialized
-    assert "capabilities" not in serialized
-
     forged = Actor(
         actor_type=ActorType.CONSOLE_ADMIN,
         actor_id="forged",
@@ -115,11 +43,11 @@ def test_management_identity_and_worker_projection_are_fail_closed() -> None:
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
 
     with pytest.raises(PluginConflictError) as error:
-        service.install(
+        service.install_service_v2(
             b"package",
-            instance_name="blocked",
             request_id=str(uuid.uuid4()),
             transport_package_sha256="0" * 64,
+            raw_intent='{"instance_name":"blocked","permissions_confirmed":true}',
             actor=_console_actor(super_admin=False),
         )
     assert error.value.code == "PLUGIN_MANAGEMENT_FORBIDDEN"
@@ -337,7 +265,6 @@ def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> No
         ),
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -368,7 +295,6 @@ def test_catalog_service_v2_projection_states_are_closed_and_fail_closed() -> No
         ),
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -417,7 +343,6 @@ def test_catalog_projection_uses_only_enabled_managed_contributions() -> None:
             ),
             lifecycle=SimpleNamespace(),
             configuration=SimpleNamespace(),
-            worker_repository=SimpleNamespace(),
             target_service=SimpleNamespace(),
             package_repository=SimpleNamespace(),
             storage=SimpleNamespace(),
@@ -544,7 +469,6 @@ def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:
         catalog=_Catalog(),  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -577,7 +501,6 @@ def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:
         catalog=_Catalog(),  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),

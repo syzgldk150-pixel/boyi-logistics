@@ -36,7 +36,7 @@ def test_batch_generation_listing_matches_individual_rows(database, tmp_path, mo
             host.management.save_configuration(
                 project, config={}, account_bindings={}, resource_bindings={},
                 enabled_entrypoints=("run",) if enabled else (),
-                schedule={"kind": "none", "times": [], "enabled": False}, device_id=None,
+                schedule={"kind": "none", "times": [], "enabled": False}, 
                 request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version,
                 actor=ACTOR,
             )
@@ -79,7 +79,7 @@ def test_batch_generation_listing_matches_individual_rows(database, tmp_path, mo
         host.management.save_configuration(
             project, config={}, account_bindings={}, resource_bindings={},
             enabled_entrypoints=("run",),
-            schedule={"kind": "none", "times": [], "enabled": False}, device_id=None,
+            schedule={"kind": "none", "times": [], "enabled": False}, 
             request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version,
             actor=ACTOR,
         )

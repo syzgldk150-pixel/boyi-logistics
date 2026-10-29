@@ -7,13 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.tool_executor import (
-    TRUSTED_SCHEDULER_CONTEXT_ENV,
-    _redact_execution_capability,
-    build_trusted_scheduler_context,
-    build_tool_subprocess_environment,
-    trusted_scheduler_context,
-)
+from agent.tool_executor import _redact_execution_capability
 from agent.execution_boundary import execution_capability_scope
 from shared.service_identity import (
     ConsoleIdentityError,
@@ -137,110 +131,6 @@ def test_console_signature_expires() -> None:
             now=1_800_000_031,
         )
     assert expired.value.code == "CONSOLE_SIGNATURE_EXPIRED"
-
-
-def test_tool_subprocess_environment_strips_management_secrets_only() -> None:
-    source = {
-        "AGENT_INTERNAL_API_TOKEN": "management-token",
-        "CONSOLE_AGENT_SIGNING_SECRET": "signing-secret",
-        "DOCFLOW_SESSION_SECRET": "cookie-secret",
-        "DOCFLOW_AGENT_WEBHOOK_TOKEN": "webhook-secret",
-        "AGENT_WEBHOOK_TOKEN": "webhook-secret-2",
-        "FEISHU_EVENT_VERIFICATION_TOKEN": "verification-secret",
-        "FEISHU_VERIFICATION_TOKEN": "verification-secret-2",
-        "DOCFLOW_BASIC_AUTH_PASS": "basic-password",
-        "DOCFLOW_BASIC_AUTH_USER": "basic-user",
-        "DOCFLOW_ADMIN_PASSWORD": "bootstrap-password",
-        "DOCFLOW_ADMIN_USERNAME": "bootstrap-user",
-        "FEISHU_APP_ID": "business-app-id",
-        "AGENT_DB_HOST": "database-host",
-        "PYTHONPATH": "existing-path",
-        TRUSTED_SCHEDULER_CONTEXT_ENV: "operator-forged-context",
-    }
-    with patch.dict("os.environ", source, clear=True):
-        environment = build_tool_subprocess_environment("execution-only")
-
-    for name in (
-        "AGENT_INTERNAL_API_TOKEN",
-        "CONSOLE_AGENT_SIGNING_SECRET",
-        "DOCFLOW_SESSION_SECRET",
-        "DOCFLOW_AGENT_WEBHOOK_TOKEN",
-        "AGENT_WEBHOOK_TOKEN",
-        "FEISHU_EVENT_VERIFICATION_TOKEN",
-        "FEISHU_VERIFICATION_TOKEN",
-        "DOCFLOW_BASIC_AUTH_PASS",
-        "DOCFLOW_BASIC_AUTH_USER",
-        "DOCFLOW_ADMIN_PASSWORD",
-        "DOCFLOW_ADMIN_USERNAME",
-    ):
-        assert name not in environment
-    assert environment["AGENT_EXECUTION_CAPABILITY"] == "execution-only"
-    assert environment["PYTHON_DOTENV_DISABLED"] == "1"
-    assert environment["FEISHU_APP_ID"] == "business-app-id"
-    assert environment["AGENT_DB_HOST"] == "database-host"
-    assert TRUSTED_SCHEDULER_CONTEXT_ENV not in environment
-
-
-def test_validated_scheduler_context_overwrites_parent_environment_and_is_read_only() -> None:
-    context = build_trusted_scheduler_context(
-        "r7_arrival_checkin",
-        {
-            "source": "scheduler",
-            "actor": {
-                "actor_type": "scheduler",
-                "actor_id": "r7_arrival_checkin_1430",
-                "roles": ["system"],
-            },
-            "task_id": "r7_arrival_checkin_1430",
-            "configuration_version": 3,
-            "scheduled_for": "2026-08-14T06:30:00Z",
-            "cron_expression": "30 14 * * *",
-        },
-    )
-    assert context is not None
-    with patch.dict(
-        "os.environ",
-        {TRUSTED_SCHEDULER_CONTEXT_ENV: "operator-forged-context"},
-        clear=True,
-    ):
-        child_environment = build_tool_subprocess_environment(
-            "execution-only",
-            trusted_context=context,
-        )
-
-    assert child_environment[TRUSTED_SCHEDULER_CONTEXT_ENV] != "operator-forged-context"
-    with patch.dict("os.environ", child_environment, clear=True):
-        child_context = trusted_scheduler_context()
-
-    assert child_context is not None
-    assert child_context["task_id"] == "r7_arrival_checkin_1430"
-    assert child_context["configuration_version"] == 3
-    with pytest.raises(TypeError):
-        child_context["task_id"] = "forged"
-
-
-@pytest.mark.parametrize(
-    "raw",
-    (
-        "not-json",
-        json.dumps({"task_id": "r7_arrival_checkin_0900"}),
-        json.dumps(
-            {
-                "schema_version": 1,
-                "source": "scheduler",
-                "actor_type": "scheduler",
-                "actor_id": "r7_arrival_checkin_0900",
-                "task_id": "r7_arrival_checkin_0900",
-                "configuration_version": 1,
-                "scheduled_for": "2026-08-14T09:00:00",
-                "cron_expression": "0 9 * * *",
-            }
-        ),
-    ),
-)
-def test_child_accessor_rejects_malformed_or_naive_context(raw: str) -> None:
-    with patch.dict("os.environ", {TRUSTED_SCHEDULER_CONTEXT_ENV: raw}, clear=True):
-        assert trusted_scheduler_context() is None
 
 
 def test_execution_capability_is_redacted_with_or_without_a_field_name() -> None:

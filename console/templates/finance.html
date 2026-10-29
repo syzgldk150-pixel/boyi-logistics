@@ -437,24 +437,6 @@
   </section>
 
   <section id="finance-panel-sync" class="finance-tab-panel" role="tabpanel" aria-labelledby="finance-tab-sync" tabindex="0" hidden data-finance-panel="sync">
-    <div class="finance-sync-actions">
-      <form class="finance-panel finance-sync-form" data-finance-sync-form>
-        <div class="finance-panel-head"><div><h2>手动同步</h2><p>按顶部所选来源定位采集器，同步该采集器已配置的全部数据源，默认重扫最近 7 天。账号在“数据源管理”中设置。</p></div></div>
-        <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>目标日期（可选）</span><input type="date" name="target_date" max="{{ today }}"></label>
-          <label class="finance-field"><span>重扫天数</span><input type="number" name="rescan_days" min="1" max="31" value="7"></label>
-        </div>
-        <button class="primary-btn" type="submit"><i data-feather="download-cloud" aria-hidden="true"></i><span>开始同步</span></button>
-      </form>
-      <form class="finance-panel finance-sync-form" data-finance-backfill-form>
-        <div class="finance-panel-head"><div><h2>历史回溯</h2><p>按顶部所选来源定位采集器，按日期回溯该采集器已配置的全部数据源。账号在“数据源管理”中设置。</p></div></div>
-        <div class="finance-filter-grid finance-filter-grid--sync">
-          <label class="finance-field"><span>开始日期</span><input type="date" name="start_date" required max="{{ today }}"></label>
-          <label class="finance-field"><span>结束日期</span><input type="date" name="end_date" required max="{{ today }}"></label>
-        </div>
-        <button class="ghost-btn finance-backfill-btn" type="submit"><i data-feather="archive" aria-hidden="true"></i><span>创建回溯</span></button>
-      </form>
-    </div>
     <section class="finance-panel finance-table-panel" aria-labelledby="finance-sync-title">
       <div class="finance-panel-head">
         <div><h2 id="finance-sync-title">同步记录</h2><p data-finance-sync-count>尚未查询。</p></div>
@@ -464,7 +446,7 @@
       <div class="finance-table-wrap">
         <table class="finance-table finance-sync-table">
           <caption class="visually-hidden">财务同步批次记录</caption>
-          <thead><tr><th scope="col">批次</th><th scope="col">触发方式</th><th scope="col">日期范围</th><th scope="col">状态</th><th scope="col">运行结果</th><th scope="col">最早日期确认</th><th scope="col">发起人</th><th scope="col">开始/结束</th><th scope="col">错误</th><th scope="col">操作</th></tr></thead>
+          <thead><tr><th scope="col">批次</th><th scope="col">触发方式</th><th scope="col">日期范围</th><th scope="col">状态</th><th scope="col">运行结果</th><th scope="col">最早日期确认</th><th scope="col">发起人</th><th scope="col">开始/结束</th><th scope="col">错误</th></tr></thead>
           <tbody data-finance-sync-body></tbody>
         </table>
       </div>

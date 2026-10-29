@@ -13,7 +13,6 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
 from typing import Any, Awaitable
 
 from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES
@@ -24,86 +23,40 @@ from agent.automation_plugins.catalog import (
     project_contract_fragment,
 )
 from agent.automation_plugins.catalog_read_scope import catalog_read_transaction, catalog_row_cache
-from agent.automation_plugins.code_owned_fields import (
-    SCAN_PHASE_FORMAL,
-    SCAN_PHASE_PREVIEW,
-    SELECTION_PHASE_FORMAL,
-    SELECTION_PHASE_PREVIEW,
-    resolve_scan_execution_phase,
-    resolve_selection_execution_phase,
-)
 from agent.automation_plugins.service_v2_contract import (
     SELECTION_ARGUMENT_FIELDS,
+    SELECTION_PHASE_FORMAL,
+    SELECTION_PHASE_PREVIEW,
     resolve_service_v2_selection_phase,
 )
 from agent.orchestration.automation_project_service_v2 import (
-    normalize_contribution_id,
-    require_active_service_v2_dispatch,
-    require_service_v2_policy_mode,
-    resolve_invocation_contract_id,
-    validate_service_v2_event_context,
     validate_service_v2_compiled_target,
-)
-from agent.orchestration.automation_project_policy_plan import (
-    plan_from_mapping as _plan_from_mapping,
 )
 from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import (
     Actor,
     ActorType,
-    Command,
-    EntityRef,
     OperationType,
     OrchestrationError,
     Plan,
     RiskLevel,
-    new_id,
-)
-from agent.orchestration.automation_run_supersession import (
-    supersede_safely_suspended_runs,
 )
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
 from agent.orchestration.automation_project_policy_support import (
     policy_list_automation_ids, scoped_policy_projection, _automation_id,
-    _bootstrap_automation_ids,
-    _bootstrap_project_is_stable,
-    _comment,
     _datetime_text,
-    _entrypoint,
-    _idempotency_key,
-    _locked_command_replay,
     _pending_set_hash,
     _policy_summary,
     _positive_int,
     _project_denied,
-    _request_id,
     _selection_contribution_id,
-    _selection_preview_expectation,
-    _trusted_context,
-    _validate_bootstrap_schedule_set,
 )
 from agent.orchestration.scan_preview_binding import (
-    SCAN_PREVIEW_CONTEXT_KEY,
-    ScanPreviewExpectation,
-    consume_scan_preview,
-    ensure_scan_preview_active,
     is_scan_preview_project,
-    normalize_preview_run_id,
-    require_scan_formal_governance,
-    resolve_scan_preview,
-    restore_scan_preview_replay,
-    scan_preview_public_projection,
 )
 from agent.orchestration.selection_preview_binding import (
-    SELECTION_PREVIEW_CONTEXT_KEY,
-    consume_selection_preview,
-    ensure_selection_preview_active,
     is_selection_preview_project,
-    resolve_selection_preview,
-    selection_confirmation_arguments,
     selection_preview_contribution,
-    selection_preview_public_projection,
-    restore_selection_preview_replay,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -111,46 +64,17 @@ from shared.automation_project_authorization import (
     AutomationProjectInvocation,
     AutomationProjectPolicyMode,
     CompiledAutomationProjectContract,
-    OMIT_DYNAMIC_ARGUMENT,
-    canonical_sha256,
     compile_automation_project_contract,
 )
 from shared.automation_project_manifest import AutomationProjectInstanceDefinition
 from shared.automation_project_policy_repository import (
-    AUTOMATION_PROJECT_BOOTSTRAP_ACTOR_ID as _PROJECT_BOOTSTRAP_ACTOR_ID,
-    AUTOMATION_PROJECT_BOOTSTRAP_ACTOR_ROLE as _PROJECT_BOOTSTRAP_ACTOR_ROLE,
-    AUTOMATION_PROJECT_BOOTSTRAP_COMPLETED_BY as _PROJECT_BOOTSTRAP_COMPLETED_BY,
-    AUTOMATION_PROJECT_BOOTSTRAP_EVENT_COMMENT as _PROJECT_BOOTSTRAP_EVENT_COMMENT,
-    AUTOMATION_PROJECT_BOOTSTRAP_POLICY_COMMENT as _PROJECT_BOOTSTRAP_POLICY_COMMENT,
-    AUTOMATION_PROJECT_BOOTSTRAP_REASON as _PROJECT_BOOTSTRAP_REASON,
-    AutomationProjectBootstrapContractError,
     SUPER_ADMIN_PROJECT_POLICY_REASON,
-    automation_project_bootstrap_project_set_sha256 as _bootstrap_project_set_sha256,
-    automation_project_bootstrap_release_sha as _bootstrap_release_sha,
-    automation_project_bootstrap_source_snapshot_sha256,
-    automation_project_policy_bootstrap_request_id,
-    derive_automation_project_bootstrap_source_snapshot,
-    validate_automation_project_configuration_evidence,
-    validate_automation_project_bootstrap_policy_event,
-    validate_existing_automation_project_bootstrap as _validate_existing_bootstrap,
-    validate_initial_automation_project_bootstrap_policy,
-    validate_unconfigured_automation_project_policy,
 )
-from shared.orchestration_repository import ConcurrentUpdateError, InvalidStateError
-from shared.orchestration_repository_support import IdempotencyConflict
-from shared.redaction import redact_text
 
 
 logger = logging.getLogger(__name__)
 
 
-_USER_POLICY_MODES = frozenset(
-    {
-        AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value,
-        AutomationProjectPolicyMode.REQUIRE_EACH_RUN.value,
-    }
-)
-_SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH = 36
 _SOURCE_LABELS = {
     "console": "后台",
     "harness": "Harness",
@@ -172,26 +96,20 @@ class AutomationProjectPolicyService:
     def __init__(
         self,
         repository: Any,
-        core_catalog: Any,
         plugin_catalog: PluginCatalog,
         *,
         command_gateway: CommandGateway | None = None,
         wake_runner: Callable[[str], None] | None = None,
         dynamic_resolver: (Callable[[str, str, Mapping[str, Any]], Any] | None) = None,
-        unknown_write_recovery: (
-            Callable[[str, str], Mapping[str, Any] | None] | None
-        ) = None,
         release_hold_provider: Callable[[], bool] | None = None,
         contribution_registry: Any | None = None,
         direct_invocations: Any | None = None,
     ) -> None:
         self._repository = repository
-        self._core_catalog = core_catalog
         self._plugin_catalog = plugin_catalog
         self._command_gateway = command_gateway
         self._wake_runner = wake_runner
         self._dynamic_resolver = dynamic_resolver
-        self._unknown_write_recovery = unknown_write_recovery
         self._release_hold_provider = release_hold_provider
         self._contribution_registry = contribution_registry
         self.direct_invocations = direct_invocations
@@ -205,312 +123,6 @@ class AutomationProjectPolicyService:
     def list_policies(self, *, automation_ids: Sequence[str] | None = None) -> dict[str, Any]:
         selected = policy_list_automation_ids(automation_ids) if automation_ids is not None else None
         return scoped_policy_projection(self._repository, self._plugin_catalog, selected, self._describe_entry)
-
-    def get_policy_projection(self, automation_id: str) -> dict[str, Any]:
-        safe_id = _automation_id(automation_id)
-        entry = self._plugin_catalog.get(safe_id)
-        if entry is None:
-            raise OrchestrationError(
-                "AUTOMATION_PROJECT_NOT_FOUND",
-                "Automation project is not installed",
-            )
-        with self._repository.unit_of_work() as uow:
-            policy = uow.automation_projects.get_policy(safe_id)
-        return self._describe_entry(entry, policy)
-
-    def bootstrap_legacy_project_policies(
-        self,
-        *,
-        expected_automation_ids: Sequence[str],
-        release_sha: str,
-    ) -> dict[str, Any]:
-        """Transfer only proven legacy schedule grants into project policy.
-
-        The first-party configuration bootstrap has already retired the old
-        per-task EXACT rows before generations commit.  Authorization is
-        therefore derived only from the immutable original grant plus the
-        exact migration-owned retirement event associated with the committed
-        project configuration.  The whole 018 marker is one transaction.
-        """
-        self._require_release_held()
-        automation_ids = _bootstrap_automation_ids(expected_automation_ids)
-        try:
-            safe_release_sha = _bootstrap_release_sha(release_sha)
-        except AutomationProjectBootstrapContractError as exc:
-            raise OrchestrationError(
-                exc.code,
-                "Automation project bootstrap requires a full release digest",
-            ) from exc
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        bootstrap_actor = Actor(
-            actor_type=ActorType.SYSTEM,
-            actor_id=_PROJECT_BOOTSTRAP_ACTOR_ID,
-            roles=("system",),
-            display_name="Automation project bootstrap 018",
-            authenticated_by="release_hold",
-        )
-        created_items: list[dict[str, Any]] = []
-        retired_exact_count = 0
-        try:
-            with self._repository.unit_of_work() as uow:
-                marker = uow.automation_projects.get_bootstrap_marker_018(
-                    for_update=True
-                )
-                existing_items = uow.automation_projects.list_bootstrap_items_018(
-                    for_update=True
-                )
-                if marker is not None:
-                    result = _validate_existing_bootstrap(
-                        marker,
-                        existing_items,
-                        expected_automation_ids=automation_ids,
-                    )
-                    uow.commit()
-                    return result
-                if existing_items:
-                    raise OrchestrationError(
-                        "PROJECT_POLICY_BOOTSTRAP_PARTIAL",
-                        "Automation project bootstrap is partially persisted",
-                    )
-                entries: dict[str, PluginCatalogEntry] = {}
-                try:
-                    for automation_id in automation_ids:
-                        entry = self._plugin_catalog.require(automation_id)
-                        if entry.automation_id != automation_id:
-                            raise ValueError("catalog identity mismatch")
-                        entries[automation_id] = entry
-                except Exception as exc:
-                    raise OrchestrationError(
-                        "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
-                        "Automation project bootstrap release scope is unavailable",
-                    ) from exc
-                for automation_id in automation_ids:
-                    entry = entries[automation_id]
-                    project = uow.automation_plugins.get_project(
-                        automation_id,
-                        for_update=True,
-                    )
-                    if not _bootstrap_project_is_stable(project):
-                        raise OrchestrationError(
-                            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-                            "Automation project generation is not a stable migration project",
-                        )
-                    contract, config = self._lock_and_compile_contract(
-                        uow,
-                        entry,
-                        require_enabled=True,
-                        lock_rows=True,
-                    )
-                    rows = uow.automation_projects.list_configuration_rows(
-                        automation_id,
-                        for_update=True,
-                    )
-                    legacy_rows = (
-                        uow.automation_projects.list_automation_identity_backup_rows_018(
-                            tuple(str(row.get("id") or "") for row in rows),
-                            for_update=True,
-                        )
-                    )
-                    _validate_bootstrap_schedule_set(entry, contract, rows)
-                    policy = uow.automation_projects.get_policy(
-                        automation_id,
-                        for_update=True,
-                    )
-                    validate_unconfigured_automation_project_policy(
-                        policy,
-                        automation_generation=contract.automation_generation,
-                        project_configuration_version=(
-                            contract.project_configuration_version
-                        ),
-                    )
-                    policy_events = uow.automation_projects.list_policy_events(
-                        automation_id,
-                        for_update=True,
-                    )
-                    configuration_evidence = (
-                        uow.automation_projects.list_configuration_event_evidence(
-                            automation_id,
-                            project_configuration_version=(
-                                contract.project_configuration_version
-                            ),
-                            for_update=True,
-                        )
-                    )
-                    configuration_evidence_binding = (
-                        validate_automation_project_configuration_evidence(
-                        automation_id=automation_id,
-                        release_sha=safe_release_sha,
-                        config=config,
-                        automation_generation=contract.automation_generation,
-                        project_configuration_version=(
-                            contract.project_configuration_version
-                        ),
-                        scheduled_task_count=len(rows),
-                        policy_events=policy_events,
-                        evidence_rows=configuration_evidence,
-                    )
-                    )
-                    configuration_request_id = configuration_evidence_binding[
-                        "request_id"
-                    ]
-                    scheduled_events = (
-                        uow.automation_projects.list_scheduled_policy_events(
-                            automation_id,
-                            for_update=True,
-                        )
-                    )
-                    (
-                        source_snapshot,
-                        legacy_authorized,
-                        project_retired_count,
-                    ) = derive_automation_project_bootstrap_source_snapshot(
-                            automation_id=automation_id,
-                            automation_generation=contract.automation_generation,
-                            project_configuration_version=(
-                                contract.project_configuration_version
-                            ),
-                            contract_hash=contract.contract_hash,
-                            configuration_request_id=configuration_request_id,
-                            configuration_event_metadata_sha256=(
-                                configuration_evidence_binding["metadata_sha256"]
-                            ),
-                            rows=rows,
-                            legacy_rows=legacy_rows,
-                            scheduled_events=scheduled_events,
-                    )
-                    retired_exact_count += project_retired_count
-                    initial_mode = (
-                        AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
-                        if rows and legacy_authorized
-                        else AutomationProjectPolicyMode.REQUIRE_EACH_RUN.value
-                    )
-                    source_set_sha256 = (
-                        automation_project_bootstrap_source_snapshot_sha256(
-                            source_snapshot
-                        )
-                    )
-                    project_request_id = (
-                        automation_project_policy_bootstrap_request_id(
-                            automation_id
-                        )
-                    )
-                    if uow.automation_projects.get_event_by_request(
-                        automation_id,
-                        project_request_id,
-                        for_update=True,
-                    ) is not None:
-                        raise OrchestrationError(
-                            "PROJECT_POLICY_BOOTSTRAP_PARTIAL",
-                            "Automation project bootstrap event exists without its marker",
-                        )
-                    correlation_id = project_request_id
-                    if initial_mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
-                        updated = uow.automation_projects.update_policy(
-                            automation_id,
-                            expected_version=int(policy["version"]),
-                            mode=initial_mode,
-                            contract_hash=contract.contract_hash,
-                            contract_snapshot=contract.snapshot,
-                            tool_contract_hash=contract.tool_contract_hash,
-                            plugin_contract_hash=contract.plugin_contract_hash,
-                            project_generation=contract.automation_generation,
-                            project_configuration_version=(
-                                contract.project_configuration_version
-                            ),
-                            actor_id=_PROJECT_BOOTSTRAP_ACTOR_ID,
-                            actor_role=_PROJECT_BOOTSTRAP_ACTOR_ROLE,
-                            actor_display_name=bootstrap_actor.display_name,
-                            comment=_PROJECT_BOOTSTRAP_POLICY_COMMENT,
-                        )
-                        event_contract_hash: str | None = contract.contract_hash
-                        event_contract_snapshot: Mapping[str, Any] | None = (
-                            contract.snapshot
-                        )
-                        event_tool_hash: str | None = contract.tool_contract_hash
-                        event_plugin_hash: str | None = contract.plugin_contract_hash
-                    else:
-                        updated = policy
-                        event_contract_hash = None
-                        event_contract_snapshot = None
-                        event_tool_hash = None
-                        event_plugin_hash = None
-                    bootstrap_event = uow.automation_projects.append_event(
-                        {
-                            "automation_id": automation_id,
-                            "request_id": project_request_id,
-                            "from_mode": policy.get("mode"),
-                            "to_mode": initial_mode,
-                            "contract_hash": event_contract_hash,
-                            "contract_snapshot_json": event_contract_snapshot,
-                            "tool_contract_hash": event_tool_hash,
-                            "plugin_contract_hash": event_plugin_hash,
-                            "project_generation": contract.automation_generation,
-                            "project_configuration_version": (
-                                contract.project_configuration_version
-                            ),
-                            "actor_id": _PROJECT_BOOTSTRAP_ACTOR_ID,
-                            "actor_role": _PROJECT_BOOTSTRAP_ACTOR_ROLE,
-                            "actor_display_name": bootstrap_actor.display_name,
-                            "reason": _PROJECT_BOOTSTRAP_REASON,
-                            "comment": _PROJECT_BOOTSTRAP_EVENT_COMMENT,
-                            "correlation_id": correlation_id,
-                            "occurred_at": now,
-                        }
-                    )
-                    item = uow.automation_projects.create_bootstrap_item_018(
-                        automation_id=automation_id,
-                        initial_mode=initial_mode,
-                        source_set_sha256=source_set_sha256,
-                        source_snapshot=source_snapshot,
-                        policy_version=int(updated["version"]),
-                    )
-                    validate_automation_project_bootstrap_policy_event(
-                        bootstrap_event,
-                        item=item,
-                    )
-                    validate_initial_automation_project_bootstrap_policy(
-                        updated,
-                        item=item,
-                        bootstrap_event=bootstrap_event,
-                    )
-                    created_items.append(dict(item))
-                project_set_sha256 = _bootstrap_project_set_sha256(
-                    safe_release_sha,
-                    created_items,
-                )
-                uow.automation_projects.create_bootstrap_marker_018(
-                    release_sha=safe_release_sha,
-                    project_set_sha256=project_set_sha256,
-                    completed_by=_PROJECT_BOOTSTRAP_COMPLETED_BY,
-                )
-                uow.commit()
-        except AutomationProjectBootstrapContractError as exc:
-            raise OrchestrationError(
-                exc.code,
-                "Automation project bootstrap evidence is inconsistent",
-            ) from exc
-        except ConcurrentUpdateError as exc:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_CONCURRENT_UPDATE",
-                "Automation project bootstrap changed concurrently",
-            ) from exc
-        legacy_count = sum(
-            1
-            for item in created_items
-            if item.get("initial_mode")
-            == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
-        )
-        return {
-            "status": "created",
-            "project_count": len(created_items),
-            "legacy_schedule_only": legacy_count,
-            "require_each_run": len(created_items) - legacy_count,
-            "retired_scheduled_exact": retired_exact_count,
-            "project_set_sha256": _bootstrap_project_set_sha256(
-                safe_release_sha,
-                created_items,
-            ),
-        }
 
     def ensure_default_full_auto_policies(self) -> dict[str, int]:
         """Make legacy/default policies durable full-auto without touching runtime.
@@ -615,186 +227,6 @@ class AutomationProjectPolicyService:
             uow.commit()
         return {"changed": changed}
 
-    def update_policy(
-        self,
-        automation_id: str,
-        *,
-        mode: str,
-        request_id: str,
-        comment: str,
-        expected_policy_version: int,
-        expected_project_configuration_version: int,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        self._require_release_active()
-        self._require_super_admin(actor)
-        safe_id = _automation_id(automation_id)
-        safe_mode = str(mode or "").strip().upper()
-        if safe_mode not in _USER_POLICY_MODES:
-            raise OrchestrationError(
-                "INVALID_APPROVAL_POLICY_MODE",
-                "Project policy must be full auto or require each run",
-            )
-        catalog_entry = self._plugin_catalog.require(safe_id)
-        require_service_v2_policy_mode(catalog_entry, safe_mode)
-        safe_request_id = _request_id(request_id)
-        safe_comment = _comment(comment)
-        expected_policy = _positive_int(
-            expected_policy_version,
-            "expected_policy_version",
-        )
-        expected_configuration = _positive_int(
-            expected_project_configuration_version,
-            "expected_project_configuration_version",
-        )
-        wake_run_ids: tuple[str, ...] = ()
-        correlation_id = new_id()
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        try:
-            with self._repository.unit_of_work() as uow:
-                project = uow.automation_plugins.get_project(safe_id, for_update=True)
-                if project is None:
-                    raise OrchestrationError(
-                        "AUTOMATION_PROJECT_NOT_FOUND",
-                        "Automation project is not installed",
-                    )
-                config = uow.automation_plugins.get_project_config(
-                    safe_id,
-                    for_update=True,
-                )
-                if config is None:
-                    raise OrchestrationError(
-                        "PROJECT_CONFIGURATION_MISSING",
-                        "Automation project configuration is not initialized",
-                    )
-                policy = uow.automation_projects.get_policy(
-                    safe_id,
-                    for_update=True,
-                )
-                if policy is None:
-                    raise OrchestrationError(
-                        "PROJECT_POLICY_NOT_INITIALIZED",
-                        "Automation project policy is not initialized",
-                    )
-                prior = uow.automation_projects.get_event_by_request(
-                    safe_id,
-                    safe_request_id,
-                    for_update=True,
-                )
-                if prior is not None:
-                    self._validate_policy_replay(
-                        prior,
-                        current=policy,
-                        mode=safe_mode,
-                        comment=safe_comment,
-                        actor=actor,
-                    )
-                    uow.commit()
-                    return self.get_policy_projection(safe_id)
-                if int(config.get("config_version") or 0) != expected_configuration:
-                    raise OrchestrationError(
-                        "PROJECT_CONFIGURATION_CHANGED",
-                        "Automation project configuration changed; refresh and retry",
-                    )
-                if int(policy.get("version") or 0) != expected_policy:
-                    raise OrchestrationError(
-                        "PROJECT_POLICY_CHANGED",
-                        "Automation project policy changed; refresh and retry",
-                    )
-                # Approval policy is durable administrator intent.  Changing it
-                # must not create or reconcile a runtime generation: runtime
-                # lineage is owned exclusively by project/plugin configuration.
-                project_generation = int(
-                    policy.get("project_generation")
-                    or project.get("target_generation")
-                    or project.get("committed_generation")
-                    or 1
-                )
-                contract_hash = None
-                contract_snapshot = None
-                tool_contract_hash = None
-                plugin_contract_hash = None
-                updated = uow.automation_projects.update_policy(
-                    safe_id,
-                    expected_version=expected_policy,
-                    mode=safe_mode,
-                    contract_hash=contract_hash,
-                    contract_snapshot=contract_snapshot,
-                    tool_contract_hash=tool_contract_hash,
-                    plugin_contract_hash=plugin_contract_hash,
-                    project_generation=project_generation,
-                    project_configuration_version=expected_configuration,
-                    actor_id=actor.actor_id,
-                    actor_role="super_admin",
-                    actor_display_name=actor.display_name or None,
-                    comment=safe_comment,
-                )
-                uow.automation_projects.append_event(
-                    {
-                        "automation_id": safe_id,
-                        "request_id": safe_request_id,
-                        "from_mode": policy.get("mode"),
-                        "to_mode": safe_mode,
-                        "contract_hash": contract_hash,
-                        "contract_snapshot_json": contract_snapshot,
-                        "tool_contract_hash": tool_contract_hash,
-                        "plugin_contract_hash": plugin_contract_hash,
-                        "project_generation": project_generation,
-                        "project_configuration_version": expected_configuration,
-                        "actor_id": actor.actor_id,
-                        "actor_role": "super_admin",
-                        "actor_display_name": actor.display_name or None,
-                        "reason": SUPER_ADMIN_PROJECT_POLICY_REASON,
-                        "comment": safe_comment,
-                        "correlation_id": correlation_id,
-                        "occurred_at": now,
-                    }
-                )
-                self._retire_legacy_schedule_policies(
-                    uow,
-                    automation_id=safe_id,
-                    rows=uow.automation_projects.list_configuration_rows(
-                        safe_id,
-                        for_update=True,
-                    ),
-                    actor=actor,
-                    request_id=safe_request_id,
-                    correlation_id=correlation_id,
-                    occurred_at=now,
-                )
-                self._append_policy_domain_event(
-                    uow,
-                    automation_id=safe_id,
-                    mode=safe_mode,
-                    version=int(updated["version"]),
-                    actor=actor,
-                    request_id=safe_request_id,
-                    correlation_id=correlation_id,
-                    occurred_at=now,
-                )
-                if self.direct_invocations is None:
-                    wake_run_ids = (
-                        uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
-                            safe_id,
-                            event_repository=uow.events,
-                        )
-                    )
-                uow.commit()
-        except ConcurrentUpdateError as exc:
-            raise OrchestrationError(
-                "PROJECT_POLICY_CHANGED",
-                "Automation project policy changed; refresh and retry",
-            ) from exc
-        except IdempotencyConflict as exc:
-            raise OrchestrationError(
-                "REQUEST_ID_REUSED",
-                "Request id was already used for a different project policy change",
-            ) from exc
-        for run_id in wake_run_ids:
-            if self._wake_runner is not None:
-                self._wake_runner(run_id)
-        return self.get_policy_projection(safe_id)
-
     def pending_approvals(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
         safe_id = _automation_id(automation_id)
         self._require_console_admin(actor)
@@ -807,167 +239,6 @@ class AutomationProjectPolicyService:
             rows = uow.automation_projects.list_pending_approvals(safe_id)
             projection = self._pending_projection(safe_id, rows, actor=actor)
         return projection
-
-    def decide_pending_approvals(
-        self,
-        automation_id: str,
-        *,
-        decision: str,
-        expected_pending_set_hash: str,
-        request_id: str,
-        comment: str,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        self._require_release_active()
-        self._require_super_admin(actor)
-        safe_id = _automation_id(automation_id)
-        normalized_decision = str(decision or "").strip().upper()
-        if normalized_decision not in {"APPROVED", "REJECTED"}:
-            raise OrchestrationError(
-                "INVALID_APPROVAL_DECISION",
-                "Project approval decision must be approved or rejected",
-            )
-        safe_expected_hash = str(expected_pending_set_hash or "").strip().lower()
-        if len(safe_expected_hash) != 64 or any(
-            character not in "0123456789abcdef" for character in safe_expected_hash
-        ):
-            raise OrchestrationError(
-                "EXPECTED_PENDING_SET_HASH_REQUIRED",
-                "A valid pending set hash is required",
-            )
-        safe_request_id = _request_id(request_id)
-        safe_comment = _comment(comment)
-        decided_run_ids: list[str] = []
-        try:
-            with self._repository.unit_of_work() as uow:
-                project = uow.automation_plugins.get_project(safe_id, for_update=True)
-                if project is None:
-                    raise OrchestrationError(
-                        "AUTOMATION_PROJECT_NOT_FOUND",
-                        "Automation project is not installed",
-                    )
-                replay = uow.automation_projects.get_batch_by_request(
-                    safe_id,
-                    safe_request_id,
-                    for_update=True,
-                )
-                if replay is not None:
-                    result = self._validate_batch_replay(
-                        replay,
-                        decision=normalized_decision,
-                        expected_hash=safe_expected_hash,
-                        actor=actor,
-                        comment=safe_comment,
-                    )
-                    uow.commit()
-                    return result
-                # Lock every waiting Run before locking approval rows, matching
-                # individual decision and execution-consumption lock order.
-                uow.automation_projects.lock_waiting_approval_runs(safe_id)
-                uow.automation_projects.expire_pending_approvals(safe_id)
-                rows = uow.automation_projects.list_pending_approvals(
-                    safe_id,
-                    for_update=True,
-                )
-                current_hash = _pending_set_hash(rows)
-                if current_hash != safe_expected_hash:
-                    latest = self._pending_projection(safe_id, rows, actor=actor)
-                    raise OrchestrationError(
-                        "PENDING_SET_CHANGED",
-                        "Pending approval set changed; refresh and retry",
-                        details={"pending": latest},
-                    )
-                self._validate_pending_rows(
-                    uow,
-                    project=project,
-                    automation_id=safe_id,
-                    rows=rows,
-                    approving=normalized_decision == "APPROVED",
-                )
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-                for row in rows:
-                    decided = uow.approvals.record_decision(
-                        {
-                            "decision_id": new_id(),
-                            "approval_id": row["approval_id"],
-                            "actor_type": actor.actor_type.value,
-                            "actor_id": actor.actor_id,
-                            "actor_roles": list(actor.roles),
-                            "decision": normalized_decision,
-                            "reason": safe_comment,
-                            "decided_at": now,
-                        },
-                        expected_plan_hash=str(row["plan_hash"]),
-                    )
-                    if decided.get("_decision_error"):
-                        raise InvalidStateError(
-                            "a pending approval expired during the grouped decision"
-                        )
-                    uow.runs.make_waiting_approval_runnable(str(row["run_id"]))
-                    self._append_approval_domain_event(
-                        uow,
-                        row=row,
-                        actor=actor,
-                        decision=normalized_decision,
-                        comment=safe_comment,
-                        occurred_at=now,
-                    )
-                    decided_run_ids.append(str(row["run_id"]))
-                remaining = uow.automation_projects.list_pending_approvals(
-                    safe_id,
-                    for_update=True,
-                )
-                result = {
-                    **self._pending_projection(safe_id, remaining, actor=actor),
-                    "decision": normalized_decision,
-                    "decided_count": len(rows),
-                    "run_receipts": [
-                        {
-                            "automation_id": safe_id,
-                            "work_item_id": str(row["work_item_id"]),
-                            "run_id": str(row["run_id"]),
-                            # The Run is still locked in WAITING_APPROVAL while the
-                            # decision commits; runner wake happens after this UOW.
-                            # This is the last status the receipt can attest.
-                            "status": str(
-                                row.get("run_status") or "WAITING_APPROVAL"
-                            ).upper(),
-                        }
-                        for row in rows
-                    ],
-                }
-                uow.automation_projects.create_batch(
-                    {
-                        "batch_id": new_id(),
-                        "automation_id": safe_id,
-                        "request_id": safe_request_id,
-                        "decision": normalized_decision,
-                        "expected_pending_set_hash": safe_expected_hash,
-                        "decided_pending_set_hash": current_hash,
-                        "decided_count": len(rows),
-                        "actor_id": actor.actor_id,
-                        "actor_role": "super_admin",
-                        "comment": safe_comment,
-                        "result_json": result,
-                    }
-                )
-                uow.commit()
-        except InvalidStateError as exc:
-            latest = self.pending_approvals(safe_id, actor=actor)
-            raise OrchestrationError(
-                "PENDING_SET_CHANGED",
-                "A pending approval changed during the grouped decision",
-                details={"pending": latest},
-            ) from exc
-        except IdempotencyConflict as exc:
-            raise OrchestrationError(
-                "REQUEST_ID_REUSED",
-                "Request id was already used for a different grouped decision",
-            ) from exc
-        for run_id in sorted(set(decided_run_ids)):
-            if self._wake_runner is not None:
-                self._wake_runner(run_id)
-        return result
 
     def get_scan_preview_projection(self, automation_id: str, *, preview_invocation_id: str) -> dict[str, Any]:
         from agent.orchestration.direct_invocation_previews import project_preview
@@ -1022,16 +293,6 @@ class AutomationProjectPolicyService:
             request_id=request_id, actor=actor, preview_invocation_id=preview_invocation_id,
             selected_bill_codes=selected_bill_codes,
             contribution_id=_selection_contribution_id(entry, AutomationEntrypoint.CONSOLE))
-
-    async def confirm_selection_preview_and_wait(self, automation_id: str, *, preview_invocation_id: str, selected_bill_codes: Sequence[str], entrypoint: AutomationEntrypoint | str, request_id: str, actor: Actor, trusted_context=None, idempotency_key=None, expected_automation_generation=None, expected_project_configuration_version=None, timeout_seconds: float = 1800.0, on_accepted=None) -> dict[str, Any]:
-        entry = self._load_catalog_entry(automation_id)
-        return await self.invoke_trusted_and_wait(automation_id, entrypoint=entrypoint,
-            request_id=request_id, actor=actor, trusted_context=trusted_context,
-            preview_invocation_id=preview_invocation_id, selected_bill_codes=selected_bill_codes,
-            contribution_id=_selection_contribution_id(entry, _entrypoint(entrypoint)),
-            idempotency_key=idempotency_key, expected_automation_generation=expected_automation_generation,
-            expected_project_configuration_version=expected_project_configuration_version,
-            timeout_seconds=timeout_seconds, on_accepted=on_accepted)
 
     def invoke_console(
         self,
@@ -1197,39 +458,19 @@ class AutomationProjectPolicyService:
         # REQUIRE_EACH_RUN -> PROJECT_FULL_AUTO change wake a waiting Run only
         # to fail it as stale before the current policy can take effect.
         # Contract/generation/configuration matching below remains strict.
-        scan_phase: str | None = None
+        if getattr(entry, "runtime_model", None) != "SERVICE_V2":
+            return _project_denied(
+                "PROJECT_RUNTIME_MODEL_INVALID",
+                "Only current plugin projects can be evaluated",
+            )
         selection_phase: str | None = None
-        is_service_v2_entry = (
-            getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
-        )
         selection_invocation = False
         if is_selection_preview_project(entry):
-            if is_service_v2_entry:
-                declaration = selection_preview_contribution(entry, source)
-                selection_invocation = bool(
-                    declaration is not None
-                    and declaration.get("id") == invocation.contract_id
-                )
-            else:
-                selection_invocation = True
-        if is_scan_preview_project(entry):
-            if len(plan.steps) != 1:
-                return _project_denied(
-                    "SCAN_EXECUTION_PHASE_INVALID",
-                    "Scan execution requires one exact governed step",
-                )
-            try:
-                scan_phase = resolve_scan_execution_phase(
-                    automation_id=str(getattr(entry, "automation_id", "") or ""),
-                    plugin_id=str(getattr(entry, "plugin_id", "") or ""),
-                    trust_source=str(getattr(entry, "trust_source", "") or ""),
-                    arguments=plan.steps[0].arguments,
-                )
-            except ValueError:
-                return _project_denied(
-                    "SCAN_EXECUTION_PHASE_INVALID",
-                    "Scan execution phase is incomplete or ambiguous",
-                )
+            declaration = selection_preview_contribution(entry, source)
+            selection_invocation = bool(
+                declaration is not None
+                and declaration.get("id") == invocation.contract_id
+            )
         if selection_invocation:
             if len(plan.steps) != 1:
                 return _project_denied(
@@ -1237,46 +478,17 @@ class AutomationProjectPolicyService:
                     "Selection execution requires one exact governed step",
                 )
             try:
-                if is_service_v2_entry:
-                    selection_phase = resolve_service_v2_selection_phase(
-                        plan.steps[0].arguments
-                    )
-                    if execution_context.get("selection_phase") != selection_phase:
-                        raise ValueError("selection phase context drifted")
-                else:
-                    selection_phase = resolve_selection_execution_phase(
-                        automation_id=str(getattr(entry, "automation_id", "") or ""),
-                        plugin_id=str(getattr(entry, "plugin_id", "") or ""),
-                        trust_source=str(getattr(entry, "trust_source", "") or ""),
-                        arguments=plan.steps[0].arguments,
-                    )
+                selection_phase = resolve_service_v2_selection_phase(
+                    plan.steps[0].arguments
+                )
+                if execution_context.get("selection_phase") != selection_phase:
+                    raise ValueError("selection phase context drifted")
             except ValueError:
                 return _project_denied(
                     "SELECTION_EXECUTION_PHASE_INVALID",
                     "Selection execution phase is incomplete or ambiguous",
                 )
         contract_plan = plan
-        if scan_phase == SCAN_PHASE_PREVIEW:
-            preview_step = plan.steps[0]
-            if (
-                preview_step.operation_type is not OperationType.READ
-                or preview_step.risk_level is not RiskLevel.LOW
-            ):
-                return _project_denied(
-                    "SCAN_EXECUTION_PHASE_INVALID",
-                    "Scan preview plan does not use its effective read-only governance",
-                )
-            try:
-                signed_operation = OperationType(contract.operation_type)
-            except ValueError:
-                return _project_denied(
-                    "PROJECT_INVOCATION_STALE",
-                    "Automation project contract is no longer current",
-                )
-            contract_plan = replace(
-                plan,
-                steps=(replace(preview_step, operation_type=signed_operation),),
-            )
         if selection_phase in {SELECTION_PHASE_PREVIEW, SELECTION_PHASE_FORMAL}:
             selection_step = plan.steps[0]
             if selection_phase == SELECTION_PHASE_PREVIEW and (
@@ -1287,16 +499,14 @@ class AutomationProjectPolicyService:
                     "SELECTION_EXECUTION_PHASE_INVALID",
                     "Selection preview plan does not use read-only governance",
                 )
-            contract_step = selection_step
-            if is_service_v2_entry:
-                contract_step = replace(
-                    contract_step,
-                    arguments={
-                        field_name: value
-                        for field_name, value in contract_step.arguments.items()
-                        if field_name not in SELECTION_ARGUMENT_FIELDS
-                    },
-                )
+            contract_step = replace(
+                selection_step,
+                arguments={
+                    field_name: value
+                    for field_name, value in selection_step.arguments.items()
+                    if field_name not in SELECTION_ARGUMENT_FIELDS
+                },
+            )
             if selection_phase == SELECTION_PHASE_PREVIEW:
                 try:
                     signed_operation = OperationType(contract.operation_type)
@@ -1354,14 +564,6 @@ class AutomationProjectPolicyService:
                 "PROJECT_INVOCATION_STALE",
                 "Automation plan does not match the committed project contract",
             )
-        if is_scan_preview_project(entry):
-            if scan_phase == SCAN_PHASE_PREVIEW:
-                return ProjectPolicyEvaluation(
-                    allowed=True,
-                    requires_approval=False,
-                    code="SCAN_PREVIEW_ALLOWED",
-                    reason="The governed scan preview is read-only",
-                )
         if selection_phase == SELECTION_PHASE_PREVIEW:
             return ProjectPolicyEvaluation(
                 allowed=True,
@@ -1369,42 +571,16 @@ class AutomationProjectPolicyService:
                 code="SELECTION_PREVIEW_ALLOWED",
                 reason="The governed selection preview is read-only",
             )
-        mode = _PROJECT_FULL_AUTO if getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2" else str(policy.get("mode") or "")
-        if mode == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
-            legacy_active = self._legacy_schedule_active(policy, contract)
-            return ProjectPolicyEvaluation(
-                allowed=True,
-                requires_approval=(
-                    False if source == "scheduler" and legacy_active else True
-                ),
-                code=(
-                    "LEGACY_SCHEDULE_ONLY"
-                    if legacy_active
-                    else "PROJECT_APPROVAL_REQUIRED"
-                ),
-                reason=(
-                    "Current compiled legacy schedule contract is automatic"
-                    if source == "scheduler" and legacy_active
-                    else "Legacy project contract is stale or not a scheduler invocation"
-                ),
-            )
-        if mode == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
-            if not contract.can_full_auto:
-                return _project_denied(
-                    contract.restriction_code or "PROJECT_CONTRACT_NOT_RUNNABLE",
-                    "The current signed project contract is not runnable",
-                )
-            return ProjectPolicyEvaluation(
-                allowed=True,
-                requires_approval=False,
-                code="PROJECT_FULL_AUTO",
-                reason="Current signed project contract is fully automatic",
+        if not contract.can_full_auto:
+            return _project_denied(
+                contract.restriction_code or "PROJECT_CONTRACT_NOT_RUNNABLE",
+                "The current signed project contract is not runnable",
             )
         return ProjectPolicyEvaluation(
             allowed=True,
-            requires_approval=True,
-            code="PROJECT_APPROVAL_REQUIRED",
-            reason="Current project policy requires a separate approval",
+            requires_approval=False,
+            code="PROJECT_FULL_AUTO",
+            reason="Current signed project contract is fully automatic",
         )
 
     def _load_contract(
@@ -1492,7 +668,6 @@ class AutomationProjectPolicyService:
         fragment = project_contract_fragment(entry)
         return compile_automation_project_contract(
             definition,
-            catalog=self._core_catalog,
             scheduled_rows=scheduled_rows,
             plugin_contract_provider=lambda requested: (
                 fragment if requested == entry.automation_id else None
@@ -1588,15 +763,10 @@ class AutomationProjectPolicyService:
         entry: PluginCatalogEntry,
         policy: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        configured = (
-            _PROJECT_FULL_AUTO if getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
-            else str((policy or {}).get("mode") or _PROJECT_FULL_AUTO)
-        )
-        browser_configured = (
-            configured
-            if configured in _USER_POLICY_MODES
-            else AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
-        )
+        # Plugin projects are always fully automatic; the policy row keeps
+        # its version and audit trail only.
+        configured = _PROJECT_FULL_AUTO
+        browser_configured = configured
         effective = browser_configured
         status = "ACTIVE"
         contract: CompiledAutomationProjectContract | None = None
@@ -1675,27 +845,11 @@ class AutomationProjectPolicyService:
             runtime_reason = "PROJECT_RUNTIME_UNAVAILABLE"
         else:
             runtime_reason = None
-        if configured == AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value:
-            if (
-                contract is not None
-                and self._legacy_schedule_active(policy or {}, contract)
-                and stable
-            ):
-                effective = AutomationProjectPolicyMode.LEGACY_SCHEDULE_ONLY.value
-                status = "LEGACY_SCHEDULE_ONLY"
-            else:
-                status = "RECONCILING" if runtime_status == "RECONCILING" else "UNAVAILABLE"
-        elif configured == AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value:
-            effective = AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
-            if runtime_status == "RECONCILING":
-                status = "RECONCILING"
-            elif runtime_status != "READY" or contract is None:
-                status = "UNAVAILABLE"
-            elif not contract.can_full_auto:
-                status = "UNSUPPORTED"
-        elif contract_error is not None:
-            status = "UNSUPPORTED"
-        elif not can_full_auto:
+        if runtime_status == "RECONCILING":
+            status = "RECONCILING"
+        elif runtime_status != "READY" or contract is None:
+            status = "UNAVAILABLE"
+        elif not contract.can_full_auto:
             status = "UNSUPPORTED"
         summary = _policy_summary(
             configured=configured,
@@ -1736,32 +890,6 @@ class AutomationProjectPolicyService:
             ),
         }
 
-    @staticmethod
-    def _full_auto_active(
-        policy: Mapping[str, Any],
-        contract: CompiledAutomationProjectContract,
-    ) -> bool:
-        # PROJECT_FULL_AUTO is durable policy intent; the current invocation is
-        # still matched against the exact committed contract before evaluation.
-        return contract.can_full_auto
-
-    @staticmethod
-    def _legacy_schedule_active(
-        policy: Mapping[str, Any],
-        contract: CompiledAutomationProjectContract,
-    ) -> bool:
-        return bool(
-            str(policy.get("contract_hash") or "") == contract.contract_hash
-            and str(policy.get("tool_contract_hash") or "")
-            == contract.tool_contract_hash
-            and str(policy.get("plugin_contract_hash") or "")
-            == str(contract.plugin_contract_hash or "")
-            and int(policy.get("project_generation") or 0)
-            == contract.automation_generation
-            and int(policy.get("project_configuration_version") or 0)
-            == contract.project_configuration_version
-        )
-
     def _pending_projection(
         self,
         automation_id: str,
@@ -1798,304 +926,6 @@ class AutomationProjectPolicyService:
             "can_reject": can_decide,
         }
 
-    def _validate_pending_rows(
-        self,
-        uow: Any,
-        *,
-        project: Mapping[str, Any],
-        automation_id: str,
-        rows: Sequence[Mapping[str, Any]],
-        approving: bool,
-    ) -> None:
-        if approving and (
-            project.get("enabled") not in {True, 1}
-            or str(project.get("state") or "") != "ENABLED"
-        ):
-            raise OrchestrationError(
-                "PROJECT_DISABLED",
-                "Disabled automation projects cannot be approved",
-            )
-        if not approving:
-            return
-        policy = uow.automation_projects.get_policy(
-            automation_id,
-            for_update=True,
-        )
-        if policy is None:
-            raise OrchestrationError(
-                "PROJECT_POLICY_NOT_INITIALIZED",
-                "Automation project policy is not initialized",
-            )
-        try:
-            entry = self._plugin_catalog.require(automation_id)
-            contract, _config = self._lock_and_compile_contract(
-                uow,
-                entry,
-                require_enabled=True,
-                lock_rows=True,
-            )
-        except (AutomationProjectContractError, KeyError, ValueError) as exc:
-            raise OrchestrationError(
-                "PROJECT_PENDING_SET_INVALID",
-                "Automation project contract changed before approval",
-            ) from exc
-        for row in rows:
-            if str(row.get("required_role") or "") != "super_admin":
-                raise OrchestrationError(
-                    "PROJECT_PENDING_SET_INVALID",
-                    "Project pending approval has an unexpected role",
-                )
-            raw_invocation = row.get("automation_invocation_json")
-            try:
-                invocation = AutomationProjectInvocation.from_mapping(raw_invocation)
-            except (AutomationProjectContractError, TypeError) as exc:
-                raise OrchestrationError(
-                    "PROJECT_PENDING_SET_INVALID",
-                    "Project pending approval has invalid invocation identity",
-                ) from exc
-            raw_plan = row.get("plan_json")
-            raw_parameters = row.get("parameters_json")
-            try:
-                plan = _plan_from_mapping(raw_plan)
-            except OrchestrationError as exc:
-                raise OrchestrationError(
-                    "PROJECT_PENDING_SET_INVALID",
-                    "Project pending approval has an invalid plan",
-                ) from exc
-            execution_context = (
-                raw_parameters.get("execution_context", {})
-                if isinstance(raw_parameters, Mapping)
-                else None
-            )
-            if (
-                invocation.automation_id != automation_id
-                or plan.automation_id != automation_id
-                or plan.automation_generation != invocation.automation_generation
-                or plan.automation_contract_hash != invocation.contract_hash
-                or plan.plan_hash != str(row.get("plan_hash") or "")
-                or plan.plan_hash != str(row.get("current_plan_hash") or "")
-                or not isinstance(execution_context, Mapping)
-                or not contract.matches_plan(
-                    plan,
-                    invocation,
-                    source=str(row.get("source") or ""),
-                    execution_context=execution_context,
-                    dynamic_resolver=self._dynamic_resolver,
-                )
-            ):
-                raise OrchestrationError(
-                    "PROJECT_PENDING_SET_INVALID",
-                    "Project pending approval is stale",
-                )
-
-    @staticmethod
-    def _validate_policy_replay(
-        event: Mapping[str, Any],
-        *,
-        current: Mapping[str, Any],
-        mode: str,
-        comment: str,
-        actor: Actor,
-    ) -> None:
-        if (
-            str(event.get("to_mode") or "") != mode
-            or str(event.get("actor_id") or "") != actor.actor_id
-            or str(event.get("actor_role") or "") != "super_admin"
-            or str(event.get("comment") or "") != comment
-        ):
-            raise IdempotencyConflict(
-                "project policy request was reused with different input"
-            )
-        if (
-            str(current.get("mode") or "") != mode
-            or str(current.get("contract_hash") or "")
-            != str(event.get("contract_hash") or "")
-        ):
-            raise OrchestrationError(
-                "PROJECT_POLICY_CHANGED",
-                "The original idempotent policy result was superseded",
-            )
-
-    @staticmethod
-    def _validate_batch_replay(
-        batch: Mapping[str, Any],
-        *,
-        decision: str,
-        expected_hash: str,
-        actor: Actor,
-        comment: str,
-    ) -> dict[str, Any]:
-        if (
-            str(batch.get("decision") or "") != decision
-            or str(batch.get("expected_pending_set_hash") or "") != expected_hash
-            or str(batch.get("actor_id") or "") != actor.actor_id
-            or str(batch.get("actor_role") or "") != "super_admin"
-            or str(batch.get("comment") or "") != comment
-        ):
-            raise IdempotencyConflict(
-                "project approval batch request was reused with different input"
-            )
-        result = batch.get("result_json")
-        if not isinstance(result, Mapping):
-            raise OrchestrationError(
-                "INVALID_PROJECT_APPROVAL_BATCH",
-                "Persisted project approval batch is invalid",
-            )
-        return dict(result)
-
-    @staticmethod
-    def _retire_legacy_schedule_policies(
-        uow: Any,
-        *,
-        automation_id: str,
-        rows: Sequence[Mapping[str, Any]],
-        actor: Actor,
-        request_id: str,
-        correlation_id: str,
-        occurred_at: datetime,
-    ) -> None:
-        for row in rows:
-            task_id = str(row.get("id") or "").strip()
-            if not task_id:
-                raise OrchestrationError(
-                    "PROJECT_SCHEDULE_INVALID",
-                    "Automation project contains an invalid schedule identity",
-                )
-            policy = uow.scheduled_policies.ensure_default(task_id)
-            from_mode = str(policy.get("mode") or "REQUIRE_EACH_RUN")
-            if from_mode == "EXACT_SCHEDULE_EXEMPT":
-                uow.scheduled_policies.update_policy(
-                    task_id,
-                    expected_version=int(policy["version"]),
-                    mode="REQUIRE_EACH_RUN",
-                    contract_hash=None,
-                    contract_snapshot=None,
-                    tool_contract_hash=None,
-                    actor_id=actor.actor_id,
-                    actor_role="super_admin",
-                    actor_display_name=actor.display_name or None,
-                    comment="Project-level policy takeover",
-                )
-            event_request_id = f"{request_id}:takeover:{task_id}"
-            if len(event_request_id) > _SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH:
-                event_request_id = canonical_sha256(event_request_id)[
-                    :_SCHEDULED_POLICY_EVENT_REQUEST_ID_MAX_LENGTH
-                ]
-            if uow.scheduled_policies.get_event_by_request(
-                task_id,
-                event_request_id,
-            ) is None:
-                uow.scheduled_policies.append_event(
-                    {
-                        "task_id": task_id,
-                        "request_id": event_request_id,
-                        "from_mode": from_mode,
-                        "to_mode": "REQUIRE_EACH_RUN",
-                        "contract_hash": None,
-                        "contract_snapshot_json": None,
-                        "tool_contract_hash": None,
-                        "actor_id": actor.actor_id,
-                        "actor_role": "super_admin",
-                        "actor_display_name": actor.display_name or None,
-                        "reason": "PROJECT_POLICY_TAKEOVER",
-                        "comment": f"Project policy now owns {automation_id}",
-                        "occurred_at": occurred_at,
-                        "correlation_id": correlation_id,
-                    }
-                )
-
-    @staticmethod
-    def _append_policy_domain_event(
-        uow: Any,
-        *,
-        automation_id: str,
-        mode: str,
-        version: int,
-        actor: Actor,
-        request_id: str,
-        correlation_id: str,
-        occurred_at: datetime,
-    ) -> None:
-        uow.events.append_with_outbox(
-            {
-                "event_id": new_id(),
-                "event_type": "automation_project.approval_policy_changed",
-                "schema_version": 1,
-                "source_system": "agent",
-                "source_event_id": f"{automation_id}:{request_id}",
-                "entity_type": "automation_project",
-                "entity_id": automation_id,
-                "occurred_at": occurred_at,
-                "observed_at": occurred_at,
-                "correlation_id": correlation_id,
-                "payload": {
-                    "automation_id": automation_id,
-                    "mode": mode,
-                    "policy_version": version,
-                    "actor_id": actor.actor_id,
-                },
-            },
-            (
-                {
-                    "consumer_name": "orchestration.audit",
-                    "topic": "automation_project.approval_policy_changed",
-                    "partition_key": automation_id,
-                    "max_attempts": 10,
-                },
-            ),
-        )
-
-    @staticmethod
-    def _append_approval_domain_event(
-        uow: Any,
-        *,
-        row: Mapping[str, Any],
-        actor: Actor,
-        decision: str,
-        comment: str,
-        occurred_at: datetime,
-    ) -> None:
-        uow.events.append_with_outbox(
-            {
-                "event_id": new_id(),
-                "event_type": "agent.approval.decided",
-                "schema_version": 1,
-                "source_system": "agent",
-                "source_event_id": None,
-                "entity_type": "approval_request",
-                "entity_id": row["approval_id"],
-                "work_item_id": row["work_item_id"],
-                "run_id": row["run_id"],
-                "occurred_at": occurred_at,
-                "observed_at": occurred_at,
-                "correlation_id": row["correlation_id"],
-                "causation_id": row.get("causation_id"),
-                "payload": {
-                    "decision": decision,
-                    "plan_hash": row["plan_hash"],
-                    "actor_type": actor.actor_type.value,
-                    "actor_id": actor.actor_id,
-                    "actor_roles": list(actor.roles),
-                    "comment": comment,
-                    "batch": True,
-                },
-            },
-            (
-                {
-                    "consumer_name": "orchestration.audit",
-                    "topic": "agent.approval.decided",
-                    "partition_key": str(row["work_item_id"]),
-                    "max_attempts": 10,
-                },
-                {
-                    "consumer_name": "feishu.approval",
-                    "topic": "agent.approval.decided",
-                    "partition_key": str(row["approval_id"]),
-                    "max_attempts": 20,
-                },
-            ),
-        )
-
     @staticmethod
     def _is_super_admin(actor: Actor) -> bool:
         return (
@@ -2112,33 +942,6 @@ class AutomationProjectPolicyService:
             raise OrchestrationError(
                 "RELEASE_HELD",
                 "Automation project changes are disabled during release activation",
-            )
-
-    def _require_release_held(self) -> None:
-        if self._release_hold_provider is None:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_HOLD_REQUIRED",
-                "Automation project bootstrap requires a release hold",
-            )
-        try:
-            release_held = self._release_hold_provider()
-        except Exception as exc:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_HOLD_UNAVAILABLE",
-                "Automation project bootstrap could not verify the release hold",
-            ) from exc
-        if release_held is not True:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_HOLD_REQUIRED",
-                "Automation project bootstrap requires a release hold",
-            )
-
-    @classmethod
-    def _require_super_admin(cls, actor: Actor) -> None:
-        if not cls._is_super_admin(actor):
-            raise OrchestrationError(
-                "SUPER_ADMIN_REQUIRED",
-                "A signed Console super administrator is required",
             )
 
     @staticmethod

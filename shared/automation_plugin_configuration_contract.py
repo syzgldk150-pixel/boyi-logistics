@@ -123,7 +123,6 @@ def validate_optional_console_upgrade_configuration(
     for requested, saved in (
         ("config", "config_json"), ("account_bindings", "account_bindings_json"),
         ("resource_bindings", "resource_bindings_json"), ("schedule", "desired_schedule_json"),
-        ("device_id", "device_id"),
     ):
         if plugin_json_digest(request[requested]) != plugin_json_digest(current[saved]):
             raise ValueError("optional Console upgrade must preserve saved settings")

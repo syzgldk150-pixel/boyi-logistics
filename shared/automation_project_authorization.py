@@ -386,7 +386,6 @@ PluginContractProvider = Callable[[str], Mapping[str, Any] | None]
 def compile_automation_project_contract(
     definition: AutomationProjectInstanceDefinition,
     *,
-    catalog: Any,
     scheduled_rows: Sequence[Mapping[str, Any]] = (),
     plugin_contract_provider: PluginContractProvider | None = None,
 ) -> CompiledAutomationProjectContract:
@@ -402,13 +401,9 @@ def compile_automation_project_contract(
         raise AutomationProjectContractError("PLUGIN_CONTRACT_FRAGMENT_INVALID")
     _assert_privacy_safe_fragment(provided)
     plugin_fragment = dict(provided)
-    runtime_model = str(plugin_fragment.get("runtime_model") or "ACTION_V1")
-    if runtime_model == "SERVICE_V2":
-        capability = plugin_fragment.get("tool_contract")
-    elif runtime_model == "ACTION_V1":
-        capability = catalog.get_capability(definition.tool_name)
-    else:
+    if plugin_fragment.get("runtime_model") != "SERVICE_V2":
         raise AutomationProjectContractError("PLUGIN_RUNTIME_MODEL_INVALID")
+    capability = plugin_fragment.get("tool_contract")
     if not isinstance(capability, Mapping):
         raise AutomationProjectContractError("PROJECT_TOOL_UNAVAILABLE")
     tool_version = str(capability.get("version") or "").strip()
@@ -416,12 +411,7 @@ def compile_automation_project_contract(
     risk_level = str(capability.get("risk_level") or "").strip()
     if not tool_version or not operation_type or not risk_level:
         raise AutomationProjectContractError("PROJECT_TOOL_CONTRACT_INVALID")
-    governance_fields = (
-        _SERVICE_V2_TOOL_GOVERNANCE_FIELDS
-        if runtime_model == "SERVICE_V2"
-        else _CORE_GOVERNANCE_FIELDS
-    )
-    tool_contract_payload = {key: capability.get(key) for key in governance_fields}
+    tool_contract_payload = {key: capability.get(key) for key in _SERVICE_V2_TOOL_GOVERNANCE_FIELDS}
     tool_contract_hash = canonical_sha256(tool_contract_payload)
     _validate_plugin_fragment(
         plugin_fragment,
@@ -444,21 +434,10 @@ def compile_automation_project_contract(
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
     effective_entrypoints = frozenset(str(item) for item in plugin_entrypoints)
     entrypoint_kinds = plugin_fragment.get("entrypoint_kinds")
-    if runtime_model == "ACTION_V1" and entrypoint_kinds is None:
-        entrypoint_kinds = {entrypoint: entrypoint for entrypoint in effective_entrypoints}
     if not isinstance(entrypoint_kinds, Mapping) or set(entrypoint_kinds) != set(effective_entrypoints):
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
     normalized_entrypoint_kinds = {str(entrypoint): str(kind) for entrypoint, kind in entrypoint_kinds.items()}
-    if runtime_model == "ACTION_V1" and AutomationEntrypoint.MODULE_SLOTS.value in normalized_entrypoint_kinds.values():
-        raise AutomationProjectContractError("PROJECT_MODULE_SLOTS_SERVICE_V2_REQUIRED")
-    allowed_entrypoint_kinds = (
-        _SERVICE_V2_ENTRYPOINT_KINDS if runtime_model == "SERVICE_V2" else TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
-    )
-    if not effective_entrypoints or set(normalized_entrypoint_kinds.values()) - allowed_entrypoint_kinds:
-        raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
-    if runtime_model == "ACTION_V1" and any(
-        entrypoint != kind for entrypoint, kind in normalized_entrypoint_kinds.items()
-    ):
+    if not effective_entrypoints or set(normalized_entrypoint_kinds.values()) - _SERVICE_V2_ENTRYPOINT_KINDS:
         raise AutomationProjectContractError("PLUGIN_ENTRYPOINTS_INVALID")
     configured_entrypoints = plugin_fragment.get("enabled_entrypoints")
     if configured_entrypoints is not None:
@@ -531,7 +510,7 @@ def compile_automation_project_contract(
     # A migration target may retain a disabled physical schedule while its
     # Scheduler contribution is not enabled. Validate that saved row against
     # the declared contract, but never make it an invocable Scheduler entry.
-    if scheduled_rows and not scheduler_contributions and runtime_model == "SERVICE_V2":
+    if scheduled_rows and not scheduler_contributions:
         declared_schedulers = tuple(
             key for key, kind in normalized_entrypoint_kinds.items()
             if kind == AutomationEntrypoint.SCHEDULER.value
@@ -572,10 +551,7 @@ def compile_automation_project_contract(
             raise AutomationProjectContractError(
                 "PROJECT_SCHEDULE_CONTRIBUTION_MISSING"
             )
-        inactive_saved_schedule = (
-            runtime_model == "SERVICE_V2"
-            and scheduler_contribution not in effective_entrypoints
-        )
+        inactive_saved_schedule = scheduler_contribution not in effective_entrypoints
         if inactive_saved_schedule:
             # Persistence retains disabled schedule times with an explicit
             # empty-argument placeholder. It is not an executable invocation.
@@ -610,17 +586,9 @@ def compile_automation_project_contract(
             input_schema=plugin_fragment["invocation_contracts"][
                 scheduler_contribution
             ]["input_schema"],
-            contribution_id=(
-                scheduler_contribution
-                if runtime_model == "SERVICE_V2"
-                else None
-            ),
-            governance=(
-                _service_v2_invocation_governance(
-                    plugin_fragment["invocation_contracts"][scheduler_contribution]
-                )
-                if runtime_model == "SERVICE_V2"
-                else None
+            contribution_id=scheduler_contribution,
+            governance=_service_v2_invocation_governance(
+                plugin_fragment["invocation_contracts"][scheduler_contribution]
             ),
         )
         if scheduler_contribution in effective_entrypoints:
@@ -663,13 +631,9 @@ def compile_automation_project_contract(
             input_schema=plugin_fragment["invocation_contracts"][entrypoint][
                 "input_schema"
             ],
-            contribution_id=entrypoint if runtime_model == "SERVICE_V2" else None,
-            governance=(
-                _service_v2_invocation_governance(
-                    plugin_fragment["invocation_contracts"][entrypoint]
-                )
-                if runtime_model == "SERVICE_V2"
-                else None
+            contribution_id=entrypoint,
+            governance=_service_v2_invocation_governance(
+                plugin_fragment["invocation_contracts"][entrypoint]
             ),
         )
 
@@ -683,9 +647,8 @@ def compile_automation_project_contract(
             "arguments_hash": canonical_sha256(item.expected_arguments),
             "dynamic_resolvers_hash": canonical_sha256(item.dynamic_argument_resolvers),
         }
-        if runtime_model == "SERVICE_V2":
-            invocation_snapshot["contribution_id"] = item.contribution_id
-            invocation_snapshot["governance"] = dict(item.governance or {})
+        invocation_snapshot["contribution_id"] = item.contribution_id
+        invocation_snapshot["governance"] = dict(item.governance or {})
         invocation_snapshots.append(invocation_snapshot)
     snapshot = {
         "schema_version": 1,
@@ -744,15 +707,7 @@ def _full_auto_restriction(
     mode = str(approval.get("mode") or "") if isinstance(approval, Mapping) else ""
     if mode == "disabled":
         return "TOOL_DISABLED"
-    runtime_model = str(plugin_fragment.get("runtime_model") or "ACTION_V1")
-    full_auto_trust = (
-        plugin_fragment.get("trust_source")
-        in {"super_admin_upload", "builtin_bundle"}
-        if runtime_model == "SERVICE_V2"
-        else plugin_fragment.get("trust_source")
-        in {"ed25519_upload", "ed25519_first_party"}
-    )
-    if not full_auto_trust:
+    if plugin_fragment.get("trust_source") not in {"super_admin_upload", "builtin_bundle"}:
         return "PLUGIN_TRUST_NOT_FULL_AUTO"
     plugin_tool = plugin_fragment.get("tool_contract")
     if not isinstance(plugin_tool, Mapping):
@@ -1163,15 +1118,9 @@ def _validate_plugin_fragment(
     version = fragment.get("plugin_version", fragment.get("version"))
     if not isinstance(version, str) or not version.strip():
         raise AutomationProjectContractError("PLUGIN_VERSION_REQUIRED")
-    runtime_model = str(fragment.get("runtime_model") or "ACTION_V1")
-    allowed_trust_sources = (
-        {"super_admin_upload", "builtin_bundle"}
-        if runtime_model == "SERVICE_V2"
-        else {"ed25519_upload", "ed25519_first_party", "builtin_release"}
-    )
-    if runtime_model not in {"ACTION_V1", "SERVICE_V2"} or fragment.get(
+    if fragment.get("runtime_model") != "SERVICE_V2" or fragment.get(
         "trust_source"
-    ) not in allowed_trust_sources:
+    ) not in {"super_admin_upload", "builtin_bundle"}:
         raise AutomationProjectContractError("PLUGIN_TRUST_SOURCE_INVALID")
     for field_name in ("package_sha256", "manifest_sha256"):
         digest = fragment.get(field_name)
@@ -1187,11 +1136,7 @@ def _validate_plugin_fragment(
     governance_anchor = fragment.get("governance_anchor")
     if not isinstance(governance_anchor, Mapping):
         raise AutomationProjectContractError("PLUGIN_GOVERNANCE_ANCHOR_INVALID")
-    governance_fields = (
-        _SERVICE_V2_TOOL_GOVERNANCE_FIELDS
-        if runtime_model == "SERVICE_V2"
-        else _CORE_GOVERNANCE_FIELDS
-    )
+    governance_fields = _SERVICE_V2_TOOL_GOVERNANCE_FIELDS
     if set(governance_anchor) != set(governance_fields):
         raise AutomationProjectContractError("PLUGIN_GOVERNANCE_ANCHOR_INVALID")
     if str(governance_anchor.get("name") or "") != definition.tool_name:
@@ -1232,36 +1177,13 @@ def _validate_plugin_fragment(
         raise AutomationProjectContractError(
             "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID"
         )
-    exact_code_owned_identity = (
-        str(fragment.get("trust_source") or ""),
-        automation_id,
-        str(fragment.get("plugin_id") or ""),
-    )
-    expected_code_owned_plan_fields = {
-        (
-            "ed25519_first_party",
-            "customer_problems_shadow",
-            "sync_customer_service_problems",
-        ): ["recheck_items"],
-        (
-            "ed25519_first_party",
-            "scan_codes",
-            "sync_scan_codes",
-        ): ["_scan_preview_binding", "dry_run"],
-    }.get(exact_code_owned_identity, [])
-    if raw_code_owned_plan_fields != expected_code_owned_plan_fields:
+    if raw_code_owned_plan_fields != []:
         raise AutomationProjectContractError(
             "PLUGIN_CODE_OWNED_PLAN_FIELDS_INVALID"
         )
 
     plugin_entrypoints = fragment.get("allowed_entrypoints")
     entrypoint_kinds = fragment.get("entrypoint_kinds")
-    if runtime_model == "ACTION_V1" and entrypoint_kinds is None and isinstance(
-        plugin_entrypoints, list
-    ):
-        entrypoint_kinds = {
-            str(entrypoint): str(entrypoint) for entrypoint in plugin_entrypoints
-        }
     invocation_contracts = fragment.get("invocation_contracts")
     config_schema = fragment.get("config_schema")
     account_roles = fragment.get("account_roles")
@@ -1269,11 +1191,7 @@ def _validate_plugin_fragment(
         invocation_contracts, Mapping
     ) or not isinstance(config_schema, Mapping) or not isinstance(account_roles, list):
         raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
-    allowed_entrypoint_kinds = (
-        _SERVICE_V2_ENTRYPOINT_KINDS
-        if runtime_model == "SERVICE_V2"
-        else TRUSTED_AUTOMATION_ENTRYPOINTS | {"events"}
-    )
+    allowed_entrypoint_kinds = _SERVICE_V2_ENTRYPOINT_KINDS
     if (
         set(invocation_contracts) != set(plugin_entrypoints)
         or not isinstance(entrypoint_kinds, Mapping)
@@ -1291,15 +1209,12 @@ def _validate_plugin_fragment(
             "input_schema",
             "argument_template",
             "dynamic_resolvers",
+            "service",
+            "operation",
+            "contribution_kind",
+            "effect",
+            "governance",
         }
-        if runtime_model == "SERVICE_V2":
-            expected_contract_fields |= {
-                "service",
-                "operation",
-                "contribution_kind",
-                "effect",
-                "governance",
-            }
         if set(raw_contract) != expected_contract_fields:
             raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
         if (
@@ -1313,12 +1228,11 @@ def _validate_plugin_fragment(
             raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
         if not isinstance(raw_contract.get("dynamic_resolvers"), Mapping):
             raise AutomationProjectContractError("PLUGIN_INVOCATION_CONTRACT_INVALID")
-        if runtime_model == "SERVICE_V2":
-            governance = _service_v2_invocation_governance(raw_contract)
-            if raw_contract.get("effect") != governance["effect"]:
-                raise AutomationProjectContractError(
-                    "PLUGIN_INVOCATION_GOVERNANCE_INVALID"
-                )
+        governance = _service_v2_invocation_governance(raw_contract)
+        if raw_contract.get("effect") != governance["effect"]:
+            raise AutomationProjectContractError(
+                "PLUGIN_INVOCATION_GOVERNANCE_INVALID"
+            )
 
     config_version = fragment.get("project_config_version")
     if type(config_version) is not int or config_version <= 0:

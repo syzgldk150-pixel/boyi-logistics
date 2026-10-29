@@ -7,10 +7,7 @@ from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.orchestration.models import OperationType, PlanStep
-from agent.orchestration.result_verifier import ResultVerifier
 from agent.tms_runtime.scripts import get_qianshou, get_sign_records
-from agent.tool_registry import ToolRegistry
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business import daily_sign_pipeline
 from service_v2_plugins.sync_daily_should_sign_v2.payload.business.daily_sign_rules import build_ledger_row
 
@@ -389,25 +386,6 @@ class DailySignPipelineTests(unittest.TestCase):
         self.assertTrue(finish_values["r13_complete"])
         self.assertTrue(finish_values["problems_complete"])
         self.assertTrue(finish_values["signs_complete"])
-        capability = ToolRegistry().get_capability("sync_daily_should_sign")
-        self.assertIsNotNone(capability)
-        verification = ResultVerifier().verify(
-            PlanStep(
-                step_key="sync",
-                tool_name="sync_daily_should_sign",
-                tool_version="2.1.0",
-                operation_type=OperationType.INTERNAL_PROJECTION_WRITE,
-                arguments=ACCOUNT_PARAMS,
-                account_id=None,
-                depends_on=(),
-                idempotency_key="daily-sign-test",
-                expected_evidence=({"required": True},),
-                postconditions=({"name": "authoritative_snapshot_committed"},),
-            ),
-            result,
-            capability,
-        )
-        self.assertTrue(verification.accepted)
 
     def test_incomplete_problem_source_marks_run_failed_and_never_persists_ledger(self):
         observed_at = datetime(2026, 8, 13, 9, 0, 0)

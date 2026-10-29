@@ -35,14 +35,12 @@ class ProductionRuntimeCoeffectProvider:
     def __init__(
         self,
         *,
-        core_catalog: Any,
         broker_handler_keys: Sequence[tuple[str, str]],
         account_manager: Any,
         binding_resolver: ProductionProjectBindingResolver | None = None,
         service_registry: ServiceRegistry | None = None,
         connector_registry: ConnectorRegistry | None = None,
     ) -> None:
-        self._core_catalog = core_catalog
         self._handler_keys = frozenset((str(a), str(b)) for a, b in broker_handler_keys)
         self._account_manager = account_manager
         self._bindings = binding_resolver
@@ -158,24 +156,15 @@ class ProductionRuntimeCoeffectProvider:
             if not isinstance(operation, Mapping):
                 raise PluginConflictError("signed broker operation contract is invalid")
             required_pairs.add((str(operation.get("operation") or ""), str(operation.get("action") or "")))
-        is_v2 = snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2
+        if snapshot.runtime_model is not PluginRuntimeModel.SERVICE_V2:
+            raise PluginConflictError("only service-v2 generations have runtime coeffects")
         runtime_contract = descriptor.get("runtime")
         service_runtime_ready = (
-            not is_v2 or isinstance(runtime_contract, Mapping) and runtime_contract.get("mode") == "on_demand"
+            isinstance(runtime_contract, Mapping) and runtime_contract.get("mode") == "on_demand"
         )
-        core_capability = None if is_v2 else self._core_catalog.get_capability(str(anchor.get("name") or ""))
-        core_ready = (is_v2 and service_runtime_ready) or (
-            not is_v2
-            and isinstance(core_capability, Mapping)
-            and all(
-                key in core_capability and canonical_json_bytes(core_capability[key]) == canonical_json_bytes(value)
-                for key, value in anchor.items()
-            )
-        )
-        adapters_ready = (
-            all(pair in self._handler_keys or (pair[0], "*") in self._handler_keys for pair in required_pairs)
-            if is_v2
-            else bool(required_pairs) and required_pairs <= self._handler_keys
+        adapters_ready = all(
+            pair in self._handler_keys or (pair[0], "*") in self._handler_keys
+            for pair in required_pairs
         )
         results: list[RuntimeCoeffectSnapshot] = [
             self._record(
@@ -190,23 +179,18 @@ class ProductionRuntimeCoeffectProvider:
                         if pair in self._handler_keys or (pair[0], "*") in self._handler_keys
                     ),
                 },
-                ready=core_ready and adapters_ready,
+                ready=service_runtime_ready and adapters_ready,
                 reason_code=(
                     None
-                    if core_ready and adapters_ready
-                    else (
-                        "CORE_REGISTRY_MISMATCH"
-                        if not core_ready and service_runtime_ready
-                        else "RESIDENT_RUNTIME_UNAVAILABLE"
-                        if not service_runtime_ready
-                        else "CORE_ADAPTER_ACTION_UNAVAILABLE"
-                    )
+                    if service_runtime_ready and adapters_ready
+                    else "RESIDENT_RUNTIME_UNAVAILABLE"
+                    if not service_runtime_ready
+                    else "CORE_ADAPTER_ACTION_UNAVAILABLE"
                 ),
             )
         ]
-        if is_v2:
-            results.extend(self._service_coeffects(snapshot))
-            results.extend(self._contribution_coeffects(snapshot))
+        results.extend(self._service_coeffects(snapshot))
+        results.extend(self._contribution_coeffects(snapshot))
         public_accounts = {
             str(item.get("account_id") or ""): item
             for item in self._account_manager.list_accounts(
@@ -321,16 +305,6 @@ class ProductionRuntimeCoeffectProvider:
                     descriptor_value or {"binding_sha256": _digest(resource_id)},
                     ready=descriptor_value is not None,
                     reason_code=reason_code,
-                )
-            )
-        if metadata.get("device_binding") is not None:
-            results.append(
-                self._record(
-                    RuntimeCoeffectKind.DEVICE,
-                    "named-worker",
-                    {"binding": "unresolved"},
-                    ready=False,
-                    reason_code="WORKER_DEVICE_UNAVAILABLE",
                 )
             )
         return tuple(results)

@@ -212,7 +212,7 @@ def _replay_policy(*, runtime_schema=INPUT_SCHEMA, arguments=None, preview_invoc
     def unit_of_work():
         yield SimpleNamespace(automation_plugins=SimpleNamespace(get_generation_row=historical_generation))
 
-    service = AutomationProjectPolicyService(SimpleNamespace(unit_of_work=unit_of_work), None, None,
+    service = AutomationProjectPolicyService(SimpleNamespace(unit_of_work=unit_of_work), None,
         direct_invocations=SimpleNamespace(repository=SimpleNamespace(by_request=lambda _key: row)))
 
     def forbid_current_contract(_identity):

@@ -1,4 +1,4 @@
-"""Read-only collector links from the Run's generation and captured sources."""
+"""Read-only collector links from one Invocation's generation and captured sources."""
 from __future__ import annotations
 
 import json
@@ -9,29 +9,19 @@ from shared.data_sources import row_dict
 from shared.plugin_management import MODULE_PATHS, management_for
 
 
-def collector_run_navigation(connection, run_id):
-    return _collector_navigation(connection, run_id, direct=False)
-
-
 def collector_invocation_navigation(connection, invocation_id):
-    """Use only this Invocation's captured generation and source publications."""
-    return _collector_navigation(connection, invocation_id, direct=True)
+    """Use only this Invocation's captured generation and source publications.
 
-
-def _collector_navigation(connection, run_id, *, direct):
-    """Never infer ownership from a tool title, current alias or current producer."""
+    Ownership is never inferred from a tool title, current alias or current producer.
+    """
     unknown = {"status": "unverified", "message": "运行所属来源尚未核验。", "sources": []}
     with connection.cursor() as cursor:
-        origin = ("""automation_plugin_invocations run
-            JOIN automation_project_generations g ON g.automation_id=run.automation_id AND g.generation=run.generation""" if direct else """agent_runs run JOIN agent_commands command ON command.command_id=run.command_id
-            JOIN automation_project_generations g ON g.automation_id=command.automation_id AND g.generation=command.automation_generation""")
-        identity_field = "invocation_id" if direct else "run_id"
-        lease_field = "invocation_id" if direct else "orchestration_run_id"
-        cursor.execute(f"""SELECT g.automation_id,g.generation,g.plugin_id,v.manifest_json
-            FROM {origin}
+        cursor.execute("""SELECT g.automation_id,g.generation,g.plugin_id,v.manifest_json
+            FROM automation_plugin_invocations run
+            JOIN automation_project_generations g ON g.automation_id=run.automation_id AND g.generation=run.generation
             JOIN automation_plugin_versions v ON v.plugin_id=g.plugin_id AND v.version=g.plugin_version
                 AND BINARY v.package_sha256=BINARY g.package_sha256 AND BINARY v.manifest_sha256=BINARY g.manifest_sha256
-            WHERE run.{identity_field}=%s AND g.committed_at IS NOT NULL""", (run_id,))
+            WHERE run.invocation_id=%s AND g.committed_at IS NOT NULL""", (invocation_id,))
         generations = [row_dict(cursor, row) for row in cursor.fetchall()]
         if not generations:
             return unknown
@@ -39,7 +29,7 @@ def _collector_navigation(connection, run_id, *, direct):
         for generation in generations:
             manifest = generation["manifest_json"]
             manifest = json.loads(manifest) if isinstance(manifest, str) else manifest
-            contract = management_for(generation["plugin_id"], manifest.get("management"))
+            contract = management_for(manifest.get("management"))
             if contract["purpose"] != "collector":
                 return {"status": "not_collector", "sources": []}
             modules.add(contract["module"])
@@ -47,44 +37,28 @@ def _collector_navigation(connection, run_id, *, direct):
             return unknown
         module, = modules
         if module == "finance":
-            # The Broker receipt holds a non-secret hash of the actual batch ID.
-            # Restrict to this Run and its exact lease/producer generation before
-            # matching batch identities; never use a current account alias.
-            current_finance = {row["plugin_id"] for row in generations} == {"sync_finance_bills_v2"}
-            receipt_operation, receipt_action = (("service.invoke", "write_snapshot") if current_finance
-                else ("ledger.invoke", "finance.source_snapshot.write"))
-            cursor.execute(f"""SELECT DISTINCT source.source_id,source.display_name
-                FROM automation_write_attempt_receipts receipt
-                JOIN finance_source_run_bindings binding ON BINARY binding.producer_instance_id=BINARY receipt.automation_id
-                    AND binding.producer_generation=receipt.generation
-                JOIN finance_sync_runs capture ON capture.id=binding.run_id
-                    AND BINARY SHA2(CAST(capture.batch_id AS CHAR),256)=BINARY JSON_UNQUOTE(JSON_EXTRACT(receipt.target_ref_json,'$.batch_sha256'))
+            # The statement capture records this exact Invocation; its publish
+            # batch runs carry the source binding of that producer generation.
+            cursor.execute("""SELECT DISTINCT source.source_id,source.display_name
+                FROM finance_platform_captures capture
+                JOIN finance_sync_runs capture_run ON capture_run.batch_id=capture.publish_batch_id
+                JOIN finance_source_run_bindings binding ON binding.run_id=capture_run.id
+                    AND BINARY binding.producer_instance_id=BINARY capture.automation_id
+                    AND binding.producer_generation=capture.generation
                 JOIN module_data_sources source ON source.source_id=binding.source_id
-                WHERE receipt.{lease_field}=%s AND receipt.operation=%s AND receipt.action=%s
-                    AND source.module='finance' ORDER BY source.source_id""", (run_id, receipt_operation, receipt_action))
+                WHERE BINARY capture.invocation_id=BINARY %s AND source.module='finance'
+                ORDER BY source.source_id""", (invocation_id,))
         else:
-            cursor.execute(f"""SELECT DISTINCT source.source_id,source.display_name
+            cursor.execute("""SELECT DISTINCT source.source_id,source.display_name
                 FROM customer_problem_publications publication
                 JOIN module_data_sources source ON source.source_id=publication.source_id
                 JOIN automation_project_generation_leases lease ON BINARY lease.automation_id=BINARY publication.producer_instance_id
-                    AND lease.generation=publication.producer_generation AND BINARY lease.{lease_field}=BINARY publication.run_id
+                    AND lease.generation=publication.producer_generation AND BINARY lease.invocation_id=BINARY publication.run_id
                 WHERE BINARY publication.run_id=BINARY %s AND source.module='customer_service'
-                ORDER BY source.source_id""", (run_id,))
+                ORDER BY source.source_id""", (invocation_id,))
         sources = [row_dict(cursor, row) for row in cursor.fetchall()]
     query_path, = BUSINESS_MODULE_BY_CODE[module].page_contributions
     return {"status": "known", "module": module, "module_url": MODULE_PATHS[module],
         "message": "本次运行已记录的来源。" if sources else "本次运行尚无已核验的来源记录。",
         "sources": [{**source, "url": query_path + "?" + urlencode({"source_id": source["source_id"]})}
             for source in sources]}
-
-
-def finance_failure_ownership(connection, run_id, steps):
-    """Keep the original fixed tool semantics and recognize signed collectors."""
-    navigation = (collector_run_navigation(connection, run_id) if connection is not None
-        else {"status": "unverified", "sources": [], "message": "运行所属来源尚未核验。"})
-    legacy_steps = [step for step in steps if str(step.get("tool_name") or "").strip() == "sync_finance_bills"]
-    if not legacy_steps and navigation.get("module") == "finance":
-        # The signed Run belongs to this collector. Preserve its existing
-        # host-owned startup suppression when the tool is an instance wrapper.
-        legacy_steps = steps
-    return legacy_steps, navigation

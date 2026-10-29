@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 
 from plugin_core_adapters import arrival_report
-from plugin_core_adapters import arrival, first_party
+from plugin_core_adapters import arrival, host_primitives
 from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.list_connectors_v2 import build_list_connectors
@@ -134,10 +134,10 @@ def test_real_v2_plugins_broker_and_mysql_latest_list_replaces_shared_sheet(v2_d
             cursorclass=fixture.pymysql.cursors.DictCursor)
 
     source = [{**_record("R12345678901"), "recipient_address": "complete fixture delivery address"}]
-    monkeypatch.setattr(first_party, "_arrive_list_read_page", lambda *_args: {
+    monkeypatch.setattr(host_primitives, "_arrive_list_read_page", lambda *_args: {
         "items": deepcopy(source), "returned": len(source), "total": len(source), "total_authoritative": True,
     })
-    monkeypatch.setattr(first_party, "_scan_read_page", lambda *_args: {
+    monkeypatch.setattr(host_primitives, "_scan_read_page", lambda *_args: {
         "items": [], "returned": 0, "total": 0, "total_authoritative": True,
     })
     resources = {}
@@ -177,7 +177,7 @@ def test_real_v2_plugins_broker_and_mysql_latest_list_replaces_shared_sheet(v2_d
     monkeypatch.setattr(arrival, "_invoke_feishu", feishu)
 
     accounts = ProblemAccounts()
-    reviewed = first_party.build_production_first_party_core_handler_map(
+    reviewed = host_primitives.build_production_host_primitive_handler_map(
         cursor_secret=b"fixture-report-publication-secret", account_manager=accounts)
     registry = ConnectorRegistry((*build_arrival_connectors(reviewed), *build_list_connectors(reviewed)))
     root = Path(__file__).resolve().parents[1]
@@ -208,7 +208,7 @@ def test_real_v2_plugins_broker_and_mysql_latest_list_replaces_shared_sheet(v2_d
                 account_bindings={account_role: [ACCOUNTS["account_id"]]}, resource_bindings=bindings,
                 enabled_entrypoints=tuple(key for key, value in entry.invocation_contracts.items()
                     if value.get("contribution_kind") == "console"),
-                schedule={"kind": "none", "times": [], "enabled": False}, device_id=None,
+                schedule={"kind": "none", "times": [], "enabled": False},
                 actor_id=ACTOR.actor_id, actor_role="super_admin", request_id=str(uuid4()),
                 expected_project_configuration_version=entry.project_config_version)
             host.targets.reconcile_project(project)

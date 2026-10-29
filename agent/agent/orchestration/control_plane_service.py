@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from agent.automation_plugins.first_party_handlers import customer_problem_identity
+from agent.automation_plugins.host_primitive_handlers import customer_problem_identity
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -254,14 +254,9 @@ class ControlPlaneService:
         result["unknown_write_recoveries"] = self._repository.list_work_item_unknown_writes(
             str(item["work_item_id"]),
         )
-        from agent.automation_plugins.first_party import RECOVERABLE_WRITE_PROJECT_PLUGINS
-
-        supported_plugins = frozenset(RECOVERABLE_WRITE_PROJECT_PLUGINS.values())
         for record in result["unknown_write_recoveries"]:
-            record["recovery_supported"] = record.get("plugin_id") in supported_plugins
-            record["recovery_unavailable_reason"] = (
-                "" if record["recovery_supported"] else "该插件尚无已审核的证据核验入口，保留历史记录待处理。"
-            )
+            record["recovery_supported"] = False
+            record["recovery_unavailable_reason"] = "旧插件已退役，历史写入记录只读保留，不再核验或重放。"
         if current is not None:
             result["run"] = _run_dto(current)
             result["current_run_id"] = str(current["run_id"])

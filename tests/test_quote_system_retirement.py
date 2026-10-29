@@ -8,7 +8,7 @@ from agent.tms_runtime.direct_business import DIRECT_READ_TARGETS
 from agent.tms_runtime.dispatch import TARGETS, TARGET_ACCOUNT_PURPOSES, TARGET_ACCOUNT_SYSTEMS
 from agent.tms_runtime.routes import COMPAT_READ_TARGETS, router
 from agent.tool_registry import ToolRegistry
-from scripts.first_party_release_scope import STANDALONE_SERVICE_V2_PLUGIN_IDS, release_plugin_ids
+from scripts.release_scope import SERVICE_V2_PLUGIN_IDS, STANDALONE_SERVICE_V2_PLUGIN_IDS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,14 +33,14 @@ def test_old_quote_tool_and_tms_targets_are_not_callable():
         assert all(target not in allowed for allowed in TOOL_ALLOWED_TMS_TARGETS.values())
 
 
-def test_quote_sources_are_explicitly_offline_and_new_package_is_standalone():
+def test_old_quote_sources_are_gone_and_new_package_is_standalone():
     for name in ("get_price.py", "yunda_price.py", "batch_price.py"):
         assert not (ROOT / "agent/agent/tms_runtime/scripts" / name).exists()
-        assert (ROOT / "agent/legacy/price_quote" / name).is_file()
     assert not (ROOT / "agent/tools/price_tool.py").exists()
-    assert (ROOT / "agent/legacy/price_quote/price_tool.py").is_file()
+    assert not (ROOT / "agent/legacy").exists()
+    assert not (ROOT / "agent/price_scripts").exists()
     assert "quote_prices_v2" in STANDALONE_SERVICE_V2_PLUGIN_IDS
-    assert "quote_prices" not in release_plugin_ids(ROOT)
+    assert "quote_prices" not in SERVICE_V2_PLUGIN_IDS
     # The shared price purpose is still used by receipts and the original page.
     assert TARGET_ACCOUNT_PURPOSES["receipts_sync"] == "price"
     assert TARGET_ACCOUNT_PURPOSES["ronghui_waybill_proxy"] == "price"

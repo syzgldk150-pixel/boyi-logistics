@@ -115,28 +115,6 @@ def create_automation_project_router(
             raise HTTPException(status_code=422, detail=exc.code) from exc
         return api_success(await asyncio.to_thread(service_provider().list_policies, automation_ids=sorted(selected)))
 
-    @router.post(
-        "/internal/v1/automation-projects/{automation_id}/approval-policy"
-    )
-    async def update_project_policy(
-        automation_id: str,
-        payload: ProjectPolicyUpdateRequest,
-        request: Request,
-    ) -> dict[str, Any]:
-        return api_success(
-            service_provider().update_policy(
-                automation_id,
-                mode=payload.mode,
-                request_id=payload.request_id,
-                comment=payload.comment,
-                expected_policy_version=payload.expected_policy_version,
-                expected_project_configuration_version=(
-                    payload.expected_project_configuration_version
-                ),
-                actor=actor_provider(request),
-            )
-        )
-
     @router.get(
         "/internal/v1/automation-projects/{automation_id}/pending-approvals"
     )

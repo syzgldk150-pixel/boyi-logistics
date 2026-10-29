@@ -20,7 +20,7 @@ from plugin_core_adapters import problem_actions
 from tests.direct_invocation_fixture import DirectFixture, direct_repository  # noqa: F401
 from tests.v32_acceptance.daily_scan import signed_request
 from tests.v32_acceptance.decision_maintenance import ACTOR, setup_instance
-from tests.v32_acceptance.finance_maintenance_drill import setup_unrelated
+from tests.v32_acceptance.collector_drill import setup_unrelated
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.problem_fixture import ACCOUNTS, ProblemAccounts, ProblemSupplier
 from tests.v32_acceptance.service_v2_artifacts import build_artifact

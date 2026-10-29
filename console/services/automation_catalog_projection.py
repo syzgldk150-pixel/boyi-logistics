@@ -72,7 +72,6 @@ AUTOMATION_PENDING_RISK_LABELS = {
     "CRITICAL": "严重",
 }
 AUTOMATION_PLUGIN_CATALOG_ENDPOINT = "/internal/v1/automation/plugins/catalog"
-AUTOMATION_WORKERS_ENDPOINT = "/internal/v1/automation/workers"
 AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES = 32 * 1024 * 1024
 AUTOMATION_PLUGIN_STATE_LABELS = {
     "ENABLED": "已启用",
@@ -83,7 +82,6 @@ AUTOMATION_PLUGIN_STATE_LABELS = {
     "DRAINING": "排空中",
     "UPGRADING": "升级中",
     "UNINSTALLING": "卸载中",
-    "UNINSTALL_PENDING": "待卸载",
     "BLOCKED_DEPENDENCY": "依赖阻断",
     "NEEDS_CONFIGURATION": "需要配置",
     "BLOCKED_LOGIN": "账号未登录",
@@ -120,18 +118,12 @@ AUTOMATION_PLUGIN_API_RE = re.compile(r"^[0-9A-Za-z._<>=,!~^*+\-]{1,32}$")
 AUTOMATION_PLUGIN_SERVICE_RE = re.compile(
     r"^plugin\.([a-z][a-z0-9_]{1,63})\.([a-z][a-z0-9_.-]{0,127})@(0|[1-9][0-9]*)$"
 )
-AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
 AUTOMATION_PLUGIN_RUNTIME_MODEL_LABELS = {
-    "ACTION_V1": "旧版操作",
     "SERVICE_V2": "最新版服务",
     "UNSUPPORTED": "不支持的运行时",
 }
 AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL = "UNSUPPORTED"
 AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS = {
-    "NOT_APPLICABLE": "v1 动作运行时",
     "ACTIVE": "依赖就绪",
     "READY": "依赖就绪",
     "SATISFIED": "依赖就绪",
@@ -143,25 +135,6 @@ AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS = {
 AUTOMATION_PLUGIN_DEPENDENCY_BLOCKING_STATES = frozenset(
     {"BLOCKED_DEPENDENCY", "NEEDS_CONFIGURATION", "BLOCKED_LOGIN", "UNKNOWN"}
 )
-AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS = {
-    "PREPARING": "准备迁移项目",
-    "TESTING": "并行验证",
-    "READY": "等待接管",
-    "CUTTING_OVER": "接管中",
-    "CUTOVER": "已接管",
-    "ROLLING_BACK": "回滚中",
-    "ROLLED_BACK": "已回滚",
-    "COMPLETED": "迁移完成",
-    "ERROR": "迁移异常",
-}
-AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS = {
-    "NOT_STARTED": "尚未真跑",
-    "RUNNING": "真跑验证中",
-    "PASSED": "真跑已通过",
-    "FAILED": "真跑失败",
-    "BLOCKED": "验证受阻",
-    "WRITE_OUTCOME_UNKNOWN": "写入结果未知",
-}
 AUTOMATION_PLUGIN_BLOCK_REASON_COPY = {
     "MISSING_PROVIDER": "缺少服务提供方",
     "PROVIDER_BLOCKED": "依赖服务尚未就绪",
@@ -173,16 +146,11 @@ AUTOMATION_PLUGIN_BLOCK_REASON_COPY = {
     "ACCOUNT_BINDING_MISSING": "必需账号尚未绑定或登录",
     "BLOCKED_LOGIN": "必需账号尚未登录",
 }
-AUTOMATION_WORKER_ID_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 AUTOMATION_PLUGIN_BINDING_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,160}$")
 AUTOMATION_PLUGIN_CONFIG_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 AUTOMATION_PLUGIN_CODE_OWNED_CONFIG_KEY_RE = re.compile(
     r"^_?[A-Za-z][A-Za-z0-9_]{0,62}$"
 )
-AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS = frozenset(
-    {"__host_business_date"}
-)
-AUTOMATION_PLUGIN_ENTRYPOINTS = frozenset({"scheduler", "console", "feishu", "webhook"})
 AUTOMATION_PLUGIN_CONTRIBUTION_PROJECTION_STATES = (
     _CONTRIBUTION_PROJECTION_STATES
 )
@@ -235,15 +203,6 @@ AUTOMATION_PLUGIN_CONFIG_COPY = {
 AUTOMATION_PLUGIN_COMMON_CONFIG_KEYS = frozenset(AUTOMATION_PLUGIN_CONFIG_COPY)
 
 
-def _valid_migration_business_key_field(value: str) -> bool:
-    """Allow the one host-derived key while rejecting all other host fields."""
-
-    if value in AUTOMATION_PLUGIN_MIGRATION_RESERVED_BUSINESS_KEY_FIELDS:
-        return True
-    if value.startswith("__host_"):
-        return False
-    return bool(AUTOMATION_PLUGIN_CONFIG_KEY_RE.fullmatch(value))
-
 AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY = {
     "account_id": ("运行账号", "任务执行时使用这个业务账号。"),
     "account_ids": ("运行账号", "任务会依次使用所选业务账号。"),
@@ -252,19 +211,6 @@ AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY = {
     "finance_self_pickup_source": ("自提部账单账号", "读取自提部的账单数据。"),
     "customer_service_source": ("客服问题件账号", "读取所选账号下的客服问题件。"),
 }
-AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY_BY_PLUGIN = {
-    "sync_daily_should_sign": {
-        "r13_account_id": (
-            "R13 应签查询账号",
-            "从这个 R13 账号读取其所属站点范围和应签清单。",
-        ),
-        "account_id": (
-            "融辉到货与签收核验账号",
-            "从这个融辉账号核验到货、问题件和主单签收证据。",
-        ),
-    },
-}
-
 AUTOMATION_PLUGIN_RESOURCE_ROLE_COPY = {
     "webhook_route": ("外部调用入口", "只有需要由外部系统触发时才使用。"),
     "feishu_route": ("飞书消息入口", "接收飞书中的固定指令。"),
@@ -539,32 +485,18 @@ def build_automation_project_policy_view(
     effective_status = str(item["effective_status"])
     runtime_status = str(item.get("runtime_status") or "UNAVAILABLE")
     summary = str(item.get("summary") or "").strip()
-    if effective_mode == "LEGACY_SCHEDULE_ONLY" or effective_status == "LEGACY_SCHEDULE_ONLY":
-        label = "运行权限待确认"
-        default_summary = "当前运行权限需要重新确认，请选择项目运行方式。"
-    elif effective_mode == "PROJECT_FULL_AUTO":
-        if runtime_status == "RECONCILING":
-            label = "完全自动，运行环境同步中"
-            default_summary = "完全自动权限已保留；同步完成前不会运行旧配置。"
-        elif runtime_status != "READY" or effective_status in {
-            "UNAVAILABLE",
-            "UNSUPPORTED",
-        }:
-            label = "完全自动，运行环境不可用"
-            default_summary = "完全自动权限已保留；运行环境修复前项目不可运行。"
-        else:
-            label = "完全自动"
-            default_summary = "项目清单允许且已启用的定时、后台、飞书与外部验签入口按当前保存配置运行。"
+    if effective_mode != "PROJECT_FULL_AUTO":
+        label = "运行权限不可用"
+        default_summary = "项目权限不是完全自动，运行已阻断；请刷新或检查智能服务。"
+    elif runtime_status == "RECONCILING":
+        label = "完全自动，运行环境同步中"
+        default_summary = "完全自动权限已保留；同步完成前不会运行旧配置。"
+    elif runtime_status != "READY" or effective_status in {"UNAVAILABLE", "UNSUPPORTED"}:
+        label = "完全自动，运行环境不可用"
+        default_summary = "完全自动权限已保留；运行环境修复前项目不可运行。"
     else:
-        if runtime_status == "RECONCILING":
-            label = "每次运行审批，运行环境同步中"
-            default_summary = "逐次审批权限未变；同步完成前不会运行旧配置。"
-        elif runtime_status != "READY":
-            label = "每次运行审批，运行环境不可用"
-            default_summary = "逐次审批权限未变；运行环境修复前项目不可运行。"
-        else:
-            label = "每次运行审批"
-            default_summary = "定时与 Console 手工执行每次都先进入审批。"
+        label = "完全自动"
+        default_summary = "项目清单允许且已启用的定时、后台、飞书与外部验签入口按当前保存配置运行。"
 
     return {
         **base,
@@ -781,10 +713,7 @@ def _normalize_plugin_account_roles(
         ):
             continue
         seen.add(role)
-        role_copy = {
-            **AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY,
-            **AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY_BY_PLUGIN.get(plugin_id, {}),
-        }
+        role_copy = AUTOMATION_PLUGIN_ACCOUNT_ROLE_COPY
         label, hint = _plain_role_copy(
             role,
             raw_role.get("label"),
@@ -1079,23 +1008,14 @@ def _normalize_plugin_code_owned_config_fields(
 def _normalize_plugin_entrypoints(
     value: Any,
     *,
-    runtime_model: str = "ACTION_V1",
+    runtime_model: str,
 ) -> tuple[list[str], bool]:
-    if not isinstance(value, list):
+    if runtime_model != "SERVICE_V2" or not isinstance(value, list):
         return [], False
     normalized = [str(item or "").strip().lower() for item in value]
     if len(normalized) != len(set(normalized)) or len(normalized) > 100:
         return [], False
-    if runtime_model == "SERVICE_V2":
-        if any(
-            not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(item)
-            for item in normalized
-        ):
-            return [], False
-    elif runtime_model == "ACTION_V1":
-        if not set(normalized) <= AUTOMATION_PLUGIN_ENTRYPOINTS:
-            return [], False
-    else:
+    if any(not AUTOMATION_PLUGIN_V2_ENTRYPOINT_ID_RE.fullmatch(item) for item in normalized):
         return [], False
     return normalized, True
 
@@ -1106,8 +1026,6 @@ def _normalize_plugin_entrypoint_kinds(
     runtime_model: str,
     entrypoints: list[str],
 ) -> tuple[dict[str, str], bool]:
-    if runtime_model == "ACTION_V1":
-        return {entrypoint: entrypoint for entrypoint in entrypoints}, True
     if runtime_model != "SERVICE_V2":
         return {}, False
     if not isinstance(value, Mapping) or set(value) != set(entrypoints):
@@ -1225,30 +1143,20 @@ def _normalize_plugin_runtime_model(
     *,
     present: bool | None = None,
 ) -> str:
-    """Normalize an explicit runtime discriminator without silently downgrading it.
-
-    Catalogs emitted before runtime-model metadata existed are the only records
-    that may be projected as ``ACTION_V1``.  A present-but-unknown discriminator
-    is kept as an unsupported contract so that a newer runtime can never be
-    mistaken for a legacy action package.
-    """
+    """Accept only an explicit ``SERVICE_V2`` discriminator; anything else is unsupported."""
 
     if present is None:
         present = value is not None
-    if not present:
-        return "ACTION_V1"
-    normalized = str(value or "").strip().upper()
-    if normalized in {"ACTION_V1", "SERVICE_V2"}:
-        return normalized
+    if present and str(value or "").strip().upper() == "SERVICE_V2":
+        return "SERVICE_V2"
     return AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
 
 
 def _normalize_plugin_api(value: Any, *, runtime_model: str) -> str:
-    fallback = "1.0.0" if runtime_model == "ACTION_V1" else ""
     if not isinstance(value, str):
-        return fallback
+        return ""
     normalized = value.strip()
-    return normalized if AUTOMATION_PLUGIN_API_RE.fullmatch(normalized) else fallback
+    return normalized if AUTOMATION_PLUGIN_API_RE.fullmatch(normalized) else ""
 
 
 def _normalize_plugin_semver(value: Any) -> str:
@@ -1270,8 +1178,6 @@ def _normalize_plugin_versions(
     target_version = _normalize_plugin_semver(
         raw.get("target_version", fallback.get("target_version"))
     )
-    if runtime_model == "ACTION_V1":
-        return active_version or version, target_version or version
     if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
         return "", ""
     return active_version, target_version or version
@@ -1299,12 +1205,10 @@ def _normalize_plugin_dependency_state(
     runtime_model: str,
     state_hint: str = "",
 ) -> str:
-    if runtime_model == "ACTION_V1":
-        return "NOT_APPLICABLE"
     if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
         return "UNKNOWN"
     normalized = str(value or "").strip().upper()
-    if normalized in set(AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS) - {"NOT_APPLICABLE"}:
+    if normalized in AUTOMATION_PLUGIN_DEPENDENCY_STATE_LABELS:
         return normalized
     hinted = str(state_hint or "").strip().upper()
     if hinted in {
@@ -1357,96 +1261,10 @@ def _normalize_plugin_blocking_reasons(value: Any) -> list[dict[str, str]]:
     return reasons
 
 
-def _normalize_plugin_migration(
-    value: Any,
-    *,
-    automation_id: str,
-) -> dict[str, Any]:
-    if isinstance(value, str):
-        raw: Mapping[str, Any] = {"state": value}
-    elif isinstance(value, Mapping):
-        raw = value
-    else:
-        return {}
-    state = str(raw.get("state") or raw.get("status") or "").strip().upper()
-    if state not in AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS:
-        return {}
-    pair_id = str(raw.get("migration_pair_id") or raw.get("pair_id") or "").strip()
-    if not AUTOMATION_PLUGIN_MIGRATION_PAIR_ID_RE.fullmatch(pair_id):
-        pair_id = ""
-    source_id = str(raw.get("source_automation_id") or "").strip()
-    target_id = str(raw.get("target_automation_id") or "").strip()
-    counterpart_id = str(raw.get("counterpart_automation_id") or "").strip()
-    owner_id = str(raw.get("entrypoint_owner_automation_id") or "").strip()
-    source_id = source_id if AUTOMATION_PROJECT_ID_RE.fullmatch(source_id) else ""
-    target_id = target_id if AUTOMATION_PROJECT_ID_RE.fullmatch(target_id) else ""
-    counterpart_id = (
-        counterpart_id
-        if AUTOMATION_PROJECT_ID_RE.fullmatch(counterpart_id)
-        else ""
-    )
-    owner_id = owner_id if AUTOMATION_PROJECT_ID_RE.fullmatch(owner_id) else ""
-    projected_role = str(raw.get("role") or "").strip().upper()
-    role = (
-        "TARGET"
-        if automation_id and automation_id == target_id
-        else "SOURCE"
-        if automation_id and automation_id == source_id
-        else projected_role
-        if projected_role in {"SOURCE", "TARGET"}
-        else ""
-    )
-    paired_automation_id = (
-        source_id
-        if role == "TARGET" and source_id
-        else target_id
-        if role == "SOURCE" and target_id
-        else counterpart_id
-    )
-    if not owner_id:
-        owner_id = (
-            automation_id
-            if (state in {"CUTOVER", "COMPLETED"} and role == "TARGET")
-            or (state not in {"CUTOVER", "COMPLETED"} and role == "SOURCE")
-            else paired_automation_id
-        )
-    record_version = raw.get("record_version")
-    if (
-        isinstance(record_version, bool)
-        or not isinstance(record_version, int)
-        or record_version < 1
-    ):
-        record_version = 0
-    test_state = str(
-        raw.get("test_state") or raw.get("test_status") or ""
-    ).strip().upper()
-    if test_state not in AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS:
-        test_state = ""
-    return {
-        "migration_pair_id": pair_id,
-        "state": state,
-        "status_label": AUTOMATION_PLUGIN_MIGRATION_STATE_LABELS[state],
-        "role": role,
-        "paired_automation_id": paired_automation_id,
-        "entrypoint_owner_automation_id": owner_id,
-        "owns_entrypoints": bool(owner_id and owner_id == automation_id),
-        "record_version": record_version,
-        "can_mark_ready": bool(role == "TARGET" and state == "TESTING"),
-        "can_cutover": bool(role == "TARGET" and state == "READY"),
-        "can_rollback": bool(role == "TARGET" and state in {"TESTING", "READY", "CUTOVER"}),
-        "can_complete": bool(role == "TARGET" and state == "CUTOVER"),
-        "test_state": test_state,
-        "test_status_label": AUTOMATION_PLUGIN_MIGRATION_TEST_STATE_LABELS.get(
-            test_state, ""
-        ),
-    }
-
-
 AUTOMATION_PLUGIN_MISSING_REQUIREMENT_LABELS = {
     "project_config": "项目配置未完整",
     "account_binding": "必需账号尚未绑定",
     "resource_binding": "必需资源尚未绑定",
-    "device_binding": "指定的工作节点尚未绑定",
 }
 
 
@@ -1483,17 +1301,15 @@ def normalize_automation_plugin_catalog(
             continue
         plugin_id = str(raw.get("plugin_id") or "").strip()
         version = str(raw.get("version") or "").strip()
-        platform = str(raw.get("execution_platform") or "").strip().lower()
         if (
             package_counts[plugin_id] != 1
             or not AUTOMATION_PLUGIN_ID_RE.fullmatch(plugin_id)
             or not AUTOMATION_PLUGIN_VERSION_RE.fullmatch(version)
-            or platform not in {"server", "windows"}
         ):
             invalid_plugins.add(plugin_id)
             continue
         try:
-            management = validate_management(raw["management"]) if "management" in raw else management_for(plugin_id)
+            management = validate_management(raw["management"]) if "management" in raw else management_for()
         except ValueError:
             invalid_plugins.add(plugin_id)
             continue
@@ -1562,10 +1378,7 @@ def normalize_automation_plugin_catalog(
             "plugin_id": plugin_id,
             "name": normalize_feedback_text(redact_text(str(raw.get("name") or plugin_id)))[:120],
             "version": version,
-            "execution_platform": platform,
-            "platform_label": "Windows 设备" if platform == "windows" else "服务器",
             "can_schedule": bool(scheduling["supported"]) if contract_supported else False,
-            "worker_required": bool(raw.get("worker_required")) or platform == "windows",
             "action_summary": normalize_feedback_text(
                 redact_text(str(raw.get("action_summary") or raw.get("description") or ""))
             )[:240],
@@ -1597,9 +1410,6 @@ def normalize_automation_plugin_catalog(
             "blocking_reason_labels": [
                 reason["label"] for reason in blocking_reasons
             ],
-            "migration": _normalize_plugin_migration(
-                raw.get("migration"), automation_id=""
-            ),
             "settings_ui": dict(settings_ui) if settings_ui else None,
             "management": management,
             "settings_mode": raw.get("settings_mode", "custom" if settings_ui else "unavailable"),
@@ -1616,7 +1426,7 @@ def normalize_automation_plugin_catalog(
         plugin_id = str(raw.get("plugin_id") or automation_id).strip()
         package = packages_by_id.get(plugin_id, {})
         try:
-            management = validate_management(raw["management"]) if "management" in raw else package.get("management", management_for(plugin_id))
+            management = validate_management(raw["management"]) if "management" in raw else package.get("management", management_for())
             if plugin_id in invalid_plugins or instance_counts[automation_id] != 1 or management != package.get("management", management):
                 raise ValueError("ambiguous or inconsistent catalog identity")
         except ValueError:
@@ -1624,9 +1434,6 @@ def normalize_automation_plugin_catalog(
                 invalid_instances.append(automation_id)
             continue
         version = str(raw.get("version") or package.get("version") or "").strip()
-        platform = str(
-            raw.get("execution_platform") or package.get("execution_platform") or ""
-        ).strip().lower()
         enabled = raw.get("enabled")
         configured = raw.get("configured")
         record_version = raw.get("record_version")
@@ -1658,10 +1465,6 @@ def normalize_automation_plugin_catalog(
         if runtime_model == AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL:
             provided_services = []
             blocking_reasons = []
-        migration = _normalize_plugin_migration(
-            raw.get("migration", package.get("migration")),
-            automation_id=automation_id,
-        )
         projected_state = str(
             raw.get("state") or ("ENABLED" if enabled else "DISABLED")
         ).strip().upper()
@@ -1700,7 +1503,6 @@ def normalize_automation_plugin_catalog(
             or not AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id)
             or not AUTOMATION_PLUGIN_ID_RE.fullmatch(plugin_id)
             or not AUTOMATION_PLUGIN_VERSION_RE.fullmatch(version)
-            or platform not in {"server", "windows"}
             or not isinstance(enabled, bool)
             or not isinstance(configured, bool)
             or isinstance(record_version, bool)
@@ -1903,23 +1705,6 @@ def normalize_automation_plugin_catalog(
                     if entrypoint in entrypoint_kinds
                 }
             )
-        raw_device = raw.get("device") if isinstance(raw.get("device"), dict) else None
-        device = None
-        if raw_device is not None:
-            device_id = str(
-                raw_device.get("id") or raw_device.get("device_id") or ""
-            ).strip()
-            if AUTOMATION_WORKER_ID_RE.fullmatch(device_id):
-                device = {
-                    "device_id": device_id,
-                    "name": normalize_feedback_text(
-                        redact_text(str(raw_device.get("name") or device_id))
-                    )[:120],
-                    "state": normalize_feedback_text(
-                        str(raw_device.get("state") or raw_device.get("status") or "")
-                    )[:40],
-                    "online": bool(raw_device.get("online")),
-                }
         missing_requirements = [
             AUTOMATION_PLUGIN_MISSING_REQUIREMENT_LABELS.get(
                 str(item), normalize_feedback_text(redact_text(str(item)))[:120]
@@ -2003,26 +1788,18 @@ def normalize_automation_plugin_catalog(
             and runtime_model != AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
         )
         uninstall_allowed = lifecycle_actions_allowed or (
-            project_state == "INSTALLED" and not enabled and not configured and not migration
+            project_state == "INSTALLED" and not enabled and not configured
             and runtime_model != AUTOMATION_PLUGIN_UNSUPPORTED_RUNTIME_MODEL
         ) or (
             runtime_model == "SERVICE_V2"
             and project_state in {"INSTALLED", "DISABLED"}
             and not enabled
             and reconcile_state == "ERROR"
-            and (not migration or (
-                migration.get("state") == "ROLLED_BACK"
-                and migration.get("role") == "TARGET"
-            ))
         ) or (
             runtime_model == "SERVICE_V2"
             and project_state == "UNINSTALLING"
             and not enabled
             and reconcile_state == "STABLE"
-            and (not migration or (
-                migration.get("state") == "ROLLED_BACK"
-                and migration.get("role") == "TARGET"
-            ))
         )
         disable_allowed = bool(enabled) and project_state not in {
             "UPGRADING",
@@ -2033,7 +1810,6 @@ def normalize_automation_plugin_catalog(
             not configured
             or bool(missing_requirements)
             or state not in AUTOMATION_PLUGIN_STABLE_STATES
-            or (platform == "windows" and device is None)
             or not entrypoints_valid
             or not entrypoint_kinds_valid
             or not scheduling_valid
@@ -2081,7 +1857,6 @@ def normalize_automation_plugin_catalog(
                 "provided_services": provided_services,
                 "blocking_reasons": blocking_reasons,
                 "blocking_reason_labels": blocking_reason_labels,
-                "migration": migration,
                 "enabled": enabled,
                 "configured": configured,
                 "state": state,
@@ -2097,12 +1872,7 @@ def normalize_automation_plugin_catalog(
                 "disable_allowed": disable_allowed,
                 "record_version": record_version,
                 "project_configuration_version": project_configuration_version,
-                "execution_platform": platform,
-                "platform_label": "Windows 设备" if platform == "windows" else "服务器",
                 "can_schedule": bool(scheduling["supported"]),
-                "worker_required": bool(
-                    raw.get("worker_required", package.get("worker_required", platform == "windows"))
-                ),
                 "action_summary": normalize_feedback_text(
                     redact_text(
                         str(raw.get("action_summary") or package.get("action_summary") or "")
@@ -2141,7 +1911,6 @@ def normalize_automation_plugin_catalog(
                 "enabled_console_entrypoints": enabled_console_entrypoints,
                 "enabled_entrypoints": enabled_entrypoints,
                 "enabled_entrypoint_kinds": enabled_entrypoint_kinds,
-                "device": device,
                 "missing_requirements": missing_requirements,
                 "blocked": blocked,
                 "settings_ui": dict(settings_ui) if settings_ui else None,
@@ -2156,45 +1925,6 @@ def normalize_automation_plugin_catalog(
         if AUTOMATION_PROJECT_ID_RE.fullmatch(str(item or "").strip())
     ]
     return packages, instances, list(dict.fromkeys(unsupported + invalid_instances))
-
-
-def normalize_automation_workers(value: Any) -> list[dict[str, Any]]:
-    if isinstance(value, dict):
-        value = value.get("workers") if isinstance(value.get("workers"), list) else value.get("items")
-    if not isinstance(value, list):
-        return []
-    workers: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw in value:
-        if not isinstance(raw, dict):
-            continue
-        worker_id = str(raw.get("worker_id") or raw.get("device_id") or raw.get("id") or "").strip()
-        platform = str(raw.get("platform") or "").strip().lower()
-        if worker_id in seen or not AUTOMATION_WORKER_ID_RE.fullmatch(worker_id) or platform != "windows":
-            continue
-        state = str(raw.get("state") or raw.get("status") or "").strip().upper()
-        session_state = str(raw.get("session_state") or "").strip().upper()
-        online = bool(raw.get("online")) or state == "ONLINE" or session_state == "ONLINE"
-        display_name = normalize_feedback_text(
-            redact_text(str(raw.get("display_name") or raw.get("name") or worker_id))
-        )[:120]
-        seen.add(worker_id)
-        workers.append(
-            {
-                "worker_id": worker_id,
-                "device_id": worker_id,
-                "display_name": display_name,
-                "name": display_name,
-                "platform": "windows",
-                "status": normalize_feedback_text(str(raw.get("status") or raw.get("state") or ""))[:40],
-                "status_label": "在线" if online else "离线",
-                "online": online,
-                "binding_usable": online
-                and state not in {"DISABLED", "RETIRED", "REVOKED"},
-                "last_seen_at": normalize_feedback_text(str(raw.get("last_seen_at") or ""))[:40],
-            }
-        )
-    return workers
 
 
 def normalize_hidden_automation_ids(value: Any) -> frozenset[str]:

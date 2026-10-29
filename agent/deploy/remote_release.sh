@@ -32,36 +32,15 @@ if [[ -n "${7:-}" ]]; then
     exit 2
   fi
 fi
-# Current production scope is server-only. Windows Worker transport, signer,
-# Nginx mTLS prerequisites and dispatcher health are deliberately excluded.
-WINDOWS_WORKER_RELEASE_ENABLED=0
-
 DEPLOY_ROOT="/home/boyce/.boyi-deploy"
 RELEASE_LOCK_FILE="${DEPLOY_ROOT}/release.lock"
 SCHEDULER_RELEASE_HOLD_FILE="${DEPLOY_ROOT}/scheduler-release.pause"
+# Installed plugin versions live in ${AUTOMATION_PLUGIN_ROOT}/installed and are
+# managed only by the Agent; a release never installs or removes packages.
 AUTOMATION_PLUGIN_ROOT="/home/boyce/.boyi-automation-plugins"
-AUTOMATION_PLUGIN_INSTALL_ROOT="${AUTOMATION_PLUGIN_ROOT}/installed"
-FIRST_PARTY_PLUGIN_RELEASES_ROOT="${AUTOMATION_PLUGIN_ROOT}/releases"
-FIRST_PARTY_PLUGIN_RELEASE_ROOT="${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${RELEASE_SHA}"
-FIRST_PARTY_PLUGIN_TRUST_ROOT="${AUTOMATION_PLUGIN_ROOT}/trust"
-STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT="${STAGE_ROOT}/_plugin_artifacts"
-STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT="${STAGE_ROOT}/_plugin_trust"
 PLUGIN_RUNTIME_ENV_FILE="/home/boyce/agent/runtime/automation_plugin_release.env"
-WORKER_NGINX_STAGED_CONFIG="${STAGE_ROOT}/agent/deploy/nginx/boyi-worker-mtls.conf"
-WORKER_NGINX_INSTALLED_CONFIG="/etc/nginx/snippets/boyi-worker-mtls.conf"
-WORKER_NGINX_SITE_CONFIG="/etc/nginx/sites-enabled/boyi.homes.conf"
-WORKER_NGINX_SITES_AVAILABLE_ROOT="/etc/nginx/sites-available"
-WORKER_NGINX_SITES_ENABLED_ROOT="/etc/nginx/sites-enabled"
-WORKER_MTLS_CLIENT_CA="/etc/nginx/mtls/boyi-worker-client-ca.pem"
-WORKER_NGINX_BIN="/usr/sbin/nginx"
-WORKER_NGINX_REQUIRED_UID=0
 BACKUP_DIR="${STAGE_ROOT}/_rollback"
 BACKUP_TREE="${BACKUP_DIR}/tree"
-PLUGIN_TRUST_ADDITIONS_FILE="${BACKUP_DIR}/automation_plugin_trust.added"
-PLUGIN_INSTALL_INVENTORY_FILE="${BACKUP_DIR}/automation_plugin_install.paths"
-PLUGIN_DB_OWNERSHIP_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned"
-PLUGIN_DB_MISSING_ROOTS_FILE="${BACKUP_DIR}/automation_plugin_install.db_owned_missing"
-LEGACY_FINANCE_ETL_ROOT="/home/boyce/agent/finance_reconciliation"
 VENV_ROOT="/home/boyce/.boyi-venvs"
 PIP_INDEX_URL="${BOYI_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 PIP_RETRIES="${BOYI_PIP_RETRIES:-8}"
@@ -73,17 +52,10 @@ VENV_ACTIVATED=0
 SERVICES_QUIESCED=0
 RELEASE_STAGE="initialization"
 IDENTITY_ENV_FILE="/home/boyce/agent/.env"
-CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
-DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
-SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
-AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
-FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
-CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
 MIGRATIONS_ATTEMPTED=0
 DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=0
 NEW_RUNTIME_START_ATTEMPTED=0
 SCHEDULER_RELEASE_HOLD_CREATED=0
-FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED=0
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -346,122 +318,6 @@ validate_environment() {
   done
 }
 
-worker_mtls_preflight_failure() {
-  local reason="$1"
-  echo "worker_mtls_proxy_preflight=blocked reason=${reason}" >&2
-  return 1
-}
-
-worker_mtls_safe_root_path() {
-  local path="$1"
-  local reason_prefix="$2"
-  local kind="$3"
-  local resolved owner mode
-  case "${kind}" in
-    file) [[ -f "${path}" && ! -L "${path}" ]] ;;
-    directory) [[ -d "${path}" && ! -L "${path}" ]] ;;
-    *) return 2 ;;
-  esac || {
-    worker_mtls_preflight_failure "${reason_prefix}_MISSING_OR_UNSAFE"
-    return 1
-  }
-  resolved="$(readlink -f -- "${path}")" || {
-    worker_mtls_preflight_failure "${reason_prefix}_UNRESOLVED"
-    return 1
-  }
-  [[ "${resolved}" == "${path}" ]] || {
-    worker_mtls_preflight_failure "${reason_prefix}_PATH_REDIRECTED"
-    return 1
-  }
-  owner="$(stat -Lc '%u' -- "${path}")" || {
-    worker_mtls_preflight_failure "${reason_prefix}_OWNER_UNREADABLE"
-    return 1
-  }
-  mode="$(stat -Lc '%a' -- "${path}")" || {
-    worker_mtls_preflight_failure "${reason_prefix}_MODE_UNREADABLE"
-    return 1
-  }
-  [[ "${owner}" == "${WORKER_NGINX_REQUIRED_UID}" && "${mode}" =~ ^[0-7]{3,4}$ ]] || {
-    worker_mtls_preflight_failure "${reason_prefix}_OWNERSHIP_INVALID"
-    return 1
-  }
-  (( (8#${mode} & 8#22) == 0 )) || {
-    worker_mtls_preflight_failure "${reason_prefix}_WRITABLE_BY_NON_OWNER"
-    return 1
-  }
-}
-
-preflight_worker_mtls_proxy() {
-  local staged_sha installed_sha resolved_site include_count
-  [[ -f "${WORKER_NGINX_STAGED_CONFIG}" && ! -L "${WORKER_NGINX_STAGED_CONFIG}" ]] || {
-    worker_mtls_preflight_failure "STAGED_CONFIG_MISSING_OR_UNSAFE"
-    return 1
-  }
-  worker_mtls_safe_root_path \
-    "$(dirname -- "${WORKER_NGINX_INSTALLED_CONFIG}")" \
-    "SNIPPET_DIRECTORY" directory || return 1
-  worker_mtls_safe_root_path \
-    "$(dirname -- "${WORKER_MTLS_CLIENT_CA}")" \
-    "CLIENT_CA_DIRECTORY" directory || return 1
-  worker_mtls_safe_root_path \
-    "${WORKER_NGINX_SITES_AVAILABLE_ROOT}" \
-    "SITES_AVAILABLE_DIRECTORY" directory || return 1
-  worker_mtls_safe_root_path \
-    "${WORKER_NGINX_SITES_ENABLED_ROOT}" \
-    "SITES_ENABLED_DIRECTORY" directory || return 1
-  worker_mtls_safe_root_path \
-    "${WORKER_NGINX_INSTALLED_CONFIG}" \
-    "INSTALLED_CONFIG" file || return 1
-  worker_mtls_safe_root_path "${WORKER_MTLS_CLIENT_CA}" "CLIENT_CA" file || return 1
-  worker_mtls_safe_root_path "${WORKER_NGINX_BIN}" "NGINX_BINARY" file || return 1
-
-  [[ -e "${WORKER_NGINX_SITE_CONFIG}" ]] || {
-    worker_mtls_preflight_failure "SITE_CONFIG_MISSING"
-    return 1
-  }
-  resolved_site="$(readlink -f -- "${WORKER_NGINX_SITE_CONFIG}")" || {
-    worker_mtls_preflight_failure "SITE_CONFIG_UNRESOLVED"
-    return 1
-  }
-  case "${resolved_site}" in
-    "${WORKER_NGINX_SITES_AVAILABLE_ROOT}"/*|"${WORKER_NGINX_SITES_ENABLED_ROOT}"/*) ;;
-    *)
-      worker_mtls_preflight_failure "SITE_CONFIG_OUTSIDE_NGINX_ROOT"
-      return 1
-      ;;
-  esac
-  worker_mtls_safe_root_path "${resolved_site}" "SITE_CONFIG" file || return 1
-  include_count="$(grep -Ec \
-    '^[[:space:]]*include[[:space:]]+/etc/nginx/snippets/boyi-worker-mtls\.conf;[[:space:]]*$' \
-    "${resolved_site}")" || true
-  [[ "${include_count}" == "1" ]] || {
-    worker_mtls_preflight_failure "SITE_INCLUDE_INVALID"
-    return 1
-  }
-
-  staged_sha="$(sha256sum -- "${WORKER_NGINX_STAGED_CONFIG}" | awk '{print $1}')" || {
-    worker_mtls_preflight_failure "STAGED_CONFIG_HASH_FAILED"
-    return 1
-  }
-  installed_sha="$(sha256sum -- "${WORKER_NGINX_INSTALLED_CONFIG}" | awk '{print $1}')" || {
-    worker_mtls_preflight_failure "INSTALLED_CONFIG_HASH_FAILED"
-    return 1
-  }
-  [[ "${staged_sha}" =~ ^[0-9a-f]{64}$ && "${installed_sha}" == "${staged_sha}" ]] || {
-    worker_mtls_preflight_failure "INSTALLED_CONFIG_RELEASE_MISMATCH"
-    return 1
-  }
-  systemctl is-active --quiet nginx.service || {
-    worker_mtls_preflight_failure "NGINX_INACTIVE"
-    return 1
-  }
-  sudo -n "${WORKER_NGINX_BIN}" -t >/dev/null 2>&1 || {
-    worker_mtls_preflight_failure "NGINX_CONFIG_TEST_FAILED"
-    return 1
-  }
-  echo "worker_mtls_proxy_preflight=ok config_sha256=${staged_sha}"
-}
-
 preflight_service_identity_configuration() {
   local runtime_python="${PYTHON_BINS[agent]}"
   local staged_root="${STAGE_ROOT}"
@@ -497,36 +353,6 @@ except Exception:
     raise SystemExit(1)
 print("service_identity_preflight=ok")
 PY
-}
-
-preflight_control_plane_task_cutover() {
-  [[ -d "${STAGE_ROOT}/agent/migrations" ]] || return 0
-  local runner="${STAGE_ROOT}/agent/scripts/run_migrations.py"
-  local migration_python="${PYTHON_BINS[agent]}"
-  local output
-  [[ -f "${runner}" && -x "${migration_python}" ]] || {
-    echo "control_plane_task_cutover_preflight=blocked reason=PREFLIGHT_RUNNER_MISSING count=1" >&2
-    return 1
-  }
-
-  if output="$({
-    MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" \
-      --preflight-control-plane-task-cutover
-  } 2>&1)"; then
-    if [[ "${output}" =~ ^control_plane_task_cutover_preflight=ok\ reviewed_rows=[0-9]+\ canonical_rows=[0-9]+\ legacy_rows=[0-9]+$ ]]; then
-      echo "${output}"
-      return 0
-    fi
-    echo "control_plane_task_cutover_preflight=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-
-  if [[ "${output}" =~ ^control_plane_task_cutover_preflight=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
-    echo "${output}" >&2
-  else
-    echo "control_plane_task_cutover_preflight=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-  fi
-  return 1
 }
 
 preflight_scheduled_write_window() {
@@ -584,100 +410,6 @@ run_staged_migration_runner() {
   MIGRATION_ENV_FILE="${IDENTITY_ENV_FILE}" "${migration_python}" "${runner}" "$@"
 }
 
-preflight_automation_project_scheduled_task_identities() {
-  local output expected_count reason field_name
-  local -a lines=()
-
-  if output="$(
-    run_staged_migration_runner \
-      --check-automation-project-scheduled-task-identities 2>&1
-  )"; then
-    if [[ "${output}" =~ ^automation_project_scheduled_task_identities=ok\ state=(applied|pending)\ allowed_count=71$ ]]; then
-      echo "${output}"
-      return 0
-    fi
-    echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-
-  mapfile -t lines <<<"${output}"
-  if [[ "${#lines[@]}" -eq 1 && "${lines[0]}" =~ ^automation_project_scheduled_task_identities=blocked\ reason=(AUTOMATION_PROJECT_IDENTITY_MODULE_MISSING|AUTOMATION_PROJECT_IDENTITY_MODULE_INVALID|AUTOMATION_PROJECT_IDENTITY_SET_INVALID|AUTOMATION_PROJECT_IDENTITY_RESULT_INVALID|AUTOMATION_PROJECT_IDENTITY_PREFLIGHT_RUNTIME_ERROR)\ count=1$ ]]; then
-    echo "${lines[0]}" >&2
-    return 1
-  fi
-  if [[ "${#lines[@]}" -lt 2 || ! "${lines[0]}" =~ ^automation_project_scheduled_task_identities=blocked\ count=([1-9][0-9]*)$ ]]; then
-    echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-  expected_count="${BASH_REMATCH[1]}"
-  if (( ${#lines[@]} - 1 != expected_count )); then
-    echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-
-  local line
-  for line in "${lines[@]:1}"; do
-    if [[ "${line}" =~ ^automation_project_scheduled_task_identity\ task_id_hex=([0-9a-f]{0,1024})\ tool_name_hex=([0-9a-f]{0,1024})\ reason=(UNKNOWN_TASK_ID|TOOL_NAME_MISMATCH)\ field=(id|tool_name)$ ]]; then
-      reason="${BASH_REMATCH[3]}"
-      field_name="${BASH_REMATCH[4]}"
-      if [[ "${reason}:${field_name}" != "UNKNOWN_TASK_ID:id" && \
-            "${reason}:${field_name}" != "TOOL_NAME_MISMATCH:tool_name" ]]; then
-        echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-        return 1
-      fi
-    elif [[ "${line}" =~ ^automation_project_scheduled_task_identity_sha256=([0-9a-f]{64})\ reason=INVALID_IDENTITY\ field=(id|tool_name)$ ]]; then
-      :
-    else
-      echo "automation_project_scheduled_task_identities=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-      return 1
-    fi
-  done
-  printf '%s\n' "${lines[@]}" >&2
-  return 1
-}
-
-preflight_automation_project_required_resources() {
-  local output expected_count
-  local -a lines=()
-
-  if output="$(
-    run_staged_migration_runner \
-      --check-automation-project-required-resources 2>&1
-  )"; then
-    if [[ "${output}" == "automation_project_required_resources=ok count=8" ]]; then
-      echo "${output}"
-      return 0
-    fi
-    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-    return 1
-  fi
-
-  mapfile -t lines <<<"${output}"
-  if [[ "${#lines[@]}" -lt 2 ]]; then
-    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-    return 1
-  fi
-  if [[ "${lines[0]}" =~ ^automation_project_required_resources=blocked\ count=([1-9][0-9]*)$ ]]; then
-    expected_count="${BASH_REMATCH[1]}"
-  else
-    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-    return 1
-  fi
-  if (( ${#lines[@]} - 1 != expected_count )); then
-    echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-    return 1
-  fi
-  local line
-  for line in "${lines[@]:1}"; do
-    if [[ ! "${line}" =~ ^automation_project_required_resource=phase7\.[a-z0-9_]+\ reason=(MISSING_ROW|INVALID_KIND|MISSING_FIELD|INVALID_FIELD_TYPE|EMPTY_FIELD)\ field=[a-z0-9_]+$ ]]; then
-      echo "automation_project_required_resources=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-      return 1
-    fi
-  done
-  printf '%s\n' "${lines[@]}" >&2
-  return 1
-}
-
 preflight_running_protected_writes() {
   local output waited=0
   while true; do
@@ -710,31 +442,6 @@ preflight_running_protected_writes() {
     echo "${output}" >&2
     return 1
   done
-}
-
-check_control_plane_release_manifest() {
-  local expected_initial="0"
-  local output pattern
-  local -a args=(--check-control-plane-release-manifest)
-  if [[ "${AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" == "1" ]]; then
-    args+=(--expect-initial-production-manifest)
-    expected_initial="1"
-  fi
-  if output="$(run_staged_migration_runner "${args[@]}" 2>&1)"; then
-    pattern="^control_plane_release_manifest=ok reviewed_rows=[0-9]+ enabled_rows=[0-9]+ policies=[0-9]+ marker=1 initial=${expected_initial}$"
-    if [[ "${output}" =~ ${pattern} ]]; then
-      echo "${output}"
-      return 0
-    fi
-    echo "control_plane_release_manifest=blocked reason=UNEXPECTED_MANIFEST_RESPONSE count=1" >&2
-    return 1
-  fi
-  if [[ "${output}" =~ ^control_plane_release_manifest=blocked\ reason=[A-Z0-9_]+\ count=[0-9]+$ ]]; then
-    echo "${output}" >&2
-  else
-    echo "control_plane_release_manifest=blocked reason=UNEXPECTED_MANIFEST_RESPONSE count=1" >&2
-  fi
-  return 1
 }
 
 build_release_virtualenvs() {
@@ -997,32 +704,6 @@ backup_managed_sources() {
       return 1
     fi
 
-    if [[ -d "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
-      ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-      : >"${BACKUP_DIR}/first_party_plugin_release.existing"
-    elif [[ ! -e "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
-      ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-      : >"${BACKUP_DIR}/first_party_plugin_release.absent"
-    else
-      echo "Unsafe existing first-party plugin release path" >&2
-      return 1
-    fi
-    for root_state in \
-      "${AUTOMATION_PLUGIN_ROOT}:plugin_root" \
-      "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}:plugin_releases_root" \
-      "${FIRST_PARTY_PLUGIN_TRUST_ROOT}:plugin_trust_root"; do
-      local root_path="${root_state%%:*}"
-      local root_label="${root_state##*:}"
-      if [[ -d "${root_path}" && ! -L "${root_path}" ]]; then
-        : >"${BACKUP_DIR}/${root_label}.existing"
-      elif [[ ! -e "${root_path}" && ! -L "${root_path}" ]]; then
-        : >"${BACKUP_DIR}/${root_label}.absent"
-      else
-        echo "Unsafe automation plugin production root: ${root_path}" >&2
-        return 1
-      fi
-    done
-    : >"${PLUGIN_TRUST_ADDITIONS_FILE}"
   fi
 
   local target
@@ -1031,75 +712,19 @@ backup_managed_sources() {
   done
 }
 
-retire_legacy_finance_etl() {
-  local target retired_path="${BACKUP_DIR}/retired/finance_reconciliation"
-  for target in "${REQUESTED_TARGETS[@]}"; do
-    [[ "${target}" == "agent" ]] || continue
-    [[ "${LEGACY_FINANCE_ETL_ROOT}" == "/home/boyce/agent/finance_reconciliation" ]] || {
-      echo "Refusing unexpected legacy finance ETL path: ${LEGACY_FINANCE_ETL_ROOT}" >&2
-      return 1
-    }
-    [[ -e "${LEGACY_FINANCE_ETL_ROOT}" ]] || return 0
-    [[ ! -e "${retired_path}" ]] || {
-      echo "Legacy finance ETL rollback path already exists: ${retired_path}" >&2
-      return 1
-    }
-    mkdir -p "$(dirname "${retired_path}")"
-    mv -- "${LEGACY_FINANCE_ETL_ROOT}" "${retired_path}"
-    return 0
-  done
-}
-
-restore_legacy_finance_etl() {
-  local retired_path="${BACKUP_DIR}/retired/finance_reconciliation"
-  [[ -e "${retired_path}" ]] || return 0
-  [[ "${LEGACY_FINANCE_ETL_ROOT}" == "/home/boyce/agent/finance_reconciliation" ]] || {
-    echo "Refusing unexpected legacy finance ETL restore path: ${LEGACY_FINANCE_ETL_ROOT}" >&2
-    return 1
-  }
-  [[ ! -e "${LEGACY_FINANCE_ETL_ROOT}" ]] || {
-    echo "Refusing to overwrite legacy finance ETL during rollback" >&2
-    return 1
-  }
-  mv -- "${retired_path}" "${LEGACY_FINANCE_ETL_ROOT}"
-}
-
-# Retire the complete old import tree (including bytecode) into this release's
-# rollback material. It is never copied into the new service runtime.
-retire_legacy_plugin_sources() {
-  [[ "${AGENT_RELEASE}" == "1" ]] || return 0
-  local source="/home/boyce/agent/first_party_automation_plugins"
-  local retired="${BACKUP_DIR}/retired/first_party_automation_plugins"
-  [[ ! -L "${source}" && ! -L "${retired}" ]] || return 1
-  [[ -d "${source}" ]] || return 0
-  [[ ! -e "${retired}" ]] || return 1
-  mkdir -p "${BACKUP_DIR}/retired"
-  mv -- "${source}" "${retired}"
-}
-
-restore_legacy_plugin_sources() {
-  local source="/home/boyce/agent/first_party_automation_plugins"
-  local retired="${BACKUP_DIR}/retired/first_party_automation_plugins"
-  [[ -d "${retired}" ]] || return 0
-  [[ ! -L "${source}" && ! -L "${retired}" ]] || return 1
-  # Managed-file restoration may have recreated this exact tree already.
-  mkdir -p "${source}"
-  cp -a "${retired}/." "${source}/"
-}
-
-preflight_staged_first_party_source_scope() {
-  local helper="${STAGE_ROOT}/agent/scripts/first_party_release_scope.py"
+preflight_staged_release_scope() {
+  local helper="${STAGE_ROOT}/agent/scripts/release_scope.py"
   local output
   [[ -f "${helper}" && ! -L "${helper}" ]] || {
-    echo "first_party_release_source_scope=blocked reason=HELPER_MISSING_OR_UNSAFE" >&2
+    echo "release_source_scope=blocked reason=HELPER_MISSING_OR_UNSAFE" >&2
     return 1
   }
   output="$(
     PYTHONDONTWRITEBYTECODE=1 "${PYTHON_BINS[agent]}" "${helper}" \
       --repository-root "${STAGE_ROOT}" verify-staged
   )" || return 1
-  [[ "${output}" == "first_party_release_source_scope=ok" ]] || {
-    echo "first_party_release_source_scope=blocked reason=UNEXPECTED_RESPONSE" >&2
+  [[ "${output}" == "release_source_scope=ok" ]] || {
+    echo "release_source_scope=blocked reason=UNEXPECTED_RESPONSE" >&2
     return 1
   }
   echo "${output}"
@@ -1107,14 +732,12 @@ preflight_staged_first_party_source_scope() {
 
 run_static_preflight() {
   if [[ "${AGENT_RELEASE}" == "1" ]]; then
-    preflight_staged_first_party_source_scope
+    preflight_staged_release_scope
   fi
   local target runtime_python shared_python=""
   for target in "${REQUESTED_TARGETS[@]}"; do
     runtime_python="${PYTHON_BINS[$target]}"
-    "${runtime_python}" -m compileall -q \
-      -x '(^|/)(windows_worker($|/)|windows_worker_host\.py$)' \
-      "${STAGE_ROOT}/${target}"
+    "${runtime_python}" -m compileall -q "${STAGE_ROOT}/${target}"
     if [[ -z "${shared_python}" ]]; then
       shared_python="${runtime_python}"
     fi
@@ -1139,632 +762,6 @@ run_static_preflight() {
       return 1
     fi
   fi
-}
-
-preflight_signed_first_party_plugins() {
-  local verifier="${STAGE_ROOT}/agent/scripts/verify_first_party_plugins.py"
-  [[ -f "${verifier}" && ! -L "${verifier}" ]] || {
-    echo "Signed first-party plugin verifier is missing or unsafe" >&2
-    return 1
-  }
-  [[ -d "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
-    ! -L "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]] || {
-    echo "Signed first-party plugin release is missing or unsafe: ${RELEASE_SHA}" >&2
-    return 1
-  }
-  [[ -d "${STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT}" && \
-    ! -L "${STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT}" ]] || {
-    echo "First-party plugin trust root is missing or unsafe" >&2
-    return 1
-  }
-  local verifier_python="${PYTHON_BINS[agent]}"
-  if [[ -n "${RELEASE_VENV}" ]]; then
-    verifier_python="${RELEASE_VENV}/bin/python"
-  fi
-  local output
-  output="$(
-    PYTHONPATH="${STAGE_ROOT}/agent:${STAGE_ROOT}" "${verifier_python}" "${verifier}" \
-      --artifact-root "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}" \
-      --trust-root "${STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT}" \
-      --release-sha "${RELEASE_SHA}" \
-      --service-v2-only --require-completed-migrations --runtime-root "/home/boyce/agent"
-  )" || return 1
-  grep -Fxq 'status=ok' <<<"${output}" || {
-    echo "Signed first-party plugin preflight returned an invalid status" >&2
-    return 1
-  }
-  grep -Fxq "release_sha=${RELEASE_SHA}" <<<"${output}" || {
-    echo "Signed first-party plugin release SHA does not match" >&2
-    return 1
-  }
-  if grep -Fxq 'first_party_retired=true' <<<"${output}"; then
-    grep -Fxq 'package_count=0' <<<"${output}" || return 1
-  else
-    grep -Eq '^package_count=[1-9][0-9]*$' <<<"${output}" || {
-      echo "Signed first-party plugin package count is invalid" >&2
-      return 1
-    }
-  fi
-  grep -Eq '^instance_count=[1-9][0-9]*$' <<<"${output}" || {
-    echo "Signed first-party plugin migration instance count is invalid" >&2
-    return 1
-  }
-  grep -Eq '^contracts_sha256=[0-9a-f]{64}$' <<<"${output}" || {
-    echo "Signed first-party plugin contract digest is invalid" >&2
-    return 1
-  }
-  printf '%s\n' "${output}"
-}
-
-preflight_worker_server_identity() {
-  local verifier="${STAGE_ROOT}/agent/scripts/verify_worker_server_identity.py"
-  local verifier_python="${PYTHON_BINS[agent]}"
-  [[ -z "${RELEASE_VENV}" ]] || verifier_python="${RELEASE_VENV}/bin/python"
-  [[ -f "${verifier}" && ! -L "${verifier}" ]] || {
-    echo "Windows Worker server identity preflight is missing or unsafe" >&2
-    return 1
-  }
-  local output
-  output="$(
-    PYTHONPATH="${STAGE_ROOT}/agent:${STAGE_ROOT}" "${verifier_python}" "${verifier}" \
-      --environment-file "${IDENTITY_ENV_FILE}"
-  )" || return 1
-  [[ "${output}" == "status=ok" ]] || {
-    echo "Windows Worker server identity preflight returned an invalid status" >&2
-    return 1
-  }
-}
-
-verify_installed_first_party_plugin_artifacts() {
-  local artifact_root="$1"
-  local verifier="${STAGE_ROOT}/agent/scripts/verify_first_party_plugins.py"
-  local verifier_python="${PYTHON_BINS[agent]}"
-  [[ -z "${RELEASE_VENV}" ]] || verifier_python="${RELEASE_VENV}/bin/python"
-  [[ -d "${artifact_root}" && ! -L "${artifact_root}" && \
-    -d "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" && \
-    ! -L "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" ]] || {
-    echo "Installed first-party plugin paths are missing or unsafe" >&2
-    return 1
-  }
-  PYTHONPATH="${STAGE_ROOT}/agent:${STAGE_ROOT}" "${verifier_python}" "${verifier}" \
-    --artifact-root "${artifact_root}" \
-    --trust-root "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" \
-    --release-sha "${RELEASE_SHA}" \
-    --service-v2-only --require-completed-migrations --runtime-root "/home/boyce/agent" >/dev/null
-}
-
-install_verified_first_party_plugin_artifacts() {
-  [[ ! -L "${AUTOMATION_PLUGIN_ROOT}" && \
-    ! -L "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}" && \
-    ! -L "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" ]] || {
-    echo "Automation plugin production roots cannot be symbolic links" >&2
-    return 1
-  }
-  mkdir -p "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}" "${FIRST_PARTY_PLUGIN_TRUST_ROOT}"
-  chmod 0700 "${AUTOMATION_PLUGIN_ROOT}" "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}" \
-    "${FIRST_PARTY_PLUGIN_TRUST_ROOT}"
-
-  local source_key key_name destination_key
-  local -a source_keys=("${STAGED_FIRST_PARTY_PLUGIN_TRUST_ROOT}"/*.pub)
-  [[ "${#source_keys[@]}" -gt 0 ]] || {
-    echo "Verified first-party plugin trust set is empty" >&2
-    return 1
-  }
-  for source_key in "${source_keys[@]}"; do
-    [[ -f "${source_key}" && ! -L "${source_key}" ]] || {
-      echo "Unsafe staged automation plugin trust key" >&2
-      return 1
-    }
-    key_name="$(basename "${source_key}")"
-    [[ "${key_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.pub$ ]] || {
-      echo "Invalid automation plugin trust key name" >&2
-      return 1
-    }
-    destination_key="${FIRST_PARTY_PLUGIN_TRUST_ROOT}/${key_name}"
-    if [[ -e "${destination_key}" || -L "${destination_key}" ]]; then
-      [[ -f "${destination_key}" && ! -L "${destination_key}" ]] || {
-        echo "Unsafe existing automation plugin trust key" >&2
-        return 1
-      }
-      cmp -s -- "${source_key}" "${destination_key}" || {
-        echo "Refusing to overwrite a different automation plugin trust key" >&2
-        return 1
-      }
-    else
-      local source_key_sha256
-      source_key_sha256="$(sha256sum -- "${source_key}" | awk '{print $1}')"
-      [[ "${source_key_sha256}" =~ ^[0-9a-f]{64}$ ]] || {
-        echo "Could not fingerprint staged automation plugin trust key" >&2
-        return 1
-      }
-      printf '%s %s\n' "${source_key_sha256}" "${key_name}" \
-        >>"${PLUGIN_TRUST_ADDITIONS_FILE}"
-      install -m 0644 "${source_key}" "${destination_key}"
-    fi
-  done
-
-  if [[ -e "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" || -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-    [[ -d "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" && \
-      ! -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]] || {
-      echo "Unsafe existing first-party plugin release root" >&2
-      return 1
-    }
-    verify_installed_first_party_plugin_artifacts "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}"
-    return 0
-  fi
-
-  local temp_release
-  temp_release="$(mktemp -d "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/.${RELEASE_SHA}.XXXXXX")"
-  [[ "${temp_release}" == "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/.${RELEASE_SHA}."* && \
-    -d "${temp_release}" && ! -L "${temp_release}" ]] || {
-    echo "Unsafe temporary first-party plugin release path" >&2
-    return 1
-  }
-  chmod 0700 "${temp_release}"
-  if ! cp -a "${STAGED_FIRST_PARTY_PLUGIN_RELEASE_ROOT}/." "${temp_release}/"; then
-    rm -rf -- "${temp_release}"
-    return 1
-  fi
-  find "${temp_release}" -type d -exec chmod 0700 {} +
-  find "${temp_release}" -type f -exec chmod 0600 {} +
-  if ! verify_installed_first_party_plugin_artifacts "${temp_release}"; then
-    rm -rf -- "${temp_release}"
-    return 1
-  fi
-  if ! mv -- "${temp_release}" "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}"; then
-    rm -rf -- "${temp_release}"
-    return 1
-  fi
-}
-
-restore_first_party_plugin_artifacts() {
-  local restore_status=0 expected_sha key_name destination_key actual_sha
-  local remove_release=0
-  local -a trust_keys_to_remove=()
-
-  [[ "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" == \
-    "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${RELEASE_SHA}" ]] || {
-    echo "Refusing unexpected first-party plugin rollback path" >&2
-    return 1
-  }
-  if [[ -f "${BACKUP_DIR}/first_party_plugin_release.absent" ]]; then
-    if [[ -e "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" || \
-      -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-      if [[ ! -d "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" || \
-        -L "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" ]]; then
-        echo "Refusing unsafe first-party plugin release rollback target" >&2
-        restore_status=1
-      elif verify_installed_first_party_plugin_artifacts \
-        "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}"; then
-        remove_release=1
-      else
-        echo "Refusing to delete changed first-party plugin release artifacts" >&2
-        restore_status=1
-      fi
-    fi
-  elif [[ ! -f "${BACKUP_DIR}/first_party_plugin_release.existing" ]]; then
-    echo "Missing first-party plugin release rollback state" >&2
-    restore_status=1
-  fi
-
-  if [[ ! -f "${PLUGIN_TRUST_ADDITIONS_FILE}" ]]; then
-    echo "Missing automation plugin trust rollback state" >&2
-    restore_status=1
-  else
-    while read -r expected_sha key_name trailing; do
-      [[ -z "${expected_sha}${key_name}${trailing:-}" ]] && continue
-      if [[ -n "${trailing:-}" || \
-        ! "${expected_sha}" =~ ^[0-9a-f]{64}$ || \
-        ! "${key_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.pub$ ]]; then
-        echo "Invalid automation plugin trust rollback entry" >&2
-        restore_status=1
-        continue
-      fi
-      destination_key="${FIRST_PARTY_PLUGIN_TRUST_ROOT}/${key_name}"
-      if [[ ! -e "${destination_key}" && ! -L "${destination_key}" ]]; then
-        continue
-      fi
-      if [[ ! -f "${destination_key}" || -L "${destination_key}" ]]; then
-        echo "Refusing unsafe automation plugin trust rollback target" >&2
-        restore_status=1
-        continue
-      fi
-      actual_sha="$(sha256sum -- "${destination_key}" | awk '{print $1}')"
-      if [[ "${actual_sha}" != "${expected_sha}" ]]; then
-        echo "Refusing to delete changed automation plugin trust key" >&2
-        restore_status=1
-        continue
-      fi
-      trust_keys_to_remove+=("${destination_key}")
-    done <"${PLUGIN_TRUST_ADDITIONS_FILE}"
-  fi
-
-  [[ "${restore_status}" == "0" ]] || return "${restore_status}"
-  if [[ "${remove_release}" == "1" ]]; then
-    rm -rf -- "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}" || restore_status=1
-  fi
-  for destination_key in "${trust_keys_to_remove[@]}"; do
-    rm -- "${destination_key}" || restore_status=1
-  done
-
-  if [[ -f "${BACKUP_DIR}/plugin_trust_root.absent" ]]; then
-    rmdir -- "${FIRST_PARTY_PLUGIN_TRUST_ROOT}" 2>/dev/null || true
-  fi
-  if [[ -f "${BACKUP_DIR}/plugin_releases_root.absent" ]]; then
-    rmdir -- "${FIRST_PARTY_PLUGIN_RELEASES_ROOT}" 2>/dev/null || true
-  fi
-  if [[ -f "${BACKUP_DIR}/plugin_root.absent" ]]; then
-    rmdir -- "${AUTOMATION_PLUGIN_ROOT}" 2>/dev/null || true
-  fi
-  return "${restore_status}"
-}
-
-validate_automation_plugin_install_inventory() {
-  local inventory_file="$1" relative
-  [[ -f "${inventory_file}" && ! -L "${inventory_file}" ]] || return 1
-  while IFS= read -r relative || [[ -n "${relative}" ]]; do
-    [[ -n "${relative}" ]] || continue
-    if [[ "${relative}" == ".staging" ]]; then
-      continue
-    fi
-    if [[ "${relative}" =~ ^\.staging/[a-z][a-z0-9_]{1,63}-[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{32}$ ]]; then
-      continue
-    fi
-    if [[ "${relative}" =~ ^[a-z][a-z0-9_]{1,63}/[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$ ]]; then
-      continue
-    fi
-    if [[ "${relative}" =~ ^[a-z][a-z0-9_]{1,63}$ ]]; then
-      continue
-    fi
-    return 1
-  done <"${inventory_file}"
-}
-
-validate_automation_plugin_owned_root_inventory() {
-  local inventory_file="$1" relative
-  [[ -f "${inventory_file}" && ! -L "${inventory_file}" ]] || return 1
-  while IFS= read -r relative || [[ -n "${relative}" ]]; do
-    [[ "${relative}" =~ ^[a-z][a-z0-9_]{1,63}/[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$ ]] || return 1
-  done <"${inventory_file}"
-  LC_ALL=C sort -c -u -- "${inventory_file}" >/dev/null 2>&1
-}
-
-validate_automation_plugin_db_ownership_inventory() {
-  local inventory_file="$1" line
-  [[ -f "${inventory_file}" && ! -L "${inventory_file}" ]] || return 1
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    [[ "${line}" =~ ^[a-z][a-z0-9_]{1,63}\ [0-9]+\.[0-9]+\.[0-9]+\ [0-9a-f]{64}\ [0-9a-f]{64}$ ]] || return 1
-  done <"${inventory_file}"
-  LC_ALL=C sort -c -u -- "${inventory_file}" >/dev/null 2>&1
-}
-
-automation_plugin_db_owns_relative_root() {
-  local expected_relative="$1" plugin_id version package_sha256 manifest_sha256
-  while IFS=' ' read -r plugin_id version package_sha256 manifest_sha256; do
-    if [[ "${plugin_id}/${version}-${manifest_sha256:0:12}" == "${expected_relative}" ]]; then
-      return 0
-    fi
-  done <"${PLUGIN_DB_OWNERSHIP_FILE}"
-  return 1
-}
-
-write_automation_plugin_db_ownership_inventory() {
-  local destination="$1" output expected_count plugin_id version
-  local package_sha256 manifest_sha256
-  local -a lines=()
-  if ! output="$(
-    run_staged_migration_runner \
-      --check-automation-plugin-install-ownership \
-      --automation-plugin-install-root "${AUTOMATION_PLUGIN_INSTALL_ROOT}" 2>&1
-  )"; then
-    if [[ "${output}" =~ ^automation_plugin_install_ownership=blocked\ reason=(INVALID_INSTALL_ROOT|INVALID_DATABASE_STATE|PREFLIGHT_RUNTIME_ERROR)\ count=1$ ]]; then
-      echo "${output}" >&2
-    else
-      echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    fi
-    return 1
-  fi
-
-  mapfile -t lines <<<"${output}"
-  if [[ "${#lines[@]}" -lt 1 || \
-    ! "${lines[0]}" =~ ^automation_plugin_install_ownership=ok\ count=([0-9]+)$ ]]; then
-    echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-  expected_count="${BASH_REMATCH[1]}"
-  if (( expected_count > 4096 || ${#lines[@]} != expected_count + 1 )); then
-    echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-    return 1
-  fi
-
-  (umask 077; : >"${destination}")
-  local line
-  for line in "${lines[@]:1}"; do
-    if [[ ! "${line}" =~ ^automation_plugin_install_owner\ plugin_id=([a-z][a-z0-9_]{1,63})\ version=([0-9]+\.[0-9]+\.[0-9]+)\ package_sha256=([0-9a-f]{64})\ manifest_sha256=([0-9a-f]{64})$ ]]; then
-      echo "automation_plugin_install_ownership=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE count=1" >&2
-      return 1
-    fi
-    plugin_id="${BASH_REMATCH[1]}"
-    version="${BASH_REMATCH[2]}"
-    package_sha256="${BASH_REMATCH[3]}"
-    manifest_sha256="${BASH_REMATCH[4]}"
-    printf '%s %s %s %s\n' \
-      "${plugin_id}" "${version}" "${package_sha256}" "${manifest_sha256}" \
-      >>"${destination}"
-  done
-  validate_automation_plugin_db_ownership_inventory "${destination}" || {
-    echo "automation_plugin_install_ownership=blocked reason=INVALID_IDENTITY_SET count=1" >&2
-    return 1
-  }
-}
-
-capture_preexisting_automation_plugin_db_ownership() {
-  local pending
-  mkdir -p "${BACKUP_DIR}"
-  pending="$(mktemp "${BACKUP_DIR}/automation_plugin_install.db_owned.XXXXXX")"
-  if ! write_automation_plugin_db_ownership_inventory "${pending}"; then
-    rm -f -- "${pending}"
-    return 1
-  fi
-  mv -- "${pending}" "${PLUGIN_DB_OWNERSHIP_FILE}"
-  echo "automation_plugin_install_ownership=captured count=$(wc -l <"${PLUGIN_DB_OWNERSHIP_FILE}")"
-}
-
-confirm_preexisting_automation_plugin_db_ownership() {
-  local confirmed
-  validate_automation_plugin_db_ownership_inventory "${PLUGIN_DB_OWNERSHIP_FILE}" || {
-    echo "automation_plugin_install_ownership=blocked reason=MISSING_PRESTATE count=1" >&2
-    return 1
-  }
-  confirmed="$(mktemp "${BACKUP_DIR}/automation_plugin_install.db_confirmed.XXXXXX")"
-  if ! write_automation_plugin_db_ownership_inventory "${confirmed}"; then
-    rm -f -- "${confirmed}"
-    return 1
-  fi
-  if ! cmp -s -- "${PLUGIN_DB_OWNERSHIP_FILE}" "${confirmed}"; then
-    rm -f -- "${confirmed}"
-    echo "automation_plugin_install_ownership=blocked reason=PRESTATE_CHANGED count=1" >&2
-    return 1
-  fi
-  rm -- "${confirmed}"
-  echo "automation_plugin_install_ownership=confirmed"
-}
-
-capture_automation_plugin_installation_state() {
-  local plugin_id version package_sha256 manifest_sha256 owned_relative owned_path
-  mkdir -p "${BACKUP_DIR}"
-  validate_automation_plugin_db_ownership_inventory "${PLUGIN_DB_OWNERSHIP_FILE}" || {
-    echo "Missing or invalid automation plugin database ownership prestate" >&2
-    return 1
-  }
-  : >"${PLUGIN_INSTALL_INVENTORY_FILE}"
-  : >"${PLUGIN_DB_MISSING_ROOTS_FILE}"
-  if [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}" && \
-    ! -L "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]]; then
-    while IFS=' ' read -r plugin_id version package_sha256 manifest_sha256; do
-      printf '%s/%s-%s\n' \
-        "${plugin_id}" "${version}" "${manifest_sha256:0:12}" \
-        >>"${PLUGIN_DB_MISSING_ROOTS_FILE}"
-    done <"${PLUGIN_DB_OWNERSHIP_FILE}"
-    validate_automation_plugin_owned_root_inventory "${PLUGIN_DB_MISSING_ROOTS_FILE}" || {
-      echo "Automation plugin missing-root ownership state is invalid" >&2
-      return 1
-    }
-    : >"${BACKUP_DIR}/automation_plugin_install_root.absent"
-    return 0
-  fi
-  [[ -d "${AUTOMATION_PLUGIN_INSTALL_ROOT}" && \
-    ! -L "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]] || {
-    echo "Unsafe automation plugin installation root" >&2
-    return 1
-  }
-  : >"${BACKUP_DIR}/automation_plugin_install_root.existing"
-  if find "${AUTOMATION_PLUGIN_INSTALL_ROOT}" -mindepth 1 -maxdepth 2 \
-    ! -type d -print -quit | grep -q .; then
-    echo "Automation plugin installation index contains an unsafe entry" >&2
-    return 1
-  fi
-  find "${AUTOMATION_PLUGIN_INSTALL_ROOT}" -mindepth 1 -maxdepth 2 -type d \
-    -printf '%P\n' | LC_ALL=C sort -u >"${PLUGIN_INSTALL_INVENTORY_FILE}"
-  validate_automation_plugin_install_inventory "${PLUGIN_INSTALL_INVENTORY_FILE}" || {
-    echo "Automation plugin installation index is invalid" >&2
-    return 1
-  }
-  while IFS=' ' read -r plugin_id version package_sha256 manifest_sha256; do
-    owned_relative="${plugin_id}/${version}-${manifest_sha256:0:12}"
-    owned_path="${AUTOMATION_PLUGIN_INSTALL_ROOT}/${owned_relative}"
-    if [[ ! -e "${owned_path}" && ! -L "${owned_path}" ]]; then
-      printf '%s\n' "${owned_relative}" >>"${PLUGIN_DB_MISSING_ROOTS_FILE}"
-    elif [[ ! -d "${owned_path}" || -L "${owned_path}" ]]; then
-      echo "Automation plugin database-owned root is unsafe" >&2
-      return 1
-    fi
-  done <"${PLUGIN_DB_OWNERSHIP_FILE}"
-  validate_automation_plugin_owned_root_inventory "${PLUGIN_DB_MISSING_ROOTS_FILE}" || {
-    echo "Automation plugin missing-root ownership state is invalid" >&2
-    return 1
-  }
-}
-
-restore_automation_plugin_installations() {
-  local current_inventory new_inventory missing_inventory preserved_projects
-  local relative source destination owned_relative
-  local quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
-  validate_automation_plugin_install_inventory "${PLUGIN_INSTALL_INVENTORY_FILE}" || {
-    echo "Missing or invalid automation plugin installation rollback state" >&2
-    return 1
-  }
-  validate_automation_plugin_db_ownership_inventory "${PLUGIN_DB_OWNERSHIP_FILE}" || {
-    echo "Missing or invalid automation plugin database ownership rollback state" >&2
-    return 1
-  }
-  validate_automation_plugin_owned_root_inventory "${PLUGIN_DB_MISSING_ROOTS_FILE}" || {
-    echo "Missing or invalid automation plugin missing-root rollback state" >&2
-    return 1
-  }
-  while IFS= read -r owned_relative || [[ -n "${owned_relative}" ]]; do
-    automation_plugin_db_owns_relative_root "${owned_relative}" || {
-      echo "Automation plugin missing-root rollback state is not database-owned" >&2
-      return 1
-    }
-  done <"${PLUGIN_DB_MISSING_ROOTS_FILE}"
-  if [[ ! -e "${AUTOMATION_PLUGIN_INSTALL_ROOT}" && \
-    ! -L "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]]; then
-    if [[ -f "${BACKUP_DIR}/automation_plugin_install_root.absent" && \
-      ! -s "${PLUGIN_DB_MISSING_ROOTS_FILE}" ]]; then
-      return 0
-    fi
-    if [[ -s "${PLUGIN_DB_MISSING_ROOTS_FILE}" ]]; then
-      echo "A pre-release database-owned automation plugin root was not recovered" >&2
-      return 1
-    fi
-    echo "Automation plugin installation root disappeared during release" >&2
-    return 1
-  fi
-  [[ -d "${AUTOMATION_PLUGIN_INSTALL_ROOT}" && \
-    ! -L "${AUTOMATION_PLUGIN_INSTALL_ROOT}" ]] || {
-    echo "Unsafe automation plugin installation rollback root" >&2
-    return 1
-  }
-  current_inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_install.current.XXXXXX")"
-  new_inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_install.new.XXXXXX")"
-  missing_inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_install.missing.XXXXXX")"
-  preserved_projects="$(mktemp "${BACKUP_DIR}/automation_plugin_install.preserved.XXXXXX")"
-  if find "${AUTOMATION_PLUGIN_INSTALL_ROOT}" -mindepth 1 -maxdepth 2 \
-    ! -type d -print -quit | grep -q .; then
-    echo "Automation plugin rollback found an unsafe indexed entry" >&2
-    return 1
-  fi
-  find "${AUTOMATION_PLUGIN_INSTALL_ROOT}" -mindepth 1 -maxdepth 2 -type d \
-    -printf '%P\n' | LC_ALL=C sort -u >"${current_inventory}"
-  validate_automation_plugin_install_inventory "${current_inventory}" || {
-    echo "Automation plugin rollback found an invalid path" >&2
-    return 1
-  }
-  while IFS= read -r owned_relative || [[ -n "${owned_relative}" ]]; do
-    grep -Fqx -- "${owned_relative}" "${current_inventory}" || {
-      echo "A pre-release database-owned automation plugin root was not recovered" >&2
-      return 1
-    }
-  done <"${PLUGIN_DB_MISSING_ROOTS_FILE}"
-  if ! LC_ALL=C comm --check-order -23 \
-    "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${missing_inventory}"; then
-    echo "Automation plugin rollback inventory comparison failed" >&2
-    return 1
-  fi
-  if [[ -s "${missing_inventory}" ]]; then
-    echo "A pre-release automation plugin installation disappeared" >&2
-    return 1
-  fi
-  if ! LC_ALL=C comm --check-order -13 \
-    "${PLUGIN_INSTALL_INVENTORY_FILE}" "${current_inventory}" >"${new_inventory}"; then
-    echo "Automation plugin rollback inventory comparison failed" >&2
-    return 1
-  fi
-
-  # Services are stopped and migration 018 has already been restored. Move only
-  # release-created immutable version/staging directories out of the live root;
-  # never delete or overwrite a path that existed before this release.
-  while IFS= read -r relative || [[ -n "${relative}" ]]; do
-    [[ "${relative}" == */* ]] || continue
-    source="${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}"
-    if grep -Fqx -- "${relative}" "${PLUGIN_DB_MISSING_ROOTS_FILE}"; then
-      [[ -d "${source}" && ! -L "${source}" ]] || {
-        echo "Unsafe recovered automation plugin rollback root" >&2
-        return 1
-      }
-      printf '%s\n' "${relative%%/*}" >>"${preserved_projects}"
-      continue
-    fi
-    destination="${quarantine}/${relative}"
-    [[ -d "${source}" && ! -L "${source}" && ! -e "${destination}" ]] || {
-      echo "Unsafe automation plugin rollback candidate: ${relative}" >&2
-      return 1
-    }
-    mkdir -p "$(dirname "${destination}")"
-    mv -- "${source}" "${destination}"
-  done <"${new_inventory}"
-  while IFS= read -r relative || [[ -n "${relative}" ]]; do
-    [[ -n "${relative}" && "${relative}" != */* ]] || continue
-    if grep -Fqx -- "${relative}" "${preserved_projects}"; then
-      continue
-    fi
-    rmdir -- "${AUTOMATION_PLUGIN_INSTALL_ROOT}/${relative}" || {
-      echo "New automation plugin project root is not empty: ${relative}" >&2
-      return 1
-    }
-  done <"${new_inventory}"
-  if [[ -f "${BACKUP_DIR}/automation_plugin_install_root.absent" ]]; then
-    if [[ ! -s "${PLUGIN_DB_MISSING_ROOTS_FILE}" ]]; then
-      rmdir -- "${AUTOMATION_PLUGIN_INSTALL_ROOT}" || {
-        echo "New automation plugin installation root is not empty" >&2
-        return 1
-      }
-    fi
-  elif [[ ! -f "${BACKUP_DIR}/automation_plugin_install_root.existing" ]]; then
-    echo "Missing automation plugin installation root prestate" >&2
-    return 1
-  fi
-}
-
-prepare_retired_automation_plugins_for_stage_cleanup() {
-  local quarantine="${BACKUP_DIR}/retired/automation_plugin_installed"
-  local expected_quarantine="${STAGE_ROOT}/_rollback/retired/automation_plugin_installed"
-  local inventory path path_device path_uid stage_device expected_uid
-  local -a cleanup_paths=()
-
-  [[ "${BACKUP_DIR}" == "${STAGE_ROOT}/_rollback" && \
-    "${quarantine}" == "${expected_quarantine}" ]] || {
-    echo "Retired automation plugin cleanup path escaped the current release stage" >&2
-    return 1
-  }
-  if [[ ! -e "${quarantine}" && ! -L "${quarantine}" ]]; then
-    return 0
-  fi
-  [[ -d "${quarantine}" && ! -L "${quarantine}" ]] || {
-    echo "Retired automation plugin cleanup root is unsafe" >&2
-    return 1
-  }
-  [[ "$(readlink -e -- "${quarantine}")" == "${expected_quarantine}" ]] || {
-    echo "Retired automation plugin cleanup root resolved outside the current release stage" >&2
-    return 1
-  }
-
-  stage_device="$(stat -c '%d' -- "${STAGE_ROOT}")" || return 1
-  expected_uid="$(id -u)" || return 1
-  inventory="$(mktemp "${BACKUP_DIR}/automation_plugin_cleanup.inventory.XXXXXX")" || return 1
-  if ! find "${quarantine}" -xdev -print0 >"${inventory}"; then
-    rm -f -- "${inventory}"
-    echo "Could not inventory retired automation plugins for cleanup" >&2
-    return 1
-  fi
-  mapfile -d '' -t cleanup_paths <"${inventory}"
-  rm -f -- "${inventory}" || return 1
-
-  for path in "${cleanup_paths[@]}"; do
-    [[ "${path}" == "${quarantine}" || "${path}" == "${quarantine}/"* ]] || {
-      echo "Retired automation plugin cleanup inventory escaped its root" >&2
-      return 1
-    }
-    [[ ! -L "${path}" && ( -d "${path}" || -f "${path}" ) ]] || {
-      echo "Retired automation plugin cleanup inventory contains an unsafe entry" >&2
-      return 1
-    }
-    path_device="$(stat -c '%d' -- "${path}")" || return 1
-    path_uid="$(stat -c '%u' -- "${path}")" || return 1
-    [[ "${path_device}" == "${stage_device}" && "${path_uid}" == "${expected_uid}" ]] || {
-      echo "Retired automation plugin cleanup inventory ownership or device changed" >&2
-      return 1
-    }
-  done
-
-  # Signed package directories are intentionally 0555. Only make directories in
-  # this already-quarantined, fully validated tree owner-writable so the release
-  # stage can be removed; immutable files remain unchanged.
-  for path in "${cleanup_paths[@]}"; do
-    [[ -d "${path}" ]] || continue
-    chmod u+rwx -- "${path}" || return 1
-  done
 }
 
 cleanup_failed_release_stage() {
@@ -1794,20 +791,23 @@ cleanup_failed_release_stage() {
     return 1
   }
 
-  prepare_retired_automation_plugins_for_stage_cleanup || return 1
   rm -rf -- "${STAGE_ROOT}"
 }
 
 write_automation_plugin_runtime_environment() {
   local runtime_dir temp_path
+  [[ -d "${AUTOMATION_PLUGIN_ROOT}/installed" && ! -L "${AUTOMATION_PLUGIN_ROOT}" && \
+     ! -L "${AUTOMATION_PLUGIN_ROOT}/installed" ]] || {
+    echo "Automation plugin root is missing or unsafe: ${AUTOMATION_PLUGIN_ROOT}" >&2
+    return 1
+  }
   runtime_dir="$(dirname "${PLUGIN_RUNTIME_ENV_FILE}")"
   mkdir -p "${runtime_dir}"
   temp_path="$(mktemp "${runtime_dir}/.automation_plugin_release.XXXXXX")"
   chmod 0600 "${temp_path}"
   if ! {
-    printf 'BOYI_AUTOMATION_PLUGIN_ARTIFACT_ROOT=%s\n' "${FIRST_PARTY_PLUGIN_RELEASE_ROOT}"
-    printf 'BOYI_AUTOMATION_PLUGIN_TRUST_ROOT=%s\n' "${FIRST_PARTY_PLUGIN_TRUST_ROOT}"
-    printf 'BOYI_AUTOMATION_PLUGIN_VERIFIED_RELEASE_SHA=%s\n' "${RELEASE_SHA}"
+    printf 'BOYI_AUTOMATION_PLUGIN_ROOT=%s\n' "${AUTOMATION_PLUGIN_ROOT}"
+    printf 'BOYI_AUTOMATION_PLUGIN_RELEASE_SHA=%s\n' "${RELEASE_SHA}"
   } >"${temp_path}"; then
     rm -f -- "${temp_path}"
     return 1
@@ -1832,146 +832,15 @@ apply_migrations() {
   MIGRATION_ENV_FILE="/home/boyce/agent/.env" "${migration_python}" "${runner}"
 }
 
-capture_control_plane_release_state() {
+capture_domain_database_split_state() {
   local status
-  if [[ ! -d "${STAGE_ROOT}/agent/migrations" ]]; then
-    CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
-    DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
-    SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
-    AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
-    FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
-    CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
-    return 0
-  fi
+  [[ -d "${STAGE_ROOT}/agent/migrations" ]] || return 0
   status="$(run_staged_migration_runner --domain-database-split-status)" || return 1
   case "${status}" in
     domain_database_split_status=pending_clean) DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=1 ;;
     domain_database_split_status=ACTIVE) DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=0 ;;
     *) echo "Migration 055 has unfinished state; restore or finish it before release" >&2; return 1 ;;
   esac
-  status="$(run_staged_migration_runner --control-plane-task-cutover-status)" || return 1
-  case "${status}" in
-    control_plane_task_cutover_status=pending_clean)
-      CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=1
-      ;;
-    control_plane_task_cutover_status=applied)
-      CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY=0
-      ;;
-    control_plane_task_cutover_status=pending_dirty)
-      echo "A previous migration 014 attempt left unrecovered scheduler backup data" >&2
-      return 1
-      ;;
-    *)
-      echo "Unexpected control-plane task migration state response" >&2
-      return 1
-      ;;
-  esac
-
-  status="$(run_staged_migration_runner --daily-sign-single-tms-status)" || return 1
-  case "${status}" in
-    daily_sign_single_tms_status=pending_clean)
-      DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=1
-      ;;
-    daily_sign_single_tms_status=applied)
-      DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY=0
-      ;;
-    daily_sign_single_tms_status=pending_dirty)
-      echo "A previous migration 016 attempt left unrecovered daily-sign backup data" >&2
-      return 1
-      ;;
-    *)
-      echo "Unexpected migration 016 state response" >&2
-      return 1
-      ;;
-  esac
-
-  status="$(run_staged_migration_runner --scheduled-task-contract-upgrade-status)" || return 1
-  case "${status}" in
-    scheduled_task_contract_upgrade_status=pending_clean)
-      SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=1
-      ;;
-    scheduled_task_contract_upgrade_status=applied)
-      SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY=0
-      ;;
-    scheduled_task_contract_upgrade_status=pending_dirty)
-      echo "A previous migration 017 attempt left unrecovered scheduler backup data" >&2
-      return 1
-      ;;
-    *)
-      echo "Unexpected migration 017 state response" >&2
-      return 1
-      ;;
-  esac
-
-  status="$(run_staged_migration_runner --automation-project-authorization-status)" || return 1
-  case "${status}" in
-    automation_project_authorization_status=pending_clean)
-      AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=1
-      ;;
-    automation_project_authorization_status=applied)
-      AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY=0
-      ;;
-    automation_project_authorization_status=pending_dirty)
-      echo "A previous migration 018 attempt left unrecovered automation project data" >&2
-      return 1
-      ;;
-    *)
-      echo "Unexpected migration 018 state response" >&2
-      return 1
-      ;;
-  esac
-
-  status="$(run_staged_migration_runner --feishu-notification-lease-status)" || return 1
-  case "${status}" in
-    feishu_notification_lease_status=pending)
-      FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=1
-      ;;
-    feishu_notification_lease_status=applied)
-      FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY=0
-      ;;
-    *)
-      echo "Unexpected migration 030 state response" >&2
-      return 1
-      ;;
-  esac
-
-  status="$(run_staged_migration_runner --control-plane-policy-bootstrap-marker-status)" || return 1
-  case "${status}" in
-    control_plane_policy_bootstrap_marker_status=absent)
-      CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=1
-      ;;
-    control_plane_policy_bootstrap_marker_status=present)
-      CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE=0
-      ;;
-    *)
-      echo "Unexpected control-plane policy bootstrap marker response" >&2
-      return 1
-      ;;
-  esac
-}
-
-restore_control_plane_task_cutover_data() {
-  run_staged_migration_runner --restore-control-plane-task-cutover
-}
-
-restore_daily_sign_single_tms_data() {
-  run_staged_migration_runner --restore-daily-sign-single-tms-account
-}
-
-restore_scheduled_task_contract_upgrade_data() {
-  run_staged_migration_runner --restore-scheduled-task-contract-upgrade
-}
-
-restore_automation_project_authorization_data() {
-  run_staged_migration_runner --restore-automation-project-authorization
-}
-
-restore_feishu_notification_leases() {
-  run_staged_migration_runner --restore-feishu-notification-leases
-}
-
-restore_control_plane_policy_bootstrap_data() {
-  run_staged_migration_runner --restore-control-plane-policy-bootstrap
 }
 
 sync_scope() {
@@ -2071,152 +940,6 @@ restart_runtime_services_for_rollback() {
     fi
   done
   return "${restart_status}"
-}
-
-write_restored_first_party_seed_manifest() {
-  local destination="$1" restored_sha artifact_root index_path
-  [[ -f "${ROOTS[agent]}/runtime/release_sha" && \
-    ! -L "${ROOTS[agent]}/runtime/release_sha" && \
-    -x "${PYTHON_BINS[agent]}" ]] || return 1
-  read -r restored_sha <"${ROOTS[agent]}/runtime/release_sha"
-  [[ "${restored_sha}" =~ ^[0-9a-f]{40}$ ]] || return 1
-  artifact_root="${FIRST_PARTY_PLUGIN_RELEASES_ROOT}/${restored_sha}"
-  index_path="${artifact_root}/release-index.json"
-  [[ -d "${artifact_root}" && ! -L "${artifact_root}" && \
-    -f "${index_path}" && ! -L "${index_path}" ]] || return 1
-
-  PYTHONPATH="${ROOTS[agent]}" "${PYTHON_BINS[agent]}" - \
-    "${index_path}" "${restored_sha}" "${destination}" <<'PY'
-import json
-import os
-import re
-import sys
-from pathlib import Path
-
-from agent.automation_plugins.first_party import release_first_party_instance_seeds
-
-
-index_path = Path(sys.argv[1])
-restored_sha = sys.argv[2]
-destination = Path(sys.argv[3])
-version_re = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
-plugin_re = re.compile(r"[a-z][a-z0-9_]{1,63}")
-automation_re = re.compile(r"[a-z][a-z0-9_]{1,127}")
-sha256_re = re.compile(r"[0-9a-f]{64}")
-try:
-    if index_path.stat().st_size > 1024 * 1024:
-        raise ValueError
-    raw = index_path.read_bytes()
-    index = json.loads(raw.decode("utf-8"))
-    canonical = json.dumps(
-        index,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if (
-        not isinstance(index, dict)
-        or set(index) != {"schema_version", "release_sha", "plugins"}
-        or index.get("schema_version") != 1
-        or index.get("release_sha") != restored_sha
-        or not isinstance(index.get("plugins"), dict)
-        or raw not in {canonical, canonical + b"\n"}
-    ):
-        raise ValueError
-    rows = []
-    seen = set()
-    for seed in release_first_party_instance_seeds():
-        automation_id = str(seed.automation_id)
-        plugin_id = str(seed.plugin_id)
-        entry = index["plugins"].get(plugin_id)
-        if (
-            automation_re.fullmatch(automation_id) is None
-            or plugin_re.fullmatch(plugin_id) is None
-            or automation_id in seen
-            or not isinstance(entry, dict)
-            or set(entry) != {"version", "manifest_sha256", "package_sha256"}
-            or not isinstance(entry.get("version"), str)
-            or version_re.fullmatch(entry["version"]) is None
-            or entry["version"] != seed.version
-            or not isinstance(entry.get("manifest_sha256"), str)
-            or sha256_re.fullmatch(entry["manifest_sha256"]) is None
-            or not isinstance(entry.get("package_sha256"), str)
-            or sha256_re.fullmatch(entry["package_sha256"]) is None
-        ):
-            raise ValueError
-        seen.add(automation_id)
-        rows.append(
-            {
-                "automation_id": automation_id,
-                "plugin_id": plugin_id,
-                "version": entry["version"],
-            }
-        )
-    if not rows or len(rows) > 4096:
-        raise ValueError
-    payload = json.dumps(
-        {"seeds": sorted(rows, key=lambda item: item["automation_id"])},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if destination.is_symlink() or not destination.is_file():
-        raise ValueError
-    destination.write_bytes(payload)
-    os.chmod(destination, 0o600)
-except (KeyError, OSError, TypeError, UnicodeError, ValueError):
-    raise SystemExit(1)
-PY
-}
-
-verify_rollback_first_party_version_compatibility() {
-  local manifest output code
-  # Until the staged checker has read 046 and the restored execution contract,
-  # an unavailable manifest or database must not allow legacy activation.
-  ROLLBACK_KEEP_EXECUTION_HOLD=1
-  manifest="$(mktemp "${BACKUP_DIR}/automation_project.rollback_seeds.XXXXXX")" || return 1
-  if ! write_restored_first_party_seed_manifest "${manifest}"; then
-    rm -f -- "${manifest}"
-    echo "rollback_plugin_versions=blocked reason=RESTORED_RELEASE_CONTRACT_UNAVAILABLE" >&2
-    return 1
-  fi
-  if output="$(
-    run_staged_migration_runner \
-      --check-rollback-exact-seed-compatibility \
-      --rollback-exact-seed-manifest "${manifest}" \
-      --rollback-restored-source-root "${ROOTS[agent]}" 2>&1
-  )"; then
-    rm -f -- "${manifest}"
-    if [[ "${output}" =~ ^rollback_exact_seed_compatibility=ok\ checked_seeds=[0-9]+$ ]]; then
-      ROLLBACK_KEEP_EXECUTION_HOLD=0
-      echo "${output}"
-      return 0
-    fi
-    echo "rollback_plugin_versions=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-    return 1
-  fi
-  rm -f -- "${manifest}"
-  if [[ "${output}" =~ ^rollback_exact_seed_compatibility=blocked\ code=([A-Z_]+)$ ]]; then
-    code="${BASH_REMATCH[1]}"
-    case "${code}" in
-      LEGACY_EXECUTION_RETIRED|MIGRATION_STATE_INVALID)
-        ROLLBACK_KEEP_EXECUTION_HOLD=1
-        echo "rollback_forward_only_required reason=${code} services_stopped=1 release_hold_preserved=1" >&2
-        ;;
-      DATABASE_PLUGIN_MISMATCH|DATABASE_VERSION_NEWER)
-        ROLLBACK_KEEP_EXECUTION_HOLD=0
-        echo "rollback_forward_only_required reason=${code}" >&2
-        ;;
-      *)
-        echo "rollback_plugin_versions=blocked reason=${code}" >&2
-        ;;
-    esac
-    return 1
-  fi
-  echo "rollback_plugin_versions=blocked reason=UNEXPECTED_PREFLIGHT_RESPONSE" >&2
-  return 1
 }
 
 check_rollback_health() {
@@ -2346,17 +1069,12 @@ class SmokeGate(str, Enum):
     PLUGIN_BROKER = "plugin_broker"
     PLUGIN_SANDBOX = "plugin_sandbox"
     PLUGIN_CATALOG_UNSUPPORTED = "plugin_catalog_unsupported"
-    PLUGIN_CATALOG_ENABLED_BUILTIN = "plugin_catalog_enabled_builtin"
     PLUGIN_CATALOG_INVALID_TRUST = "plugin_catalog_invalid_trust"
     PLUGIN_CATALOG_UNSTABLE_GENERATIONS = "plugin_catalog_unstable_generations"
     PLUGIN_CATALOG_INVALID_RUNTIME = "plugin_catalog_invalid_runtime"
     PLUGIN_CATALOG_AGGREGATE_OR_SHAPE = "plugin_catalog_aggregate_or_shape"
     PLUGIN_GENERATIONS = "plugin_generations"
     PLUGIN_AGGREGATE = "plugin_aggregate"
-    WORKER = "worker"
-    BOOTSTRAP_SHAPE = "bootstrap_shape"
-    BOOTSTRAP_INCOMPLETE = "bootstrap_incomplete"
-    BOOTSTRAP_REJECTED = "bootstrap_rejected"
 
 
 def http_failure_gate(status):
@@ -2426,9 +1144,6 @@ try:
     automation_plugins = (
         components.get("automation_plugins") if isinstance(components, dict) else None
     )
-    automation_workers = (
-        components.get("automation_workers") if isinstance(components, dict) else None
-    )
     failure_gate = SmokeGate.SCHEDULER_STATE
     if not isinstance(scheduler, dict) or scheduler.get("state") != "paused":
         raise RuntimeError("scheduler was not held for release validation")
@@ -2469,10 +1184,6 @@ try:
         (
             SmokeGate.PLUGIN_CATALOG_UNSUPPORTED,
             "unsupported_automation_ids",
-        ),
-        (
-            SmokeGate.PLUGIN_CATALOG_ENABLED_BUILTIN,
-            "enabled_builtin_release",
         ),
         (
             SmokeGate.PLUGIN_CATALOG_INVALID_TRUST,
@@ -2522,37 +1233,6 @@ try:
         or (plugin_runtime_status == "READY") != plugin_runnable
     ):
         raise RuntimeError("automation plugin runtime is not release-ready")
-    failure_gate = SmokeGate.WORKER
-    if (
-        not isinstance(automation_workers, dict)
-        or automation_workers.get("enabled") is not False
-        or automation_workers.get("state") != "disabled"
-        or automation_workers.get("release_hold") is not False
-        or int(automation_workers.get("active_jobs") or 0) != 0
-    ):
-        raise RuntimeError("deferred automation Worker was unexpectedly active")
-    bootstrap = (
-        components.get("scheduled_task_approval_bootstrap")
-        if isinstance(components, dict)
-        else None
-    )
-    failure_gate = SmokeGate.BOOTSTRAP_SHAPE
-    if not isinstance(bootstrap, dict):
-        raise RuntimeError("scheduled approval bootstrap health is missing")
-    reviewed = int(bootstrap.get("reviewed_candidates", -1))
-    created = int(bootstrap.get("created", -1))
-    existing = int(bootstrap.get("already_present", -1))
-    configured = int(bootstrap.get("explicitly_configured", -1))
-    rejected = int(bootstrap.get("rejected", -1))
-    completed = int(bootstrap.get("completed", -1))
-    if min(reviewed, created, existing, configured, rejected, completed) < 0:
-        raise RuntimeError("scheduled approval bootstrap health is invalid")
-    failure_gate = SmokeGate.BOOTSTRAP_INCOMPLETE
-    if completed != 1:
-        raise RuntimeError("scheduled approval bootstrap one-time evaluation is incomplete")
-    failure_gate = SmokeGate.BOOTSTRAP_REJECTED
-    if rejected != 0 or created + existing + configured != reviewed:
-        raise RuntimeError("scheduled approval bootstrap did not preserve reviewed tasks")
 except Exception:
     print(
         f"service_identity_smoke=failed reason={failure_gate.value}",
@@ -2646,11 +1326,6 @@ try:
         or data["workflow_runner"].get("release_hold") is not False
         or not isinstance(data.get("automation_plugins"), dict)
         or data["automation_plugins"].get("ok") is not True
-        or not isinstance(data.get("automation_workers"), dict)
-        or data["automation_workers"].get("enabled") is not False
-        or data["automation_workers"].get("state") != "disabled"
-        or data["automation_workers"].get("release_hold") is not False
-        or int(data["automation_workers"].get("active_jobs") or 0) != 0
     ):
         raise RuntimeError("release runtime activation was not confirmed")
 except Exception:
@@ -2664,24 +1339,6 @@ restore_managed_release_state() {
   local restore_status=0
   local scope root new_manifest backup_scope relative target
 
-  if [[ "${FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED}" == "1" ]]; then
-    restore_automation_plugin_installations || {
-      echo "Failed to restore automation plugin installations" >&2
-      restore_status=1
-    }
-    restore_first_party_plugin_artifacts || {
-      echo "Failed to restore first-party plugin artifacts" >&2
-      restore_status=1
-    }
-  fi
-  restore_legacy_plugin_sources || {
-    echo "Failed to restore retired plugin sources" >&2
-    restore_status=1
-  }
-  restore_legacy_finance_etl || {
-    echo "Failed to restore legacy finance ETL rollback data" >&2
-    restore_status=1
-  }
   for scope in "${SCOPES[@]}"; do
     root="${ROOTS[$scope]}"
     new_manifest="${STAGE_ROOT}/_manifests/${scope}.txt"
@@ -2773,30 +1430,6 @@ rollback() {
         "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
         run_staged_migration_runner --restore-domain-database-split || rollback_status=1
       fi
-      if [[ "${FEISHU_NOTIFICATION_LEASE_PENDING_AT_APPLY}" == "1" && \
-        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
-        restore_feishu_notification_leases || rollback_status=1
-      fi
-      if [[ "${AUTOMATION_PROJECT_AUTHORIZATION_PENDING_AT_APPLY}" == "1" && \
-        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
-        restore_automation_project_authorization_data || rollback_status=1
-      fi
-      if [[ "${CONTROL_PLANE_POLICY_BOOTSTRAP_ABSENT_BEFORE_RELEASE}" == "1" && \
-        "${NEW_RUNTIME_START_ATTEMPTED}" == "1" ]]; then
-        restore_control_plane_policy_bootstrap_data || rollback_status=1
-      fi
-      if [[ "${SCHEDULED_TASK_CONTRACT_UPGRADE_PENDING_AT_APPLY}" == "1" && \
-        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
-        restore_scheduled_task_contract_upgrade_data || rollback_status=1
-      fi
-      if [[ "${DAILY_SIGN_SINGLE_TMS_PENDING_AT_APPLY}" == "1" && \
-        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
-        restore_daily_sign_single_tms_data || rollback_status=1
-      fi
-      if [[ "${CONTROL_PLANE_TASK_CUTOVER_PENDING_AT_APPLY}" == "1" && \
-        "${MIGRATIONS_ATTEMPTED}" == "1" ]]; then
-        restore_control_plane_task_cutover_data || rollback_status=1
-      fi
       if [[ "${VENV_ACTIVATED}" == "1" ]] && ! restore_virtualenvs; then
         rollback_status=1
       fi
@@ -2810,17 +1443,7 @@ rollback() {
           rollback_status=1
         fi
       elif [[ "${rollback_status}" == "0" ]]; then
-        if ! verify_rollback_first_party_version_compatibility; then
-          rollback_status=1
-          # Selected runtime services are still stopped. Remove only this
-          # release's verified hold so a forward repair can acquire a fresh
-          # hold; the stage remains intact below for diagnosis.
-          if [[ "${ROLLBACK_KEEP_EXECUTION_HOLD:-0}" == "1" ]]; then
-            echo "Rollback activation blocked: the retired legacy queue must not be restarted; keeping the release hold" >&2
-          else
-            clear_scheduler_release_hold_for_rollback || rollback_status=1
-          fi
-        elif ! restart_runtime_services_for_rollback; then
+        if ! restart_runtime_services_for_rollback; then
           echo "Rollback runtime failed to start under the scheduler release hold" >&2
           stop_runtime_services_for_rollback || rollback_status=1
           rollback_status=1
@@ -2887,20 +1510,8 @@ run_release() {
   RELEASE_STAGE="validate_environment"
   validate_environment
   if [[ "${AGENT_RELEASE}" == "1" ]]; then
-    if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then
-      RELEASE_STAGE="preflight_worker_mtls_proxy"
-      preflight_worker_mtls_proxy
-    else
-      echo "windows_worker_release_scope=disabled"
-    fi
     RELEASE_STAGE="preflight_service_identity_configuration"
     preflight_service_identity_configuration
-    RELEASE_STAGE="preflight_control_plane_task_cutover"
-    preflight_control_plane_task_cutover
-    RELEASE_STAGE="preflight_automation_project_scheduled_task_identities"
-    preflight_automation_project_scheduled_task_identities
-    RELEASE_STAGE="preflight_automation_project_required_resources"
-    preflight_automation_project_required_resources
     if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" ]]; then
       echo "emergency_scheduled_window_override=authorized emergency_user_authorized=true scope=scheduled_write_window_proximity_only residual_race_user_authorized=true"
       RELEASE_STAGE="preflight_running_protected_writes_before_emergency_window_override"
@@ -2919,22 +1530,13 @@ run_release() {
     build_release_virtualenvs
   fi
   if [[ "${AGENT_RELEASE}" == "1" ]]; then
-    RELEASE_STAGE="preflight_signed_first_party_plugins"
-    preflight_signed_first_party_plugins
-    if [[ "${WINDOWS_WORKER_RELEASE_ENABLED}" == "1" ]]; then
-      RELEASE_STAGE="preflight_worker_server_identity"
-      preflight_worker_server_identity
-    fi
-
     # Agent mutations can cross into an external-write schedule. Recheck the
     # window after static/dependency work and immediately before quiescence.
     RELEASE_STAGE="preflight_scheduled_write_window_before_mutation"
     preflight_scheduled_write_window
-    RELEASE_STAGE="capture_preexisting_automation_plugin_db_ownership"
-    capture_preexisting_automation_plugin_db_ownership
     if [[ "${EMERGENCY_SCHEDULED_WINDOW_OVERRIDE}" == "1" || -n "${RECOVER_RELEASE_HOLD_SHA}" ]]; then
-      RELEASE_STAGE="capture_control_plane_release_state"
-      capture_control_plane_release_state
+      RELEASE_STAGE="capture_domain_database_split_state"
+      capture_domain_database_split_state
       RELEASE_STAGE="create_pre_mutation_scheduler_release_hold"
       create_scheduler_release_hold
       RELEASE_STAGE="preflight_running_protected_writes_immediately_before_quiesce"
@@ -2942,8 +1544,8 @@ run_release() {
     else
       RELEASE_STAGE="preflight_running_protected_writes"
       preflight_running_protected_writes
-      RELEASE_STAGE="capture_control_plane_release_state"
-      capture_control_plane_release_state
+      RELEASE_STAGE="capture_domain_database_split_state"
+      capture_domain_database_split_state
     fi
   fi
   MUTATION_STARTED=1
@@ -2952,16 +1554,6 @@ run_release() {
   if [[ "${AGENT_RELEASE}" == "1" ]]; then
     RELEASE_STAGE="verify_protected_writes_quiesced"
     preflight_running_protected_writes
-    RELEASE_STAGE="confirm_preexisting_automation_plugin_db_ownership"
-    confirm_preexisting_automation_plugin_db_ownership
-    RELEASE_STAGE="capture_automation_plugin_installation_state"
-    capture_automation_plugin_installation_state
-    RELEASE_STAGE="install_verified_first_party_plugin_artifacts"
-    FIRST_PARTY_PLUGIN_INSTALL_ATTEMPTED=1
-    install_verified_first_party_plugin_artifacts
-    RELEASE_STAGE="retire_legacy_finance_etl"
-    retire_legacy_finance_etl
-    retire_legacy_plugin_sources
   fi
   for scope in "${SCOPES[@]}"; do
     RELEASE_STAGE="sync_scope:${scope}"
@@ -2995,10 +1587,6 @@ run_release() {
   if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
     RELEASE_STAGE="check_service_identity_smoke"
     check_service_identity_smoke
-  fi
-  if [[ "${AGENT_RELEASE}" == "1" ]]; then
-    RELEASE_STAGE="check_control_plane_release_manifest"
-    check_control_plane_release_manifest
   fi
   if [[ "${COORDINATED_RELEASE}" == "1" ]]; then
     RELEASE_STAGE="record_dependency_hashes"

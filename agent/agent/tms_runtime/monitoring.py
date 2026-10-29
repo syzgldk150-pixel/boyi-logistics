@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, time as dt_time, timedelta
+from datetime import date, datetime
 from typing import Any
 
 from agent.tms_runtime.errors import TMSAuthStateError
@@ -92,15 +92,6 @@ def feishu_operation(action: str, params: dict) -> dict:
     if _feishu_operation is None:
         raise RuntimeError("Feishu monitoring operation is not configured")
     return _feishu_operation(action, params)
-
-
-def list_scheduled_tasks() -> list[dict[str, Any]]:
-    """Read the same scheduled_tasks table used by the Agent scheduler."""
-    from agent.memory import Memory
-
-    memory = Memory()
-    memory.init()
-    return memory.list_scheduled_tasks()
 
 
 def _clean_text(value: Any) -> str:
@@ -274,93 +265,15 @@ def _count_unsigned_daily_sign_sheet_rows(values: list[list[Any]], target_date: 
     return total
 
 
-def _daily_cron_time_value(cron_expression: Any) -> str:
-    match = _DAILY_CRON_RE.fullmatch(_clean_text(cron_expression))
-    if not match:
-        return ""
-    minute = int(match.group(1))
-    hour = int(match.group(2))
-    if not (0 <= minute <= 59 and 0 <= hour <= 23):
-        return ""
-    return f"{hour:02d}:{minute:02d}"
-
-
-def _task_enabled(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    return _clean_text(value).lower() not in {"0", "false", "no", "off", "disabled"}
-
-
-def _is_daily_sign_task(row: dict[str, Any]) -> bool:
-    task_id = _clean_text(row.get("id"))
-    tool_name = _clean_text(row.get("tool_name"))
-    return tool_name == "sync_daily_should_sign" or task_id.startswith("daily_sign")
-
-
-def _daily_sign_schedule_time_values() -> tuple[list[str], str]:
-    try:
-        rows = list_scheduled_tasks()
-    except Exception:
-        return [], "unavailable"
-    values = sorted(
-        {
-            value
-            for row in rows
-            if isinstance(row, dict) and _is_daily_sign_task(row) and _task_enabled(row.get("enabled"))
-            for value in [_daily_cron_time_value(row.get("cron_expression"))]
-            if value
-        }
-    )
-    return values, "scheduled_tasks"
-
-
-def _combine_time(day: date, time_value: str) -> datetime:
-    hour_text, minute_text = time_value.split(":", 1)
-    return datetime.combine(day, dt_time(hour=int(hour_text), minute=int(minute_text)))
-
-
 def _daily_sign_refresh_schedule(target_date: str, now_ts: float | None = None) -> tuple[int, str, dict[str, Any]]:
+    """The R13 sheet refresh time belongs to the plugin project's own schedule."""
+    del target_date
     now_dt = datetime.fromtimestamp(time.time() if now_ts is None else now_ts)
-    target_day = datetime.strptime(target_date, "%Y-%m-%d").date()
-    time_values, source = _daily_sign_schedule_time_values()
-    if not time_values:
-        updated_at = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-        return POLL_INTERVAL_SEC, updated_at, {
-            "time_values": [],
-            "last_refresh_at": "",
-            "next_refresh_at": "",
-            "source": source,
-        }
-
-    today = now_dt.date()
-    today_slots = [_combine_time(today, item) for item in time_values]
-    future_slots = [item for item in today_slots if item > now_dt]
-    if future_slots:
-        next_refresh = future_slots[0]
-    else:
-        next_refresh = _combine_time(today + timedelta(days=1), time_values[0])
-
-    if target_day == today:
-        past_slots = [item for item in today_slots if item <= now_dt]
-        if past_slots:
-            last_refresh = past_slots[-1]
-        else:
-            last_refresh = _combine_time(today - timedelta(days=1), time_values[-1])
-    elif target_day < today:
-        last_refresh = _combine_time(target_day, time_values[-1])
-    else:
-        last_refresh = _combine_time(target_day, time_values[0])
-
-    poll_interval = max(int((next_refresh - now_dt).total_seconds()), 1)
-    return poll_interval, last_refresh.strftime("%Y-%m-%d %H:%M:%S"), {
-        "time_values": time_values,
-        "last_refresh_at": last_refresh.strftime("%Y-%m-%d %H:%M:%S"),
-        "next_refresh_at": next_refresh.strftime("%Y-%m-%d %H:%M:%S"),
-        "source": source,
+    return POLL_INTERVAL_SEC, now_dt.strftime("%Y-%m-%d %H:%M:%S"), {
+        "time_values": [],
+        "last_refresh_at": "",
+        "next_refresh_at": "",
+        "source": "plugin_schedule",
     }
 
 

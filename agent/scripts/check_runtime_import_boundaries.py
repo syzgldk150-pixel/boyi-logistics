@@ -36,11 +36,8 @@ def main() -> int:
                     if isinstance(node, ast.ImportFrom) and node.module in {
                         "browser_manager",
                         "shared_login",
-                        "r7_login",
                         "r7_login_manager",
                         "r13_login_manager",
-                        "mysql_sink",
-                        "auto_checkin_r7",
                         "waybill_tracking",
                         "get_infor",
                     }:

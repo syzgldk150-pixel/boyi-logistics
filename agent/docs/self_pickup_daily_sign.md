@@ -2,7 +2,7 @@
 module: 自提部每日应签
 type: 维护手册
 status: active
-updated: 2026-10-12
+updated: 2026-10-29
 ---
 
 # 自提部每日应签
@@ -51,12 +51,12 @@ L 列不跨日相加；最新记录为 0 时保留 0，最新为空或从未匹�
 
 ## 开发与验证
 
-入口为 `service_v2_plugins/sync_self_pickup_should_sign_v2/payload/action.py`；使用既有每日应签 family 构建器注入共同业务模块和通用运行入口，避免复制规则。源码发布清单单独登记新 V2 身份，不建立旧 V1 迁移关系。
+入口为 `service_v2_plugins/sync_self_pickup_should_sign_v2/payload/action.py`；使用既有每日应签 family 构建器注入共同业务模块和通用运行入口，避免复制规则。源码发布清单（`agent/scripts/release_scope.py`）单独登记该 V2 包。
 
 在仓库根目录使用项目 Python 3.10，禁用开发工具自动加载配置：
 
 ```bash
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_self_pickup_daily_sign_v2.py tests/test_first_party_release_source_scope.py
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_self_pickup_daily_sign_v2.py tests/test_release_scope.py
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m service_v2_plugins._shared.build_zip --source agent/service_v2_plugins/sync_self_pickup_should_sign_v2 --output .task_tmp/self-pickup-daily-sign/sync_self_pickup_should_sign_v2-1.0.0.zip
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin validate .task_tmp/self-pickup-daily-sign/sync_self_pickup_should_sign_v2-1.0.0.zip
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/self-pickup-daily-sign/sync_self_pickup_should_sign_v2-1.0.0.zip

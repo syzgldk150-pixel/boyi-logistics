@@ -4,10 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.orchestration.automation_project_policy_service import (
-    AutomationProjectPolicyService,
-    _trusted_context,
-)
+from agent.orchestration.automation_project_policy_service import AutomationProjectPolicyService
+from agent.orchestration.automation_project_policy_support import _trusted_context
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.automation_project_authorization import AutomationEntrypoint
 from shared.automation_project_manifest import TRUSTED_AUTOMATION_ENTRYPOINTS

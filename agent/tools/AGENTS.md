@@ -1,18 +1,17 @@
 ## 每日应签源码归属
 
-每日应签业务规则、采集和渲染位于仓库根 `agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/`（顺延与到齐规则在其中唯一的 `daily_sign_rules.py`）；`agent/tools/daily_sign_store.py` 仅持久化和回读核验，`agent/tools/daily_sign_values.py` 仅数据规范化。旧 V1 离线材料在 `agent/legacy/`，不进入发布清单。
+每日应签业务规则、采集和渲染位于仓库根 `agent/service_v2_plugins/sync_daily_should_sign_v2/payload/business/`（顺延与到齐规则在其中唯一的 `daily_sign_rules.py`）；`agent/tools/daily_sign_store.py` 仅持久化和回读核验，`agent/tools/daily_sign_values.py` 仅数据规范化。
 
 # tools
 
 ## 目录职责
 
-`tools/` 保留三类代码：
+`tools/` 只保留两类代码：
 
 - 仍在使用的直接 reader 与业务入口：运单/单号查询、OCR、财务与经营只读查询、回单、客服问题件等，由组合根注入或经 `registry.yaml` 调用。
-- Host 原语复用的共享仓储与 helper：`phase7_mysql_store.py`、`daily_sign_store.py`、`split_pending_snapshot.py`、`feishu_cli_tool.py`，以及旧同步工具中被 `../plugin_core_adapters/` 复用的表头、区间和记录转换函数。
-- 旧 V1 整段同步工具：只用于离线回归和上述 helper 复用，不再作为执行入口。
+- Host 原语复用的共享仓储与 helper：`phase7_mysql_store.py`、`daily_sign_store.py`、`split_pending_snapshot.py`、`feishu_cli_tool.py`，以及 `arrival_stats_sync_tool.py`、`arrive_list_sync_tool.py`、`send_order_sync_tool.py`、`yunda_dispatch_forecast_sync_tool.py`、`yunda_send_waybills_sync_tool.py`、`delivery_status_common.py` 中被 `../plugin_core_adapters/` 复用的表头、区间和记录转换函数。这些模块不再有整段同步入口。
 
-已插件化的业务算法改在对应 `../service_v2_plugins/<id>_v2/payload/`；只有共享接口或核心 primitive 变化才修改这里，不把整段旧工具重新接入运行时。
+业务算法在对应 `../service_v2_plugins/<id>_v2/payload/`；只有共享接口或核心 primitive 变化才修改这里，不得把整段旧工具重新接入运行时。
 
 ## 修改入口
 
@@ -23,15 +22,13 @@
 - OCR 工具封装：
   - `ocr_tool.py`
 - 价格查询：
-  - 当前实现为 `../service_v2_plugins/quote_prices_v2/` 独立 ZIP，飞书和自然对话调用已安装插件实例；系统工具目录不再注册 `get_price`。
-  - 原工具与融辉/韵达脚本位于 `../legacy/price_quote/`，仅用于离线回归。
+  - 由 `../service_v2_plugins/quote_prices_v2/` 独立 ZIP 实现，飞书和自然对话调用已安装插件实例；系统工具目录不注册价格查询。
 - TMS 对接：
   - `tms_tool.py`
   - `internal_http.py`（工具访问底层 TMS target 的能力请求头；缺少当前工具短期执行能力时显式失败，不读取或回退到 `AGENT_INTERNAL_API_TOKEN`）
-- 财务账本同步：
-  - `finance_sync_service.py`（融辉/韵达多账号、多日期编排与提交前校验）
-  - `sync_finance_bills_tool.py`（工具入口与进程/数据库双重单实例锁）
-  - 真实页面采集位于 `../agent/tms_runtime/scripts/*finance*`，共享领域与仓储位于 `../../shared/finance/`
+  - `governed_tms_adapter.py`（回单与客服问题件工具共用的闭合 CLI 传输）
+- 财务：
+  - `business_finance_query_tool.py`、`finance_review_analysis_tool.py` 只读取共享账本；采集由财务数据源页的统计查询抓取插件完成，共享领域与仓储位于 `../../shared/finance/`。
 - 飞书 CLI：
   - `feishu_knowledge.py`、`feishu_knowledge_pdf.py`：限定授权 Wiki 空间的只读 CLI；支持在线正文与 PDF 文字层，PDF 子进程有界解析、按命中页及邻页摘录并标注页码，不把图表或整书误报为已读。不切换共享身份，权限不足和解析不完整明确失败。维护边界见 `../../docs/shipment_knowledge_queries.md`。
   - `feishu_cli_tool.py`
@@ -41,22 +38,6 @@
   - `daily_sign_store.py` / `daily_sign_values.py`（每日应签版本化 MySQL 仓储与数据规范化；应签计算只在插件包的 `daily_sign_rules.py`，禁止在宿主复制口径）
   - `split_pending_snapshot.py`（统计与分批共享的 A:S 表头校验、未齐分类、MySQL 快照和“分批及有发未到表”覆盖刷新；零候选会清空旧行）
   - `phase7_sync_common.py`
-- 旧同步工具（V1 整段入口仅离线回归；现行算法在对应 V2 包）：
-  - `send_order_sync_tool.py` → `sync_daily_send_orders_v2`；`../plugin_core_adapters/waybill_query.py` 复用其控制台运单记录转换与日期解析。
-  - `delivery_status_sync_tool.py` → `sync_delivery_status_v2`；Host 复用 `delivery_status_common.py` 的状态与运单规范化。
-  - `site_send_list_sync_tool.py` → `sync_site_send_list_v2`。
-  - `arrive_list_sync_tool.py` → `sync_arrive_list_v2`；Host 复用其表标题与表格资源写入 helper。
-  - `arrival_stats_sync_tool.py` → `sync_arrival_stats_v2`；Host 复用其统计表区间、标题与归档 helper。
-  - `scan_sync_tool.py` → `sync_scan_codes_v2`。
-  - `yunda_dispatch_forecast_sync_tool.py` → `sync_yunda_dispatch_forecast_v2`。
-  - `yunda_send_waybills_sync_tool.py` → `sync_yunda_send_waybills_v2`；Host 复用其控制台运单记录转换。
-- 运维与回填工具：
-  - `daily_sign_backfill_tool.py`（只读影子计算或显式 `apply=true` 的历史回填；来源缺失时只标记待核验，不猜测日期、不发布飞书）
-  - `init_waybills_sql_from_feishu_tool.py`（SQL 初始化回填；从飞书融辉寄件数据和韵达寄件运单表全量读取历史记录，按运单号 upsert 到控制台 `waybills`，不删除历史）
-- TMS 问题件上报：
-  - `self_pickup_problem_upload_tool.py`（legacy 兼容只读封装，不参与飞书当前预览或正式写入；当前飞书链路调用 V2 committed project route 的 dry-run，并从已验证候选 Invocation 确认。兼容脚本仍只按 `邵阳自提部` 以及 `邵阳大祥S站 + 派送方式=自提` 规则读取来源，账号必须由自动化项目角色显式绑定，任何路径都不得注入固定账号或默认 session profile）
-- R7 到达/发车打卡（当前发行已移除）：
-  - `r7_arrival_checkin_tool.py`、`r7_departure_checkin_tool.py` 只为追溯保留，不进入当前自动化、Scheduler 和飞书入口。R7 相关表由 `../migrations/006_r7_runtime_tables.sql` 创建；工具仅校验表存在，禁止在运行时建表。
 - 经营摘要执行统计：
   - `query_automation_operations` 的 `1.1.0` 只读合同返回当前 `invocations` 及显式记录来源；实际处理器由组合根绑定 `../agent/business_query.py`，脚本占位入口缺少组合根时明确失败。终态成功率包含失败、取消及未知写，不统计旧 Command/Run。
 - 工具对外注册定义：
@@ -65,16 +46,12 @@
 ## 修改原则
 
 - 改单条业务链，优先只动对应工具文件和 `registry.yaml`
-- 多个同步工具共享逻辑时，优先提取到 `phase7_sync_common.py`
+- 多个 helper 共享逻辑时，优先提取到 `phase7_sync_common.py`
 - `phase7_sync_common.sync_sheet_snapshot()` 清空普通飞书电子表格时走 `feishu_cli_tool.clear_sheet`，不要改回写入大量空白单元格；否则大范围清空会产生过多 OpenAPI 写入分块。`clear_sheet` 通过飞书行维度删除旧快照行，清空范围必须从 A 列开始，配置里的 `Sheet1` 这类标题会在实际调用前解析成飞书 `sheet_id`，并按工作表当前最大行数裁剪清空结束行；后续 `write_sheet` 会在写入前自动补足目标范围需要的行数。
 - 普通飞书电子表格只有一个页签时，`feishu_cli_tool` 会把旧配置里的 `Sheet1` 自动映射到唯一页签的真实 `sheet_id`，避免用户重命名页签后触发 `sheetId not found`。
-- Snapshot sync tools generally treat an empty TMS fetch (`records=[]` or `data=[]`) as `no_fetched_rows`: skip Feishu Bitable writes/deletes, skip ordinary spreadsheet refresh, and skip SQL `replace_date` when applicable, so a source-side empty result cannot clear existing target data. This applies to `yunda_send_waybills_sync_tool.py`. Daily sign is ledger-based: a structurally complete zero-row R13 result is a valid empty publication set; each Feishu sink then clears its earlier projection and freshly reads back zero rows, while source failures never count as zero rows.
-- `site_send_list_sync_tool.py` is the exception: an empty TMS fetch is an intentional empty snapshot and must still clear/overwrite the Feishu Bitable and ordinary spreadsheet targets.
 - TMS 兼容接口返回 `AUTH_REQUIRED` / `AUTH_PENDING_CODE` 时，工具必须直接返回顶层 `error_code`，不得包装为“返回格式异常”；统一使用 `phase7_sync_common.tms_auth_error_result()` / `raise_tms_auth_error_if_present()`
 
-## Phase 7 历史兼容说明
-
-以下工具与 Runner 描述用于保留接口和离线回归；新增业务算法从 V2 插件维护入口定位，不恢复旧领取链。
+## TMS 兼容层
 
 - `tms_tool.py`
   - 默认走 `http://127.0.0.1:9000/tms/*` 兼容层
@@ -89,7 +66,7 @@
 - `../../AGENTS.md`
 
 - 分批及有发未到问题件：
-  - `split_pending_problem_upload_tool.py` dry-run 返回未完成候选、步骤状态、隐藏成功数量和指纹；该只读预览指纹的字段与规范化序列化必须和签名 action 保持完全一致；正式参数缺少 `selected_bill_codes` / `preview_fingerprint` 必须拒绝。
+  - 分批插件 dry-run 返回未完成候选、步骤状态、隐藏成功数量和指纹；该只读预览指纹的字段与规范化序列化必须和签名 action 保持完全一致；正式参数缺少 `selected_bill_codes` / `preview_fingerprint` 必须拒绝。
   - 分批与自提兼容工具缺少项目账号绑定时必须在来源读取或登录前返回 `blocked_config`；问题件权威回读成功后，分批链路必须先写并核验每日应签问题事件，最后才把问题件结果标记为成功，避免事件失败后候选被永久隐藏。
   - 正式执行先校验最新来源与状态指纹，再刷新全部当前未齐 Sheet/MySQL 快照；融辉外部操作只处理所选运单，并通过 `phase7_mysql_store.py` 独立回写问题件结果。
   - `0 < 已到 < 应到` 不再进入投诉方登记，直接登记“少货/分批 / 交接异常”，内容严格为 `应到XX件 实际到XX件`；遗留 `complaint_status` 字段统一写 `not_applicable`，只以问题件权威回读判定成功。

@@ -1,33 +1,22 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 
-from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
-from agent.automation_plugins.management import (
-    AutomationPluginManagementService,
-    MigrationPreparationPersistedError,
-)
-from agent.automation_plugins.management_api import (
-    create_automation_plugin_management_router,
-)
+from agent.automation_plugins.errors import PluginConflictError
+from agent.automation_plugins.management import AutomationPluginManagementService
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
     PluginProjectState,
     PluginRuntimeModel,
     RuntimeReconcileState,
 )
-from agent.orchestration.models import Actor, ActorType
 from shared.orchestration_repository_support import IdempotencyConflict
 
 
@@ -36,9 +25,6 @@ from tests.automation_plugin_management_api_support import (
     _entry,
     _Catalog,
     _ContributionRegistry,
-    _ProjectionCatalog,
-    _committed_service_entry,
-    _projection_service,
     _ApiService,
     _api_client,
     _configuration_request_payload,
@@ -243,109 +229,13 @@ def test_service_v2_inspect_projection_preserves_signed_action_call_limits() -> 
     ]
 
 
-def test_legacy_install_keeps_action_v1_and_rejects_service_v2_without_intent() -> None:
-    calls: list[str] = []
-    active_version = SimpleNamespace(
-        version="1.0.0",
-        runtime_model=PluginRuntimeModel.ACTION_V1,
-        plugin_api="1.0.0",
-    )
-    instance = SimpleNamespace(
-        automation_id="action-v1-instance",
-        plugin_id="example_action",
-        display_name="Action v1 instance",
-        active_version=active_version,
-        enabled=False,
-        state=PluginProjectState.INSTALLED,
-        record_version=1,
-        target_generation=1,
-        committed_generation=None,
-        reconcile_state=RuntimeReconcileState.PREPARING,
-    )
-
-    def inspect_action_v1(*_args: Any, **_kwargs: Any) -> None:
-        calls.append("inspect-v1")
-        raise PluginPackageError(
-            "service v2 required",
-            code="PLUGIN_SERVICE_V2_REQUIRED",
-        )
-
-    lifecycle = SimpleNamespace(
-        inspect_service_v2_upload=inspect_action_v1,
-        install_upload=lambda *_args, **_kwargs: calls.append("install-v1") or instance,
-    )
-    service = AutomationPluginManagementService(
-        catalog=_Catalog(),  # type: ignore[arg-type]
-        lifecycle=lifecycle,
-        configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
-        target_service=SimpleNamespace(),
-        package_repository=SimpleNamespace(),
-        storage=SimpleNamespace(),
-    )
-
-    result = service.install(
-        b"action-v1-package",
-        instance_name="Action v1 instance",
-        request_id=str(uuid.uuid4()),
-        transport_package_sha256="a" * 64,
-        actor=_console_actor(),
-    )
-
-    assert calls == ["inspect-v1", "install-v1"]
-    assert result["automation_id"] == "action-v1-instance"
-
-    lifecycle.inspect_service_v2_upload = lambda *_args, **_kwargs: object()
-    with pytest.raises(PluginConflictError) as raised:
-        service.install(
-            b"service-v2-package",
-            instance_name="Service v2 instance",
-            request_id=str(uuid.uuid4()),
-            transport_package_sha256="b" * 64,
-            actor=_console_actor(),
-        )
-    assert raised.value.code == "PLUGIN_SERVICE_V2_INSTALL_INTENT_REQUIRED"
-    assert calls == ["inspect-v1", "install-v1"]
-
-
-def test_management_router_is_closed_and_install_identity_is_server_owned() -> None:
+def test_management_router_is_closed_and_state_identity_is_server_owned() -> None:
     service = _ApiService()
     client = _api_client(service)
-    package = b"PK\x03\x04signed-plugin"
-    digest = hashlib.sha256(package).hexdigest()
-    request_id = str(uuid.uuid4())
 
     assert client.get("/internal/v1/automation/plugins/catalog").status_code == 200
-    assert client.get("/internal/v1/automation/workers").status_code == 200
-    installed = client.post(
-        "/internal/v1/automation/plugins/install",
-        data={
-            "instance_name": "Season account action",
-            "request_id": request_id,
-            "package_sha256": digest,
-        },
-        files={"package": ("action.zip", package, "application/zip")},
-    )
-    assert installed.status_code == 200
-    name, call = service.calls[-1]
-    assert name == "install"
-    assert call["package"] == package
-    assert call["instance_name"] == "Season account action"
-    assert "automation_id" not in call
-    assert "manifest" not in call
-
-    unsupported = client.post(
-        "/internal/v1/automation/plugins/install",
-        data={
-            "instance_name": "forged",
-            "request_id": str(uuid.uuid4()),
-            "package_sha256": digest,
-            "automation_id": "browser-forged-id",
-        },
-        files={"package": ("action.zip", package, "application/zip")},
-    )
-    assert unsupported.status_code == 422
-    assert unsupported.json()["error"]["code"] == "PLUGIN_MULTIPART_FIELDS_INVALID"
+    assert client.get("/internal/v1/automation/workers").status_code == 404
+    assert client.post("/internal/v1/automation/plugins/install", data={}).status_code == 404
 
     state = client.post(
         "/internal/v1/automation/instances/automation-1/state",
@@ -373,11 +263,11 @@ def test_lifecycle_mutations_refresh_scheduler_after_commit() -> None:
     digest = hashlib.sha256(package).hexdigest()
 
     install = client.post(
-        "/internal/v1/automation/plugins/install",
+        "/internal/v1/automation/plugins/install-v2",
         data={
-            "instance_name": "Lifecycle plugin",
             "request_id": str(uuid.uuid4()),
             "package_sha256": digest,
+            "intent": json.dumps(_service_v2_install_intent(instance_name="Lifecycle plugin")),
         },
         files={"package": ("lifecycle.zip", package, "application/zip")},
     )
@@ -430,11 +320,11 @@ def test_lifecycle_refresh_failure_is_explicit_and_does_not_retry_operation() ->
     )
     package = b"PK\x03\x04lifecycle-plugin"
     response = client.post(
-        "/internal/v1/automation/plugins/install",
+        "/internal/v1/automation/plugins/install-v2",
         data={
-            "instance_name": "Lifecycle plugin",
             "request_id": str(uuid.uuid4()),
             "package_sha256": hashlib.sha256(package).hexdigest(),
+            "intent": json.dumps(_service_v2_install_intent(instance_name="Lifecycle plugin")),
         },
         files={"package": ("lifecycle.zip", package, "application/zip")},
     )
@@ -460,11 +350,11 @@ def test_scheduler_refresh_rejects_explicit_invalid_tasks_for_lifecycle_and_conf
     client = _api_client(service, scheduler_refresh_provider=invalid_refresh)
     package = b"PK\x03\x04invalid-refresh"
     installed = client.post(
-        "/internal/v1/automation/plugins/install",
+        "/internal/v1/automation/plugins/install-v2",
         data={
-            "instance_name": "Invalid refresh",
             "request_id": str(uuid.uuid4()),
             "package_sha256": hashlib.sha256(package).hexdigest(),
+            "intent": json.dumps(_service_v2_install_intent(instance_name="Invalid refresh")),
         },
         files={"package": ("invalid-refresh.zip", package, "application/zip")},
     )
@@ -631,7 +521,6 @@ def test_service_v2_wizard_installs_unknown_package_disabled_without_generic_con
             set_enabled=set_enabled,
         ),
         configuration=SimpleNamespace(save=configure),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(reconcile_project=reconcile),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -710,7 +599,6 @@ def test_service_v2_install_replay_does_not_configure_or_enable_instance() -> No
         configuration=SimpleNamespace(
             save=lambda _automation_id, **kwargs: config_calls.append(dict(kwargs))
         ),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(reconcile_project=lambda _automation_id: None),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -819,7 +707,6 @@ def test_service_v2_install_does_not_enter_enable_or_reconcile_workflow() -> Non
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=lifecycle,
         configuration=SimpleNamespace(save=lambda *_args, **_kwargs: None),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(reconcile_project=reconcile),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -874,7 +761,6 @@ def test_service_v2_install_replay_never_treats_manual_disable_as_its_rollback()
             )
         ),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -898,33 +784,6 @@ def test_service_v2_install_replay_never_treats_manual_disable_as_its_rollback()
         )
 
     assert error.value.code == "PLUGIN_INSTALL_PROGRESS_CONFLICT"
-
-
-def test_current_unknown_write_recovery_accepts_only_request_identity() -> None:
-    service = _ApiService()
-    client = _api_client(service)
-    request_id = str(uuid.uuid4())
-
-    response = client.post(
-        "/internal/v1/automation/instances/automation-1/generation/"
-        "recover-current-unknown-write",
-        json={"request_id": request_id},
-    )
-
-    assert response.status_code == 200
-    name, call = service.calls[-1]
-    assert name == "recover-current"
-    assert call["automation_id"] == "automation-1"
-    assert call["request_id"] == request_id
-    assert "generation" not in call
-    assert "lease_id" not in call
-
-    rejected = client.post(
-        "/internal/v1/automation/instances/automation-1/generation/"
-        "recover-current-unknown-write",
-        json={"request_id": str(uuid.uuid4()), "lease_id": "browser-lease"},
-    )
-    assert rejected.status_code == 422
 
 
 def test_configuration_route_refreshes_scheduler_after_ready_commit() -> None:
@@ -1086,10 +945,10 @@ def test_management_mutations_fail_closed_during_release_hold() -> None:
     service = AutomationPluginManagementService(
         catalog=_Catalog(),  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(
-            install_upload=lambda *args, **kwargs: lifecycle_calls.append(kwargs)
+            inspect_upload=lambda *args, **kwargs: lifecycle_calls.append(kwargs),
+            install_upload=lambda *args, **kwargs: lifecycle_calls.append(kwargs),
         ),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -1097,11 +956,11 @@ def test_management_mutations_fail_closed_during_release_hold() -> None:
     )
     assert service.catalog_projection(actor=_console_actor())["plugins"]
     with pytest.raises(PluginConflictError) as error:
-        service.install(
-            b"signed-package",
-            instance_name="blocked during release",
+        service.install_service_v2(
+            b"plugin-package",
             request_id=str(uuid.uuid4()),
             transport_package_sha256="a" * 64,
+            raw_intent=json.dumps({"instance_name": "blocked during release", "permissions_confirmed": True}),
             actor=_console_actor(),
         )
     assert error.value.code == "PLUGIN_RELEASE_HOLD"
@@ -1111,7 +970,6 @@ def test_management_mutations_fail_closed_during_release_hold() -> None:
         catalog=_Catalog(),  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -1138,7 +996,6 @@ def test_enable_requires_exact_committed_generation_before_lifecycle_call() -> N
             set_enabled=lambda *args, **kwargs: lifecycle_calls.append(kwargs)
         ),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
             reconcile_project=lambda automation_id: target_calls.append(automation_id)
         ),
@@ -1208,7 +1065,6 @@ def test_service_v2_transition_readiness_requires_exact_enabled_projection_gener
             catalog=_Catalog(),  # type: ignore[arg-type]
             lifecycle=SimpleNamespace(),
             configuration=SimpleNamespace(),
-            worker_repository=SimpleNamespace(),
             target_service=SimpleNamespace(),
             package_repository=SimpleNamespace(),
             storage=SimpleNamespace(),
@@ -1263,7 +1119,7 @@ def test_disable_revokes_authority_while_generation_is_reconciling() -> None:
             automation_id=automation_id,
             plugin_id="example_action",
             display_name="Example action",
-            active_version=SimpleNamespace(version="1.0.0"),
+            active_version=SimpleNamespace(version="1.0.0", runtime_model=PluginRuntimeModel.SERVICE_V2),
             enabled=False,
             state=PluginProjectState.DISABLED,
             record_version=4,
@@ -1276,7 +1132,6 @@ def test_disable_revokes_authority_while_generation_is_reconciling() -> None:
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(set_enabled=set_enabled),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
             reconcile_project=lambda automation_id: target_calls.append(automation_id)
         ),
@@ -1294,7 +1149,7 @@ def test_disable_revokes_authority_while_generation_is_reconciling() -> None:
 
     assert result["enabled"] is False
     assert result["state"] == "DISABLED"
-    assert target_calls == []
+    assert target_calls == ["automation-1"]
     assert lifecycle_calls[0]["expected_record_version"] == 3
 
 
@@ -1342,7 +1197,6 @@ def test_disable_refresh_failure_returns_committed_pending_projection_for_api_re
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(set_enabled=set_enabled),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(reconcile_project=reconcile),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -1377,7 +1231,7 @@ def test_disable_refresh_failure_returns_committed_pending_projection_for_api_re
     assert refresh_calls == ["refresh"]
 
 
-def test_state_response_loss_retry_reaches_audited_lifecycle_without_reconcile() -> None:
+def test_state_response_loss_retry_replays_the_audited_lifecycle() -> None:
     catalog = _Catalog(
         _entry(
             enabled=True,
@@ -1404,7 +1258,7 @@ def test_state_response_loss_retry_reaches_audited_lifecycle_without_reconcile()
             automation_id=automation_id,
             plugin_id="example_action",
             display_name="Example action",
-            active_version=SimpleNamespace(version="1.0.0"),
+            active_version=SimpleNamespace(version="1.0.0", runtime_model=PluginRuntimeModel.SERVICE_V2),
             enabled=False,
             state=PluginProjectState.DISABLED,
             record_version=4,
@@ -1417,7 +1271,6 @@ def test_state_response_loss_retry_reaches_audited_lifecycle_without_reconcile()
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(set_enabled=set_enabled),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
             reconcile_project=lambda automation_id: target_calls.append(automation_id)
         ),
@@ -1442,7 +1295,7 @@ def test_state_response_loss_retry_reaches_audited_lifecycle_without_reconcile()
 
     assert first == retried
     assert first["enabled"] is False
-    assert target_calls == []
+    assert target_calls == ["automation-1", "automation-1"]
     assert len(lifecycle_calls) == 2
     assert {call["request_id"] for call in lifecycle_calls} == {request_id}
     assert {call["expected_record_version"] for call in lifecycle_calls} == {3}
@@ -1465,7 +1318,6 @@ def test_stale_state_request_fails_closed_when_audited_lifecycle_rejects_it() ->
         ),  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(set_enabled=reject_state_change),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
             reconcile_project=lambda _automation_id: (_ for _ in ()).throw(
                 AssertionError("stale retries must not reconcile")
@@ -1509,7 +1361,6 @@ def test_stale_state_request_with_non_replay_shape_never_calls_lifecycle(
             set_enabled=lambda *args, **kwargs: lifecycle_calls.append(kwargs)
         ),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(),
         package_repository=SimpleNamespace(),
         storage=SimpleNamespace(),
@@ -1549,7 +1400,6 @@ def test_upgrade_response_loss_retry_keeps_non_runnable_transition_idempotent() 
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(upgrade_upload=upgrade_upload),
         configuration=SimpleNamespace(),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
             reconcile_project=lambda _automation_id: (_ for _ in ()).throw(
                 RuntimeError("worker offline")
@@ -1583,7 +1433,7 @@ def test_upgrade_response_loss_retry_keeps_non_runnable_transition_idempotent() 
     assert {call["expected_record_version"] for call in lifecycle_calls} == {3}
 
 
-@pytest.mark.parametrize("runtime_model", [PluginRuntimeModel.SERVICE_V2.value, PluginRuntimeModel.ACTION_V1.value])
+@pytest.mark.parametrize("runtime_model", [PluginRuntimeModel.SERVICE_V2.value])
 def test_configuration_persists_exact_payload_and_projects_reconcile_block(runtime_model) -> None:
     catalog = _Catalog(_entry(runtime_model=runtime_model))
     saved: list[dict[str, Any]] = []
@@ -1610,7 +1460,6 @@ def test_configuration_persists_exact_payload_and_projects_reconcile_block(runti
         catalog=catalog,  # type: ignore[arg-type]
         lifecycle=SimpleNamespace(),
         configuration=SimpleNamespace(save=save),
-        worker_repository=SimpleNamespace(),
         target_service=SimpleNamespace(
             reconcile_project=lambda _automation_id: (_ for _ in ()).throw(
                 RuntimeError("resource offline")
@@ -1626,7 +1475,6 @@ def test_configuration_persists_exact_payload_and_projects_reconcile_block(runti
         resource_bindings={"input": "resource-1"},
         enabled_entrypoints=("scheduler",),
         schedule={"kind": "daily_times", "times": ["08:00"], "enabled": True},
-        device_id=None,
         request_id=str(uuid.uuid4()),
         expected_project_configuration_version=1,
         actor=_console_actor(),

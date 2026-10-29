@@ -1,14 +1,12 @@
-"""Exact Business Account, managed-resource and named-Worker binding checks."""
+"""Exact Business Account and managed-resource binding checks."""
 
 from __future__ import annotations
 
-import copy
 import re
 from collections.abc import Callable, Sequence
 from typing import Any, Mapping
 
 from agent.automation_plugins.errors import PluginConflictError
-from agent.automation_plugins.models import DeviceBinding
 from agent.feishu_resource_catalog import FeishuResourceCatalogError
 
 
@@ -21,8 +19,7 @@ class ProductionProjectBindingResolver:
 
     Account lookup never uses an account's ``is_default`` flag or list order.
     Resource lookup requires an explicit ``resource_kind`` in the managed
-    resource itself.  Worker lookup accepts an offline or locked named device
-    (jobs may queue), but never a disabled device or a different platform.
+    resource itself.
     """
 
     def __init__(
@@ -30,17 +27,13 @@ class ProductionProjectBindingResolver:
         *,
         account_manager: Any,
         resource_provider: Callable[[str], Mapping[str, Any] | None],
-        worker_repository: Any,
     ) -> None:
         if not callable(getattr(account_manager, "list_accounts", None)):
             raise TypeError("account_manager must expose list_accounts()")
         if not callable(resource_provider):
             raise TypeError("resource_provider must be callable")
-        if not callable(getattr(worker_repository, "get_worker_device", None)):
-            raise TypeError("worker_repository must expose get_worker_device()")
         self._account_manager = account_manager
         self._resource_provider = resource_provider
-        self._workers = worker_repository
 
     @staticmethod
     def _identifier(value: object, field: str) -> str:
@@ -244,103 +237,6 @@ class ProductionProjectBindingResolver:
             "config_sha256": str(descriptor["config_sha256"]),
             "updated_at": str(descriptor.get("updated_at") or ""),
         }
-
-    def describe_device_binding(
-        self,
-        *,
-        automation_id: str,
-        device_id: str,
-        worker_requirement: Mapping[str, object],
-    ) -> dict[str, Any]:
-        del automation_id
-        exact_id = self._identifier(device_id, "device_id")
-        row = self._workers.get_worker_device(exact_id)
-        if not isinstance(row, Mapping):
-            raise PluginConflictError(
-                "the explicitly named Worker device is not paired",
-                code="PLUGIN_WORKER_BINDING_NOT_FOUND",
-            )
-        supported_os = worker_requirement.get("supported_os")
-        if not isinstance(supported_os, list) or not supported_os:
-            raise PluginConflictError(
-                "signed Worker requirements are invalid",
-                code="PLUGIN_WORKER_CONTRACT_INVALID",
-            )
-        platform = str(row.get("platform") or "").strip().lower()
-        service_state = str(row.get("service_state") or "").strip().upper()
-        if platform not in {str(item).strip().lower() for item in supported_os}:
-            raise PluginConflictError(
-                "the named Worker platform does not match the signed requirement",
-                code="PLUGIN_WORKER_PLATFORM_MISMATCH",
-            )
-        if service_state == "DISABLED":
-            raise PluginConflictError(
-                "the named Worker device is disabled",
-                code="PLUGIN_WORKER_BINDING_DISABLED",
-            )
-        capabilities = row.get("capabilities_json")
-        if not isinstance(capabilities, Mapping):
-            raise PluginConflictError(
-                "the named Worker capability record is invalid",
-                code="PLUGIN_WORKER_CAPABILITY_INVALID",
-            )
-        if (
-            worker_requirement.get("interactive_session") is True
-            and capabilities.get("interactive") is not True
-        ):
-            raise PluginConflictError(
-                "the named Worker does not support interactive Tray execution",
-                code="PLUGIN_WORKER_CAPABILITY_MISMATCH",
-            )
-        fingerprint = str(row.get("paired_public_key_fingerprint") or "").lower()
-        capabilities_sha256 = str(row.get("capabilities_sha256") or "").lower()
-        record_version = row.get("record_version")
-        if (
-            not _SHA256_RE.fullmatch(fingerprint)
-            or not _SHA256_RE.fullmatch(capabilities_sha256)
-            or isinstance(record_version, bool)
-            or not isinstance(record_version, int)
-            or record_version < 1
-        ):
-            raise PluginConflictError(
-                "the named Worker immutable identity is incomplete",
-                code="PLUGIN_WORKER_IDENTITY_INVALID",
-            )
-        return {
-            "device_id": exact_id,
-            "device_name": str(row.get("display_name") or exact_id)[:255],
-            "platform": platform,
-            "service_state": service_state,
-            "interactive_session_state": str(
-                row.get("interactive_session_state") or ""
-            ).upper(),
-            "paired_public_key_fingerprint": fingerprint,
-            "capabilities_sha256": capabilities_sha256,
-            "record_version": record_version,
-        }
-
-    def resolve_device_binding(
-        self,
-        *,
-        automation_id: str,
-        device_id: str,
-        worker_requirement: Mapping[str, object],
-    ) -> DeviceBinding:
-        descriptor = self.describe_device_binding(
-            automation_id=automation_id,
-            device_id=device_id,
-            worker_requirement=worker_requirement,
-        )
-        return DeviceBinding(
-            device_id=str(descriptor["device_id"]),
-            device_name=str(descriptor["device_name"]),
-        )
-
-    def detached_worker_row(self, device_id: str) -> dict[str, Any] | None:
-        """Testing/support hook that never exposes the row through HTTP."""
-
-        row = self._workers.get_worker_device(device_id)
-        return copy.deepcopy(dict(row)) if isinstance(row, Mapping) else None
 
 
 __all__ = ["ProductionProjectBindingResolver"]

@@ -494,10 +494,9 @@ class ControlPlaneServiceTests(unittest.TestCase):
         result = service.get_work_item("work-1")
         records = result["unknown_write_recoveries"]
         self.assertEqual(["old-a", "old-b"], [record["lease_id"] for record in records])
-        self.assertTrue(records[0]["recovery_supported"])
-        self.assertEqual("", records[0]["recovery_unavailable_reason"])
-        self.assertFalse(records[1]["recovery_supported"])
-        self.assertIn("尚无已审核", records[1]["recovery_unavailable_reason"])
+        for record in records:
+            self.assertFalse(record["recovery_supported"])
+            self.assertIn("只读保留", record["recovery_unavailable_reason"])
 
     def test_read_dtos_are_whitelisted_and_recursively_redacted(self):
         repository = _FakeRepository([_run("run-1", "WAITING_APPROVAL")])

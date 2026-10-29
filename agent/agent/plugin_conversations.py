@@ -68,9 +68,8 @@ def _channel(actor: Actor, source: str) -> AutomationEntrypoint:
 class PluginConversationService:
     """Expose configured project actions, without changing plugin declarations."""
 
-    def __init__(self, policy_service: Any, *, route_resolver: Any = None) -> None:
+    def __init__(self, policy_service: Any) -> None:
         self.policy = policy_service
-        self.routes = route_resolver
 
     def targets(self, *, actor: Actor, source: str) -> tuple[ConversationPluginTarget, ...]:
         channel = _channel(actor, source)
@@ -83,8 +82,7 @@ class PluginConversationService:
             snapshot = entry.committed_snapshot
             if (not entry.enabled or not entry.configured or snapshot is None
                     or entry.target_generation != entry.committed_generation
-                    or str(getattr(entry.reconcile_state, "value", entry.reconcile_state)) != "STABLE"
-                    or (entry.runtime_model != "SERVICE_V2" and channel.value not in snapshot.enabled_entrypoints)):
+                    or str(getattr(entry.reconcile_state, "value", entry.reconcile_state)) != "STABLE"):
                 continue
             _, contract = self.policy._load_contract(entry.automation_id)
             if (contract.automation_generation != snapshot.generation
@@ -94,55 +92,41 @@ class PluginConversationService:
                 permission = uow.automation_projects.get_policy(entry.automation_id)
             if not permission or not contract.can_full_auto:
                 continue
-            if entry.runtime_model != "SERVICE_V2" and permission.get("mode") != "PROJECT_FULL_AUTO":
-                continue
             for invocation in contract.invocation_contracts.values():
                 if invocation.entrypoint != channel.value:
                     continue
-                contribution = invocation.contribution_id if entry.runtime_model == "SERVICE_V2" else None
-                if contribution and contribution not in snapshot.enabled_entrypoints:
+                contribution = invocation.contribution_id
+                if contribution not in snapshot.enabled_entrypoints:
                     continue
-                if contribution and any(
+                if any(
                     item.get("id") == contribution and item.get("input_schema", {}).get("properties")
                     for item in entry.contributions.get(channel.value, ())
                 ):
                     # These entries require explicit channel input, not an empty model call.
                     continue
-                capability = project_capability_from_snapshot(snapshot)
-                if contribution:
-                    capability = PluginExecutionRouter._service_contribution_capability(capability, contribution_id=contribution)
+                capability = PluginExecutionRouter._service_contribution_capability(
+                    project_capability_from_snapshot(snapshot), contribution_id=contribution)
                 title = redact_text(entry.name if entry.display_name == entry.name else f"{entry.name}（{entry.display_name}）")
                 description = redact_text(capability.get("description") or entry.name)
                 route_key = command = ""
                 selection_tool = entry.plugin_id if is_selection_preview_project(entry) else ""
                 if channel is AutomationEntrypoint.FEISHU:
-                    if contribution:
-                        declarations = [item for item in entry.contributions.get("feishu", ()) if item.get("id") == contribution]
-                        if len(declarations) != 1:
-                            raise HarnessError("插件飞书入口不明确", code="HARNESS_PLUGIN_UNAVAILABLE")
-                        commands = declarations[0].get("commands")
-                        if not isinstance(commands, list) or not commands or any(not isinstance(value, str) or not value.strip() for value in commands):
-                            raise HarnessError("插件飞书指令未配置", code="HARNESS_PLUGIN_UNAVAILABLE")
-                        # The first manifest alias is the declared canonical command.
-                        command = commands[0]
-                        if is_selection_preview_project(entry) or is_scan_preview_project(entry):
-                            route_key, preview_tool = service_preview_route(entry.plugin_id, commands)
-                            if route_key:
-                                command = ""
-                                selection_tool = preview_tool if is_selection_preview_project(entry) else ""
-                    else:
-                        if self.routes is None:
-                            raise HarnessError("插件飞书入口不可用", code="HARNESS_PLUGIN_UNAVAILABLE")
-                        route = self.routes.resolve_instance_feishu_route(entry.automation_id)
-                        if route is None or not route.enabled:
-                            continue
-                        route_key = route.route_key
-                    if not contribution and is_selection_preview_project(entry):
-                        selection_tool = entry.plugin_id
-                if contribution:
-                    declarations = [item for item in entry.contributions.get(channel.value, ()) if item.get("id") == contribution]
-                    if len(declarations) == 1 and declarations[0].get("title"):
-                        title = f"{title} · {redact_text(declarations[0]['title'])}"
+                    declarations = [item for item in entry.contributions.get("feishu", ()) if item.get("id") == contribution]
+                    if len(declarations) != 1:
+                        raise HarnessError("插件飞书入口不明确", code="HARNESS_PLUGIN_UNAVAILABLE")
+                    commands = declarations[0].get("commands")
+                    if not isinstance(commands, list) or not commands or any(not isinstance(value, str) or not value.strip() for value in commands):
+                        raise HarnessError("插件飞书指令未配置", code="HARNESS_PLUGIN_UNAVAILABLE")
+                    # The first manifest alias is the declared canonical command.
+                    command = commands[0]
+                    if is_selection_preview_project(entry) or is_scan_preview_project(entry):
+                        route_key, preview_tool = service_preview_route(entry.plugin_id, commands)
+                        if route_key:
+                            command = ""
+                            selection_tool = preview_tool if is_selection_preview_project(entry) else ""
+                declarations = [item for item in entry.contributions.get(channel.value, ()) if item.get("id") == contribution]
+                if len(declarations) == 1 and declarations[0].get("title"):
+                    title = f"{title} · {redact_text(declarations[0]['title'])}"
                 identity = json.dumps([entry.automation_id, contract.automation_generation, contract.project_configuration_version, channel.value, contribution], separators=(",", ":"))
                 choices.append(ConversationPluginTarget(
                     handle="run_plugin_" + uuid5(NAMESPACE_URL, identity).hex,

@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from agent.automation_plugins.errors import PluginConflictError, PluginPackageError
-from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 
 
@@ -745,12 +744,12 @@ class LockedVirtualEnvironmentBuilder:
     def build(
         self,
         version_root: Path,
-        manifest: AutomationPluginManifest | AutomationPluginManifestV2,
+        manifest: AutomationPluginManifestV2,
     ) -> Path:
         package_root = version_root / "package"
         if not package_root.is_dir():
             raise PluginPackageError("verified plugin package directory is missing")
-        if isinstance(manifest, AutomationPluginManifestV2) and (
+        if (
             not sys.platform.startswith("linux")
             or sys.version_info[:2] != (3, 10)
         ):
@@ -779,26 +778,21 @@ class LockedVirtualEnvironmentBuilder:
         if lock_name:
             lock_path = package_root.joinpath(*str(lock_name).split("/"))
             self._validated_lock(lock_path)
-            wheels = package_root / "payload" / (
-                "wheelhouse"
-                if isinstance(manifest, AutomationPluginManifestV2)
-                else "wheels"
-            )
+            wheels = package_root / "payload" / "wheelhouse"
             if not wheels.is_dir():
-                raise PluginPackageError("hashed plugin dependencies require payload/wheels")
+                raise PluginPackageError("hashed plugin dependencies require payload/wheelhouse")
             wheel_files = tuple(wheels.iterdir())
             if not wheel_files or any(not item.is_file() or item.suffix != ".whl" for item in wheel_files):
                 raise PluginPackageError("plugin dependency bundle may contain wheels only")
-            if isinstance(manifest, AutomationPluginManifestV2):
-                declared_wheels = {
-                    package_root.joinpath(*str(item).split("/")).resolve()
-                    for item in manifest.runtime["wheelhouse"]
-                }
-                observed_wheels = {item.resolve() for item in wheel_files}
-                if not declared_wheels or observed_wheels != declared_wheels:
-                    raise PluginPackageError(
-                        "service-v2 wheelhouse differs from its manifest declaration"
-                    )
+            declared_wheels = {
+                package_root.joinpath(*str(item).split("/")).resolve()
+                for item in manifest.runtime["wheelhouse"]
+            }
+            observed_wheels = {item.resolve() for item in wheel_files}
+            if not declared_wheels or observed_wheels != declared_wheels:
+                raise PluginPackageError(
+                    "service-v2 wheelhouse differs from its manifest declaration"
+                )
             completed = subprocess.run(
                 [
                     str(python_path),

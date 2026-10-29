@@ -15,16 +15,11 @@ from agent.orchestration.models import (
     RunStatus,
 )
 from agent.orchestration.approval_service import ApprovalService
-from agent.orchestration.automation_project_policy_service import (
-    AutomationProjectPolicyService,
-)
-from agent.orchestration.policy_engine import PolicyDecision, PolicyEngine
+from agent.orchestration.policy_engine import PolicyDecision
 from agent.orchestration.workflow_runner import WorkflowRunner
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectInvocation,
-    CompiledAutomationProjectContract,
-    InvocationArgumentContract,
 )
 from shared.orchestration_repository import InvalidStateError
 
@@ -1158,132 +1153,3 @@ def test_typed_project_policy_is_rechecked_under_project_uow_before_step_start()
         invocation.to_dict()
     )
 
-
-def test_real_project_policy_service_blocks_old_unapproved_run_under_new_automatic_mode():
-    invocation = AutomationProjectInvocation(
-        automation_id="instance-one",
-        automation_generation=1,
-        entrypoint=AutomationEntrypoint.CONSOLE,
-        contract_id="console",
-        contract_hash="a" * 64,
-        policy_version=1,
-        project_configuration_version=1,
-        request_id="request-policy-drift",
-    )
-    plan = Plan(
-        command_type="automation.project.invoke",
-        context_fingerprint="context",
-        tool_catalog_hash="catalog",
-        steps=(
-            PlanStep(
-                step_key="write",
-                tool_name="automation.instance-one.run",
-                tool_version="1.0.0",
-                operation_type=OperationType.EXTERNAL_WRITE,
-                arguments={"record_id": "record-1"},
-                account_id=None,
-                depends_on=(),
-                idempotency_key="step-key",
-                expected_evidence=(),
-                postconditions=(),
-                risk_level=RiskLevel.HIGH,
-            ),
-        ),
-        automation_id="instance-one",
-        automation_generation=1,
-        automation_contract_hash="a" * 64,
-    )
-    contract = CompiledAutomationProjectContract(
-        automation_id="instance-one",
-        automation_generation=1,
-        manifest_sha256="b" * 64,
-        tool_name="automation.instance-one.run",
-        tool_version="1.0.0",
-        operation_type=OperationType.EXTERNAL_WRITE.value,
-        risk_level=RiskLevel.HIGH.value,
-        invocation_contracts={
-            "console": InvocationArgumentContract(
-                contract_id="console",
-                entrypoint="console",
-                expected_arguments={"record_id": "record-1"},
-                dynamic_argument_resolvers={},
-            )
-        },
-        account_bindings={},
-        allowed_entrypoints=frozenset({"console"}),
-        contract_hash="a" * 64,
-        tool_contract_hash="c" * 64,
-        plugin_contract_hash="d" * 64,
-        project_configuration_version=1,
-        snapshot={"automation_id": "instance-one"},
-        can_full_auto=True,
-    )
-    repository = _Repository(plan)
-    repository.run["status"] = RunStatus.VALIDATED.value
-    repository.project_policy = {
-        "automation_id": "instance-one",
-        "mode": "REQUIRE_EACH_RUN",
-        "version": 1,
-    }
-    repository.command.update(
-        {
-            "command_type": "automation.project.invoke",
-            "source": "console",
-            "actor_type": ActorType.CONSOLE_ADMIN.value,
-            "actor_id": "admin-one",
-            "actor_roles_json": ["admin", "super_admin"],
-            "parameters_json": {
-                "tool_name": "automation.instance-one.run",
-                "arguments": {"record_id": "record-1"},
-                "execution_context": {},
-            },
-            "automation_id": "instance-one",
-            "automation_generation": 1,
-            "automation_invocation_json": invocation.to_dict(),
-        }
-    )
-
-    class _PluginCatalog:
-        @staticmethod
-        def require(automation_id):
-            if automation_id != "instance-one":
-                raise KeyError(automation_id)
-            return SimpleNamespace(automation_id=automation_id)
-
-    project_service = AutomationProjectPolicyService(
-        repository,
-        core_catalog=SimpleNamespace(),
-        plugin_catalog=_PluginCatalog(),
-    )
-    project_service._lock_and_compile_contract = (  # type: ignore[method-assign]
-        lambda _uow, _entry, **_kwargs: (contract, {})
-    )
-    execution = _Execution()
-    runner = _runner(
-        repository,
-        plan,
-        execution,
-        policy=PolicyEngine(
-            _Catalog(plan.steps[0]),
-            project_policy_provider=project_service.evaluate_invocation,
-        ),
-    )
-
-    asyncio.run(runner._process_claimed(copy.deepcopy(repository.run)))
-
-    assert repository.run["status"] == RunStatus.WAITING_APPROVAL.value
-    assert repository.approval is not None
-    assert repository.approval["status"] == "PENDING"
-
-    repository.project_policy.update(
-        {"mode": "PROJECT_FULL_AUTO", "version": 2}
-    )
-    repository.approval["status"] = "INVALIDATED"
-    claimed = repository.claim_current()
-    asyncio.run(runner._process_claimed(claimed))
-
-    assert execution.execute_calls == 0
-    assert repository.run["status"] == RunStatus.FAILED_TERMINAL.value
-    assert repository.run["error_code"] == "APPROVAL_POLICY_CHANGED"
-    assert repository.run["finished_at"] is not None
-    assert repository.work_item["status"] == "OPEN"

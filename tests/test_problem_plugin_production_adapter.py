@@ -34,8 +34,8 @@ def _disable_readback_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _load_action(plugin_id: str):
-    from tests.first_party_action_payload_support import load_first_party_action
-    return load_first_party_action(plugin_id)
+    from tests.plugin_action_payload_support import load_plugin_action
+    return load_plugin_action(plugin_id)
 
 def _split_header() -> list[str]:
     return [
@@ -277,12 +277,12 @@ def _broker(harness: _Harness, tool: str):
     handlers = harness.handlers()
     account_bindings = (
         {"account_id": (_PRIMARY,), "daxiang_s_account_id": (_DAXIANG,)}
-        if tool == "self_pickup_problem_upload"
+        if tool == "self_pickup_problem"
         else {"account_id": (_PRIMARY,)}
     )
     resource_bindings = (
         {"self_pickup_source_sheet": _SELF_RESOURCE}
-        if tool == "self_pickup_problem_upload"
+        if tool == "self_pickup_problem"
         else {
             "split_pending_source_sheet": _SPLIT_SOURCE,
             "split_pending_target_sheet": _SPLIT_TARGET,
@@ -320,7 +320,7 @@ def _walk_keys(value: object):
 def test_self_pickup_payload_runs_through_production_ports_without_binding_leak() -> None:
     harness = _Harness()
     action = _load_action("self_pickup_problem_upload")
-    broker = _broker(harness, "self_pickup_problem_upload")
+    broker = _broker(harness, "self_pickup_problem")
     preview = action.run_action({}, broker)
     result = action.run_action(
         {
@@ -354,7 +354,7 @@ def test_self_pickup_payload_runs_through_production_ports_without_binding_leak(
 def test_split_payload_runs_full_closed_write_and_readback_chain() -> None:
     harness = _Harness()
     action = _load_action("split_pending_problem_upload")
-    broker = _broker(harness, "split_pending_problem_upload")
+    broker = _broker(harness, "split_pending_problem")
     preview = action.run_action({}, broker)
     result = action.run_action(
         {
@@ -412,7 +412,7 @@ def test_target_sheet_acknowledgement_without_matching_readback_is_unknown() -> 
     context = CoreBrokerInvocationContext(
         automation_id="split-instance",
         plugin_version="1.0.0",
-        tool_name="split_pending_problem_upload",
+        tool_name="split_pending_problem",
         operation="network.request",
         action="feishu.sheet.replace_rows",
         role="split_pending_target_sheet",

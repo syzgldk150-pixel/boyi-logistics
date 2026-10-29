@@ -13,7 +13,7 @@ from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
 from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
 from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
-from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
+from plugin_core_adapters.host_primitives import build_production_host_primitive_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from tests.v32_acceptance.daily_protocol import ACCOUNT_ID, CHILD_CODE, DailyAccounts
 from tests.v32_acceptance.daily_scan import ACTOR, setup_scan, signed_request
@@ -139,7 +139,7 @@ def main():
                 if arguments['spreadsheet_token'] == 'isolated-daily-workbook':
                     return daily.feishu_operation(action, arguments)
                 return problems.feishu_operation(action, arguments)
-            handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
+            handlers = build_production_host_primitive_handler_map(cursor_secret=secrets.token_bytes(32),
                 account_manager=account_manager, capability_authorizer=daily.authorize)
             problem_handlers = build_production_problem_handler_map(cursor_secret=secrets.token_bytes(32),
                 account_manager=account_manager, resource_loader=resources.get, feishu_operation=sheet,

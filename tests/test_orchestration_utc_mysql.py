@@ -11,7 +11,7 @@ from agent.orchestration.models import Actor, ActorType, Plan, RiskLevel
 from agent.orchestration.policy_engine import PolicyDecision, PolicyEngine
 from shared.orchestration_repository import OrchestrationRepository
 from tests import test_mysql_orchestration_integration as mysql_helpers
-from tests.test_manual_unknown_write_mysql import database as database
+from tests.mysql_migrated_database import database as database
 
 
 pytestmark = pytest.mark.skipif(

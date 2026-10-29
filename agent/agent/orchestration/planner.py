@@ -11,14 +11,6 @@ from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from agent.automation_plugins.code_owned_fields import (
-    SCAN_PHASE_PREVIEW,
-    SCAN_PREVIEW_POSTCONDITION,
-    SELECTION_PHASE_PREVIEW,
-    first_party_code_owned_plan_fields,
-    resolve_scan_capability_phase,
-    resolve_selection_capability_phase,
-)
 from agent.automation_plugins.service_v2_contract import (
     SELECTION_ARGUMENT_FIELDS,
     resolve_service_v2_selection_target,
@@ -42,13 +34,6 @@ from agent.orchestration.plan_dependencies import (
 from agent.orchestration.impact_preview import build_write_impact
 from agent.orchestration.ports import ToolCatalogPort
 from agent.orchestration.scan_preview_binding import build_scan_preview_impact
-from agent.orchestration.scan_preview_binding import (
-    SCAN_PREVIEW_PAYLOAD_BINDING_FIELD,
-    scan_preview_payload_binding,
-)
-
-
-CUSTOMER_PROBLEM_SYNC_TOOL = "sync_customer_service_problems"
 
 
 class DeterministicPlanner:
@@ -130,57 +115,7 @@ class DeterministicPlanner:
             arguments["account_id"] = account_id
 
         arguments = _normalize_financial_values(arguments)
-        code_owned_fields = _project_code_owned_plan_fields(
-            command=command,
-            capability=capability,
-        )
-        if (
-            tool_name == CUSTOMER_PROBLEM_SYNC_TOOL
-            or "recheck_items" in code_owned_fields
-        ):
-            arguments["recheck_items"] = _customer_problem_recheck_context(context)
-        if SCAN_PREVIEW_PAYLOAD_BINDING_FIELD in code_owned_fields:
-            if SCAN_PREVIEW_PAYLOAD_BINDING_FIELD in raw_arguments:
-                raise OrchestrationError(
-                    "SCAN_PREVIEW_CONTEXT_INVALID",
-                    "Scan preview payload binding is controlled by the server",
-                )
-            if arguments.get("dry_run") is not True:
-                preview_binding = scan_preview_payload_binding(
-                    command=command,
-                    capability=capability,
-                    arguments=arguments,
-                )
-                if preview_binding is None:
-                    raise OrchestrationError(
-                        "SCAN_PREVIEW_CONTEXT_REQUIRED",
-                        "Formal scan execution requires a completed preview binding",
-                    )
-                arguments[SCAN_PREVIEW_PAYLOAD_BINDING_FIELD] = preview_binding
-
-        try:
-            scan_phase = resolve_scan_capability_phase(capability, arguments)
-        except ValueError as exc:
-            raise OrchestrationError(
-                "SCAN_EXECUTION_PHASE_INVALID",
-                "Scan execution phase is incomplete or ambiguous",
-            ) from exc
-        try:
-            selection_phase = resolve_selection_capability_phase(capability, arguments)
-        except ValueError as exc:
-            raise OrchestrationError(
-                "SELECTION_EXECUTION_PHASE_INVALID",
-                "Selection execution phase is incomplete or ambiguous",
-            ) from exc
-        read_preview = (
-            scan_phase == SCAN_PHASE_PREVIEW
-            or selection_phase == SELECTION_PHASE_PREVIEW
-        )
-        operation_type = (
-            OperationType.READ
-            if read_preview
-            else _operation_type(capability)
-        )
+        operation_type = _operation_type(capability)
         if llm_selected:
             if not bool(capability.get("llm_exposed")):
                 raise OrchestrationError("LLM_TOOL_NOT_EXPOSED", f"Tool is not exposed to the LLM: {tool_name}")
@@ -192,11 +127,7 @@ class DeterministicPlanner:
             raise OrchestrationError("TOOL_VERSION_REQUIRED", f"Tool capability has no version: {tool_name}")
 
         expected_evidence = _object_tuple(capability.get("evidence"), field_name="evidence")
-        postconditions = (
-            ({"name": SCAN_PREVIEW_POSTCONDITION},)
-            if scan_phase == SCAN_PHASE_PREVIEW
-            else _object_tuple(capability.get("postconditions"), field_name="postconditions")
-        )
+        postconditions = _object_tuple(capability.get("postconditions"), field_name="postconditions")
         write_impact = build_scan_preview_impact(
             command=command,
             capability=capability,
@@ -234,11 +165,7 @@ class DeterministicPlanner:
             idempotency_key=step_idempotency,
             expected_evidence=expected_evidence,
             postconditions=postconditions,
-            risk_level=(
-                RiskLevel.LOW
-                if read_preview
-                else _risk_level(capability)
-            ),
+            risk_level=_risk_level(capability),
             requires_approval=False,
         )
         invocation = command.automation_invocation
@@ -269,34 +196,6 @@ class DeterministicPlanner:
             ),
             schema_version=selected_schema_version,
         )
-
-
-def _project_code_owned_plan_fields(
-    *,
-    command: Command,
-    capability: Mapping[str, Any],
-) -> tuple[str, ...]:
-    """Resolve server-owned plan fields from the exact committed plugin identity.
-
-    Project capabilities are exposed as ``automation.<instance>.run`` aliases,
-    so matching the underlying core tool name silently skipped first-party
-    fields for real Console and Scheduler commands.  The immutable runtime
-    descriptor carries the signed instance/plugin/trust identity needed by the
-    same closed declaration used during contract compilation.
-    """
-
-    invocation = command.automation_invocation
-    runtime = capability.get("_plugin_runtime")
-    if invocation is None or not isinstance(runtime, Mapping):
-        return ()
-    automation_id = str(runtime.get("automation_id") or "").strip()
-    if automation_id != invocation.automation_id:
-        return ()
-    return first_party_code_owned_plan_fields(
-        automation_id=automation_id,
-        plugin_id=str(runtime.get("plugin_id") or "").strip(),
-        trust_source=str(runtime.get("trust_source") or "").strip(),
-    )
 
 
 def _service_v2_selection_plan_fields(
@@ -505,32 +404,6 @@ def _object_tuple(value: Any, *, field_name: str) -> tuple[Mapping[str, Any], ..
     if not isinstance(value, list) or any(not isinstance(item, Mapping) for item in value):
         raise OrchestrationError("INVALID_TOOL_CONTRACT", f"Tool {field_name} must be an object or object list")
     return tuple(dict(item) for item in value)
-
-
-def _customer_problem_recheck_context(context: ContextSnapshot) -> list[dict[str, Any]]:
-    resources = context.values.get("resources")
-    if not isinstance(resources, Mapping):
-        raise OrchestrationError(
-            "INVALID_PROBLEM_RECHECK_CONTEXT",
-            "Customer problem recheck context must be an object",
-        )
-    raw = resources.get("customer_problem_open_refs")
-    if (
-        not isinstance(raw, list)
-        or any(not isinstance(item, Mapping) for item in raw)
-    ):
-        raise OrchestrationError(
-            "INVALID_PROBLEM_RECHECK_CONTEXT",
-            "Customer problem open references must be an object array",
-        )
-    refs = [dict(item) for item in raw]
-    dedupe_keys = [str(item.get("dedupe_key") or "").strip() for item in refs]
-    if any(not value for value in dedupe_keys) or len(dedupe_keys) != len(set(dedupe_keys)):
-        raise OrchestrationError(
-            "INVALID_PROBLEM_RECHECK_CONTEXT",
-            "Customer problem open references contain missing or duplicate identities",
-        )
-    return sorted(refs, key=lambda item: str(item["dedupe_key"]))
 
 
 _MONEY_FIELD_MARKERS = (

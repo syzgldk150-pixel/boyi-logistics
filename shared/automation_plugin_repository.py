@@ -10,8 +10,6 @@ from __future__ import annotations
 from shared.plugin_generation_contract import validate_execution_envelope
 from shared.plugin_json import plugin_json, plugin_json_digest
 
-import base64
-import binascii
 import hashlib
 import json
 import uuid
@@ -67,30 +65,6 @@ def _manifest_json(value: Any) -> str:
 _PROJECT_STATES = frozenset(
     {"INSTALLED", "ENABLED", "DISABLED", "UPGRADING", "UNINSTALLING", "ERROR"}
 )
-_DEVICE_SERVICE_STATES = frozenset({"ONLINE", "OFFLINE", "DRAINING", "DISABLED"})
-_DEVICE_SESSION_STATES = frozenset({"AVAILABLE", "LOCKED", "LOGGED_OUT"})
-_ACTIVE_JOB_STATES = frozenset({"CLAIMED", "RUNNING", "OUTCOME_UNKNOWN"})
-_WORKER_OPERATION_TYPES = frozenset(
-    {
-        "read",
-        "compute",
-        "internal_projection_write",
-        "external_write",
-        "financial_write",
-        "destructive",
-    }
-)
-_WORKER_WRITE_OPERATION_TYPES = frozenset(
-    {
-        "internal_projection_write",
-        "external_write",
-        "financial_write",
-        "destructive",
-    }
-)
-_WORKER_TERMINAL_JOB_STATES = frozenset(
-    {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED_DATA", "OUTCOME_UNKNOWN"}
-)
 _PLUGIN_TRUST_SOURCES = frozenset(
     {
         "ed25519_upload",
@@ -99,33 +73,6 @@ _PLUGIN_TRUST_SOURCES = frozenset(
         "super_admin_upload",
         "builtin_bundle",
     }
-)
-_MIGRATION_PAIR_STATES = frozenset(
-    {
-        "PREPARING",
-        "TESTING",
-        "READY",
-        "CUTTING_OVER",
-        "CUTOVER",
-        "ROLLING_BACK",
-        "ROLLED_BACK",
-        "COMPLETED",
-        "ERROR",
-    }
-)
-_MIGRATION_PAIR_TRANSITIONS = {
-    "PREPARING": frozenset({"TESTING", "ERROR"}),
-    "TESTING": frozenset({"READY", "ERROR"}),
-    "READY": frozenset({"CUTTING_OVER", "ROLLING_BACK", "ERROR"}),
-    "CUTTING_OVER": frozenset({"CUTOVER", "ROLLING_BACK", "ERROR"}),
-    "CUTOVER": frozenset({"COMPLETED", "ROLLING_BACK", "ERROR"}),
-    "ROLLING_BACK": frozenset({"ROLLED_BACK", "ERROR"}),
-    "ROLLED_BACK": frozenset({"COMPLETED"}),
-    "ERROR": frozenset({"TESTING", "ROLLING_BACK"}),
-    "COMPLETED": frozenset(),
-}
-_MIGRATION_RUN_TERMINAL_STATES = frozenset(
-    {"SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED", "OUTCOME_UNKNOWN"}
 )
 _PLUGIN_DOCUMENT_STATES = frozenset(
     {"ACTIVE", "RETAINED", "CLEAR_PENDING", "CLEARED"}
@@ -190,7 +137,6 @@ _GENERATION_HASH_FIELDS = (
     "policy_contract_sha256",
 )
 _ARCHIVAL_UNKNOWN_WRITE = "_archival_unknown_write"
-FIRST_PARTY_RELEASE_ACTOR_ID = "system:release:first-party-upgrade"
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -260,7 +206,6 @@ def _project_generation_stage(
     generation_rows: Sequence[Mapping[str, Any]],
     *,
     allow_initial: bool,
-    allow_current_unknown_write: bool = False,
 ) -> AutomationProjectGenerationStage:
     """Plan one exact project generation without mutating persistence."""
 
@@ -329,25 +274,15 @@ def _project_generation_stage(
             committed_generation,
             (None, False),
         )
-        current_unknown_write = (
-            allow_current_unknown_write
-            and reconcile_state == "BLOCKED_UNKNOWN_WRITE"
-            and target_generation == committed_generation
-            and configured in {True, 1}
-            and committed_state == ("BLOCKED", True)
-        )
         if (
-            not current_unknown_write
-            and (
-                reconcile_state != "STABLE"
-                or target_generation != committed_generation
-                or configured not in {True, 1}
-            )
+            reconcile_state != "STABLE"
+            or target_generation != committed_generation
+            or configured not in {True, 1}
         ):
             raise ConcurrentUpdateError(
                 "automation project must be stable before a generation can advance"
             )
-        if not current_unknown_write and committed_state[0] != "COMMITTED":
+        if committed_state[0] != "COMMITTED":
             raise OrchestrationPersistenceError(
                 "stable automation project has no committed generation record"
             )
@@ -394,8 +329,6 @@ def _prepared_configuration_upgrade_stage(
     project: Mapping[str, Any],
     current_config: Mapping[str, Any],
     generation_rows: Sequence[Mapping[str, Any]],
-    *,
-    allow_current_unknown_write: bool = False,
 ) -> AutomationProjectGenerationStage:
     """Reuse only the exact empty target opened by a configuration save."""
 
@@ -448,7 +381,6 @@ def _prepared_configuration_upgrade_stage(
         current_config,
         lineage_rows,
         allow_initial=False,
-        allow_current_unknown_write=allow_current_unknown_write,
     )
     if closed_stage.target_generation != target_generation:
         raise ConcurrentUpdateError(
@@ -591,14 +523,6 @@ def _stable_schedule_task_id(automation_id: str, cron_expression: str) -> str:
         f"automation-schedule-v1\0{automation_id}\0{cron_expression}".encode("utf-8")
     ).hexdigest()
     return f"ap_{digest[:40]}"
-
-
-def _device_binding_id(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        return _required_text(value.get("device_id"), "device_id")
-    return _required_text(getattr(value, "device_id", None), "device_id")
 
 
 def _mysql_datetime(value: Any, field: str) -> datetime:
@@ -777,47 +701,6 @@ def _sql_placeholders(values: Sequence[Any]) -> str:
     return ", ".join(["%s"] * len(values))
 
 
-def _worker_release_sha(value: Any) -> str:
-    release_sha = _required_text(value, "release_sha")
-    if not 7 <= len(release_sha) <= 64 or any(
-        character not in "0123456789abcdef" for character in release_sha
-    ):
-        raise ValueError("release_sha must be a lowercase hexadecimal revision")
-    return release_sha
-
-
-def _normalized_worker_identity(value: Any) -> dict[str, str]:
-    if not isinstance(value, Mapping):
-        raise ValueError("worker device identity must be an object")
-    identity = dict(value)
-    if set(identity) != {
-        "device_key_id",
-        "ed25519_public_key_base64",
-        "tls_client_certificate_sha256",
-    }:
-        raise ValueError("worker device identity is not closed")
-    key_id = _required_text(identity.get("device_key_id"), "device_key_id")
-    public_key_text = _required_text(
-        identity.get("ed25519_public_key_base64"),
-        "ed25519_public_key_base64",
-    )
-    try:
-        public_key = base64.b64decode(public_key_text, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError("worker Ed25519 public key is not canonical base64") from exc
-    if len(public_key) != 32:
-        raise ValueError("worker Ed25519 public key must contain 32 bytes")
-    certificate_sha256 = _sha256(
-        identity.get("tls_client_certificate_sha256"),
-        "tls_client_certificate_sha256",
-    )
-    return {
-        "device_key_id": key_id,
-        "ed25519_public_key_base64": public_key_text,
-        "tls_client_certificate_sha256": certificate_sha256,
-    }
-
-
 def _canonical_uuid(value: Any, field: str) -> str:
     text = _required_text(value, field)
     try:
@@ -880,285 +763,11 @@ def _normalized_state_change_context(
     raise ValueError("state change context workflow is invalid")
 
 
-def _worker_time(value: Any, field: str) -> str:
-    if not isinstance(value, datetime):
-        raise ValueError(f"{field} must be a datetime")
-    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-    return aware.astimezone(timezone.utc).isoformat()
-
-
-def _worker_job_body(
-    row: Mapping[str, Any],
-    *,
-    claimed_attempt: bool,
-) -> dict[str, Any]:
-    payload = row.get("payload_json")
-    if not isinstance(payload, Mapping):
-        raise OrchestrationPersistenceError("worker job payload is invalid")
-    attempt_count = _positive_int(
-        int(row.get("attempt_count") or 0) + (1 if claimed_attempt else 0),
-        "attempt_count",
-    )
-    max_attempts = _positive_int(row.get("max_attempts"), "max_attempts")
-    if max_attempts != 1 or attempt_count != 1:
-        raise OrchestrationPersistenceError(
-            "durable Worker jobs must be dispatched exactly once"
-        )
-    operation_type = str(row.get("operation_type") or "")
-    if operation_type not in _WORKER_OPERATION_TYPES:
-        raise OrchestrationPersistenceError("worker job operation type is invalid")
-    requires_interactive = row.get("requires_interactive_session")
-    if requires_interactive not in {True, False, 0, 1}:
-        raise OrchestrationPersistenceError(
-            "worker job interactive requirement is invalid"
-        )
-    cleanup_scope = _optional_text(row.get("cleanup_scope"))
-    return {
-        "job_id": _canonical_uuid(row.get("job_id"), "job_id"),
-        "automation_id": _required_text(row.get("automation_id"), "automation_id"),
-        "automation_generation": _positive_int(
-            row.get("automation_generation"),
-            "automation_generation",
-        ),
-        "plugin_id": _required_text(row.get("plugin_id"), "plugin_id"),
-        "plugin_version": _required_text(
-            row.get("plugin_version"),
-            "plugin_version",
-        ),
-        "job_type": _required_text(row.get("job_type"), "job_type").upper(),
-        "status": "CLAIMED",
-        "payload": dict(payload),
-        "target_device_id": _required_text(
-            row.get("target_device_id"),
-            "target_device_id",
-        ),
-        "available_at": _worker_time(row.get("available_at"), "available_at"),
-        "deadline_at": _worker_time(row.get("deadline_at"), "deadline_at"),
-        "requires_interactive_session": bool(requires_interactive),
-        "operation_type": operation_type,
-        "attempt_count": attempt_count,
-        "max_attempts": max_attempts,
-        "cleanup_scope": cleanup_scope,
-    }
-
-
-def _validate_dispatch_envelope(
-    envelope: Mapping[str, Any],
-    *,
-    device_id: str,
-    sequence: int,
-    message_id: str,
-    job_body: Mapping[str, Any],
-    dispatch: Mapping[str, Any],
-) -> None:
-    expected_fields = {
-        "schema_version",
-        "message_id",
-        "device_id",
-        "sequence",
-        "issued_at",
-        "expires_at",
-        "kind",
-        "body",
-        "key_id",
-        "signature",
-    }
-    if set(envelope) != expected_fields:
-        raise OrchestrationPersistenceError(
-            "signed Worker dispatch envelope is not closed"
-        )
-    if (
-        envelope.get("schema_version") != 1
-        or envelope.get("message_id") != message_id
-        or envelope.get("device_id") != device_id
-        or type(envelope.get("sequence")) is not int
-        or envelope.get("sequence") != sequence
-        or envelope.get("kind") != "COMMAND"
-        or not isinstance(envelope.get("key_id"), str)
-        or not envelope.get("key_id")
-        or not isinstance(envelope.get("signature"), str)
-        or not envelope.get("signature")
-    ):
-        raise OrchestrationPersistenceError(
-            "signed Worker dispatch envelope identity is invalid"
-        )
-    _canonical_uuid(message_id, "message_id")
-    expected_body = {"job": dict(job_body), "dispatch": dict(dispatch)}
-    if _json_hash(envelope.get("body")) != _json_hash(expected_body):
-        raise OrchestrationPersistenceError(
-            "signed Worker dispatch envelope body changed"
-        )
-    for field in ("issued_at", "expires_at"):
-        if not isinstance(envelope.get(field), str) or not envelope.get(field):
-            raise OrchestrationPersistenceError(
-                "signed Worker dispatch envelope timestamp is invalid"
-            )
-
-
-def _validated_dispatch_row(value: Mapping[str, Any]) -> dict[str, Any]:
-    row = dict(value)
-    envelope = row.get("dispatch_envelope_json")
-    if not isinstance(envelope, Mapping):
-        raise OrchestrationPersistenceError(
-            "claimed Worker job has no durable dispatch envelope"
-        )
-    sequence = row.get("dispatch_sequence")
-    if type(sequence) is not int or sequence <= 0:
-        raise OrchestrationPersistenceError(
-            "claimed Worker job has an invalid dispatch sequence"
-        )
-    message_id = _canonical_uuid(
-        row.get("dispatch_message_id"),
-        "dispatch_message_id",
-    )
-    authorization_id = _canonical_uuid(
-        row.get("dispatch_authorization_id"),
-        "dispatch_authorization_id",
-    )
-    dispatch = {
-        "release_hold": False,
-        "authorization_id": authorization_id,
-        "release_sha": _worker_release_sha(row.get("dispatch_release_sha")),
-    }
-    _validate_dispatch_envelope(
-        envelope,
-        device_id=_required_text(row.get("assigned_device_id"), "assigned_device_id"),
-        sequence=sequence,
-        message_id=message_id,
-        job_body=_worker_job_body(row, claimed_attempt=False),
-        dispatch=dispatch,
-    )
-    if str(row.get("dispatch_envelope_sha256") or "") != _json_hash(envelope):
-        raise OrchestrationPersistenceError(
-            "claimed Worker dispatch envelope digest changed"
-        )
-    return row
-
-
-def _validated_worker_inbound_envelope(
-    value: Mapping[str, Any],
-    *,
-    principal_device_id: str,
-    expected_kind: str,
-) -> dict[str, Any]:
-    """Close a Worker-signed envelope after the transport verified Ed25519.
-
-    The paired device identity comes from the authenticated transport, never
-    from the request body.  Persistence still rechecks the signed envelope so
-    a handler cannot accidentally pass a body extracted from another device.
-    """
-
-    envelope = dict(value)
-    expected_fields = {
-        "schema_version",
-        "message_id",
-        "device_id",
-        "sequence",
-        "issued_at",
-        "expires_at",
-        "kind",
-        "body",
-        "key_id",
-        "signature",
-    }
-    if set(envelope) != expected_fields:
-        raise OrchestrationPersistenceError(
-            "signed Worker inbound envelope is not closed"
-        )
-    sequence = envelope.get("sequence")
-    if (
-        envelope.get("schema_version") != 1
-        or envelope.get("device_id") != principal_device_id
-        or type(sequence) is not int
-        or sequence < 0
-        or envelope.get("kind") != expected_kind
-        or not isinstance(envelope.get("body"), Mapping)
-        or not isinstance(envelope.get("key_id"), str)
-        or not envelope.get("key_id")
-        or not isinstance(envelope.get("signature"), str)
-        or not envelope.get("signature")
-    ):
-        raise OrchestrationPersistenceError(
-            "signed Worker inbound envelope identity is invalid"
-        )
-    _canonical_uuid(envelope.get("message_id"), "message_id")
-    for field in ("issued_at", "expires_at"):
-        if not isinstance(envelope.get(field), str) or not envelope.get(field):
-            raise OrchestrationPersistenceError(
-                "signed Worker inbound envelope timestamp is invalid"
-            )
-    return envelope
-
-
-def _worker_status_body(value: Mapping[str, Any]) -> dict[str, Any]:
-    body = dict(value)
-    expected_fields = {
-        "job_id",
-        "dispatch_message_id",
-        "dispatch_authorization_id",
-        "status",
-        "process_confirmed",
-        "result",
-        "error_code",
-    }
-    if set(body) != expected_fields:
-        raise OrchestrationPersistenceError("Worker JOB_STATUS body is not closed")
-    status = str(body.get("status") or "").upper()
-    if status not in _WORKER_TERMINAL_JOB_STATES:
-        raise OrchestrationPersistenceError("Worker JOB_STATUS is not terminal")
-    if type(body.get("process_confirmed")) is not bool:
-        raise OrchestrationPersistenceError(
-            "Worker JOB_STATUS process confirmation is invalid"
-        )
-    if not isinstance(body.get("result"), Mapping):
-        raise OrchestrationPersistenceError("Worker JOB_STATUS result is invalid")
-    error_code = body.get("error_code")
-    if error_code is not None:
-        if (
-            type(error_code) is not str
-            or not error_code
-            or len(error_code) > 64
-            or any(
-                character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-                for character in error_code
-            )
-        ):
-            raise OrchestrationPersistenceError(
-                "Worker JOB_STATUS error_code is invalid"
-            )
-    if status == "SUCCEEDED":
-        if body["process_confirmed"] is not True or error_code is not None:
-            raise OrchestrationPersistenceError(
-                "Worker success requires confirmed execution without an error"
-            )
-    elif status == "OUTCOME_UNKNOWN":
-        if body["process_confirmed"] is not False or error_code is None:
-            raise OrchestrationPersistenceError(
-                "unknown Worker outcome must be unconfirmed and coded"
-            )
-    elif error_code is None:
-        raise OrchestrationPersistenceError(
-            "non-success Worker JOB_STATUS requires an error code"
-        )
-    body["job_id"] = _canonical_uuid(body.get("job_id"), "job_id")
-    body["dispatch_message_id"] = _canonical_uuid(
-        body.get("dispatch_message_id"),
-        "dispatch_message_id",
-    )
-    body["dispatch_authorization_id"] = _canonical_uuid(
-        body.get("dispatch_authorization_id"),
-        "dispatch_authorization_id",
-    )
-    body["status"] = status
-    body["result"] = dict(body["result"])
-    return body
-
-
 from shared.automation_plugin_generation_repository import (
     AutomationPluginGenerationRepositoryMixin,
 )  # noqa: E402
-from shared.automation_plugin_worker_repository import (
-    AutomationPluginWorkerRepositoryMixin,
+from shared.automation_plugin_purge_repository import (
+    AutomationPluginPurgeRepositoryMixin,
 )  # noqa: E402
 from shared.automation_plugin_v2_repository import (
     AutomationPluginV2RepositoryMixin,
@@ -1176,7 +785,7 @@ class AutomationPluginRepository(
     AutomationPluginEnableRepositoryMixin,
     AutomationProjectScheduleRepositoryMixin,
     AutomationPluginGenerationRepositoryMixin,
-    AutomationPluginWorkerRepositoryMixin,
+    AutomationPluginPurgeRepositoryMixin,
     RepositoryBase,
 ):
     """Transactional repository used from an orchestration Unit of Work."""
@@ -1201,7 +810,6 @@ class AutomationPluginRepository(
     _GENERATION_JSON_FIELDS = ("snapshot_json",)
     _COEFFECT_JSON_FIELDS = ("observation_json",)
     _EFFECT_JSON_FIELDS = ("evidence_json",)
-    _MIGRATION_PAIR_JSON_FIELDS = ("entrypoint_snapshot_json",)
     _PLUGIN_DOCUMENT_JSON_FIELDS = ("document_json",)
 
     @staticmethod
@@ -1498,12 +1106,10 @@ class AutomationPluginRepository(
 
     def list_project_module_ids(self, module: str) -> list[str]:
         """Filter persisted package ownership before loading runtime snapshots."""
-        from shared.plugin_management import LEGACY_COLLECTOR_MODULES, MODULE_PATHS
+        from shared.plugin_management import MODULE_PATHS
 
         if module not in MODULE_PATHS:
             raise ValueError("unsupported plugin module")
-        cases = " ".join("WHEN p.plugin_id=%s THEN %s" for _ in LEGACY_COLLECTOR_MODULES)
-        values = [value for pair in LEGACY_COLLECTOR_MODULES.items() for value in pair]
         # Unknown ownership must reach strict validation and remain visibly quarantined.
         targets = tuple(key for key in MODULE_PATHS if key != "automation") if module == "automation" else (module,)
         predicate = "NOT IN (" + ",".join("%s" for _ in targets) + ")" if module == "automation" else "=%s"
@@ -1513,8 +1119,8 @@ class AutomationPluginRepository(
                 "LEFT JOIN automation_plugin_versions v ON v.plugin_id=p.plugin_id "
                 "AND v.version=p.plugin_version "
                 "WHERE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(v.manifest_json, '$.management.module')), "
-                f"CASE {cases} ELSE 'automation' END) {predicate} ORDER BY p.automation_id",
-                (*values, *targets),
+                f"'automation') {predicate} ORDER BY p.automation_id",
+                targets,
             )
             return [str(row["automation_id"]) for row in _rows(cursor)]
 
@@ -1712,7 +1318,6 @@ class AutomationPluginRepository(
         actor_role: str,
         expected_record_version: int,
         prepared_configuration_request_id: str | None = None,
-        allow_blocked_unknown_write_archive: bool = False,
         audit_version_identities: bool = False,
     ) -> dict[str, Any]:
         """Stage an immutable target version without changing live execution.
@@ -1734,17 +1339,8 @@ class AutomationPluginRepository(
         safe_role = _required_text(actor_role, "actor_role")
         if safe_role != "super_admin":
             raise ValueError("plugin upgrade requires a super_admin actor")
-        if type(allow_blocked_unknown_write_archive) is not bool:
-            raise ValueError("unknown-write archive authority must be boolean")
         if type(audit_version_identities) is not bool:
             raise ValueError("audit_version_identities must be boolean")
-        if (
-            allow_blocked_unknown_write_archive
-            and safe_actor != FIRST_PARTY_RELEASE_ACTOR_ID
-        ):
-            raise ValueError(
-                "unknown-write archive authority belongs to first-party release"
-            )
         safe_expected_version = _positive_int(
             expected_record_version,
             "expected_record_version",
@@ -1767,8 +1363,6 @@ class AutomationPluginRepository(
             request_payload["prepared_configuration_request_id"] = (
                 safe_prepared_configuration_request
             )
-        if allow_blocked_unknown_write_archive:
-            request_payload["blocked_unknown_write_archive"] = True
         request_payload_sha256 = _json_hash(request_payload)
 
         with self.cursor() as cursor:
@@ -1878,9 +1472,6 @@ class AutomationPluginRepository(
                     project=project,
                     current_config=current_config,
                     allow_initial=False,
-                    allow_current_unknown_write=(
-                        allow_blocked_unknown_write_archive
-                    ),
                 )
             else:
                 cursor.execute(
@@ -1911,7 +1502,7 @@ class AutomationPluginRepository(
                     raise ConcurrentUpdateError(
                         "prepared configuration request does not match the project target"
                     )
-                prepared_upgrade_target = prepared_metadata.get("first_party_upgrade_target") or prepared_metadata.get("optional_console_upgrade_target")
+                prepared_upgrade_target = prepared_metadata.get("optional_console_upgrade_target")
                 if prepared_upgrade_target is not None and prepared_upgrade_target != {
                     "from_version": safe_from,
                     "to_version": safe_to,
@@ -1954,9 +1545,6 @@ class AutomationPluginRepository(
                     project,
                     current_config,
                     generation_rows,
-                    allow_current_unknown_write=(
-                        allow_blocked_unknown_write_archive
-                    ),
                 )
             next_generation = generation_stage.target_generation
 
@@ -2116,7 +1704,6 @@ class AutomationPluginRepository(
         project: Mapping[str, Any],
         current_config: Mapping[str, Any],
         allow_initial: bool = False,
-        allow_current_unknown_write: bool = False,
     ) -> AutomationProjectGenerationStage:
         project_id = _required_text(automation_id, "automation_id")
         if str(project.get("automation_id") or "") != project_id:
@@ -2132,7 +1719,6 @@ class AutomationPluginRepository(
             current_config,
             generation_rows,
             allow_initial=allow_initial,
-            allow_current_unknown_write=allow_current_unknown_write,
         )
 
     def lock_project_generation_history(
@@ -2267,13 +1853,10 @@ class AutomationPluginRepository(
         schedule: Mapping[str, Any],
         compiled_invocations: Mapping[str, Mapping[str, Any]],
         contract_witness: Mapping[str, Any],
-        device_binding: Any | None,
         actor_id: str,
         actor_role: str,
         request_id: str,
         expected_project_configuration_version: int,
-        allow_blocked_unknown_write_archive: bool = False,
-        first_party_upgrade_target: Mapping[str, Any] | None = None,
         optional_console_upgrade: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """CAS project settings, schedules and authorization in one Unit of Work.
@@ -2293,20 +1876,10 @@ class AutomationPluginRepository(
         normalized_role = _required_text(actor_role, "actor_role")
         normalized_request = _required_text(request_id, "request_id")
         upgrade_target = None
-        if first_party_upgrade_target is not None:
-            if normalized_actor != FIRST_PARTY_RELEASE_ACTOR_ID or normalized_role != "super_admin":
-                raise ValueError("upgrade configuration authority belongs to first-party release")
-            if not isinstance(first_party_upgrade_target, Mapping) or set(first_party_upgrade_target) != {"from_version", "to_version", "package_sha256"}:
-                raise ValueError("upgrade configuration target is invalid")
-            upgrade_target = {
-                "from_version": _required_text(first_party_upgrade_target["from_version"], "from_version"),
-                "to_version": _required_text(first_party_upgrade_target["to_version"], "to_version"),
-                "package_sha256": _sha256(first_party_upgrade_target["package_sha256"], "package_sha256"),
-            }
-        upgrade_metadata_key = "first_party_upgrade_target"
+        upgrade_metadata_key = "optional_console_upgrade_target"
         previous_witness = None
         if optional_console_upgrade is not None:
-            if upgrade_target is not None or normalized_role != "super_admin":
+            if normalized_role != "super_admin":
                 raise ValueError("optional Console upgrade requires exclusive super_admin authority")
             if set(optional_console_upgrade) != {"target", "previous_contract_witness"}:
                 raise ValueError("optional Console upgrade proof is invalid")
@@ -2315,19 +1888,6 @@ class AutomationPluginRepository(
                 raise ValueError("optional Console upgrade target is invalid")
             _sha256(upgrade_target["package_sha256"], "package_sha256")
             previous_witness = _configuration_contract_witness(optional_console_upgrade["previous_contract_witness"])
-            upgrade_metadata_key = "optional_console_upgrade_target"
-        if type(allow_blocked_unknown_write_archive) is not bool:
-            raise ValueError("unknown-write archive authority must be boolean")
-        if (
-            allow_blocked_unknown_write_archive
-            and (
-                normalized_actor != FIRST_PARTY_RELEASE_ACTOR_ID
-                or normalized_role != "super_admin"
-            )
-        ):
-            raise ValueError(
-                "unknown-write archive authority belongs to first-party release"
-            )
         if not all(
             isinstance(value, Mapping)
             for value in (config, account_bindings, resource_bindings, compiled_invocations)
@@ -2420,7 +1980,6 @@ class AutomationPluginRepository(
         # Schedule times remain persisted while the scheduler entrypoint is off.
         # Generation commit materializes those rows disabled, so re-enabling the
         # entrypoint restores the same administrator-configured times.
-        device_id = _device_binding_id(device_binding)
         request_payload = {
             "config": dict(config),
             "account_bindings": dict(account_bindings),
@@ -2429,11 +1988,8 @@ class AutomationPluginRepository(
             "schedule": normalized_schedule,
             "compiled_invocations": normalized_compiled,
             "contract_witness": witness,
-            "device_id": device_id,
             "expected_project_configuration_version": expected_version,
         }
-        if allow_blocked_unknown_write_archive:
-            request_payload["blocked_unknown_write_archive"] = True
         if upgrade_target is not None:
             request_payload[upgrade_metadata_key] = upgrade_target
         if previous_witness is not None:
@@ -2578,7 +2134,6 @@ class AutomationPluginRepository(
                 project=project,
                 current_config=current_config,
                 allow_initial=True,
-                allow_current_unknown_write=allow_blocked_unknown_write_archive,
             )
             target_generation = generation_stage.target_generation
             committed_generation = generation_stage.committed_generation
@@ -2641,37 +2196,9 @@ class AutomationPluginRepository(
             else:
                 policy_version = None
 
+            # Worker devices are retired; the persisted binding digest stays
+            # the null binding every committed generation was built with.
             device_binding_sha256 = _json_hash(None)
-            if device_id is not None:
-                cursor.execute(
-                    """
-                    SELECT device_id, paired_public_key_fingerprint,
-                           capabilities_sha256, record_version
-                    FROM automation_worker_devices
-                    WHERE device_id=%s FOR UPDATE
-                    """,
-                    (device_id,),
-                )
-                device = _row_dict(cursor, cursor.fetchone())
-                if device is None:
-                    raise OrchestrationPersistenceError("named worker device is not paired")
-                device_binding_sha256 = _json_hash(
-                    {
-                        "device_id": device_id,
-                        "paired_public_key_fingerprint": _required_text(
-                            device.get("paired_public_key_fingerprint"),
-                            "paired_public_key_fingerprint",
-                        ),
-                        "capabilities_sha256": _sha256(
-                            device.get("capabilities_sha256"),
-                            "capabilities_sha256",
-                        ),
-                        "record_version": _positive_int(
-                            int(device.get("record_version") or 0),
-                            "device.record_version",
-                        ),
-                    }
-                )
 
             cursor.execute(
                 """
@@ -2823,7 +2350,7 @@ class AutomationPluginRepository(
                     enabled_entrypoints_json=%s, enabled_entrypoints_sha256=%s,
                     desired_schedule_json=%s, desired_schedule_sha256=%s,
                     compiled_invocations_json=%s, compiled_invocations_sha256=%s,
-                    device_id=%s, device_binding_sha256=%s,
+                    device_id=NULL, device_binding_sha256=%s,
                     configured=TRUE, config_version=%s,
                     updated_by_actor_id=%s, updated_at=NOW(6)
                 WHERE automation_id=%s AND config_version=%s
@@ -2841,7 +2368,6 @@ class AutomationPluginRepository(
                     _json_hash(normalized_schedule),
                     plugin_json(normalized_compiled),
                     plugin_json_digest(normalized_compiled),
-                    device_id,
                     device_binding_sha256,
                     next_version,
                     normalized_actor,

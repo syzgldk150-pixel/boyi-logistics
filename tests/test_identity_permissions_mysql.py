@@ -9,7 +9,7 @@ from agent.orchestration.feishu_approval_service import FeishuApprovalService
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.identity_repository import IdentityRepository
 from tests.test_feishu_bindings_mysql import binding_repository as binding_repository, pytestmark, seed_admin
-from tests.test_manual_unknown_write_mysql import database as database
+from tests.mysql_migrated_database import database as database
 
 
 def setup_identities(repository):

@@ -2,7 +2,7 @@
 module: 历史控制平面
 type: 迁移边界
 status: active
-updated: 2026-09-10
+updated: 2026-10-30
 ---
 
 # 旧执行记录退役：迁移 046
@@ -42,7 +42,7 @@ updated: 2026-09-10
 
 ```bash
 isolated "$TASK_PYTHON" -m pytest tests/test_legacy_execution_retirement_mysql.py \
-    tests/test_retired_execution_rollback.py tests/test_release_boundaries.py -q
+    tests/test_release_boundaries.py -q
 ```
 
 该测试使用随机命名的独立 MySQL 测试库与真实迁移器，验证普通等待记录取消、未确认写执行失败终结、原错误/回执/定时保留、重复执行幂等和旧队列不能再次领取。真实运行/核验、未释放所有权或租约、活动插件均导致整体原子拒绝，包括无关未知写记录也不能提前退役。多步骤历史场景覆盖普通非插件写的正常核验与恢复核验、后续读取阻塞，以及迁移后原结果和 Evidence 完整保留；已核验步骤旁仍有未知写回执或错误时，保留该未知结论并失败终结。四类已终态父 Run 下的遗留 RUNNING/VERIFYING Step 均验证原样保留，缺少终结或所有权释放证据则验证原子拒绝；终态父 Run 的活动 generation lease 仍不能因历史 Step 排除而获准。此命令不连接 ECS，也不执行真实 TMS 或飞书业务。

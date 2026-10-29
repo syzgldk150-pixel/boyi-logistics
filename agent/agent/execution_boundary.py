@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from agent.connector_namespaces import DAILY_SIGN_TOOL
+
 
 EXECUTION_CAPABILITY_HEADER = "X-Agent-Execution-Capability"
 EXECUTION_CAPABILITY_ENV = "AGENT_EXECUTION_CAPABILITY"
@@ -42,9 +44,8 @@ TOOL_ALLOWED_TMS_TARGETS: dict[str, frozenset[str]] = {
     "query_waybill": frozenset({"delivery_status", "waybill_tracking"}),
     "track_waybill": frozenset({"query_waybill_detail", "tracking_query"}),
     "tms_query": _READ_ONLY_TMS_TARGETS,
-    "sync_daily_send_orders": frozenset({"send_order"}),
-    "sync_delivery_status": frozenset({"delivery_status"}),
-    "sync_daily_should_sign": frozenset(
+    # The daily-sign Connector primitives read these TMS targets directly.
+    DAILY_SIGN_TOOL: frozenset(
         {
             "customer_service_problem",
             "get_qianshou",
@@ -53,16 +54,6 @@ TOOL_ALLOWED_TMS_TARGETS: dict[str, frozenset[str]] = {
             "ronghui_tms_tracking",
         }
     ),
-    "sync_site_send_list": frozenset({"get_wangdiansendlist"}),
-    "sync_arrive_list": frozenset({"fetch_dispatch"}),
-    "sync_scan_codes": frozenset({"get_scan", "scan_next"}),
-    "sync_arrival_stats": frozenset({"child_count", "get_scan", "query_waybill_detail"}),
-    "sync_yunda_dispatch_forecast": frozenset({"yunda_dispatch_forecast"}),
-    "sync_yunda_send_waybills": frozenset({"yunda_send_waybills"}),
-    "self_pickup_problem_upload": frozenset({"self_pickup_problem_upload"}),
-    "preview_self_pickup_problems": frozenset({"self_pickup_problem_upload"}),
-    "split_pending_problem_upload": frozenset({"split_pending_problem_upload"}),
-    "preview_split_pending_problems": frozenset({"split_pending_problem_upload"}),
     "receipts_sync": frozenset({"receipts_sync"}),
     "receipts_audit": frozenset({"receipts_audit"}),
     "customer_service_problem_query": frozenset({"customer_service_problem"}),
@@ -72,7 +63,6 @@ TOOL_ALLOWED_TMS_TARGETS: dict[str, frozenset[str]] = {
     "customer_service_problem_reply": frozenset({"customer_service_problem"}),
     "customer_service_problem_publish": frozenset({"customer_service_problem"}),
     "customer_service_problem_upload_attachment": frozenset({"customer_service_problem"}),
-    "clock_in_dual": frozenset({"clock_in_dual"}),
 }
 
 
@@ -80,7 +70,7 @@ _ACTION_SCOPED_TMS_TARGETS = frozenset({"customer_service_problem"})
 
 
 _TOOL_ALLOWED_TMS_ACTIONS: dict[tuple[str, str], frozenset[str]] = {
-    ("sync_daily_should_sign", "customer_service_problem"): frozenset({"query"}),
+    (DAILY_SIGN_TOOL, "customer_service_problem"): frozenset({"query"}),
     ("customer_service_problem_query", "customer_service_problem"): frozenset({"query"}),
     ("customer_service_problem_detail", "customer_service_problem"): frozenset({"detail"}),
     ("customer_service_problem_fetch_attachment", "customer_service_problem"): frozenset(

@@ -13,10 +13,10 @@
 ## 直接调用边界
 
 - 自然语言插件请求由 `AgentCore` 按当前插件目录选择，`message_handler.py` 消费可信选择对象，经原 Feishu 入口执行并跟随本次结果；固定关键词仍直接路由。扫描确认仅消费明确扫描确认文本，未确认的预览不截获其他自然对话。
-- 固定“统计”及同一宿主解析器接受的无参数统计简称，在迁移分发前规范为声明命令“统计到货数据”；入口由迁移所有权决定（所有实例已完成迁移，当前为 V2），状态异常明确拒绝，不能回退或重复执行。
-- 非插件只读文本通过注入的 `AgentCore` 直接 reader 调用；已插件化的文本、菜单和 pending 确认只通过注入的 `AutomationProjectEntrypoints` 提交服务端 typed invocation。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
-- Service v2 动态文本通过独立注入的 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；pending、登录、确认和固定 Action V1 文本优先，动态未知才继续既有 Agent/LLM 路径。Dispatcher 接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat、精确声明命令，以及当前 contribution `input_schema` 声明的本次业务输入；不得接收项目/服务/操作/账号/资源身份或覆盖保存配置。报价解析器只提交地址、重量、体积与静态命令“三平台报价”。命中但身份缺失必须拒绝并停止，回复不暴露内部执行身份。
-- 插件项目只能按 committed generation 中唯一的 `feishu_route.route_key` 解析实例；重复别名、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；日期、车牌和预览指纹只由代码拥有的 resolver 注入。
+- 固定“统计”及同一宿主解析器接受的无参数统计简称，在分发前规范为插件声明的命令“统计到货数据”；其他固定命令按原文分发。固定命令由 `fixed_entrypoint_router.py` 发往 `../agent/automation_plugins/fixed_entrypoints.py` 指定插件唯一启用的实例，零个或多个都明确拒绝，不能回退或重复执行。
+- 非插件只读文本通过注入的 `AgentCore` 直接 reader 调用；插件文本、菜单和 pending 确认都经注入的 `ServiceV2FeishuDispatcher` 提交服务端 Invocation，`AutomationProjectEntrypoints` 只用于按原事件读取已接受调用的结果。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
+- Service v2 动态文本通过同一 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；pending、登录、确认和宿主固定命令优先，动态未知才继续既有 Agent/LLM 路径。Dispatcher 接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat、精确声明命令，以及当前 contribution `input_schema` 声明的本次业务输入；不得接收项目/服务/操作/账号/资源身份或覆盖保存配置。报价解析器只提交地址、重量、体积与静态命令“三平台报价”。命中但身份缺失必须拒绝并停止，回复不暴露内部执行身份。
+- 插件实例只能由当前 active contribution 精确声明的命令解析；重复命令、多候选、缺绑定或非稳定事件 ID 必须显式拒绝，不得按工具、插件或列表首项猜测。消息和旧 pending 中的账号覆盖字段一律拒绝，账号只取该实例的 Business Account bindings；预览指纹只由服务端从持久化预览恢复。
 - 每个生产命令使用飞书事件头 `event_id` 生成 `feishu:{event_id}` 幂等键；缺少稳定事件 ID 的写命令必须显式拒绝，不能用消息内容、时间戳或随机值代替。
 - `builtin.scan_codes` 只接受“扫描/菜单生成预览 → 原发起人精确回复“确认”或“取消””的两步流程。预览成功只回复扫描日期、扫描件数及确认/取消提示，不发送生成中的常规通知；扫描件数取真实 selection_count，其他预览字段仍保留在服务端用于核验；pending 只在进程内保存公共 `preview_invocation_id` 和事件身份，最长十五分钟且服务重启不恢复。正式确认不得发送 `dry_run`、哈希、Evidence 或运单集合；结果未知时锁定原事件 ID，仅允许该事件精确重放，已消费预览不能再次确认；新的明确触发可以生成新预览，禁止旧链路回退。
 - 飞书 actor 只由 `FeishuApprovalService.resolve_actor()` 从真实事件发送者构造：当前仍有效的 Console 超级管理员绑定投影为 `FEISHU_USER` 且角色为 `admin/super_admin`，其他已验证事件角色为空；消息、动态 contribution 或调用方不得自行提交角色。旧审批决定协议仅作历史核验；普通消息和 Dispatcher 不能伪造批准身份，也不能据此创建新的插件审批/执行队列。

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from feishu import message_handler
 from agent import pending_actions
+from _feishu_dispatch_support import EntrypointDispatcher
 
 
 class FakeProjectEntrypoints:
@@ -128,6 +129,9 @@ class FeishuSplitSelectionTests(unittest.TestCase):
         )
         service_patch.start()
         self.addCleanup(service_patch.stop)
+        dispatcher_patch = patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", EntrypointDispatcher())
+        dispatcher_patch.start()
+        self.addCleanup(dispatcher_patch.stop)
         self.command_context_token = message_handler._COMMAND_CONTEXT.set(
             message_handler.FeishuCommandContext(
                 event_id="legacy-flow-event",

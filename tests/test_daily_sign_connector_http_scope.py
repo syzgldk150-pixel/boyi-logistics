@@ -41,7 +41,7 @@ def test_v2_daily_sign_uses_host_read_scope_without_exposing_or_retaining_it(mon
     )
     handlers = build_daily_sign_port_handlers(account_manager=accounts)
     context = CoreBrokerInvocationContext(automation_id="isolated-daily-sign", plugin_version="2.0.1",
-        tool_name="sync_daily_should_sign", operation="daily_sign.port", action="daily_sign_r13.read_r13",
+        tool_name="daily_sign", operation="daily_sign.port", action="daily_sign_r13.read_r13",
         role="daily_sign_r13", account_ids=("isolated-r13",))
     try:
         with execution_capability_scope("sync_daily_should_sign_v2", ttl_seconds=30):

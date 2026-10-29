@@ -91,7 +91,7 @@ def test_self_pickup_zip_preview_selects_both_accounts_and_confirms_real_operati
         if operation=="query":
             return {"ready":True,"existing":None}
         return {**_problem_result(plan,confirmed=operation=="verify"),"postpone_updated":True}
-    fixture = problem_host("self_pickup_problem_upload",sheet_rows_read=lambda *_:{"complete":True,"rows":rows},problem_action=action)
+    fixture = problem_host("self_pickup_problem",sheet_rows_read=lambda *_:{"complete":True,"rows":rows},problem_action=action)
     host = PackagedConnectorHost(tmp_path,"self_pickup_problem_upload_v2",fixture.registry,fixture.context)
     arguments = {"include_daxiang_s_self_pickup":True}
     preview = host.execute({**arguments,"dry_run":True,"selected_bill_codes":[],"preview_fingerprint":""},operation="preview")
@@ -112,7 +112,7 @@ def test_split_zip_executes_selected_problem_and_publishes_ledger(tmp_path):
     def record_event(account,event):
         events.append((account["account_id"],event))
         return {"ok":True,"verified":True}
-    fixture = problem_host("split_pending_problem_upload",sheet_rows_read=lambda *_:{"complete":True,"rows":rows},
+    fixture = problem_host("split_pending_problem",sheet_rows_read=lambda *_:{"complete":True,"rows":rows},
                            problem_event_upsert=record_event)
     host = PackagedConnectorHost(tmp_path,"split_pending_problem_upload_v2",fixture.registry,fixture.context)
     preview = host.execute({"dry_run":True,"selected_bill_codes":[],"preview_fingerprint":""},operation="preview")

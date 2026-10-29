@@ -4,8 +4,6 @@ param(
     [string]$Target = "auto",
     [string]$RemoteHost = "100.107.181.3",
     [string]$SshKeyPath = "C:\Users\DENG\.ssh\codex_ecs_ed25519",
-    [string]$AutomationPluginArtifactRoot,
-    [string]$AutomationPluginTrustRoot,
     [ValidatePattern("^[0-9a-f]{40}$")]
     [string]$RecoverReleaseHoldSha,
     [switch]$CheckConnection,
@@ -27,7 +25,7 @@ $RepoRoot = Split-Path -Parent $AgentRoot
 $StateDir = Join-Path $ScriptDir "state"
 $StateFile = Join-Path $StateDir "publish_state.json"
 $TaskTempRoot = Join-Path $RepoRoot ".task_tmp"
-$ReleaseScopeHelper = Join-Path $AgentRoot "scripts/first_party_release_scope.py"
+$ReleaseScopeHelper = Join-Path $AgentRoot "scripts/release_scope.py"
 $remoteSpec = "${RemoteUser}@${RemoteHost}"
 $sshArgs = @(
     "-i", $SshKeyPath,
@@ -66,12 +64,11 @@ $ConsoleDirs = @("config", "routes", "services", "static", "templates")
 $BlockedDirNames = @(
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache", "logs", "runtime",
     "state", "sessions", "cache", "temp", "tmp", "uploads", "downloads", "output",
-    "outputs", "reports", "metadata", "data", "windows_worker"
+    "outputs", "reports", "metadata", "data"
 )
 $BlockedFileNames = @(
     ".env", "config.json", "cookies.json", "credentials.json", "feishu_ws.lock",
-    "pending_actions.json", "session_meta.json", "storage_state.json",
-    "windows_worker_host.py", "windows_worker_requirements.txt", "windows_worker_requirements.lock"
+    "pending_actions.json", "session_meta.json", "storage_state.json"
 )
 $BlockedExtensions = @(
     ".log", ".pyc", ".xlsx", ".xls", ".xlsm", ".csv", ".tsv", ".pdf", ".parquet",
@@ -88,72 +85,6 @@ function Assert-Command([string]$Name) {
 function Assert-PathExists([string]$PathValue) {
     if (-not (Test-Path -LiteralPath $PathValue)) {
         throw "Path not found: $PathValue"
-    }
-}
-
-function Copy-AutomationPluginReleaseInputs(
-    [string]$ArtifactRoot,
-    [string]$TrustRoot,
-    [string]$ExpectedReleaseSha,
-    [string]$DestinationRoot
-) {
-    if ([string]::IsNullOrWhiteSpace($ArtifactRoot) -or [string]::IsNullOrWhiteSpace($TrustRoot)) {
-        throw "Agent releases require -AutomationPluginArtifactRoot and -AutomationPluginTrustRoot."
-    }
-    foreach ($pathValue in @($ArtifactRoot, $TrustRoot)) {
-        if (-not (Test-Path -LiteralPath $pathValue -PathType Container)) {
-            throw "Automation plugin release input is not a directory: $pathValue"
-        }
-        $rootItem = Get-Item -LiteralPath $pathValue -Force
-        if ($rootItem.LinkType) {
-            throw "Automation plugin release input cannot be a symbolic link: $pathValue"
-        }
-    }
-
-    $artifactItems = @(Get-ChildItem -LiteralPath $ArtifactRoot -Force)
-    $zipItems = @($artifactItems | Where-Object { -not $_.PSIsContainer -and $_.Extension -ceq ".zip" })
-    $indexItems = @($artifactItems | Where-Object { -not $_.PSIsContainer -and $_.Name -ceq "release-index.json" })
-    if ($indexItems.Count -ne 1 -or $artifactItems.Count -ne ($zipItems.Count + 1)) {
-        throw "Signed first-party artifact root must contain one release-index.json and only its ZIP packages."
-    }
-    if (@($artifactItems | Where-Object { $_.PSIsContainer -or $_.LinkType }).Count -ne 0) {
-        throw "Signed first-party artifact root cannot contain directories or symbolic links."
-    }
-    foreach ($zip in $zipItems) {
-        if ($zip.Length -le 0 -or $zip.Length -gt 268435456) {
-            throw "Signed first-party package size is invalid: $($zip.Name)"
-        }
-    }
-    $releaseIndex = Get-Content -Raw -Encoding utf8 -LiteralPath $indexItems[0].FullName | ConvertFrom-Json
-    if ($zipItems.Count -eq 0 -and ($releaseIndex.schema_version -ne 2 -or $releaseIndex.runtime_model -cne "SERVICE_V2")) {
-        throw "An empty package set requires the explicit completed-migration release format."
-    }
-    if ([string]$releaseIndex.release_sha -cne $ExpectedReleaseSha) {
-        throw "Signed first-party release index does not match the committed release SHA."
-    }
-    $indexedPluginCount = @($releaseIndex.plugins.PSObject.Properties).Count
-    if ($indexedPluginCount -ne $zipItems.Count) {
-        throw "Signed first-party release index and ZIP package counts differ."
-    }
-
-    $trustItems = @(Get-ChildItem -LiteralPath $TrustRoot -Force)
-    if ($trustItems.Count -lt 1 -or @(
-        $trustItems | Where-Object {
-            $_.PSIsContainer -or $_.LinkType -or $_.Extension -cne ".pub" -or $_.Length -le 0
-        }
-    ).Count -ne 0) {
-        throw "Automation plugin trust root must contain only non-empty Ed25519 .pub files."
-    }
-
-    $artifactDestination = Join-Path $DestinationRoot "_plugin_artifacts"
-    $trustDestination = Join-Path $DestinationRoot "_plugin_trust"
-    New-Item -ItemType Directory -Path $artifactDestination -Force | Out-Null
-    New-Item -ItemType Directory -Path $trustDestination -Force | Out-Null
-    foreach ($item in $artifactItems) {
-        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $artifactDestination $item.Name)
-    }
-    foreach ($item in $trustItems) {
-        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $trustDestination $item.Name)
     }
 }
 
@@ -257,37 +188,9 @@ function Invoke-ReleaseScopeHelper(
             $linuxHelper --repository-root $linuxRoot @Arguments
     )
     if ($LASTEXITCODE -ne 0) {
-        throw "First-party release scope validation failed."
+        throw "Release scope validation failed."
     }
     return $output
-}
-
-function Get-ReleaseFirstPartyPluginIds() {
-    Assert-PathExists $ReleaseScopeHelper
-    $values = @(Invoke-ReleaseScopeHelper $RepoRoot @("plugin-ids"))
-    $selected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($value in $values) {
-        $pluginId = ([string]$value).Trim()
-        if ($pluginId -notmatch '^[a-z][a-z0-9_]{1,63}$' -or -not $selected.Add($pluginId)) {
-            throw "First-party release scope returned an invalid or duplicate plugin ID."
-        }
-    }
-    if ($selected.Count -lt 1) {
-        throw "First-party release scope is empty."
-    }
-    return @($selected | Sort-Object)
-}
-
-function Test-ReleaseScopedFirstPartyPath(
-    [string]$AgentRelativePath,
-    [string[]]$ReleasePluginIds
-) {
-    $normalized = $AgentRelativePath.Replace("\", "/").TrimStart("/")
-    if ($normalized.StartsWith("first_party_automation_plugins/", [StringComparison]::Ordinal) -or
-        $normalized.StartsWith("legacy/", [StringComparison]::Ordinal)) {
-        return $false
-    }
-    return $true
 }
 
 function Test-BlockedPublishPath([string]$RepoRelativePath) {
@@ -359,7 +262,7 @@ function Write-Utf8NoBomLines([string]$PathValue, [string[]]$Lines) {
 }
 
 function Build-Payload([string]$PayloadRoot) {
-    $releasePluginIds = Get-ReleaseFirstPartyPluginIds
+    Assert-PathExists $ReleaseScopeHelper
     $manifestEntries = @{
         agent = [Collections.Generic.List[string]]::new()
         console = [Collections.Generic.List[string]]::new()
@@ -374,10 +277,7 @@ function Build-Payload([string]$PayloadRoot) {
         $repoPath = ([string]$repoPathRaw).Replace("\", "/")
         if ($repoPath.StartsWith("agent/", [StringComparison]::Ordinal)) {
             $relative = $repoPath.Substring(6)
-            if (
-                (Test-AllowedRelativePath $relative $AgentFiles $AgentDirs) -and
-                (Test-ReleaseScopedFirstPartyPath $relative $releasePluginIds)
-            ) {
+            if (Test-AllowedRelativePath $relative $AgentFiles $AgentDirs) {
                 Copy-TrackedFile $repoPath "agent" $relative $PayloadRoot $manifestEntries
             }
         }
@@ -404,8 +304,8 @@ function Build-Payload([string]$PayloadRoot) {
     $scopeResult = @(
         Invoke-ReleaseScopeHelper $PayloadRoot @("verify-staged")
     )
-    if ($scopeResult.Count -ne 1 -or $scopeResult[0] -cne "first_party_release_source_scope=ok") {
-        throw "Staged first-party source returned an invalid validation result."
+    if ($scopeResult.Count -ne 1 -or $scopeResult[0] -cne "release_source_scope=ok") {
+        throw "Staged plugin source returned an invalid validation result."
     }
 }
 
@@ -431,15 +331,9 @@ function Get-ReleaseFingerprints() {
         "agent/requirements.lock",
         "agent/scripts/run_migrations.py",
         "agent/scripts/business_module_migration_contract.py",
-        "agent/scripts/migration_018_authorization.py",
-        "agent/scripts/migration_030_notification_lease.py",
         "agent/scripts/migration_055_domain_databases.py",
         "agent/scripts/migration_connection.py",
-        "agent/scripts/automation_project_release_manifest_preflight.py",
-        "agent/scripts/automation_project_resource_preflight.py",
-        "agent/scripts/automation_project_schedule_identity_preflight.py",
-        "agent/scripts/automation_plugin_install_ownership_preflight.py",
-        "agent/scripts/automation_project_version_preflight.py",
+        "agent/scripts/scheduled_write_window.py",
         "agent/scripts/repair_yunda_send_waybills_sheet.py",
         "agent/scripts/verify_locked_environment.py"
     )
@@ -582,13 +476,6 @@ try {
     if ($targetsToPublish.Count -eq 0) {
         Write-Host "No changed source scope detected. Nothing to publish."
         exit 0
-    }
-    if (($targetsToPublish -contains "agent") -or ($targetsToPublish -contains "shared")) {
-        Copy-AutomationPluginReleaseInputs `
-            $AutomationPluginArtifactRoot `
-            $AutomationPluginTrustRoot `
-            $releaseSha `
-            $PayloadRoot
     }
 
     $skipRestartValue = if ($SkipRestart) { "1" } else { "0" }

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
-import os
 import re
 import sys
 from typing import Any
@@ -18,9 +16,7 @@ from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_sync_common import (
     bind_explicit_account_id,
     require_explicit_account_id,
-    tms_auth_error_result,
 )
-from tools.tms_tool import call_http_service
 
 
 RESOURCE_KEY = "phase7.yunda_dispatch_forecast_bitable"
@@ -253,11 +249,6 @@ def _date_from_value(value: Any) -> str:
         return ""
 
 
-def _record_matches_target_date(item: dict[str, Any], target_date: dt.date) -> bool:
-    fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
-    return _date_from_value(fields.get("应派时间")) == target_date.isoformat()
-
-
 def _is_blank_value(value: Any) -> bool:
     if value is None:
         return True
@@ -268,60 +259,6 @@ def _is_blank_value(value: Any) -> bool:
     if isinstance(value, dict):
         return all(_is_blank_value(item) for item in value.values())
     return False
-
-
-def _record_is_blank(item: dict[str, Any]) -> bool:
-    fields = item.get("fields")
-    if isinstance(fields, dict):
-        return all(_is_blank_value(value) for value in fields.values())
-    data = item.get("data")
-    if isinstance(data, list):
-        return all(_is_blank_value(value) for value in data)
-    return False
-
-
-def _list_records_for_date(base_token: str, table_id: str, params: dict[str, Any], target_date: dt.date) -> tuple[list[str] | None, dict[str, Any]]:
-    limit = int(params.get("list_limit") or 500)
-    max_pages = int(params.get("list_max_pages") or 20)
-    record_ids: list[str] = []
-    target_date_record_ids: list[str] = []
-    blank_record_ids: list[str] = []
-    pages: list[dict[str, Any]] = []
-    offset = 0
-    for _page_index in range(max_pages):
-        list_result = feishu_operation(
-            "list_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "limit": limit,
-                "offset": offset,
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        pages.append(list_result)
-        if "error" in list_result:
-            return None, {"pages": pages, "error": list_result.get("error")}
-        items = _extract_items(list_result)
-        for item in items:
-            record_id = str(item.get("record_id") or "").strip()
-            if not record_id:
-                continue
-            if _record_matches_target_date(item, target_date):
-                target_date_record_ids.append(record_id)
-                record_ids.append(record_id)
-            elif _record_is_blank(item):
-                blank_record_ids.append(record_id)
-                record_ids.append(record_id)
-        if len(items) < limit:
-            break
-        offset += limit
-    return record_ids, {
-        "pages": pages,
-        "target_date_record_ids": target_date_record_ids,
-        "blank_record_ids": blank_record_ids,
-    }
 
 
 def _extract_tms_payload(tms_result: Any) -> dict[str, Any] | None:
@@ -383,110 +320,3 @@ def _build_request_body(params: dict[str, Any], target_date: dt.date) -> dict[st
         "client_timeout_sec": int(request_body.get("client_timeout_sec", params.get("client_timeout_sec", 960)) or 960),
     }
 
-
-def run_yunda_dispatch_forecast_sync(params: dict[str, Any]) -> dict[str, Any]:
-    params = params or {}
-    target_date = _target_date(params)
-    _emit_progress("开始拉取韵达派件预测", target_date=target_date.isoformat())
-    tms_result = call_http_service("/yunda_dispatch_forecast", _build_request_body(params, target_date))
-    if auth_error := tms_auth_error_result(tms_result):
-        return auth_error
-    if service_error := _tms_service_error(tms_result):
-        return service_error
-    payload = _extract_tms_payload(tms_result)
-    if payload is None or not isinstance(payload.get("records"), list):
-        return {"error": "yunda_dispatch_forecast 返回格式异常", "raw": tms_result}
-    rows = [row for row in payload.get("records", []) if isinstance(row, dict)]
-    _emit_progress("韵达派件预测拉取完成", rows=len(rows), total=payload.get("total"))
-
-    base_token, table_id = _resolve_bitable_target(params)
-    _emit_progress("开始校验飞书字段", table_id=table_id)
-    field_result = _ensure_fields(base_token, table_id, params)
-    if "error" in field_result:
-        return {"error": field_result["error"], "field_result": field_result, "fetched": len(rows)}
-
-    records = _build_records(
-        rows,
-        primary_field_name=str(field_result.get("primary_field_name") or "").strip() or None,
-        has_explicit_main_field=bool(field_result.get("has_explicit_main_field", True)),
-    )
-    append_only = params.get("append_only", True) is not False
-    old_record_ids: list[str] = []
-    list_result: dict[str, Any] | None = None
-    delete_result: dict[str, Any] | None = None
-    if append_only:
-        _emit_progress("追加模式，不删除飞书旧记录", target_date=target_date.isoformat())
-    else:
-        old_record_ids, list_result = _list_records_for_date(base_token, table_id, params, target_date)
-        if old_record_ids is None:
-            return {"error": "飞书读取同日旧记录失败", "list_result": list_result, "fetched": len(rows)}
-        _emit_progress(
-            "开始删除同日旧记录",
-            count=len(old_record_ids),
-            target_date=target_date.isoformat(),
-        )
-
-        if old_record_ids:
-            delete_result = feishu_operation(
-                "delete_records",
-                {
-                    "base_token": base_token,
-                    "table_id": table_id,
-                    "record_ids": old_record_ids,
-                    "as": params.get("as", "bot"),
-                    "dry_run": bool(params.get("dry_run", False)),
-                },
-            )
-            if "error" in delete_result or delete_result.get("errors"):
-                return {
-                    "error": "飞书删除同日旧记录失败",
-                    "fetched": len(rows),
-                    "existing_record_ids": old_record_ids,
-                    "delete_result": delete_result,
-                }
-
-    write_result: dict[str, Any] = {"ok": True, "requested": 0, "written": 0, "results": []}
-    if records:
-        _emit_progress("开始写入韵达派件预测", rows=len(records))
-        write_result = feishu_operation(
-            "write_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "records": records,
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        if "error" in write_result or write_result.get("errors"):
-            return {
-                "error": "飞书写入韵达派件预测失败",
-                "fetched": len(rows),
-                "deleted": len(old_record_ids),
-                "write_result": write_result,
-            }
-    _emit_progress("韵达派件预测同步完成", written=write_result.get("written", 0))
-    return {
-        "ok": True,
-        "source": "yunda_dispatch_forecast",
-        "target_date": target_date.isoformat(),
-        "total": payload.get("total"),
-        "fetched": len(rows),
-        "append_only": append_only,
-        "deleted": len(old_record_ids),
-        "written": write_result.get("written", 0),
-        "field_result": field_result,
-        "list_result": list_result,
-        "delete_result": delete_result,
-        "write_result": write_result,
-    }
-
-
-def main() -> None:
-    params = json.loads(sys.stdin.read() or "{}")
-    result = run_yunda_dispatch_forecast_sync(params)
-    print(json.dumps(result, ensure_ascii=False, default=str))
-
-
-if __name__ == "__main__":
-    main()

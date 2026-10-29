@@ -1,6 +1,5 @@
 """Disabled migration schedules are validated, never exposed as runnable entries."""
 import copy
-from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +27,7 @@ def disabled_schedule():
 
 def compile_saved(values):
     definition, fragment, row = values
-    return compile_automation_project_contract(definition, catalog=SimpleNamespace(),
+    return compile_automation_project_contract(definition, 
         scheduled_rows=[row], plugin_contract_provider=lambda _:fragment)
 
 

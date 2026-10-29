@@ -6,10 +6,10 @@ import pytest
 from agent.tool_registry import validate_schema_instance
 
 from agent.automation_plugins.capability_proxy_v2 import _service_v2_clock_handler
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.host_capability_registry import HOST_CAPABILITY_API_VERSION, default_host_capability_registry
 from service_v2_plugins._shared.clock_runtime import run_clock_service
-from tests.test_first_party_core_handlers import _Manager, _SECRET, _context
+from tests.test_host_primitive_handlers import _Manager, _SECRET, _context
 
 
 @pytest.mark.parametrize("branch", ["邵阳分拨中心", "隔离测试" + "".join(chr(0x4e00 + i) for i in range(70))])
@@ -25,7 +25,7 @@ def test_full_host_operation_token_survives_submit_and_verify_contracts(branch):
         return {"confirmed": True, "clock_type": arguments["clock_type"],
                 "observed_at": "2026-09-12 15:50:05", "record_id": "isolated-" + arguments["clock_type"]}
 
-    handlers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(HostPrimitivePorts(
         describe_account=_Manager().require_authenticated_binding, clock_action=platform), cursor_secret=_SECRET)
     registry = default_host_capability_registry()
     lengths = []

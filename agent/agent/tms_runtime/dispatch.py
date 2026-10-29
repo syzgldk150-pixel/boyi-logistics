@@ -48,24 +48,15 @@ class Target:
 SCAN_NEXT_CONCURRENCY = max(1, int(os.getenv("SCAN_NEXT_CONCURRENCY", "3")))
 
 TARGETS: dict[str, Target] = {
-    "fetch_dispatch": Target(module=f"{SCRIPTS_PACKAGE}.fetch_dispatch", func="run_once"),
-    "fetch_pre_arrive_list": Target(module=f"{SCRIPTS_PACKAGE}.fetch_pre_arrive_list", func="run_once"),
-    "send_order": Target(module=f"{SCRIPTS_PACKAGE}.Send_order", func="run_once"),
     "delivery_status": Target(module=f"{SCRIPTS_PACKAGE}.Delivery_status", func="run_once"),
-    "clock_in_dual": Target(module=f"{SCRIPTS_PACKAGE}.clock_in_dual", func="run_once"),
-    "auto_checkin_r7": Target(module=f"{SCRIPTS_PACKAGE}.auto_checkin_r7", func="run_once"),
     "ronghui_tms_tracking": Target(module="agent.tms_runtime.scripts.ronghui_tms_tracking", func="run_once"),
     "yunda_waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.yunda_waybill_tracking", func="run_once"),
     "tracking_query": Target(module=f"{SCRIPTS_PACKAGE}.tracking_query", func="run_once"),
-    "get_scan": Target(module=f"{SCRIPTS_PACKAGE}.get_scan", func="run_once"),
-    "get_sign_records": Target(module=f"{SCRIPTS_PACKAGE}.get_sign_records", func="run_once"),
     "get_qianshou": Target(module=f"{SCRIPTS_PACKAGE}.get_qianshou", func="run_once"),
     "get_sign_records": Target(
         module="agent.tms_runtime.scripts.get_sign_records",
         func="run_once",
     ),
-    "get_wangdiansendlist": Target(module=f"{SCRIPTS_PACKAGE}.get_wangdiansendlist", func="run_once"),
-    "child_count": Target(module=f"{SCRIPTS_PACKAGE}.child_count", func="run_once"),
     "yunda_waybill_entry": Target(module="agent.tms_runtime.scripts.yunda_waybill_entry", func="run_once"),
     "yunda_waybill_proxy": Target(module="agent.tms_runtime.scripts.yunda_waybill_proxy", func="run_once"),
     "receipts_sync": Target(module="agent.tms_runtime.scripts.receipts_sync", func="run_once"),
@@ -82,38 +73,20 @@ TARGETS: dict[str, Target] = {
     ),
     "waybill_tracking": Target(module=f"{SCRIPTS_PACKAGE}.waybill_tracking", func="run_once"),
     "query_waybill_detail": Target(module=f"{SCRIPTS_PACKAGE}.query_waybill_detail", func="run_once"),
-    "self_pickup_problem_upload": Target(module=f"{SCRIPTS_PACKAGE}.self_pickup_problem_upload", func="run_once", max_concurrency=1),
-    "split_pending_problem_upload": Target(module="agent.tms_runtime.scripts.split_pending_problem_upload", func="run_once", max_concurrency=1),
-    "scan_next": Target(module=f"{SCRIPTS_PACKAGE}.scan_next", func="run_once", max_concurrency=SCAN_NEXT_CONCURRENCY),
-    "yunda_dispatch_forecast": Target(module=f"{SCRIPTS_PACKAGE}.yunda_dispatch_forecast", func="run_once"),
-    "yunda_send_waybills": Target(module=f"{SCRIPTS_PACKAGE}.yunda_send_waybills", func="run_once"),
 }
 
 TARGET_ACCOUNT_SYSTEMS: dict[str, str] = {
-    "fetch_dispatch": "ronghui",
-    "fetch_pre_arrive_list": "ronghui",
-    "send_order": "ronghui",
     "delivery_status": "ronghui",
-    "clock_in_dual": "ronghui",
-    "get_scan": "ronghui",
-    "get_sign_records": "ronghui",
     "get_qianshou": "r13",
     "get_sign_records": "ronghui",
-    "get_wangdiansendlist": "ronghui",
-    "child_count": "ronghui",
     "ronghui_tms_tracking": "ronghui",
     "waybill_tracking": "ronghui",
     "query_waybill_detail": "ronghui",
-    "self_pickup_problem_upload": "ronghui",
-    "split_pending_problem_upload": "ronghui",
-    "scan_next": "ronghui",
     "yunda_waybill_tracking": "yunda",
     "yunda_waybill_entry": "yunda",
     "yunda_waybill_proxy": "yunda",
     "receipts_sync": "ronghui",
     "ronghui_waybill_proxy": "ronghui",
-    "yunda_dispatch_forecast": "yunda",
-    "yunda_send_waybills": "yunda",
 }
 
 TARGET_ACCOUNT_PURPOSES: dict[str, str] = {
@@ -123,8 +96,6 @@ TARGET_ACCOUNT_PURPOSES: dict[str, str] = {
 
 TARGET_REQUIRED_ACCOUNT_FIELDS: dict[str, str] = {
     "get_qianshou": "r13_account_id",
-    "self_pickup_problem_upload": "account_id",
-    "split_pending_problem_upload": "account_id",
 }
 
 TARGET_PRIMARY_ACCOUNT_ROLE_FIELDS: dict[str, dict[str, str]] = {
@@ -135,14 +106,7 @@ TARGET_PRIMARY_ACCOUNT_ROLE_FIELDS: dict[str, dict[str, str]] = {
     },
 }
 
-TARGET_ACCOUNT_ROLE_FIELDS: dict[str, list[dict[str, str]]] = {
-    "self_pickup_problem_upload": [
-        {
-            "account_field": "daxiang_s_account_id",
-            "output_session_profile_field": "daxiang_s_session_profile",
-        },
-    ],
-}
+TARGET_ACCOUNT_ROLE_FIELDS: dict[str, list[dict[str, str]]] = {}
 
 _SEMAPHORES: dict[str, asyncio.Semaphore] = {
     name: asyncio.Semaphore(max(1, target.max_concurrency))

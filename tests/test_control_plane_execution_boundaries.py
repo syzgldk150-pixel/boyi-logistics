@@ -7,12 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.connector_namespaces import DAILY_SIGN_TOOL
 from agent.execution_boundary import (
     authorize_tms_target,
     issue_execution_capability,
     revoke_execution_capability,
 )
-from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
 from agent.tms_runtime import routes
 from agent.tms_runtime.account_manager import AutomationAccountManager
 from feishu import message_handler
@@ -100,22 +100,13 @@ def test_execution_capability_is_owner_and_target_scoped() -> None:
     finally:
         revoke_execution_capability(read_token)
 
-    preview_token = issue_execution_capability("preview_self_pickup_problems", ttl_seconds=30)
-    try:
-        assert authorize_tms_target(preview_token, "self_pickup_problem_upload") is True
-        assert authorize_tms_target(preview_token, "split_pending_problem_upload") is False
-    finally:
-        revoke_execution_capability(preview_token)
-
-    split_preview_token = issue_execution_capability(
-        "preview_split_pending_problems",
-        ttl_seconds=30,
-    )
-    try:
-        assert authorize_tms_target(split_preview_token, "split_pending_problem_upload") is True
-        assert authorize_tms_target(split_preview_token, "self_pickup_problem_upload") is False
-    finally:
-        revoke_execution_capability(split_preview_token)
+    for retired_tool in ("preview_self_pickup_problems", "preview_split_pending_problems", "sync_scan_codes"):
+        retired_token = issue_execution_capability(retired_tool, ttl_seconds=30)
+        try:
+            assert authorize_tms_target(retired_token, "self_pickup_problem_upload") is False
+            assert authorize_tms_target(retired_token, "scan_next") is False
+        finally:
+            revoke_execution_capability(retired_token)
 
 
 def test_customer_service_execution_capability_is_bound_to_one_action() -> None:
@@ -145,7 +136,7 @@ def test_customer_service_execution_capability_is_bound_to_one_action() -> None:
         revoke_execution_capability(query_token)
 
     daily_sign_token = issue_execution_capability(
-        "sync_daily_should_sign",
+        DAILY_SIGN_TOOL,
         ttl_seconds=30,
     )
     try:
@@ -345,52 +336,6 @@ def test_manual_proxy_rejects_dot_segments_and_encoded_separators() -> None:
         )
 
 
-def test_phase7_templates_do_not_hide_writes_behind_tms_query() -> None:
-    offenders = []
-    for template in PHASE7_SCHEDULED_TASK_TEMPLATES:
-        params = template.get("tool_params") if isinstance(template.get("tool_params"), dict) else {}
-        endpoint = str(params.get("endpoint") or "")
-        if template.get("tool_name") == "tms_query" and endpoint == "/clock_in_dual":
-            offenders.append(str(template.get("id") or ""))
-    assert offenders == []
-
-    clock_templates = {
-        str(template.get("id") or ""): template
-        for template in PHASE7_SCHEDULED_TASK_TEMPLATES
-        if str(template.get("id") or "").startswith("clockin_")
-    }
-    assert clock_templates == {}
-
-
-def test_clock_in_compatibility_params_are_closed_and_flat() -> None:
-    normalized = routes._normalize_compatibility_params(
-        "clock_in_dual",
-        {
-            "timeout_sec": 600,
-            "params": {
-                "mode": "api",
-                "sitecode": "7390017",
-                "sitefbcode": "73901",
-                "site_name": "邵阳大祥S站",
-                "site_fb_name": "邵阳操作场",
-                "first_type": "交件到港",
-                "second_type": "接件离港",
-                "delay_seconds": "2",
-                "unexpected": "must-not-cross-command-boundary",
-            },
-        },
-    )
-    assert normalized == {
-        "sitecode": "7390017",
-        "sitefbcode": "73901",
-        "sitename": "邵阳大祥S站",
-        "sitefbname": "邵阳操作场",
-        "first_type": "交件到港",
-        "second_type": "接件离港",
-        "delay_seconds": 2.0,
-    }
-
-
 def test_account_login_transition_publishes_only_safe_account_identity() -> None:
     row = {
         "account_id": "ronghui-default",
@@ -456,7 +401,6 @@ def test_entry_modules_do_not_import_tool_executor_or_business_scripts() -> None
         AGENT_ROOT / "feishu" / "bot.py",
         AGENT_ROOT / "feishu" / "message_handler.py",
         AGENT_ROOT / "agent" / "tms_runtime" / "routes.py",
-        AGENT_ROOT / "agent" / "task_templates.py",
     ]
     banned_modules = {
         "agent.tool_executor",

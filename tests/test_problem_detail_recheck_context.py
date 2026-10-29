@@ -1,26 +1,13 @@
 from __future__ import annotations
 
-import pytest
 
-from agent.automation_plugins.first_party_handlers import customer_problem_identity
+from agent.automation_plugins.host_primitive_handlers import customer_problem_identity
 from agent.orchestration.control_plane_service import _customer_problem_open_refs
-from agent.orchestration.models import (
-    Actor,
-    ActorType,
-    Command,
-    ContextSnapshot,
-    OrchestrationError,
-)
-from agent.orchestration.planner import DeterministicPlanner
-from shared.automation_project_authorization import (
-    AutomationEntrypoint,
-    AutomationProjectInvocation,
-)
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
 
 def test_customer_problem_payload_skips_detail_for_current_list_record() -> None:
-    action = load_first_party_action("sync_customer_service_problems")
+    action = load_plugin_action("sync_customer_service_problems")
     calls: list[str] = []
 
     def broker(operation, *, action, role, arguments):
@@ -64,7 +51,7 @@ def test_customer_problem_payload_skips_detail_for_current_list_record() -> None
 
 
 def test_customer_problem_payload_blocks_context_error_without_detail_query() -> None:
-    action = load_first_party_action("sync_customer_service_problems")
+    action = load_plugin_action("sync_customer_service_problems")
     calls: list[str] = []
 
     def broker(operation, *, action, role, arguments):
@@ -105,46 +92,6 @@ def test_customer_problem_payload_blocks_context_error_without_detail_query() ->
             "evidence": {},
         }
     ]
-
-
-class _Catalog:
-    catalog_hash = "catalog-hash"
-
-    @staticmethod
-    def get_capability(tool_name: str):
-        if tool_name not in {
-            "sync_customer_service_problems",
-            "automation.customer_problems_shadow.run",
-        }:
-            return None
-        capability = {
-            "version": "1.1.0",
-            "operation_type": "read",
-            "risk_level": "low",
-            "llm_exposed": False,
-            "evidence": {"required": True},
-            "postconditions": [{"name": "configured_accounts_queried"}],
-        }
-        if tool_name == "automation.customer_problems_shadow.run":
-            capability["_plugin_runtime"] = {
-                "automation_id": "customer_problems_shadow",
-                "plugin_id": "sync_customer_service_problems",
-                "trust_source": "ed25519_first_party",
-            }
-        return capability
-
-
-def _project_invocation() -> AutomationProjectInvocation:
-    return AutomationProjectInvocation(
-        automation_id="customer_problems_shadow",
-        automation_generation=1,
-        entrypoint=AutomationEntrypoint.SCHEDULER,
-        contract_id="scheduler:customer-problems",
-        contract_hash="a" * 64,
-        policy_version=1,
-        project_configuration_version=1,
-        request_id="customer-problems-request",
-    )
 
 
 class _WorkItems:
@@ -371,115 +318,3 @@ def test_open_problem_context_keeps_exact_persisted_key_on_subject_mismatch() ->
         == "SUBJECT_ENTITY_IDENTITY_MISMATCH"
     )
 
-
-def test_planner_overwrites_caller_rechecks_with_authoritative_context() -> None:
-    trusted_refs = _customer_problem_open_refs(_Uow())
-    context = ContextSnapshot(
-        values={
-            "resources": {"customer_problem_open_refs": trusted_refs},
-            "accounts": [{"account_id": "account-1", "system": "yunda"}],
-        },
-        account_ids=("account-1",),
-    )
-    command = Command(
-        command_type="tool.execute",
-        source="scheduler",
-        actor=Actor(ActorType.SCHEDULER, "scheduler"),
-        parameters={
-            "tool_name": "sync_customer_service_problems",
-            "arguments": {
-                "direction": "both",
-                "recheck_items": [
-                    {
-                        "dedupe_key": "problem:yunda:forged:forged",
-                        "platform": "yunda",
-                        "account_id": "forged",
-                        "external_id": "forged",
-                        "source_direction": "received",
-                    }
-                ],
-            },
-        },
-        idempotency_key="scheduler:customer-problems:2026-08-13T00:00:00+08:00",
-    )
-
-    plan = DeterministicPlanner(_Catalog()).plan(command, context)
-
-    assert plan.steps[0].arguments["recheck_items"] == trusted_refs
-    assert "account_id" not in plan.steps[0].arguments["recheck_items"][0]
-    assert plan.steps[0].operation_type.value == "read"
-
-
-def test_planner_rejects_missing_authoritative_recheck_context() -> None:
-    command = Command(
-        command_type="tool.execute",
-        source="scheduler",
-        actor=Actor(ActorType.SCHEDULER, "scheduler"),
-        parameters={
-            "tool_name": "sync_customer_service_problems",
-            "arguments": {"direction": "both"},
-        },
-        idempotency_key="scheduler:customer-problems:missing-rechecks",
-    )
-
-    context = ContextSnapshot(
-        values={"resources": {}, "accounts": []},
-        account_ids=(),
-    )
-    with pytest.raises(
-        OrchestrationError,
-        match="must be an object array",
-    ):
-        DeterministicPlanner(_Catalog()).plan(command, context)
-
-
-def test_planner_accepts_empty_authoritative_recheck_context() -> None:
-    context = ContextSnapshot(
-        values={
-            "resources": {"customer_problem_open_refs": []},
-            "accounts": [],
-        },
-        account_ids=(),
-    )
-    command = Command(
-        command_type="tool.execute",
-        source="scheduler",
-        actor=Actor(ActorType.SCHEDULER, "scheduler"),
-        parameters={
-            "tool_name": "sync_customer_service_problems",
-            "arguments": {"direction": "both"},
-        },
-        idempotency_key="scheduler:customer-problems:empty-rechecks",
-    )
-
-    plan = DeterministicPlanner(_Catalog()).plan(command, context)
-
-    assert plan.steps[0].arguments["recheck_items"] == []
-
-
-def test_project_alias_injects_authoritative_empty_recheck_context() -> None:
-    context = ContextSnapshot(
-        values={
-            "resources": {"customer_problem_open_refs": []},
-            "accounts": [],
-        },
-        account_ids=(),
-    )
-    command = Command(
-        command_type="automation.project.invoke",
-        source="scheduler",
-        actor=Actor(ActorType.SCHEDULER, "scheduler"),
-        parameters={
-            "tool_name": "automation.customer_problems_shadow.run",
-            "arguments": {"direction": "both"},
-        },
-        idempotency_key="scheduler:customer-problems:project-alias",
-        automation_invocation=_project_invocation(),
-    )
-
-    plan = DeterministicPlanner(_Catalog()).plan(command, context)
-
-    assert plan.steps[0].arguments == {
-        "direction": "both",
-        "recheck_items": [],
-    }

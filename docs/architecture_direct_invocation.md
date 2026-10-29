@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-20
+updated: 2026-10-29
 ---
 
 # 业务接口与独立插件调用
@@ -107,7 +107,7 @@ Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次�
 | 插件身份与入口授权 | `agent/agent/orchestration/direct_project_invocation.py`、项目策略和入口 API | 核心更新 |
 | 普通页面查询与人工操作 | `agent/agent/tms_runtime/direct_business.py`、`console/services/business_calls.py` | 对应业务接口/页面；不建任务 |
 | 寄件补查与数据完整性 | `agent/agent/send_waybills_business.py`、`shared/waybill_source_coverage.py`、迁移 045 | 共享语义改变时核心更新 |
-| 财务采集 | `sync_finance_bills_v2` 插件、`finance_business.py` | 相容采集变化只更新财务插件 |
+| 财务采集 | `sync_ronghui_finance_statement_v2` 插件、`shared/finance/platform_capture*.py` | 相容采集变化只更新财务插件 |
 | 财务汇总和分析 | 既有财务账本、查询服务、显式分析接口 | 公共账本变化属于核心更新 |
 | 客服采集发布、列表消失后的精确复核 | `agent/agent/customer_collection_business.py`、共享来源发布与纯校验模块 | 公共数据合同变化属于核心更新；插件字段解析独立维护 |
 | Agent 固定只读接口 | `agent/agent/direct_readers.py`、Harness 网关 | 注册接口；保留权限与实际结果检查 |

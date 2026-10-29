@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from agent.automation_plugins.first_party_handlers import customer_problem_identity
+from agent.automation_plugins.host_primitive_handlers import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
 from agent.orchestration.models import (
     Actor,

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.customer_connectors_v2 import build_customer_connectors
 from agent.automation_plugins.manifest_v2 import parse_manifest_v2
@@ -22,9 +22,8 @@ from shared.data_sources import DataSourceRepository
 from tests.v32_acceptance.console_fixture import ConsoleFixture
 from tests.v32_acceptance.catalog_guards import exercise_catalog_guards
 from tests.v32_acceptance.customer_scheduler_entry import exercise_scheduler_entry
-from tests.v32_acceptance.finance_maintenance import ROOT, ACTOR, connect, prepare_database
-from tests.v32_acceptance.finance_maintenance_browser import FinanceBrowser
-from tests.v32_acceptance.finance_maintenance_drill import require_complete
+from tests.v32_acceptance.collector_drill import ROOT, ACTOR, connect, prepare_database, require_complete
+from tests.v32_acceptance.collector_browser import CollectorBrowser
 from tests.v32_acceptance.collector_navigation_probe import exercise_run_links
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.direct_invocation_fixture import DirectFixture
@@ -212,7 +211,7 @@ def main():
     RUNTIME.mkdir(parents=True, exist_ok=True)
     try:
         with CustomerSource() as supplier:
-            handlers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+            handlers = build_host_primitive_handler_map(HostPrimitivePorts(
                 describe_account=account_manager.require_active_binding_descriptor, customer_action=supplier.read),
                 cursor_secret=secrets.token_bytes(32))
             with ManagementFixture(connection_factory=connection_factory, runtime_root=RUNTIME / uuid4().hex[:10],
@@ -223,7 +222,7 @@ def main():
                 with (DirectFixture(management) as runner, ConsoleFixture(
                         agent_base_url=management.url, internal_token=management.internal_token,
                         signing_secret=management.signing_secret, runtime_root=management.task_env / "console") as console,
-                        FinanceBrowser(console, module="customer_service") as browser):
+                        CollectorBrowser(console, module="customer_service") as browser):
                     installed = []
                     for index, account in enumerate(ACCOUNTS):
                         automation_id = browser.install(artifact, instance_name="隔离客服采集 " + str(index))

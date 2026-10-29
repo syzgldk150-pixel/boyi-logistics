@@ -102,7 +102,7 @@ class ServiceV2WebhookDispatcherTests(IsolatedAsyncioTestCase):
     async def test_interface_rejects_transport_and_business_overrides(self):
         dispatcher, policy = self._dispatcher(_Registry())
         self.assertEqual(
-            {"self", "method", "route", "source_event_id", "envelope", "preview_invocation_id", "expected_migration_target"},
+            {"self", "method", "route", "source_event_id", "envelope", "preview_invocation_id", "expected_target"},
             set(inspect.signature(ServiceV2WebhookDispatcher.dispatch).parameters),
         )
 

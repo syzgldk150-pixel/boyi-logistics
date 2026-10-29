@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-10-19
+updated: 2026-10-29
 ---
 
 # 物流 Agent 项目总览
@@ -13,8 +13,8 @@ updated: 2026-10-19
 
 ## 当前插件、账号与权限
 
-- 当前业务使用 `SERVICE_V2` 独立 ZIP。业务源码在 `agent/service_v2_plugins/`，Host 提供受审核的接口、隔离、持久化和回读；维护入口见[插件 README](../service_v2_plugins/README.md)。旧 `ACTION_V1` 仅保留离线迁移合同与历史证据，不在生产启动时恢复。
-- 超级管理员安装 ZIP 时创建独立实例，默认停用；账号、资源、参数和时间计划在安装后配置。不同实例可独立执行。生产发布核验 Service-V2-only 退役索引与权威 COMPLETED 归属。
+- 当前业务使用 `SERVICE_V2` 独立 ZIP。业务源码在 `agent/service_v2_plugins/`，Host 提供受审核的接口、隔离、持久化和回读；维护入口见[插件 README](../service_v2_plugins/README.md)。V1 运行时、迁移配对与签名发行已于 2026-10 删除，系统只运行 Service V2。
+- 超级管理员安装 ZIP 时创建独立实例，默认停用；账号、资源、参数和时间计划在安装后配置。不同实例可独立执行。核心发布只复制 `agent/scripts/release_scope.py` 列出的当前 V2 包。
 - 账号登录态由业务账号模块维护；插件只使用管理员明确保存的账号与资源绑定，不选择默认账号或第一项。普通账号与飞书身份继承身份设置的权限，超级管理员原生拥有全部权限。
 - Host Capability Registry 定义精确接口 Schema 和 effect；插件不能自报写入成功。缺少身份、字段、结果或独立写后证据时明确失败或报告未知写。
 - 功能插件在自动化模块，财务/客服采集插件在所属模块的数据源页；共用生命周期与执行机制。Harness contribution 可选，账号引用和平铺参数可用宿主简单设置。
@@ -102,7 +102,7 @@ updated: 2026-10-19
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
 - Console 导航固定登记上述 16 个模块身份；迁移 `027` 保存的 14 行历史生命周期状态和 Lite 审计仅供只读兼容，不参与固定模块菜单、页面、API 或新调用可用性判断。依赖 Agent、账号、资源或其他业务数据的具体操作仍由各自合同独立失败关闭。
 - OCR、运单、跟踪、回单、客服、融辉财务、调度、自动化、账号、智能模型、事项中心和系统管理均沿既有页面与服务边界运行；韵达财务适配器待真实来源验收后再启用。
-- 财务工作台通过共享 MySQL 账本与 `sync_finance_bills` 插件接通；代码来源注册表开放融辉三个财务角色，实际启停、时刻与账号以已安装实例的持久设置为准。逐笔汇总、平台汇总与 signed-net 必须一致，旧 Excel ETL 已退出当前运行时。
+- 财务工作台通过共享 MySQL 账本与统计查询月度抓取插件 `sync_ronghui_finance_statement_v2` 接通：插件按月抓取融辉三个财务账号的统计查询与明细，Host 核对是本次真实返回后原样保存，并按结算日写入账本；旧逐日财务采集与 Excel ETL 均已删除。
 - `车辆调度` 当前为 `map_only`：高德地图、路线规划与本地试算；没有真实货拉拉派单、车辆或平台接口。
 - 面向客户的独立 AI 客服模块仍未建立；现有固定命令、受限只读查询和客服工作台分别由 `agent/`、`feishu/` 与 Console 既有链路承载。
 - Agent 公开面只保留精简 `/health`、飞书事件入口和带独立 Webhook Token 的 `/webhook/*`；主要管理与业务代理接口位于 `/internal/v1/*`。`/chat`、`/run-tool` 等旧入口只作为继续鉴权的 deprecated 兼容层，不得新增调用方。
@@ -116,7 +116,7 @@ updated: 2026-10-19
 - `sync_yunda_dispatch_forecast` 按插件实例绑定的韵达账号读取次日“网点派件量预测主单表”并写入绑定的飞书资源。17:00 是历史默认定时说明，不代表当前生产设置；运行时使用已安装实例的实际定时及精确账号绑定，融辉插件同样不回落 `ronghui/default`。
 - `sync_yunda_send_waybills` 复用该实例绑定韵达账号的登录态，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入绑定的寄件资源；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
 - `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
-- `r7_arrival_checkin` 和 `r7_departure_checkin` 已从当前发行的后台 `/automations`、调度注册和飞书直达入口移除；历史项目、运行及审计记录继续保留，不参与当前健康计数，也不会执行第三方打卡写入。
+- 旧 R7 到达/发车打卡已删除；R7 车线每日打卡由独立 V2 包 `r7_vehicle_checkin_v2` 承担，见 `r7_vehicle_checkin.md`。
 - `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
 - `sync_arrival_stats` 会将融辉纯数字子单归并到对应主单，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
 - `sync_arrival_stats` 以累计子单扫描数作为到货件数并按主单开单件数封顶；`count_result.quantity_gaps` 记录扫描不足，`quantity_adjustments` 记录超量封顶。

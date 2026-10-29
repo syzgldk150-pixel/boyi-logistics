@@ -20,17 +20,8 @@ from console.app_support import normalize_feedback_text
 from console.services.automation_projects import AUTOMATION_PROJECT_ID_RE
 
 
-SCAN_PREVIEW_PROJECT_ID = "scan_codes"
-SELECTION_PREVIEW_PROJECT_IDS = frozenset(
-    {"self_pickup_problem_upload", "split_pending_problem_upload"}
-)
-
-
-def preview_project_id_valid(automation_id: str, *, scan: bool) -> bool:
-    """Accept fixed V1 IDs or exact V2 instance UUIDs; Agent checks ownership."""
-    legacy_ids = {SCAN_PREVIEW_PROJECT_ID} if scan else SELECTION_PREVIEW_PROJECT_IDS
-    if automation_id in legacy_ids:
-        return True
+def preview_project_id_valid(automation_id: str) -> bool:
+    """Accept only exact V2 instance UUIDs; Agent checks ownership."""
     try:
         return str(uuid.UUID(automation_id)) == automation_id
     except (ValueError, AttributeError, TypeError):
@@ -52,8 +43,9 @@ SELECTION_PREVIEW_PUBLIC_FIELDS = frozenset(
         "preview_state",
     }
 )
-SELECTION_PREVIEW_CANDIDATE_FIELDS = {
-    "self_pickup_problem_upload": frozenset(
+# Candidate shapes of the self-pickup and split-pending selection plugins.
+SELECTION_PREVIEW_CANDIDATE_SHAPES = (
+    frozenset(
         {
             "arrival_count",
             "bill_code",
@@ -65,7 +57,7 @@ SELECTION_PREVIEW_CANDIDATE_FIELDS = {
             "source_name",
         }
     ),
-    "split_pending_problem_upload": frozenset(
+    frozenset(
         {
             "arrived_quantity",
             "bill_code",
@@ -77,7 +69,7 @@ SELECTION_PREVIEW_CANDIDATE_FIELDS = {
             "source_row_no",
         }
     ),
-}
+)
 SELECTION_PREVIEW_ERROR_MESSAGES = {
     "SELECTION_PREVIEW_PROJECT_INVALID": "该自动化不支持后台候选选择。",
     "SELECTION_PREVIEW_NOT_FOUND": "候选清单不存在，请重新读取。",
@@ -144,7 +136,7 @@ def normalize_selection_preview_projection(
     automation_id = str(raw.get("automation_id") or "").strip()
     if (
         automation_id != expected_automation_id
-        or not preview_project_id_valid(automation_id, scan=False)
+        or not preview_project_id_valid(automation_id)
     ):
         return None
     preview_invocation_id = str(raw.get("preview_invocation_id") or "").strip()
@@ -171,7 +163,6 @@ def normalize_selection_preview_projection(
         timestamps[field] = value
     candidate_count = raw.get("candidate_count")
     candidates = raw.get("candidates")
-    allowed_fields = SELECTION_PREVIEW_CANDIDATE_FIELDS.get(automation_id)
     if (
         isinstance(candidate_count, bool)
         or not isinstance(candidate_count, int)
@@ -185,11 +176,7 @@ def normalize_selection_preview_projection(
     for candidate in candidates:
         if not isinstance(candidate, Mapping):
             return None
-        if allowed_fields is not None and set(candidate) != allowed_fields:
-            return None
-        if allowed_fields is None and not any(
-            set(candidate) == fields for fields in SELECTION_PREVIEW_CANDIDATE_FIELDS.values()
-        ):
+        if set(candidate) not in SELECTION_PREVIEW_CANDIDATE_SHAPES:
             return None
         bill_code = str(candidate.get("bill_code") or "").strip()
         if not bill_code or len(bill_code) > 64 or bill_code in seen:
@@ -259,11 +246,9 @@ def group_scheduled_rows_by_automation_id(
 
 
 __all__ = [
-    "SCAN_PREVIEW_PROJECT_ID",
     "preview_project_id_valid",
-    "SELECTION_PREVIEW_PROJECT_IDS",
     "SELECTION_PREVIEW_PUBLIC_FIELDS",
-    "SELECTION_PREVIEW_CANDIDATE_FIELDS",
+    "SELECTION_PREVIEW_CANDIDATE_SHAPES",
     "SELECTION_PREVIEW_ERROR_MESSAGES",
     "SCAN_PREVIEW_PUBLIC_FIELDS",
     "SCAN_PREVIEW_ERROR_MESSAGES",

@@ -95,16 +95,11 @@ def test_non_emergency_recovery_also_adopts_before_any_runtime_mutation():
         acquire_release_lock() { return 0; }
         validate_environment() { validate_scheduler_release_hold_recovery; }
         preflight_service_identity_configuration() { return 0; }
-        preflight_control_plane_task_cutover() { return 0; }
-        preflight_automation_project_scheduled_task_identities() { return 0; }
-        preflight_automation_project_required_resources() { return 0; }
         preflight_scheduled_write_window() { echo real-window-check-still-required; }
         backup_managed_sources() { return 0; }
         run_static_preflight() { return 0; }
         build_release_virtualenvs() { return 0; }
-        preflight_signed_first_party_plugins() { return 0; }
-        capture_preexisting_automation_plugin_db_ownership() { return 0; }
-        capture_control_plane_release_state() { return 0; }
+        capture_domain_database_split_state() { return 0; }
         preflight_running_protected_writes() { return 0; }
         quiesce_runtime_services() {
           [[ "${SCHEDULER_RELEASE_HOLD_ADOPTED}" == 1 ]]

@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from agent.direct_tool_router import (
-    FIRST_PARTY_FEISHU_ROUTE_KEYS,
+    FIXED_FEISHU_ROUTE_KEYS,
     QUOTE_PLUGIN_COMMAND,
     direct_tool_request_from_text,
     format_quote_plugin_messages,
@@ -46,8 +46,9 @@ from shared.automation_preview_contract import (
 from agent.pending_actions import clear_pending, get_pending, set_pending
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
-from feishu.migration_entrypoint_router import (
-    dispatch_migrated_fixed_feishu_entrypoint,
+from feishu.fixed_entrypoint_router import (
+    dispatch_fixed_feishu_command,
+    invoke_fixed_preview,
 )
 from feishu.automation_messages import (
     TOOL_DISPLAY_NAMES,
@@ -180,7 +181,7 @@ def _automation_task_name(route_key: str) -> str:
     safe_route_key = str(route_key or "").strip()
     matching_names = [
         TOOL_DISPLAY_NAMES[tool_name]
-        for tool_name, candidate_route in FIRST_PARTY_FEISHU_ROUTE_KEYS.items()
+        for tool_name, candidate_route in FIXED_FEISHU_ROUTE_KEYS.items()
         if candidate_route == safe_route_key and tool_name in TOOL_DISPLAY_NAMES
     ]
     return matching_names[0] if matching_names else "自动化任务"
@@ -266,21 +267,11 @@ async def _invoke_automation_project(
     service = _automation_entrypoints()
 
     async def submit(callback):
-        from feishu.migration_entrypoint_router import invoke_migrated_preview
-        migrated, result = await invoke_migrated_preview(
+        return await invoke_fixed_preview(
             dispatcher=_SERVICE_V2_FEISHU_DISPATCHER, route_key=safe_route_key,
             event_id=context.event_id, sender_id=context.actor_id, chat_id=context.chat_id,
             dynamic_inputs=inputs, preview_invocation_id=preview_invocation_id,
             on_accepted=callback, conversation_target=conversation_target,
-        )
-        if migrated:
-            return result
-        return await service.invoke_feishu(
-            route_key=safe_route_key, event_id=context.event_id,
-            sender_id=context.actor_id, chat_id=context.chat_id,
-            envelope={"body": inputs, "query": {}},
-            preview_invocation_id=preview_invocation_id, on_accepted=callback,
-            **({"conversation_target": conversation_target} if conversation_target is not None else {}),
         )
 
     async def waiting():
@@ -304,7 +295,7 @@ async def _cancel_direct_plugin(text: str, *, chat_id: str, sender_id: str) -> b
     tool = _cancel_tool_name_from_text(text)
     if not tool and not is_cancel_text(text):
         return False
-    route = FIRST_PARTY_FEISHU_ROUTE_KEYS.get(tool) if tool else None
+    route = FIXED_FEISHU_ROUTE_KEYS.get(tool) if tool else None
     matches = [(key, value) for key, value in _ACTIVE_PLUGIN_INVOCATIONS.items()
                if key[:2] == (chat_id, sender_id) and (route is None or key[2] == route)]
     if not matches:
@@ -1749,7 +1740,7 @@ async def _execute_and_reply(
     tool_name: str,
     params: dict[str, Any],
 ) -> None:
-    if tool_name in FIRST_PARTY_FEISHU_ROUTE_KEYS:
+    if tool_name in FIXED_FEISHU_ROUTE_KEYS:
         await _reply_text(
             chat_id,
             "旧版自动化确认已失效，请重新发起该任务。",
@@ -2526,13 +2517,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 await _reply_text(chat_id, "价格查询插件尚未启用或未配置，请在后台检查三平台报价项目。", reply_type="quote_plugin_unavailable")
             return
 
-        if await dispatch_migrated_fixed_feishu_entrypoint(
+        if await dispatch_fixed_feishu_command(
             mode=mode,
             automation_route_key=automation_route_key,
-            tool_name=tool_name,
             command_text=text,
             receive_id=chat_id,
-            dispatcher=_SERVICE_V2_FEISHU_DISPATCHER,
             dispatch_service_v2=_dispatch_service_v2_feishu_command,
             reply_text=_reply_text,
         ):
@@ -2641,7 +2630,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                     await _reply_text(chat_id, f"{target.title}入口已变化，请重新发起。")
             elif target.selection_tool:
                 await _invoke_selection_preview_and_reply(route_key=target.route_key,
-                    tool_name=SELF_PICKUP_PREVIEW_TOOL_NAME if target.selection_tool == "self_pickup_problem_upload" else "preview_split_pending_problems",
+                    tool_name=SELF_PICKUP_PREVIEW_TOOL_NAME if target.selection_tool == "self_pickup_problem_upload_v2" else "preview_split_pending_problems",
                     receive_id=chat_id, conversation_target=target)
             else:
                 await _invoke_automation_project_and_reply(route_key=target.route_key, dynamic_inputs={},
@@ -2768,7 +2757,7 @@ async def _run_deferred_tool(
 ):
     from feishu.bot import get_agent_core
 
-    if tool_name in FIRST_PARTY_FEISHU_ROUTE_KEYS:
+    if tool_name in FIXED_FEISHU_ROUTE_KEYS:
         if receive_id:
             await _reply_text(
                 receive_id,

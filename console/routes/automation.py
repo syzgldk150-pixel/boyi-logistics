@@ -57,23 +57,7 @@ def _automation_plugin_settings_asset_route(path: str) -> tuple[str, str] | None
     return automation_id, asset_path
 
 
-def _automation_plugin_migration_route(path: str) -> tuple[str, str] | None:
-    prefix = "/automations/plugin-migrations/"
-    if not path.startswith(prefix):
-        return None
-    remainder = path[len(prefix) :]
-    if remainder == "create":
-        return "", "create"
-    pair_id, separator, action = remainder.partition("/")
-    if not separator or not pair_id or not action or "/" in action:
-        return None
-    return pair_id, action
-
-
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
-    if path == "/automations/maintenance":
-        app._render_plugin_maintenance(handler)
-        return True
     if path in {"/module-data-sources/finance", "/module-data-sources/customer_service"}:
         app._handle_module_sources_get(handler, path.rsplit("/", 1)[1])
         return True
@@ -141,12 +125,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if app._handle_automation_account_post(handler, path):
         return True
-    if path == "/automations/resources/save":
-        app._handle_automation_resource_save(handler)
-        return True
-    if path == "/automations/tasks/save":
-        app._handle_automation_task_save(handler)
-        return True
     if path == "/automations/tasks/run-now":
         app._handle_automation_task_run_now(handler)
         return True
@@ -161,21 +139,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if path == "/automations/tasks/cancel":
         app._handle_automation_task_cancel(handler)
-        return True
-    migration_route = _automation_plugin_migration_route(path)
-    if migration_route and migration_route[1] in {
-        "create",
-        "resume",
-        "ready",
-        "cutover",
-        "rollback",
-        "complete",
-    }:
-        app._handle_automation_plugin_migration_action(
-            handler,
-            migration_route[0],
-            migration_route[1],
-        )
         return True
     plugin_route = _automation_plugin_route(path)
     if plugin_route and plugin_route[1] == "install":
@@ -194,12 +157,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
             plugin_route[1],
         )
         return True
-    if plugin_route and plugin_route[1] == "recover":
-        app._handle_automation_plugin_unknown_write_recovery(
-            handler,
-            plugin_route[0],
-        )
-        return True
     if plugin_route and plugin_route[1] == "configuration":
         app._handle_automation_plugin_configuration_save(handler, plugin_route[0])
         return True
@@ -212,9 +169,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
             app._handle_automation_plugin_settings_bridge(handler, automation_id)
             return True
     project_route = _automation_project_route(path)
-    if project_route and project_route[1] == "/approval-policy":
-        app._handle_automation_project_approval_policy(handler, project_route[0])
-        return True
     if project_route and project_route[1] in {
         "/pending-approvals/approve",
         "/pending-approvals/reject",
@@ -223,27 +177,6 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
             handler,
             project_route[0],
             project_route[1].rsplit("/", 1)[-1],
-        )
-        return True
-    if path == "/automations/admin/import-phase7-resources":
-        app._handle_automation_admin_action(
-            handler,
-            endpoint="/internal/v1/admin/import-phase7-resources",
-            success_message="Phase 7 资源已重新导入。",
-        )
-        return True
-    if path == "/automations/admin/seed-phase7-tasks":
-        app._handle_automation_admin_action(
-            handler,
-            endpoint="/internal/v1/admin/seed-phase7-tasks",
-            success_message="Phase 7 默认任务模板已写入并重载调度。",
-        )
-        return True
-    if path == "/automations/admin/reload":
-        app._handle_automation_admin_action(
-            handler,
-            endpoint="/internal/v1/admin/reload",
-            success_message="智能服务运行配置已重新加载。",
         )
         return True
     return False

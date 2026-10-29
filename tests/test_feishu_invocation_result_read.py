@@ -25,10 +25,10 @@ def _reader(*, row_changes=None, actor=None, result_changes=None):
     result = {"invocation_id": INVOCATION_ID, "automation_id": "scan_codes", "status": "COMPLETED", "output": {"dry_run": True}, **(result_changes or {})}
     policy = object.__new__(AutomationProjectPolicyService)
     policy.direct_invocations = SimpleNamespace(repository=SimpleNamespace(get=Mock(return_value=row)), wait=AsyncMock(return_value=result))
-    policy._load_catalog_entry = Mock(return_value=SimpleNamespace(automation_id="scan_codes", plugin_id="sync_scan_codes", trust_source="ed25519_first_party"))
+    policy._load_catalog_entry = Mock(return_value=SimpleNamespace(automation_id="scan_codes", plugin_id="sync_scan_codes_v2", runtime_model="SERVICE_V2", trust_source="super_admin_upload"))
     policy.get_scan_preview_projection = Mock(return_value={"preview_invocation_id": INVOCATION_ID, "can_confirm": True})
     resolver = Mock(return_value=actor or Actor(ActorType.FEISHU_USER, "sender-one", authenticated_by="feishu_verified_event"))
-    entrypoints = AutomationProjectEntrypoints(policy, route_resolver=None, feishu_actor_resolver=resolver)
+    entrypoints = AutomationProjectEntrypoints(policy, feishu_actor_resolver=resolver)
     return entrypoints, policy
 
 

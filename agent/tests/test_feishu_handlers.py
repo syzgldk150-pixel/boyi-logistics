@@ -13,7 +13,6 @@ from feishu import message_handler, notify
 from feishu.reply_formatter import format_reply
 import main
 from main import _check_tms_account_session, _feishu_event_type, _tms_session_alert_key, _verify_feishu_event_token
-from legacy.price_quote.price_tool import get_price_via_script
 
 
 def _admin_accounts_payload(*, pending_accounts: set[str] | None = None) -> dict:
@@ -290,19 +289,6 @@ class FeishuMessageHandlerTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("不可到达", messages[0])
-
-    def test_price_tool_captures_progress_stdout(self):
-        class DummyModule:
-            @staticmethod
-            def run_once(params):
-                print("[Login] 第 1 次尝试成功")
-                return {"目的网点": "测试站"}
-
-        with patch("legacy.price_quote.price_tool._load_local_price_module", return_value=DummyModule()):
-            result = get_price_via_script("武汉", 10)
-
-        self.assertEqual(result["目的网点"], "测试站")
-        self.assertEqual(result["mode"], "local_script")
 
     def test_get_price_yunda_auth_result_selects_yunda_session(self):
         auth_session = message_handler._auth_session_for_result(

@@ -12,13 +12,14 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from agent.connector_namespaces import DELIVERY_STATUS_TOOL, SITE_SEND_TOOL
 from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
 )
 from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.errors import PluginExecutionError
-from agent.automation_plugins.first_party_handler_common import (
+from agent.automation_plugins.host_primitive_common import (
     _OpaqueCodec,
     _account_descriptor,
     _business_date,
@@ -52,10 +53,10 @@ DELIVERY_WRITE_ACTION_KEYS = frozenset(
 DELIVERY_SITE_WRITE_ACTION_KEYS = SITE_WRITE_ACTION_KEYS | DELIVERY_WRITE_ACTION_KEYS
 MARKED_WRITE_ACTION_KEYS = DELIVERY_SITE_WRITE_ACTION_KEYS
 
-_SITE_TOOL = "sync_site_send_list"
+_SITE_TOOL = SITE_SEND_TOOL
 _SITE_BITABLE_ROLE = "site_send_bitable"
 _SITE_SHEET_ROLE = "site_send_sheet"
-_DELIVERY_TOOL = "sync_delivery_status"
+_DELIVERY_TOOL = DELIVERY_STATUS_TOOL
 _DELIVERY_BITABLE_ROLE = "delivery_status_bitable"
 _ACCOUNT_ROLE = "account_id"
 _MAX_RECORDS = 20_000

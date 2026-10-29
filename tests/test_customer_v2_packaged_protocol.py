@@ -3,8 +3,8 @@ import pytest
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.customer_connectors_v2 import build_customer_connectors
-from agent.automation_plugins.first_party_handler_common import customer_problem_identity
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_common import customer_problem_identity
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 
 
@@ -31,7 +31,7 @@ def test_customer_zip_queries_all_bound_accounts_and_rechecks_exact_old_identity
             })
         return {'ok':True,'source_site_code':'isolated-site','rows':[row],
             'stats':{'returned':1,'total':1,'total_authoritative':True}}
-    reviewed=build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(describe_account=describe,customer_action=platform))
+    reviewed=build_host_primitive_handler_map(HostPrimitivePorts(describe_account=describe,customer_action=platform))
     registry=ConnectorRegistry(build_customer_connectors(reviewed))
     context=CoreBrokerInvocationContext(automation_id='isolated-customer',plugin_version='2.0.0',tool_name='sync_customer_service_problems_v2',
         operation='service.invoke',action='run',role='__system__',account_bindings={'customer_service_source':tuple(accounts)})
@@ -69,8 +69,8 @@ def test_customer_zip_closes_recheck_budget_before_any_detail_call(tmp_path, rec
         return {"ok": True, "source_site_code": "isolated-site", "rows": [],
                 "stats": {"returned": 0, "total": 0, "total_authoritative": True}}
 
-    reviewed = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(describe_account=describe, customer_action=platform))
+    reviewed = build_host_primitive_handler_map(
+        HostPrimitivePorts(describe_account=describe, customer_action=platform))
     registry = ConnectorRegistry(build_customer_connectors(reviewed))
     context = CoreBrokerInvocationContext(
         automation_id="isolated-customer", plugin_version="2.0.2", tool_name="sync_customer_service_problems_v2",
@@ -111,9 +111,9 @@ def test_customer_zip_closes_recheck_budget_before_any_detail_call(tmp_path, rec
 
 @pytest.mark.parametrize("error_code", ["BROKER_CALL_LIMIT", "BROKER_CAPABILITY_INVALID"])
 def test_customer_payload_does_not_publish_when_execution_budget_is_unavailable(error_code):
-    from tests.first_party_action_payload_support import load_first_party_action
+    from tests.plugin_action_payload_support import load_plugin_action
 
-    action = load_first_party_action("sync_customer_service_problems")
+    action = load_plugin_action("sync_customer_service_problems")
 
     def broker(operation, *, action, role, arguments):
         if action == "customer_problem.list_page":

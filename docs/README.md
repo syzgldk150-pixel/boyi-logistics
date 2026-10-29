@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-21
+updated: 2026-10-29
 ---
 
 # 仓库文档索引
@@ -71,7 +71,7 @@ updated: 2026-10-21
 - [插件职责边界修复与上线记录](plugin_business_boundary_20261008.md)（2026-10-08）：扫描、自提、分批、到货统计和财务的边界修复、核心发布与三个 2.1.0 包安装结果，以及只读预览验收范围。
 
 - [扩展平台原始方案](extension-platform-baseline.md)、[原迁移执行账本](extension-platform-progress.md)：保留阶段性 TASK 与隔离证据，不是当前待办或生产门禁。
-- [旧控制平面](../agent/docs/control_plane_v1.md)、[旧 Action V1 合同](../agent/docs/automation_plugin_platform.md)：解释历史记录；不用于新增插件或日常执行。
+- [旧控制平面](../agent/docs/control_plane_v1.md)：解释历史记录；不用于新增插件或日常执行。
 - [任务领取与审批时间](control_plane_timebase.md)：旧领取、唤醒和审批时间口径，仅用于解释历史记录；新 Invocation 明确使用 UTC。
 - [架构改造验收映射](architecture_refactor_acceptance_mapping.md)、[V3.2 逐组验收要求](low_maintenance_v32_acceptance.json)、[V3.2 复现与发布回退](low_maintenance_v32_release.md)：阶段验收与复现入口，不能据此推断当前线上每次执行都成功。
 - [第一轮收尾验收报告](phase1_final_closeout.md)（2026-09-23）、[身份与 V2 插件验证记录](identity_v2_validation_20260911.md)（2026-09-11）：当时的验收证据与状态，不代表现行部署情况。

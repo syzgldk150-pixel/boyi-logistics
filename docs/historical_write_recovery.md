@@ -2,20 +2,19 @@
 module: 历史控制平面
 type: 未知写核验
 status: active
-updated: 2026-09-15
+updated: 2026-10-29
 ---
 
 # 历史未知写入与新任务
 
-本文说明保留的历史 Run 写回执与人工核验。当前业务使用[直接调用架构](architecture_direct_invocation.md)，主系统不启用 Runner；旧恢复测试不代表生产仍在领取或续跑。已有迁移 `042` 保留原字节，不能把本页当成重新启用旧队列的步骤。
+本文说明保留的历史 Run 写回执及其只读展示。当前业务使用[直接调用架构](architecture_direct_invocation.md)，主系统不启用 Runner；旧恢复测试不代表生产仍在领取或续跑。已有迁移 `042` 保留原字节，不能把本页当成重新启用旧队列的步骤。
 
 | 维护内容 | 唯一实现位置 | 更新范围 |
 |---|---|---|
 | 新任务互斥、失败终结与中断请求隔离 | `automation_run_supersession.py`、`automation_run_lookup.py`、`workflow_runner.py` | 核心 |
 | 原始写入范围与历史隔离 | `execution_resource_journal.py`、迁移 `042` | 核心和共享数据库 |
-| 精确证据核验与代际闭合 | `automation_unknown_write_recovery.py`、`automation_plugin_generation_unknown_write_repository.py` | 核心 |
-| 核验后是否唤醒执行 | `production_write_recovery.py` | 核心 |
-| 事项历史记录与操作界面 | `automation_write_recovery_views.py`、Console 控制平面服务和 `unknown_write_recovery.js` | 核心和 Console |
+| 代际未知写状态 | `automation_plugin_generation_unknown_write_repository.py` | 核心 |
+| 事项历史记录只读展示 | `automation_write_recovery_views.py`、Console 控制平面服务和 `unknown_write_recovery.js` | 核心和 Console |
 
 这些规则不移入业务插件配置；业务字段与局部判断仍按原插件维护入口单独测试和打包。
 
@@ -32,15 +31,13 @@ updated: 2026-09-15
 - 有效执行租约上的缺失、损坏范围仍明确报错；停止历史无论有无原范围都不会生成新任务锁。回执按稳定主键分页读取，历史数量增加不会触发全局数量上限错误。
 - 普通页面也使用直接业务接口，不自动恢复中断的旧 read/compute Run；历史恢复实现不得作为当前线上入口。
 
-## 人工查看与核验
+## 只读查看
 
-事项详情按具体 Run 与 lease 展示历史记录。支持核验的插件可由超级管理员检查已保存的服务端证据；不支持的记录显示原因。浏览器不能提供核验结论、原始资源、外部账号或证据。
-
-事项中的人工入口使用 `resume_run=False`，Agent 在事务内重新验证事项、Run、项目、代际和 lease 的精确关联。只有原有证明规则确认 APPLIED / NOT_APPLIED 时才闭合该 lease 并写审计；原 Run 和 Step 保持停止，不投递执行消息、不唤醒 Runner。证据不足继续 UNKNOWN。本入口不代表每个插件都已实现第三方系统的现场回读。
+事项详情按具体 Run 与 lease 只读展示历史记录，不提供核验、恢复或重放入口（原人工核验只覆盖已删除的 V1 插件，2026-10 随之删除）。浏览器不能提供核验结论、原始资源、外部账号或证据；UNKNOWN 保持原样。
 
 现有 `GET /control-plane/work-items/{work_item_id}` 的 `unknown_write_recoveries[].write_attempts` 提供该 lease 的只读回执诊断：精确回执 ID、已记录的操作与 action、结果状态、记录数量和创建／更新时间，以及原始范围的类别与缺失、损坏、历史隔离标记。`scope_derivation_reason` 与 `derived_scope_key_kinds` 复用 Runner 的同一证明函数，只输出范围计算原因码和类别。创建／更新时间不是写后验证时间；没有保存的字段不推断补齐。查询必须同时匹配该事项已关联的 lease、项目、代际与 Run，每个事项最多返回 1000 条回执，超过上限明确失败。
 
-该诊断不返回账号、资源键原值、定位器、请求参数或业务行，也不改动回执、锁或任务状态。自动化 `EXECUTION_RESOURCE_BUSY` 保留通道或实际写冲突的原因；旧 `RESOURCE_WAIT` 仅是历史记录。回执诊断不能只凭插件名或历史隔离标记断言当前冲突。页面中的“检查已保存证据”仍沿用上述证明规则。
+该诊断不返回账号、资源键原值、定位器、请求参数或业务行，也不改动回执、锁或任务状态。自动化 `EXECUTION_RESOURCE_BUSY` 保留通道或实际写冲突的原因；旧 `RESOURCE_WAIT` 仅是历史记录。回执诊断不能只凭插件名或历史隔离标记断言当前冲突。
 
 已归档代际的最后一条未知写闭合后，仅其 `BLOCKED/WRITE_OUTCOME_UNKNOWN` 状态进入既有 DRAINING 清理流程，不恢复旧项目路由。其他独立错误保持原样。未知证据仍须保留，卸载和数据保留规则不因此绕过。
 
@@ -54,9 +51,7 @@ PYTHONPATH=agent:. pytest -q \
   tests/test_historical_receipt_execution_scopes.py \
   tests/test_automation_fail_fast_mysql.py \
   tests/test_workflow_runner_read_recovery_mysql.py \
-  tests/test_manual_unknown_write_recovery.py \
   tests/test_automation_write_recovery_views.py \
-  tests/test_automation_unknown_write_recovery_transaction.py \
   tests/test_automation_project_policy_service.py
 ```
 
@@ -64,6 +59,6 @@ PYTHONPATH=agent:. pytest -q \
 
 ## 发布与回退
 
-按 [ECS 发布流程](../agent/deploy/publish_to_ecs.md) 使用通过 CI 的最终 Git SHA 和对应 Service-V2-only 退役索引，执行核心更新。本次失败终结修复不新增或改写迁移；既有 `042` 保持原字节。先保存生产一致性备份，隔离验证通过后发布；副本只用于备份与演练，不上传替换生产数据库。
+按 [ECS 发布流程](../agent/deploy/publish_to_ecs.md) 使用通过 CI 的最终 Git SHA 执行核心更新。本次失败终结修复不新增或改写迁移；既有 `042` 保持原字节。先保存生产一致性备份，隔离验证通过后发布；副本只用于备份与演练，不上传替换生产数据库。
 
 `042` 是增加可空列和标记历史记录，回退代码时保留该列、迁移记录和所有原证据。旧应用可以忽略新增列，但会恢复旧的全局阻塞行为。不得删除未知回执、修改成功状态、删除迁移校验和或用旧数据库覆盖发布后业务。保留标准发布器生成的本次精确回滚材料，按其中恢复流程排空运行后回退代码与服务。

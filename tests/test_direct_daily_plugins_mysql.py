@@ -12,7 +12,7 @@ from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
 from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
 from agent.automation_plugins.problem_connectors_v2 import build_problem_connectors
 from tests.v32_acceptance.service_v2_artifacts import build_artifact
-from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
+from plugin_core_adapters.host_primitives import build_production_host_primitive_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from tests.direct_invocation_fixture import DirectFixture, direct_repository  # noqa:F401
 from tests.test_direct_plugin_invocation_mysql import _legacy_counts
@@ -50,7 +50,7 @@ def test_statistics_scan_pickup_execute_in_parallel_without_a_queue(daily_reposi
         resources = {**daily.resources, **problems.resources}
         def sheet(action, arguments):
             return daily.feishu_operation(action, arguments) if arguments["spreadsheet_token"] == "isolated-daily-workbook" else problems.feishu_operation(action, arguments)
-        handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32), account_manager=accounts, capability_authorizer=daily.authorize)
+        handlers = build_production_host_primitive_handler_map(cursor_secret=secrets.token_bytes(32), account_manager=accounts, capability_authorizer=daily.authorize)
         handlers.update(build_production_problem_handler_map(cursor_secret=secrets.token_bytes(32), account_manager=accounts, resource_loader=resources.get, feishu_operation=sheet, problem_action=problems.problem_action, capability_authorizer=problems.authorize))
         with ManagementFixture(connection_factory=direct_repository._connection_factory, runtime_root=root / "runtime", account_manager=accounts, broker_handlers=handlers, resource_provider=resources.get, enable_directory_faults=False, connector_registry=ConnectorRegistry((*build_scan_connectors(handlers), *build_arrival_connectors(handlers), *build_problem_connectors(handlers)))) as management:
             scan_id = setup_scan(management, artifacts['sync_scan_codes_v2'])

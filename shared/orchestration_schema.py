@@ -3,28 +3,6 @@
 from __future__ import annotations
 
 
-WINDOWS_WORKER_REQUIRED_TABLES = frozenset(
-    {
-        "automation_worker_devices",
-        "automation_worker_jobs",
-        "automation_worker_cleanup_directives",
-    }
-)
-
-WINDOWS_WORKER_REQUIRED_COLUMNS = frozenset(
-    {
-        ("automation_worker_devices", "interactive_session_state"),
-        ("automation_worker_devices", "paired_public_key_fingerprint"),
-        ("automation_worker_jobs", "deadline_at"),
-        ("automation_worker_jobs", "plugin_id"),
-        ("automation_worker_jobs", "automation_generation"),
-        ("automation_worker_cleanup_directives", "package_sha256"),
-        ("automation_worker_cleanup_directives", "cleanup_scope"),
-        ("automation_worker_cleanup_directives", "purge_id"),
-        ("automation_worker_cleanup_directives", "acknowledged_result_sha256"),
-    }
-)
-
 REQUIRED_TABLES = frozenset(
     {
         "admin_users",
@@ -53,8 +31,6 @@ REQUIRED_TABLES = frozenset(
         "feishu_admin_bindings",
         "feishu_binding_failures",
         "feishu_approval_deliveries",
-        "automation_project_bootstrap_items_018",
-        "automation_project_bootstrap_marker_018",
         "automation_plugin_packages",
         "automation_plugin_versions",
         "automation_projects",
@@ -69,9 +45,6 @@ REQUIRED_TABLES = frozenset(
         "automation_plugin_package_events",
         "automation_project_events",
         "automation_project_schedule_changes",
-        "automation_worker_devices",
-        "automation_worker_jobs",
-        "automation_worker_cleanup_directives",
         "automation_plugin_purge_journal",
         "tool_logs",
         "waybill_problem_events",
@@ -242,15 +215,6 @@ REQUIRED_COLUMNS = frozenset(
         ("automation_plugin_versions", "package_sha256"),
         ("automation_plugin_package_events", "request_id"),
         ("automation_project_events", "request_id"),
-        ("automation_worker_devices", "interactive_session_state"),
-        ("automation_worker_devices", "paired_public_key_fingerprint"),
-        ("automation_worker_jobs", "deadline_at"),
-        ("automation_worker_jobs", "plugin_id"),
-        ("automation_worker_jobs", "automation_generation"),
-        ("automation_worker_cleanup_directives", "package_sha256"),
-        ("automation_worker_cleanup_directives", "cleanup_scope"),
-        ("automation_worker_cleanup_directives", "purge_id"),
-        ("automation_worker_cleanup_directives", "acknowledged_result_sha256"),
         ("automation_plugin_purge_journal", "phase"),
         ("automation_plugin_purge_journal", "instance_snapshot_sha256"),
         ("workflow_resources", "configuration_version"),
@@ -262,15 +226,7 @@ REQUIRED_COLUMNS = frozenset(
 )
 
 
-def orchestration_schema_requirements(
-    *,
-    include_windows_worker: bool = True,
-) -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
-    """Return the schema required by the selected runtime composition."""
+def orchestration_schema_requirements() -> tuple[frozenset[str], frozenset[tuple[str, str]]]:
+    """Return the schema required by the runtime composition."""
 
-    if include_windows_worker:
-        return REQUIRED_TABLES, REQUIRED_COLUMNS
-    return (
-        REQUIRED_TABLES - WINDOWS_WORKER_REQUIRED_TABLES,
-        REQUIRED_COLUMNS - WINDOWS_WORKER_REQUIRED_COLUMNS,
-    )
+    return REQUIRED_TABLES, REQUIRED_COLUMNS

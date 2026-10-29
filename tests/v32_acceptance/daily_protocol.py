@@ -214,7 +214,7 @@ class DailyProtocol:
 
 
 def probe_scan_http():
-    from plugin_core_adapters.first_party import _scan_next_submit, _scan_next_verify
+    from plugin_core_adapters.host_primitives import _scan_next_submit, _scan_next_verify
     with DailyProtocol() as boundary, boundary.authentication_boundaries():
         descriptor = {'session_profile': 'v32-daily-profile'}
         items = [{'bill_code': CHILD_CODE, 'station_name': STATION}]

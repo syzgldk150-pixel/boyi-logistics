@@ -6,8 +6,6 @@
     entries: "/finance/entries",
     mappings: "/finance/fee-mappings",
     batches: "/finance/sync-batches",
-    sync: "/finance/sync",
-    backfill: "/finance/backfill",
     reviews: "/finance/review-cases",
     analyzeReviews: "/finance/reviews/analyze",
     waybillFacts: "/finance/waybill-facts",
@@ -58,8 +56,6 @@
     const endDateInput = $("[data-finance-end-date]");
     const entryForm = $("[data-finance-entry-form]");
     const mappingForm = $("[data-finance-mapping-form]");
-    const syncForm = $("[data-finance-sync-form]");
-    const backfillForm = $("[data-finance-backfill-form]");
     const reviewForm = $("[data-finance-review-form]");
     const waybillForm = $("[data-finance-waybill-form]");
 
@@ -176,14 +172,6 @@
         throw new Error("当前浏览器无法生成安全的请求标识，财务计划未提交。");
       }
       return window.crypto.randomUUID();
-    }
-
-    function financeCommandOptions(body) {
-      return {
-        method: "POST",
-        headers: {"X-Browser-Request-UUID": newBrowserRequestUuid()},
-        body: JSON.stringify(body || {}),
-      };
     }
 
     function toQuery(params) {
@@ -1094,14 +1082,13 @@
       if (count) count.textContent = `共 ${displayText(payload.total)} 个批次。`;
       if (!body) return;
       if (!items.length) {
-        body.innerHTML = '<tr><td colspan="10" class="finance-empty-cell">尚无同步记录。可在上方发起手动同步或历史回溯。</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="finance-empty-cell">尚无同步记录。采集在“数据源管理”中按来源执行。</td></tr>';
         setPanelState(tableState, "尚无同步记录。", "empty");
         return;
       }
       setPanelState(tableState);
       body.innerHTML = items.map((row) => {
         const [statusLabel, statusTone] = syncStatusMeta(row.status);
-        const canRetry = ["failed", "partial_failed"].includes(String(row.status || ""));
         const range = `${displayText(row.requested_start_date)} 至 ${displayText(row.requested_end_date)}`;
         const runResult = `${displayText(row.success_runs)} 成功 / ${displayText(row.failed_runs)} 失败 / ${displayText(row.total_runs)} 总计`;
         const failedSources = Array.isArray(row.failed_sources) ? row.failed_sources : [];
@@ -1123,7 +1110,6 @@
           ${responsiveCell("发起人", escapeHtml(displayText(row.requested_by)))}
           ${responsiveCell("开始/结束", `<span class="finance-text-wrap">${escapeHtml(displayText(row.started_at))}<br>${escapeHtml(displayText(row.finished_at))}</span>`)}
           ${responsiveCell("错误", `<span class="finance-text-wrap">${escapeHtml(errorText)}</span>`)}
-          ${responsiveCell("操作", canRetry ? '<button class="ghost-btn finance-row-action" type="button" data-finance-retry><span>重试失败批次</span></button>' : '<span class="finance-pill">无需重试</span>')}
         </tr>`;
       }).join("");
     }
@@ -1143,59 +1129,6 @@
         setStatus("同步记录查询失败。", "error");
       } finally {
         state.loadingBatches = false;
-      }
-    }
-
-    async function collectionArguments(body) {
-      const payload = await fetchJson("/module-data-sources/finance");
-      const selected = globalFilters().source_ids;
-      const sources = Array.isArray(payload.sources) ? payload.sources : [];
-      const scope = selected ? sources.filter(source => source.source_id === selected) : sources;
-      if (!scope.length || scope.some(source => !source.producer_instance_id || source.status !== "active")) {
-        throw new Error("所选财务来源尚未接续采集器，请先在数据源页面配置。");
-      }
-      const producers = [...new Set(scope.map(source => source.producer_instance_id))];
-      if (producers.length !== 1) {
-        throw new Error("当前来源属于多个采集器，请先在顶部选择一个来源再采集。");
-      }
-      return { ...body, automation_id: producers[0] };
-    }
-
-    async function refreshCollectedData() {
-      state.loadedTabs.delete("entries");
-      state.loadedTabs.delete("waybill-facts");
-      await Promise.all([loadBatches(), loadOverview()]);
-    }
-
-    async function submitSyncAction(form, endpoint, busyLabel) {
-      const button = form.querySelector('button[type="submit"]');
-      const body = formValues(form);
-      setButtonBusy(button, true, busyLabel);
-      try {
-        await fetchJson(endpoint, financeCommandOptions(await collectionArguments(body)));
-        await refreshCollectedData();
-        setStatus("财务采集完成。", "success");
-      } catch (error) {
-        setStatus(`财务采集失败：${error.message}`, "error");
-      } finally {
-        setButtonBusy(button, false, busyLabel);
-      }
-    }
-
-    async function retryBatch(row, button) {
-      const batchId = Number(row.dataset.batchId || 0);
-      setButtonBusy(button, true, "重试中");
-      try {
-        await fetchJson(
-          `${ENDPOINTS.batches}/${batchId}/retry`,
-          financeCommandOptions(await collectionArguments({})),
-        );
-        await refreshCollectedData();
-        setStatus(`批次 #${batchId} 重试完成。`, "success");
-      } catch (error) {
-        setStatus(`批次重试失败：${error.message}`, "error");
-      } finally {
-        setButtonBusy(button, false, "重试中");
       }
     }
 
@@ -1834,8 +1767,6 @@
     waybillForm?.addEventListener("submit", (event) => { event.preventDefault(); loadWaybillFacts(); });
     if (periodMonthInput && !periodMonthInput.value) periodMonthInput.value = previousMonthKey();
     periodForm?.addEventListener("submit", (event) => { event.preventDefault(); loadPeriod(); });
-    syncForm?.addEventListener("submit", (event) => { event.preventDefault(); submitSyncAction(syncForm, ENDPOINTS.sync, "提交中"); });
-    backfillForm?.addEventListener("submit", (event) => { event.preventDefault(); submitSyncAction(backfillForm, ENDPOINTS.backfill, "创建中"); });
     $("[data-finance-sync-status]")?.addEventListener("change", loadBatches);
     $("[data-finance-entry-prev]")?.addEventListener("click", () => { if (state.entryPage > 1) { state.entryPage -= 1; loadEntries(); } });
     $("[data-finance-entry-next]")?.addEventListener("click", () => { if (state.entryPage * state.entryPageSize < state.entryTotal) { state.entryPage += 1; loadEntries(); } });
@@ -1867,12 +1798,6 @@
       if (mappingSave) {
         const row = mappingSave.closest("[data-finance-mapping-row]");
         if (row) saveMapping(row, mappingSave);
-        return;
-      }
-      const retry = event.target.closest("[data-finance-retry]");
-      if (retry) {
-        const row = retry.closest("[data-finance-batch-row]");
-        if (row) retryBatch(row, retry);
         return;
       }
       const approve = event.target.closest("[data-finance-review-approve]");

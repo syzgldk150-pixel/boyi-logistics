@@ -9,7 +9,7 @@ updated: 2026-10-21
 
 # clockin_daxiang_v2
 
-这是独立的 `service_v2` `1.2.3` 源包。Provider `run` 操作固定声明 `external_write`，三个 Host action 仍在 `capabilities[*].operations` 中以字符串声明，其 effect 由 Host Capability Registry 权威给出。每次运行都校验逐 contribution governance；两次提交必须分别留下宿主写开始回执，并以 `precheck -> submit -> verify -> submit -> verify` 的 Python-only Host 调用观测、唯一 Evidence 和严格 postcondition proof 闭合 ResultVerifier，任一缺失进入未知写而不重放。Manifest 声明 `Asia/Shanghai` 每日 18:30 定时入口，新安装实例默认关闭，由后台项目设置启用；原 V1 实例已完成迁移，线上启停与定时以后台项目设置为准。打卡页面为融辉“交接任务管理”分拨代打，页面协议、提交与独立回读由 Host 原语 `clock_in_dual` 实现（见 `agent/CLAUDE.md`），包内只编排两次提交与核验。账号、站点参数和运行状态由平台项目绑定，包内不包含凭据、Webhook、事件订阅或业务前端；配置使用受限设置页。飞书命令与后台调用同一个 `run` 操作，入口默认关闭，由后台显式启用。设置 Schema 不写宿主不支持的默认值，缺省间隔仍由包内既有运行规则处理。
+这是独立的 `service_v2` `1.2.3` 源包。Provider `run` 操作固定声明 `external_write`，三个 Host action 仍在 `capabilities[*].operations` 中以字符串声明，其 effect 由 Host Capability Registry 权威给出。每次运行都校验逐 contribution governance；两次提交必须分别留下宿主写开始回执，并以 `precheck -> submit -> verify -> submit -> verify` 的 Python-only Host 调用观测、唯一 Evidence 和严格 postcondition proof 闭合 ResultVerifier，任一缺失进入未知写而不重放。Manifest 声明 `Asia/Shanghai` 每日 18:30 定时入口，新安装实例默认关闭，由后台项目设置启用，线上启停与定时以后台项目设置为准。打卡页面为融辉“交接任务管理”分拨代打，页面协议、提交与独立回读由 Host 原语 `clock_in_dual` 实现（见 `agent/CLAUDE.md`），包内只编排两次提交与核验。账号、站点参数和运行状态由平台项目绑定，包内不包含凭据、Webhook、事件订阅或业务前端；配置使用受限设置页。飞书命令与后台调用同一个 `run` 操作，入口默认关闭，由后台显式启用。设置 Schema 不写宿主不支持的默认值，缺省间隔仍由包内既有运行规则处理。
 
 从仓库根目录构建到忽略的任务临时目录中的新路径；验证完成后精确删除生成物：
 

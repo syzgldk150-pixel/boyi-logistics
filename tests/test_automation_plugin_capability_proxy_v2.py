@@ -1178,7 +1178,7 @@ def test_reviewed_clock_primitives_are_adapted_to_the_account_blind_v2_contract(
     assert verified["match_count"] == 1
     assert verified["outcome_category"] == "confirmed_exact_source_record"
     assert verified["observed_at"] == "2026-08-30T09:10:11+08:00"
-    assert all(call[0].tool_name == "clock_in_dual" for call in calls)
+    assert all(call[0].tool_name == "clock_in" for call in calls)
     assert all(call[0].operation == "browser.invoke" for call in calls)
     assert all(call[0].role == "account_id" for call in calls)
     assert ("browser.session", "*") in UNAVAILABLE_SERVICE_V2_HANDLER_KEYS

@@ -12,11 +12,12 @@ import pytest
 
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
-from agent.automation_plugins.models import PluginRuntimeModel, PluginTrustSource
+from agent.automation_plugins.models import PluginRuntimeModel, PluginTrustSource, PluginVersionRecord
 from agent.automation_plugins.mysql_repository import (
     MySQLAutomationPluginRepositoryAdapter, _compile_upgrade_invocations,
     _configuration_contract_witness, _version_contract,
 )
+from agent.automation_plugins.storage import VERIFIED_ARCHIVE_RELATIVE
 from shared.automation_plugin_configuration_contract import (
     optional_console_input_additions, validate_optional_console_upgrade_configuration,
 )
@@ -24,25 +25,60 @@ from shared.orchestration_repository_support import (
     ConcurrentUpdateError, IdempotencyConflict, OrchestrationPersistenceError,
 )
 from shared.plugin_json import plugin_json_digest
-from tests.test_automation_plugin_upgrade import _version
-from tests.test_first_party_upgrade_configuration_mysql import _rows
 from tests.test_legacy_unknown_scope_migration_mysql import database  # noqa: F401
 
 PROJECT = "upgrade-instance"
 ACTOR = "isolated-console-admin"
 MYSQL = pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reason="requires isolated MySQL 8")
+CONSOLE = "monthly_capture"
+SCHEDULER = "monthly_schedule"
+_MANIFEST = Path(__file__).resolve().parents[1] / "agent/service_v2_plugins/sync_ronghui_finance_statement_v2/manifest.json"
+
+
+def _rows(database):
+    result = {}
+    with database.helper._connection() as connection, connection.cursor() as cursor:
+        for table in (
+            "automation_projects", "automation_project_configs", "automation_project_generations",
+            "automation_project_events", "automation_project_policies", "scheduled_tasks",
+        ):
+            cursor.execute(f"SELECT * FROM {table} WHERE automation_id=%s", (PROJECT,))
+            result[table] = cursor.fetchall()
+        cursor.execute("SELECT * FROM domain_events WHERE entity_id=%s", (PROJECT,))
+        result["domain_events"] = cursor.fetchall()
+        cursor.execute("""SELECT o.* FROM outbox_events o JOIN domain_events d ON d.event_id=o.event_id
+            WHERE d.entity_id=%s""", (PROJECT,))
+        result["outbox_events"] = cursor.fetchall()
+    return result
+
+
+def _version(payload, marker):
+    manifest = AutomationPluginManifestV2.from_mapping(payload)
+    install_root = f"/plugins/synthetic/{manifest.version}"
+    return PluginVersionRecord(
+        plugin_id=manifest.plugin_id, version=manifest.version, package_sha256=marker * 64,
+        manifest_sha256=manifest.manifest_sha256, manifest=manifest.to_mapping(),
+        trust_source=PluginTrustSource.SUPER_ADMIN_UPLOAD, install_root=install_root,
+        install_metadata={"install_root": install_root, "python_relative": "venv/bin/python",
+                          "archive_relative": VERIFIED_ARCHIVE_RELATIVE, "archive_sha256": marker * 64},
+        runtime_model=PluginRuntimeModel.SERVICE_V2, plugin_api="2.0.0",
+    )
 
 
 def _versions():
-    target_payload = json.loads((Path(__file__).resolve().parents[1] /
-        "agent/service_v2_plugins/sync_finance_bills_v2/manifest.json").read_text())
+    """The current statement package with a saved setting, a scheduler and an optional month input."""
+    target_payload = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    target_payload["version"] = "1.0.1"
+    target_payload["config_schema"]["properties"]["page_size"] = {"type": "integer", "minimum": 1, "maximum": 500}
+    console = target_payload["contributes"]["console"][0]
+    console["input_schema"]["required"] = []
+    target_payload["contributes"]["scheduler"] = [{
+        "id": SCHEDULER, "title": "Monthly schedule", "service": console["service"],
+        "operation": console["operation"], "default_enabled": False}]
     old_payload = copy.deepcopy(target_payload)
-    old_payload["version"] = "2.0.1"
+    old_payload["version"] = "1.0.0"
     del old_payload["contributes"]["console"][0]["input_schema"]
-    return tuple(replace(_version(AutomationPluginManifestV2.from_mapping(payload), marker),
-        runtime_model=PluginRuntimeModel.SERVICE_V2, plugin_api="2.0.0",
-        trust_source=PluginTrustSource.SUPER_ADMIN_UPLOAD)
-        for payload, marker in ((old_payload, "1"), (target_payload, "2")))
+    return _version(old_payload, "1"), _version(target_payload, "2")
 
 
 def _witness(version):
@@ -57,10 +93,10 @@ def _compiled(version, config, accounts, sources):
 def _seed(database, *, startup=False):
     old, target = _versions()
     adapter = MySQLAutomationPluginRepositoryAdapter(database.repository)
-    sources = ["manual_run", "daily_run"] if startup else ["manual_run"]
+    sources = [CONSOLE, SCHEDULER] if startup else [CONSOLE]
     schedule = ({"kind": "startup", "times": [], "enabled": True} if startup else
         {"kind": "daily_times", "times": ["00:10"], "enabled": False})
-    config = {"mode": "sync", "rescan_days": 7}
+    config = {"page_size": 100}
     accounts = {role["role"]: "isolated-" + role["role"] for role in old.manifest["account_roles"]}
     compiled = _compiled(old, config, accounts, sources)
     with database.repository.unit_of_work() as uow:
@@ -75,7 +111,7 @@ def _seed(database, *, startup=False):
             project_generation=1, project_configuration_version=1)
         uow.automation_plugins.save_project_config(PROJECT, config=config, account_bindings=accounts,
             resource_bindings={}, enabled_entrypoints=sources, schedule=schedule,
-            compiled_invocations=compiled, contract_witness=_witness(old), device_binding=None,
+            compiled_invocations=compiled, contract_witness=_witness(old), 
             actor_id=ACTOR, actor_role="super_admin", request_id=str(uuid4()),
             expected_project_configuration_version=1)
         uow.commit()
@@ -107,7 +143,7 @@ def _stage(database, adapter, old, target, request_id, record_version):
 
 @MYSQL
 @pytest.mark.parametrize("startup", [False, True])
-def test_finance_optional_console_upgrade_preserves_settings_and_replays(database, startup):  # noqa: F811
+def test_optional_console_upgrade_preserves_settings_and_replays(database, startup):  # noqa: F811
     adapter, old, target = _seed(database, startup=startup)
     before = _rows(database)
     request = str(uuid4())
@@ -121,8 +157,7 @@ def test_finance_optional_console_upgrade_preserves_settings_and_replays(databas
         assert saved_after[field] == saved_before[field], field
     assert saved_after["config_version"] == saved_before["config_version"] + 1
     compiled = json.loads(saved_after["compiled_invocations_json"])
-    assert compiled["manual_run"]["dynamic_resolvers"] == {
-        "collection_request": "verified_optional_console_collection_request"}
+    assert compiled[CONSOLE]["dynamic_resolvers"] == {"month": "verified_optional_console_month"}
     assert saved_after["compiled_invocations_sha256"] == plugin_json_digest(compiled)
     assert after["scheduled_tasks"] == before["scheduled_tasks"]
     assert after["automation_project_generations"] == before["automation_project_generations"]
@@ -155,14 +190,14 @@ def test_optional_console_upgrade_failure_rolls_back_every_write(database, monke
             cursor.execute("SELECT compiled_invocations_json FROM automation_project_configs WHERE automation_id=%s",
                 (PROJECT,))
             compiled = json.loads(cursor.fetchone()["compiled_invocations_json"])
-            compiled["manual_run"]["arguments"]["rescan_days"] = 30
+            compiled[CONSOLE]["arguments"]["page_size"] = 30
             cursor.execute("UPDATE automation_project_configs SET compiled_invocations_json=%s,"
                 "compiled_invocations_sha256=%s WHERE automation_id=%s",
                 (json.dumps(compiled), plugin_json_digest(compiled), PROJECT))
             connection.commit()
     if failure == "required_input":
         payload = copy.deepcopy(target.manifest)
-        payload["contributes"]["console"][0]["input_schema"]["required"] = ["collection_request"]
+        payload["contributes"]["console"][0]["input_schema"]["required"] = ["month"]
         manifest = AutomationPluginManifestV2.from_mapping(payload)
         target = replace(target, manifest=manifest.to_mapping(), manifest_sha256=manifest.manifest_sha256)
     before = _rows(database)
@@ -184,13 +219,13 @@ def test_optional_console_upgrade_failure_rolls_back_every_write(database, monke
 def test_optional_console_contract_rejects_non_additive_change(drift):
     old, target = _versions()
     before, after = _witness(old), _witness(target)
-    invocation = after["invocation_contracts"]["manual_run"]
+    invocation = after["invocation_contracts"][CONSOLE]
     if drift == "required":
-        invocation["input_schema"]["required"].append("collection_request")
+        invocation["input_schema"]["required"].append("month")
     elif drift == "old_schema":
-        invocation["input_schema"]["properties"]["rescan_days"]["type"] = "string"
+        invocation["input_schema"]["properties"]["page_size"]["type"] = "string"
     elif drift == "old_resolver":
-        invocation["dynamic_resolvers"]["mode"] = "verified_optional_console_mode"
+        invocation["dynamic_resolvers"]["page_size"] = "verified_optional_console_page_size"
     elif drift == "target":
         invocation["operation"] = "another_operation"
     elif drift == "governance":
@@ -204,7 +239,7 @@ def test_optional_console_contract_rejects_non_additive_change(drift):
 @pytest.mark.parametrize("drift", ["config", "bindings", "arguments", "resolver", "target", "entrypoints", "bool", "float"])
 def test_optional_console_preparation_rejects_saved_or_compiled_change(drift):
     old, target = _versions()
-    config, sources = {"mode": "sync", "rescan_days": 1}, ["manual_run"]
+    config, sources = {"page_size": 1}, [CONSOLE]
     accounts = {role["role"]: "isolated-" + role["role"] for role in old.manifest["account_roles"]}
     current = {"config_json": config, "account_bindings_json": accounts, "resource_bindings_json": {},
         "enabled_entrypoints_json": sources, "desired_schedule_json": {"kind": "none", "times": [], "enabled": False},
@@ -213,19 +248,19 @@ def test_optional_console_preparation_rejects_saved_or_compiled_change(drift):
         "enabled_entrypoints": list(sources), "schedule": copy.deepcopy(current["desired_schedule_json"]),
         "device_id": None, "compiled_invocations": _compiled(target, config, accounts, sources)}
     if drift in {"bool", "float"}:
-        request["config"]["rescan_days"] = True if drift == "bool" else 1.0
+        request["config"]["page_size"] = True if drift == "bool" else 1.0
     elif drift == "config":
-        request["config"]["rescan_days"] = 30
+        request["config"]["page_size"] = 30
     elif drift == "bindings":
         request["account_bindings"]["extra"] = "another-account"
     elif drift == "entrypoints":
-        request["enabled_entrypoints"].append("daily_run")
+        request["enabled_entrypoints"].append(SCHEDULER)
     else:
-        compiled = request["compiled_invocations"]["manual_run"]
+        compiled = request["compiled_invocations"][CONSOLE]
         if drift == "arguments":
-            compiled["arguments"]["mode"] = "backfill"
+            compiled["arguments"]["page_size"] = 7
         elif drift == "resolver":
-            compiled["dynamic_resolvers"]["collection_request"] = "verified_console_collection_request"
+            compiled["dynamic_resolvers"]["month"] = "verified_console_month"
         else:
             compiled["target"]["operation"] = "another_operation"
     with pytest.raises(ValueError):
@@ -240,9 +275,9 @@ def test_shared_preparation_rejects_forged_upgrade_proof(database, tamper):  # n
     previous, witness = _witness(old), _witness(target)
     identity = {"from_version": old.version, "to_version": target.version, "package_sha256": target.package_sha256}
     if tamper == "previous_witness":
-        previous["invocation_contracts"]["manual_run"]["operation"] = "forged"
+        previous["invocation_contracts"][CONSOLE]["operation"] = "forged"
     elif tamper == "target_witness":
-        witness["invocation_contracts"]["manual_run"]["dynamic_resolvers"]["collection_request"] = "forged"
+        witness["invocation_contracts"][CONSOLE]["dynamic_resolvers"]["month"] = "forged"
     elif tamper == "target_digest":
         identity["package_sha256"] = "f" * 64
     with pytest.raises((ValueError, OrchestrationPersistenceError)):
@@ -253,7 +288,7 @@ def test_shared_preparation_rejects_forged_upgrade_proof(database, tamper):  # n
                 account_bindings=current["account_bindings_json"], resource_bindings=current["resource_bindings_json"],
                 enabled_entrypoints=current["enabled_entrypoints_json"], schedule=current["desired_schedule_json"],
                 compiled_invocations=_compiled(target, current["config_json"], current["account_bindings_json"],
-                    current["enabled_entrypoints_json"]), contract_witness=witness, device_binding=None,
+                    current["enabled_entrypoints_json"]), contract_witness=witness, 
                 actor_id=ACTOR, actor_role="viewer" if tamper == "actor" else "super_admin",
                 request_id=str(uuid4()), expected_project_configuration_version=current["config_version"],
                 optional_console_upgrade={"target": identity, "previous_contract_witness": previous})

@@ -218,30 +218,6 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("增值服务费", rendered)
         self.assertNotIn("平台费", rendered)
 
-    def test_collection_forms_match_bound_source_plugin_scope(self):
-        self.app._render_finance(_Handler(), {})
-        service = FinanceService.__new__(FinanceService)
-        cases = (
-            ("sync", {"target_date": "2026-09-09", "rescan_days": "7"},
-             service.build_sync_arguments),
-            ("backfill", {"start_date": "2026-09-01", "end_date": "2026-09-09"},
-             service.build_backfill_arguments),
-        )
-        for name, values, build in cases:
-            with self.subTest(form=name):
-                form = re.search(
-                    rf'<form\b[^>]*data-finance-{name}-form[^>]*>(.*?)</form>',
-                    self.sent_html, flags=re.DOTALL,
-                ).group(1)
-                fields = re.findall(r'<(?:input|select)\b[^>]*\bname="([^"]+)"', form)
-                self.assertEqual(set(values), set(fields))
-                self.assertIn("已配置的全部数据源", form)
-                arguments = build({**{field: values[field] for field in fields}, "automation_id": "finance-v2-instance"})
-                self.assertEqual(name, arguments["mode"])
-                self.assertEqual("finance-v2-instance", arguments["automation_id"])
-                self.assertNotIn("account_id", arguments)
-                self.assertNotIn("platform", arguments)
-
     def test_frontend_keeps_yunda_label_only_for_historical_sync_records(self):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
@@ -284,52 +260,14 @@ class FinanceModuleWorkbenchTests(unittest.TestCase):
         self.assertNotIn("parseFloat(row.expense", script)
         self.assertNotIn("total_income +", script)
 
-    def test_frontend_submits_stable_uuid_and_displays_completed_result(self):
+    def test_frontend_submits_stable_uuid_without_collection_controls(self):
         script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
 
-        self.assertIn('"X-Browser-Request-UUID": newBrowserRequestUuid()', script)
+        self.assertIn('"X-Browser-Request-UUID": requestId', script)
         self.assertNotIn("receipt?.run_id", script)
         self.assertNotIn("事项中心完成审批", script)
-        self.assertIn("财务采集完成", script)
-        self.assertNotIn("await loadBatches();\n        await loadOverview();", script)
-
-    def test_collection_uses_source_producer_and_rejects_ambiguous_or_missing_sources(self):
-        node = shutil.which("node") or shutil.which("node.exe")
-        if node is None:
-            self.skipTest("Node.js is required for finance source routing")
-        script = (CONSOLE_DIR / "static" / "finance.js").read_text(encoding="utf-8")
-        function = script.split("    async function collectionArguments(body) {", 1)[1].split(
-            "    async function refreshCollectedData()", 1,
-        )[0]
-        harness = "async function collectionArguments(body) {" + function + r'''
-const assert = require("node:assert/strict");
-let selected = "";
-let sources = [];
-function globalFilters() { return {source_ids: selected}; }
-async function fetchJson(url) {
-  assert.equal(url, "/module-data-sources/finance");
-  return {sources};
-}
-(async () => {
-  sources = [{source_id: "a", status: "active", producer_instance_id: "actual-v2"},
-             {source_id: "b", status: "active", producer_instance_id: "actual-v2"}];
-  assert.deepEqual(await collectionArguments({mode: "sync"}), {mode: "sync", automation_id: "actual-v2"});
-  sources[1].producer_instance_id = "another-v2";
-  await assert.rejects(collectionArguments({}), /多个采集器/);
-  selected = "a";
-  assert.equal((await collectionArguments({})).automation_id, "actual-v2");
-  selected = "missing";
-  await assert.rejects(collectionArguments({}), /尚未接续/);
-  selected = "a";
-  sources[0].status = "history_only";
-  await assert.rejects(collectionArguments({}), /尚未接续/);
-  sources = [];
-  selected = "";
-  await assert.rejects(collectionArguments({}), /尚未接续/);
-})().catch(error => { console.error(error); process.exitCode = 1; });
-'''
-        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=20, check=False)
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertNotIn("/finance/sync\"", script)
+        self.assertNotIn("/finance/backfill", script)
 
     def test_finance_api_routes_include_review_fact_and_knowledge_workflows(self):
         source = (CONSOLE_DIR / "routes" / "finance.py").read_text(encoding="utf-8")
@@ -339,10 +277,7 @@ async function fetchJson(url) {
             "/finance/entries",
             "/finance/fee-mappings",
             "/finance/sync-batches",
-            "/finance/sync",
-            "/finance/backfill",
             "/finance/fee-mappings/\\d+",
-            "/finance/sync-batches/\\d+/retry",
             "/finance/review-cases",
             "/finance/waybill-facts",
             "/finance/knowledge",
@@ -365,40 +300,6 @@ async function fetchJson(url) {
                 self.assertEqual(HTTPStatus.OK, self.sent_status)
                 self.assertTrue(self.sent_payload["ok"])
                 self.assertEqual(resource, self.sent_payload["data"]["resource"])
-
-    def test_post_handlers_cover_sync_backfill_mapping_and_retry(self):
-        self.app._handle_finance_post(_Handler({"rescan_days": 7}), "sync")
-        self.assertEqual(HTTPStatus.OK, self.sent_status)
-        self.assertNotIn("pending", self.sent_payload)
-        self.assertEqual("sync", self.command_submissions[-1]["params"]["resource"])
-        self.assertEqual(BROWSER_REQUEST_UUID, self.command_submissions[-1]["request_id"])
-
-        self.app._handle_finance_post(
-            _Handler({"start_date": "2026-07-01", "end_date": "2026-07-11"}),
-            "backfill",
-        )
-        self.assertEqual(HTTPStatus.OK, self.sent_status)
-        self.assertEqual("backfill", self.command_submissions[-1]["params"]["resource"])
-
-        with patch(
-            "console.services.monitoring_finance.current_admin_user",
-            return_value={"username": "admin"},
-        ):
-            self.app._handle_finance_post(
-                _Handler({"fee_level": "operating"}),
-                "save_mapping",
-                path="/finance/fee-mappings/12",
-            )
-        self.assertEqual("save_mapping", self.sent_payload["data"]["resource"])
-        self.assertEqual(12, self.app.finance_service.calls[-1][1][0])
-
-        self.app._handle_finance_post(
-            _Handler(),
-            "retry_batch",
-            path="/finance/sync-batches/8/retry",
-        )
-        self.assertEqual(HTTPStatus.OK, self.sent_status)
-        self.assertEqual("retry_batch", self.command_submissions[-1]["params"]["resource"])
 
     def test_validation_errors_are_readable_json(self):
         self.app.finance_service.fail_next = True

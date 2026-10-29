@@ -13,7 +13,7 @@ from agent.automation_plugins.delivery_site_handlers import (
 )
 from agent.automation_plugins.errors import PluginExecutionError
 from plugin_core_adapters.delivery_site import build_production_delivery_site_ports
-from plugin_core_adapters.first_party import _site_send_read_page
+from plugin_core_adapters.host_primitives import _site_send_read_page
 from tools.phase7_mysql_store import CONSOLE_WAYBILL_FIELDS
 
 
@@ -144,7 +144,7 @@ def _resource_context(*, mark_write_started=None) -> CoreBrokerInvocationContext
     return CoreBrokerInvocationContext(
         automation_id="delivery-test",
         plugin_version="1.0.0",
-        tool_name="sync_delivery_status",
+        tool_name="delivery_status",
         operation="network.request",
         action="feishu.bitable.write_records",
         role="delivery_status_bitable",
@@ -158,7 +158,7 @@ def _projection_context(*, mark_write_started=None) -> CoreBrokerInvocationConte
     return CoreBrokerInvocationContext(
         automation_id="delivery-test",
         plugin_version="1.0.0",
-        tool_name="sync_delivery_status",
+        tool_name="delivery_status",
         operation="projection.invoke",
         action="waybill.delivery_status.update",
         role="account_id",
@@ -178,7 +178,7 @@ def _site_context(
     return CoreBrokerInvocationContext(
         automation_id="site-send-test",
         plugin_version="1.0.0",
-        tool_name="sync_site_send_list",
+        tool_name="site_send",
         operation="network.request",
         action=action,
         role=role,

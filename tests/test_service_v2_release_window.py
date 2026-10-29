@@ -75,4 +75,4 @@ class ServiceV2ReleaseWindowTests(unittest.TestCase):
                 cursor = _WindowCursor([], policy_exists=True,
                     project_rows=[dict(row, snapshot_json=changed)])
                 with self.assertRaisesRegex(Exception, "PROJECT_SCHEDULE_CONTRACT_INVALID"):
-                    self.runner._typed_project_scheduled_write_crons(cursor)
+                    self.runner._SCHEDULED_WRITE_WINDOW.project_scheduled_write_crons(cursor)

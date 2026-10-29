@@ -1,9 +1,10 @@
 """Yunda source and verified output primitives for independently shipped plugins."""
+from agent.connector_namespaces import YUNDA_DISPATCH_TOOL, YUNDA_SEND_TOOL
 from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
 from agent.automation_plugins.connector_schemas import TEXT, DATE, BOOL, COUNT, CURSOR, object_schema as obj, array_schema as arr, record_schema as record, source_record_schema
-from agent.automation_plugins.first_party_handler_support import _YUNDA_DISPATCH_FIELDS, _YUNDA_SEND_FIELDS
+from agent.automation_plugins.host_primitive_support import _YUNDA_DISPATCH_FIELDS, _YUNDA_SEND_FIELDS
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
 
@@ -11,9 +12,9 @@ from agent.automation_plugins.reviewed_connectors import reviewed_connector_hand
 def build_yunda_connectors(reviewed):
     result = []
     for tool, prefix, fields, resources in (
-        ("sync_yunda_dispatch_forecast", "yunda_dispatch", _YUNDA_DISPATCH_FIELDS,
+        (YUNDA_DISPATCH_TOOL, "yunda_dispatch", _YUNDA_DISPATCH_FIELDS,
          {"dispatch_forecast_bitable":("feishu_bitable", "feishu.bitable.append_yunda_dispatch_forecast")}),
-        ("sync_yunda_send_waybills", "yunda_send", _YUNDA_SEND_FIELDS,
+        (YUNDA_SEND_TOOL, "yunda_send", _YUNDA_SEND_FIELDS,
          {"send_waybills_bitable":("feishu_bitable", "feishu.bitable.replace_yunda_send_waybills_date"),
           "send_waybills_sheet":("feishu_sheet", "feishu.sheet.replace_yunda_send_waybills")}),
     ):

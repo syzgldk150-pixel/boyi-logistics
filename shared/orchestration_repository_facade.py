@@ -56,9 +56,9 @@ class OrchestrationRepositoryFacadeMixin:
             raise RuntimeError(f"orchestration persistence requires MySQL 8+, found {version or 'unknown'}")
         return version
 
-    def validate_schema(self, *, include_windows_worker: bool = True) -> None:
+    def validate_schema(self) -> None:
         with self.unit_of_work() as uow:
-            uow.validate_schema(include_windows_worker=include_windows_worker)
+            uow.validate_schema()
 
     def outbox_health(self) -> dict[str, Any]:
         with self.unit_of_work() as uow:

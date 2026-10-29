@@ -8,10 +8,6 @@ import logging
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-from agent.automation_plugins.code_owned_fields import (
-    SCAN_PHASE_PREVIEW,
-    resolve_scan_capability_phase,
-)
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -189,16 +185,6 @@ class PolicyEngine:
             capability = self._catalog.get_capability(step.tool_name)
             if capability is None:
                 raise OrchestrationError("UNKNOWN_TOOL", f"Unknown tool: {step.tool_name}")
-            try:
-                scan_phase = resolve_scan_capability_phase(
-                    capability,
-                    step.arguments,
-                )
-            except ValueError as exc:
-                raise OrchestrationError(
-                    "SCAN_EXECUTION_PHASE_INVALID",
-                    "Scan execution phase is incomplete or ambiguous",
-                ) from exc
             approval = capability.get("approval") or {}
             if not isinstance(approval, Mapping):
                 raise OrchestrationError("INVALID_APPROVAL_CONTRACT", f"Invalid approval contract: {step.tool_name}")
@@ -214,11 +200,7 @@ class PolicyEngine:
                 project_policy_required = True
                 raw_mode = "none" if step.operation_type in {OperationType.READ, OperationType.COMPUTE} else "required"
             try:
-                mode = (
-                    ApprovalMode.NONE
-                    if scan_phase == SCAN_PHASE_PREVIEW
-                    else ApprovalMode(raw_mode)
-                )
+                mode = ApprovalMode(raw_mode)
             except ValueError as exc:
                 raise OrchestrationError("INVALID_APPROVAL_MODE", f"Invalid approval mode: {step.tool_name}") from exc
 
@@ -240,8 +222,6 @@ class PolicyEngine:
                     "INVALID_PERMISSION_CONTRACT",
                     f"Tool permissions require a non-empty role list: {step.tool_name}",
                 )
-            if scan_phase == SCAN_PHASE_PREVIEW:
-                tool_roles = {"admin"}
 
             highest_risk = _max_risk(highest_risk, step.risk_level)
             if mode is ApprovalMode.DISABLED:

@@ -7,12 +7,12 @@ import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.customer_connectors_v2 import build_customer_connectors
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from shared.customer_service_repository import CustomerServiceRepository
 from shared.data_sources import DataSourceError, DataSourceRepository
 from tests.direct_invocation_fixture import DirectFixture, direct_repository  # noqa: F401
 from tests.v32_acceptance.customer_collection_flow import Accounts, CustomerSource, ACCOUNTS, configured_instance
-from tests.v32_acceptance.finance_maintenance import ACTOR
+from tests.v32_acceptance.collector_drill import ACTOR
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.service_v2_artifacts import build_artifact, install_artifact
 
@@ -23,7 +23,7 @@ def source_runtime(direct_repository):  # noqa: F811
     artifact = build_artifact('sync_customer_service_problems_v2', root / 'artifacts')
     accounts = Accounts()
     with CustomerSource() as supplier:
-        handlers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+        handlers = build_host_primitive_handler_map(HostPrimitivePorts(
             describe_account=accounts.require_active_binding_descriptor, customer_action=supplier.read),
             cursor_secret=secrets.token_bytes(32))
         with ManagementFixture(connection_factory=direct_repository._connection_factory, runtime_root=root / 'host',

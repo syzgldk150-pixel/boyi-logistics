@@ -36,16 +36,15 @@ _SCAN_SHARED_FILES = {
     "payload/boyi_plugin_sdk.py": "boyi_plugin_sdk.py",
 }
 _SCAN_PLUGIN_ID = "sync_scan_codes_v2"
-_CONNECTOR_PLUGINS = {
-    "sync_arrive_list_v2": "sync_arrive_list",
-    "sync_site_send_list_v2": "sync_site_send_list",
-    "sync_yunda_dispatch_forecast_v2": "sync_yunda_dispatch_forecast",
-    "sync_yunda_send_waybills_v2": "sync_yunda_send_waybills",
-    "sync_finance_bills_v2": "sync_finance_bills",
-    "sync_daily_send_orders_v2": "sync_daily_send_orders",
-    "sync_delivery_status_v2": "sync_delivery_status",
-    "sync_customer_service_problems_v2": "sync_customer_service_problems",
-}
+_CONNECTOR_PLUGINS = frozenset({
+    "sync_arrive_list_v2",
+    "sync_site_send_list_v2",
+    "sync_yunda_dispatch_forecast_v2",
+    "sync_yunda_send_waybills_v2",
+    "sync_daily_send_orders_v2",
+    "sync_delivery_status_v2",
+    "sync_customer_service_problems_v2",
+})
 _SOURCE_FILES = {
     "manifest.json": "manifest.json",
     "payload/plugin.py": "payload/plugin.py",
@@ -100,8 +99,6 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
         entries["payload/boyi_plugin_result.py"] = (shared / "result.py").read_bytes()
         if manifest["plugin_id"] == "sync_yunda_send_waybills_v2":
             entries["payload/yunda_send_fields.py"] = (source / "payload/yunda_send_fields.py").read_bytes()
-        if manifest["plugin_id"] == "sync_finance_bills_v2":
-            entries["payload/finance_fields.py"] = (source.parents[2] / "shared/ronghui_finance_fields.py").read_bytes()
         if manifest["plugin_id"] == "sync_customer_service_problems_v2":
             entries["payload/customer_problem_fields.py"] = (source.parents[2] / "shared/ronghui_customer_problem_fields.py").read_bytes()
             entries["payload/customer_queue_policy.py"] = (source.parents[2] / "shared/customer_problem_policy.py").read_bytes()

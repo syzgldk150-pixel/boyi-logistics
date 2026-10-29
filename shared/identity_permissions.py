@@ -80,7 +80,7 @@ def tool_permission(name: str) -> str:
 def plugin_permission(plugin_id: str, *, management=None, entrypoint: str = "") -> str:
     if entrypoint == "module_slots":
         return "waybill.write"
-    module = management_for(plugin_id, management)["module"]
+    module = management_for(management)["module"]
     if module == "finance":
         return "finance.manage"
     if module == "customer_service":

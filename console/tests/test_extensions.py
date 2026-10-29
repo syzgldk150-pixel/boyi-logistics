@@ -1,4 +1,4 @@
-"""Contract tests for the extension-center projection and routes."""
+"""Contract tests for the retired extension-center routes and the automation install dialog."""
 
 from __future__ import annotations
 
@@ -9,212 +9,17 @@ from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.routes import extensions as extension_routes
 from console.routes import automation as automation_routes
-from console.services.business_modules import BusinessModulesServiceMixin
-from console.services.extensions import ExtensionsServiceMixin
-
-
-def _package(plugin_id: str) -> dict:
-    return {
-        "plugin_id": plugin_id,
-        "name": f"{plugin_id} package",
-        "version": "1.2.3",
-        "execution_platform": "server",
-        "runtime_model": "ACTION_V1",
-        "account_roles": [],
-        "resource_roles": [],
-        "entrypoints": ["scheduler"],
-        "entrypoint_kinds": {"scheduler": "scheduler"},
-        "scheduling": {"supported": True, "allowed_kinds": ["daily_times"], "max_daily_times": 2},
-    }
-
-
-def _instance(plugin_id: str, automation_id: str) -> dict:
-    return {
-        **_package(plugin_id),
-        "automation_id": automation_id,
-        "instance_name": f"{automation_id} instance",
-        "enabled": True,
-        "configured": True,
-        "state": "ENABLED",
-        "reconcile_state": "STABLE",
-        "record_version": 2,
-        "project_configuration_version": 3,
-        "config": {"must_not_render": "secret-like-value"},
-        "account_bindings": {},
-        "resource_bindings": {},
-        "enabled_entrypoints": ["scheduler"],
-        "missing_requirements": [],
-    }
-
-
-class _ExtensionApp(ExtensionsServiceMixin, BusinessModulesServiceMixin):
-    def __init__(self) -> None:
-        self.sent = None
-
-    def _load_automation_plugin_catalog(self, _handler):
-        payload = {
-            "plugins": [_package("extension_actions"), _package("automations")],
-            "instances": [
-                _instance("extension_actions", "extension_actions_east"),
-                _instance("automations", "automations_legacy"),
-            ],
-            "resources": [],
-            "resource_pool_available": True,
-        }
-        from console.services.automation_projects import normalize_automation_plugin_catalog
-
-        packages, instances, unsupported = normalize_automation_plugin_catalog(payload)
-        return packages, instances, [], unsupported, frozenset(), "", True
-
-    def _send_json(self, _handler, status, payload):
-        self.sent = (status, payload)
 
 
 class ExtensionProjectionTests(unittest.TestCase):
-    def _handler(self, *, role="admin", legacy=False, user_id=7):
-        return SimpleNamespace(
-            current_admin_user={
-                "id": user_id,
-                "role": role,
-                "control_plane_role": role,
-                "is_legacy_basic_auth": legacy,
-            }
-        )
-
-    def test_catalog_filters_fixed_modules_and_never_projects_sensitive_fields(self):
-        app = _ExtensionApp()
-        packages, warning, can_manage = app._extension_catalog(self._handler())
-        self.assertEqual("", warning)
-        self.assertTrue(can_manage)
-        self.assertEqual(["extension_actions"], [item["plugin_id"] for item in packages])
-        package = packages[0]
-        self.assertEqual(["无"], package["permissions"][0]["items"])
-        self.assertEqual("extension_actions_east instance", package["display_name"])
-        self.assertEqual("使用中", package["display_status"])
-        self.assertEqual("已用于 1 个项目", package["instance_count_label"])
-        instance = package["instances"][0]
-        self.assertEqual("使用中", instance["display_status"])
-        self.assertNotIn("config", instance)
-        self.assertNotIn("account_bindings", instance)
-        self.assertNotIn("secret-like-value", str(package))
-
-    def test_known_business_extensions_use_plain_chinese_names(self):
-        self.assertEqual(
-            "到货统计",
-            ExtensionsServiceMixin._extension_display_name(
-                {"plugin_id": "arrival_stats", "name": "arrival_stats"}, []
-            ),
-        )
-
-    def test_extension_list_keeps_runtime_details_out_of_the_novice_view(self):
-        app = _ExtensionApp()
-        packages, warning, can_manage = app._extension_catalog(self._handler())
-        template_dir = Path(__file__).parents[1] / "templates"
-        template = Environment(
-            loader=FileSystemLoader(template_dir),
-            autoescape=select_autoescape(("html",)),
-        ).get_template("extensions.html")
-
-        html = template.render(
-            app_title="Console",
-            packages=packages,
-            detail=None,
-            extension_warning=warning,
-            can_manage_extensions=can_manage,
-        )
-
-        self.assertIn("我的扩展", html)
-        self.assertIn("已用于 1 个项目", html)
-        self.assertNotIn("权限 · 账号", html)
-        self.assertNotIn("Host API", html)
-        self.assertNotIn("ACTION_V1", html)
-        self.assertEqual(1, html.count("data-extension-open"))
-
-    def test_action_v1_project_has_an_independent_uninstall_action(self):
-        app = _ExtensionApp()
-        packages, warning, can_manage = app._extension_catalog(self._handler())
-        template_dir = Path(__file__).parents[1] / "templates"
-        template = Environment(
-            loader=FileSystemLoader(template_dir),
-            autoescape=select_autoescape(("html",)),
-        ).get_template("extensions.html")
-
-        html = template.render(
-            app_title="Console",
-            packages=(),
-            detail=packages[0],
-            extension_warning=warning,
-            can_manage_extensions=can_manage,
-        )
-
-        self.assertIn("卸载此项目", html)
-        self.assertIn('data-extension-action="uninstall"', html)
-        self.assertNotIn("更新扩展", html)
-
     def test_standalone_extension_center_is_absent_from_navigation(self):
         from console.navigation import CONSOLE_NAVIGATION
 
         self.assertNotIn("/extensions", {item["route"] for item in CONSOLE_NAVIGATION})
         self.assertIn("/automations", {item["route"] for item in CONSOLE_NAVIGATION})
-
-    def test_extension_template_uses_one_current_drag_install_entry(self):
-        source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
-            encoding="utf-8"
-        )
-        styles = (Path(__file__).parents[1] / "static" / "style.css").read_text(
-            encoding="utf-8"
-        )
-        script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("data-extension-open", source)
-        self.assertIn("data-extension-dialog", source)
-        self.assertIn("data-extension-dropzone", source)
-        self.assertIn("把扩展压缩包拖到这里", source)
-        self.assertNotIn("data-extension-legacy-install-form", source)
-        self.assertNotIn("安装旧版 Action v1", source)
-        self.assertNotIn("安装 Service v2", source)
-        self.assertIn('class="extension-install-form"', source)
-        self.assertIn('class="ghost-btn extension-upgrade"', source)
-        self.assertIn(".extension-upgrade:focus-within", styles)
-        self.assertIn(".extension-install-dialog", styles)
-        self.assertIn("new DataTransfer()", script)
-        self.assertIn("inspectForm.requestSubmit()", script)
-        self.assertIn("dialog.showModal()", script)
-        self.assertIn('credentials: "same-origin"', script)
-        self.assertNotIn("window.location.reload()", script)
-
-    def test_current_extension_dialog_uses_closed_projection_and_safe_two_phase_install(self):
-        source = (Path(__file__).parents[1] / "templates" / "extensions.html").read_text(
-            encoding="utf-8"
-        )
-        script = (Path(__file__).parents[1] / "static" / "extensions.js").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("<dialog", source)
-        self.assertIn("安装设置", source)
-        self.assertIn("使用权限", source)
-        self.assertNotIn("Host API", source)
-        self.assertNotIn("运行平台", source)
-        self.assertNotIn("扩展 ID", source)
-        self.assertIn('action="/extensions/inspect"', source)
-        self.assertIn('action="/extensions/install"', source)
-        self.assertIn('data-extension-final-form', source)
-        self.assertIn('data-extension-inspection-warnings', source)
-        self.assertIn('body.set("package", file)', script)
-        self.assertIn('body.set("request_id", inspectedRequestId)', script)
-        self.assertIn('body.set("package", state.frozen.packageFile)', script)
-        self.assertIn('body.set("request_id", state.frozen.requestId)', script)
-        self.assertIn('body.set("intent", state.frozen.serializedIntent)', script)
-        self.assertIn('state.frozen = Object.freeze({', script)
-        self.assertIn('state.finalSent = true;', script)
-        self.assertIn('credentials: "same-origin"', script)
-        self.assertIn('textContent', script)
-        self.assertNotIn('innerHTML', script)
 
     def test_service_v2_intent_has_exact_keys_and_no_browser_authority_fields(self):
         source = (Path(__file__).parents[1] / "templates" / "_automation_extension_install_dialog.html").read_text(

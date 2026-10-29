@@ -9,15 +9,15 @@ import pytest
 
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
-from agent.automation_plugins.first_party_handlers import (
-    FirstPartyCoreHandlerPorts,
-    build_first_party_core_handler_map,
+from agent.automation_plugins.host_primitive_handlers import (
+    HostPrimitivePorts,
+    build_host_primitive_handler_map,
 )
 from agent.automation_plugins.manifest import canonical_json_bytes
-from plugin_core_adapters.first_party import (
+from plugin_core_adapters.host_primitives import (
     _scan_next_identities_sha256,
     _scan_next_verify,
-    build_production_first_party_core_handler_map,
+    build_production_host_primitive_handler_map,
 )
 from plugin_core_adapters.scan_snapshot import (
     replace_scan_snapshot_verified,
@@ -33,7 +33,7 @@ def _context(action: str) -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id="scan-instance",
         plugin_version="1.0.0",
-        tool_name="sync_scan_codes",
+        tool_name="scan",
         operation="browser.invoke",
         action=action,
         role="account_id",
@@ -54,7 +54,7 @@ def _snapshot_context() -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id="scan-instance",
         plugin_version="1.0.0",
-        tool_name="sync_scan_codes",
+        tool_name="scan",
         operation="projection.invoke",
         action="scan.snapshot.replace",
         role="account_id",
@@ -79,7 +79,7 @@ def _snapshot_rows() -> list[dict[str, str]]:
     ]
 
 
-def _scan_source_context(tool_name: str = "sync_scan_codes") -> CoreBrokerInvocationContext:
+def _scan_source_context(tool_name: str = "scan") -> CoreBrokerInvocationContext:
     return CoreBrokerInvocationContext(
         automation_id="scan-instance",
         plugin_version="1.0.0",
@@ -115,8 +115,8 @@ def _scan_source_context(tool_name: str = "sync_scan_codes") -> CoreBrokerInvoca
 def test_scan_source_requires_authoritative_total_before_exposing_page(
     raw: dict[str, Any],
 ) -> None:
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             scan_read_page=lambda *_args: raw,
         ),
@@ -133,8 +133,8 @@ def test_scan_source_requires_authoritative_total_before_exposing_page(
 
 
 def test_scan_source_accepts_authoritative_zero_total() -> None:
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             scan_read_page=lambda *_args: {
                 "items": [],
@@ -157,8 +157,8 @@ def test_scan_source_accepts_authoritative_zero_total() -> None:
 
 
 def test_arrival_stats_scan_read_keeps_existing_short_page_semantics() -> None:
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             scan_read_page=lambda *_args: {"items": [], "returned": 0},
         ),
@@ -166,7 +166,7 @@ def test_arrival_stats_scan_read_keeps_existing_short_page_semantics() -> None:
     )
 
     result = handlers[("browser.invoke", "ronghui.scan.read_page")](
-        _scan_source_context("sync_arrival_stats"),
+        _scan_source_context("arrival_stats"),
         {"target_date": "2026-08-24", "page_size": 200},
     )
 
@@ -414,8 +414,8 @@ def test_scan_snapshot_core_handler_rejects_ack_or_tampered_readback_proof() -> 
             calls += 1
             return raw
 
-        handlers = build_first_party_core_handler_map(
-            FirstPartyCoreHandlerPorts(
+        handlers = build_host_primitive_handler_map(
+            HostPrimitivePorts(
                 describe_account=_descriptor,
                 replace_scan_snapshot=replace,
             ),
@@ -451,8 +451,8 @@ def test_timed_scan_snapshot_is_written_and_proved_with_its_scan_time(
         lambda records, _target_date: written.append(records),
     )
     monkeypatch.setattr("tools.phase7_mysql_store.list_scan_codes_for_date", read)
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             replace_scan_snapshot=replace_scan_snapshot_verified,
         ),
@@ -504,8 +504,8 @@ def test_timed_scan_snapshot_rejects_invalid_time_before_writing(records) -> Non
         nonlocal calls
         calls += 1
 
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(describe_account=_descriptor, replace_scan_snapshot=replace),
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(describe_account=_descriptor, replace_scan_snapshot=replace),
         cursor_secret=_SECRET,
     )
     with pytest.raises(PluginExecutionError) as exc:
@@ -564,8 +564,8 @@ def test_scan_next_verify_requires_a_fresh_context_bound_server_read():
             ).hexdigest(),
         }
 
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             scan_next_submit=submit,
             scan_next_verify=verify,
@@ -650,8 +650,8 @@ def test_scan_next_operation_token_stays_within_signed_payload_limit_for_full_ba
             "identities_sha256": _scan_next_identities_sha256(requested),
         }
 
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             scan_next_submit=submit,
             scan_next_verify=verify,
@@ -694,8 +694,8 @@ def test_scan_next_operation_token_stays_within_signed_payload_limit_for_full_ba
     ],
 )
 def test_scan_next_submit_rejects_ack_without_closed_postcondition(raw):
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=_descriptor,
             scan_next_submit=lambda descriptor, items: raw,
             scan_next_verify=lambda descriptor, items, started, finished: {
@@ -742,7 +742,7 @@ def test_production_scan_next_calls_low_level_run_flow_and_never_whole_tool():
             "skipped_signed_codes": [],
         },
     }
-    handlers = build_production_first_party_core_handler_map(
+    handlers = build_production_host_primitive_handler_map(
         account_manager=Manager(),
         cursor_secret=_SECRET,
         capability_authorizer=lambda _descriptor, _capability: None,
@@ -944,7 +944,7 @@ def test_scan_next_authoritative_readback_fails_unknown_for_non_exact_rows(case)
 
 def test_scan_next_submit_logs_page_failure_reason(caplog):
     from agent.tms_runtime.scripts import scan_next
-    from plugin_core_adapters import first_party as first_party_adapter
+    from plugin_core_adapters import host_primitives as host_primitives_adapter
 
     failed = {
         "ok": False,
@@ -954,10 +954,10 @@ def test_scan_next_submit_logs_page_failure_reason(caplog):
     }
     with (
         patch.object(scan_next, "run_flow", return_value=failed),
-        patch.object(first_party_adapter, "_required_profile", return_value="default"),
-        caplog.at_level("WARNING", logger=first_party_adapter.__name__),
+        patch.object(host_primitives_adapter, "_required_profile", return_value="default"),
+        caplog.at_level("WARNING", logger=host_primitives_adapter.__name__),
     ):
-        raw = first_party_adapter._scan_next_submit({}, [{"bill_code": "R0000000001", "station_name": "测试站"}])
+        raw = host_primitives_adapter._scan_next_submit({}, [{"bill_code": "R0000000001", "station_name": "测试站"}])
 
     assert raw["ok"] is False
     assert "stage=input_bill_code" in caplog.text

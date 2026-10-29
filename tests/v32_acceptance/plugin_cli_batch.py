@@ -14,7 +14,7 @@ from tests.v32_acceptance.host_freeze import verify_host
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGINS = ('sync_scan_codes_v2', 'sync_arrival_stats_v2', 'self_pickup_problem_upload_v2',
-    'split_pending_problem_upload_v2', 'sync_finance_bills_v2', 'sync_customer_service_problems_v2')
+    'split_pending_problem_upload_v2', 'sync_customer_service_problems_v2')
 
 
 def main():

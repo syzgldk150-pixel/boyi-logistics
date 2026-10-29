@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import sys
 from datetime import date
 from typing import Any
@@ -16,13 +14,9 @@ from tools.feishu_cli_tool import feishu_operation
 from tools.phase7_mysql_store import (
     is_receipt_like_tracking,
     normalize_waybill_record,
-    render_arrive_sheet_rows,
-    replace_waybill_records,
 )
-from tools.daily_sign_store import save_forecast_snapshot
 from tools.daily_sign_values import business_now
 from tools.phase7_sync_common import (
-    TMSAuthSyncError,
     bind_explicit_account_id,
     build_range_from_template,
     parse_a1_range,
@@ -277,72 +271,3 @@ def _write_sheet_resource(resource_key: str, rows: list[list[Any]], params: dict
         "title_result": _summarize_feishu_result(title_result),
     }
 
-
-def run_arrive_list_sync(params: dict) -> dict:
-    try:
-        records, source_result = fetch_arrive_list_records(params)
-    except TMSAuthSyncError as exc:
-        return exc.result
-    except ValueError as exc:
-        return {"error": str(exc), "stage": "forecast_validation_failed"}
-
-    sheet_rows = render_arrive_sheet_rows(records)
-    _emit_progress("派件预报表格整理完成", rows=len(sheet_rows))
-
-    if bool(params.get("dry_run", False)):
-        mysql_result = {"ok": True, "replaced": len(records), "skipped": True}
-    else:
-        _emit_progress("开始写入 waybill_data")
-        mysql_result = replace_waybill_records(records)
-    _emit_progress("waybill_data 写入完成", replaced=mysql_result.get("replaced"))
-
-    _emit_progress("开始写入主飞书表", resource_key="phase7.arrive_primary_sheet")
-    primary_result = _write_sheet_resource("phase7.arrive_primary_sheet", sheet_rows, params)
-    if "error" in primary_result:
-        return {"error": primary_result["error"], "mysql_result": mysql_result, "sheet_result": primary_result}
-    _emit_progress("主飞书表写入完成", rows=primary_result.get("rows"))
-
-    _emit_progress("开始写入副飞书表", resource_key="phase7.arrive_secondary_sheet")
-    secondary_result = _write_sheet_resource("phase7.arrive_secondary_sheet", sheet_rows, params)
-    if "error" in secondary_result:
-        return {
-            "error": secondary_result["error"],
-            "mysql_result": mysql_result,
-            "primary_result": primary_result,
-            "sheet_result": secondary_result,
-        }
-    try:
-        forecast_snapshot_result = save_forecast_snapshot(
-            _target_date(params),
-            records,
-            dry_run=bool(params.get("dry_run", False)),
-        )
-    except Exception as exc:
-        return {
-            "error": f"预计到货共享快照写入失败: {str(exc)[:500]}",
-            "mysql_result": mysql_result,
-            "primary_result": primary_result,
-            "secondary_result": secondary_result,
-        }
-    _emit_progress("副飞书表写入完成", rows=secondary_result.get("rows"))
-    _emit_progress("arrive-list 同步完成")
-
-    return {
-        "ok": True,
-        **source_result,
-        "detail_records": len(records),
-        "mysql_result": mysql_result,
-        "primary_result": primary_result,
-        "secondary_result": secondary_result,
-        "forecast_snapshot_result": forecast_snapshot_result,
-    }
-
-
-def main() -> None:
-    params = json.loads(sys.stdin.read() or "{}")
-    result = run_arrive_list_sync(params)
-    print(json.dumps(result, ensure_ascii=False, default=str))
-
-
-if __name__ == "__main__":
-    main()

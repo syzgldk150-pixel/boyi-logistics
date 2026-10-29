@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from shared.identity_repository import IdentityRepository
-from tests.test_manual_unknown_write_mysql import database as database
+from tests.mysql_migrated_database import database as database
 from tests.test_feishu_bindings_mysql import pytestmark
 from tests.mysql_database_cleanup import drop_test_database
 

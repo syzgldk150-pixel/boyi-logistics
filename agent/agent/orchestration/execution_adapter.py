@@ -11,7 +11,6 @@ from typing import Any
 from agent.orchestration.models import OperationType, OrchestrationError, PlanStep, sha256_json
 from agent.automation_plugins.models import GenerationBoundResult
 from agent.execution_boundary import execution_capability_scope
-from agent.tool_executor import build_trusted_scheduler_context
 from shared.redaction import redact_sensitive, redact_text
 
 
@@ -69,10 +68,6 @@ class RegisteredToolExecutionAdapter:
                     "duration_s": round(time.monotonic() - started, 3),
                 }
             else:
-                trusted_context = build_trusted_scheduler_context(
-                    step.tool_name,
-                    execution_context,
-                )
                 is_plugin = isinstance(capability.get("_plugin_runtime"), Mapping)
                 if is_plugin:
                     project_invocation = execution_context.get(
@@ -86,7 +81,6 @@ class RegisteredToolExecutionAdapter:
                     process_result = await self._executor.execute(
                         capability,
                         dict(step.arguments),
-                        trusted_scheduler_context=trusted_context,
                         trusted_invocation_context={
                             "run_id": run_id,
                             "step_id": step_id,
@@ -94,17 +88,10 @@ class RegisteredToolExecutionAdapter:
                         },
                         execution_identity={"run_id": run_id, "step_id": step_id},
                     )
-                elif trusted_context is None:
-                    process_result = await self._executor.execute(
-                        capability,
-                        dict(step.arguments),
-                        execution_identity={"run_id": run_id, "step_id": step_id},
-                    )
                 else:
                     process_result = await self._executor.execute(
                         capability,
                         dict(step.arguments),
-                        trusted_scheduler_context=trusted_context,
                         execution_identity={"run_id": run_id, "step_id": step_id},
                     )
         except Exception as exc:

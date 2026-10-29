@@ -18,7 +18,7 @@ from tests.service_v2_package_fixture import build_production_plugin_fixture
 from shared.automation_plugin_repository import AutomationPluginRepository
 from shared.orchestration_repository import OrchestrationRepository
 from shared.orchestration_repository_support import IdempotencyConflict, OrchestrationPersistenceError, _json_param
-from tests.test_manual_unknown_write_mysql import database  # noqa: F401 - shared isolated fixture
+from tests.mysql_migrated_database import database  # noqa: F401 - shared isolated fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +45,7 @@ def test_actual_zip_install_and_response_retry_keep_exact_manifest(database, tmp
     orchestration = OrchestrationRepository(lambda: connection(database), database.pymysql.cursors.DictCursor)
     repository = MySQLAutomationPluginRepositoryAdapter(orchestration)
     lifecycle = AutomationPluginService(repository=repository, storage=FilesystemPluginStorage(tmp_path / "installed"),
-                                       environments=LockedVirtualEnvironmentBuilder(), upload_signature_verifier=NoSignatureForV2())
+                                       environments=LockedVirtualEnvironmentBuilder())
     request_id = str(uuid4())
     args = dict(instance_name=verified.manifest.name, actor_id="1", actor_role="super_admin",
                 request_id=request_id, transport_package_sha256=package_sha)
@@ -66,7 +66,7 @@ def test_actual_zip_install_and_response_retry_keep_exact_manifest(database, tmp
         current = repo.get_project_config(instance.automation_id)
         save = dict(config={}, account_bindings={}, resource_bindings={}, enabled_entrypoints=(),
                     schedule={"kind": "none", "times": [], "enabled": False}, compiled_invocations={},
-                    device_binding=None, actor_id="1", actor_role="super_admin", request_id=str(uuid4()),
+                    actor_id="1", actor_role="super_admin", request_id=str(uuid4()),
                     expected_project_configuration_version=current["config_version"])
         if plugin_id == "sync_arrival_stats_v2":
             altered = json.loads(json.dumps(witness))

@@ -14,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-<article class="cp-page cp-detail" data-cp-detail-page data-work-item-id="{{ work_item_id | e }}" data-can-verify-unknown-write="{{ 'true' if can_verify_unknown_write else 'false' }}">
+<article class="cp-page cp-detail" data-cp-detail-page data-work-item-id="{{ work_item_id | e }}">
   <div class="cp-feedback" data-cp-detail-feedback role="status" aria-live="polite"></div>
 
   <header class="cp-detail-header" data-cp-detail-header aria-busy="true">
@@ -30,12 +30,11 @@
 
   <div class="cp-detail-layout">
     <div class="cp-detail-main">
-      <section class="cp-section" data-unknown-write-section hidden aria-label="历史写入核验">
-        <div class="cp-section-heading"><h3>历史写入核验</h3></div>
+      <section class="cp-section" data-unknown-write-section hidden aria-label="历史写入记录">
+        <div class="cp-section-heading"><h3>历史写入记录</h3></div>
         <div class="cp-section-content">
-          <p class="cp-muted">每次只检查选中记录已保存的证据；证据不足时继续保留待核验状态。原任务保持停止；需要再次执行业务时，请重新发起任务。</p>
+          <p class="cp-muted">旧插件已退役，这些写入结果未确认的记录只读保留，不再核验或重放；需要再次执行业务时，请重新发起。</p>
           <div class="cp-record-list" data-unknown-write-list></div>
-          <p class="cp-muted" data-unknown-write-feedback role="status" aria-live="polite"></p>
         </div>
       </section>
       <section class="cp-section" aria-labelledby="cp-plan-heading">
@@ -153,5 +152,5 @@
 
 {% block scripts %}
   <script src="/static/control_plane.js?v=20260908-1" defer></script>
-  <script src="/static/unknown_write_recovery.js?v=20260908-1" defer></script>
+  <script src="/static/unknown_write_recovery.js?v=20261024-1" defer></script>
 {% endblock %}

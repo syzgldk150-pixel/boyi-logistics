@@ -155,7 +155,7 @@ global.HTMLTextAreaElement = FakeElement;
 global.CustomEvent = FakeCustomEvent;
 
 const scriptPath = process.argv[2];
-if (!scriptPath) throw new Error("automation_approval_policy.js path is required");
+if (!scriptPath) throw new Error("automation_plugin_schedule.js path is required");
 vm.runInThisContext(fs.readFileSync(scriptPath, "utf8"), { filename: scriptPath });
 
 function response(status, payload) {

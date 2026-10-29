@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 import re
 from typing import Any
 
-from agent.automation_plugins.first_party_handlers import customer_problem_identity
+from agent.automation_plugins.host_primitive_handlers import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
 from agent.customer_source_projection import publish_customer_collection
 from agent.customer_collection_validation import (

@@ -13,12 +13,11 @@ from uuid import uuid4
 
 import pytest
 
-from agent.tms_runtime.scripts.finance_capture_common import CaptureResult
-from shared.finance import FinancePeriodError, FinanceRepository, SummarySemantics
-from shared.finance.models import SummarySnapshot, TransactionRecord
+from shared.finance import FinancePeriodError, FinanceRepository
+from shared.finance.models import TransactionRecord
+from shared.finance.validation import CaptureEvidence, validate_finance_capture
 from tests import test_mysql_orchestration_integration as mysql_helpers
 from tests.mysql_database_cleanup import drop_test_database
-from tools.finance_sync_service import validate_finance_capture_result
 
 
 pytestmark = pytest.mark.skipif(
@@ -77,7 +76,7 @@ def seed(repository, days, items, *, opening=Decimal("1000.0000"), skip=(), wayb
     balance = opening
     run_ids = {}
     for day in days:
-        rows, summaries = [], []
+        rows = []
         for ordinal, (name, direction, amount) in enumerate(items):
             income = amount if direction == "income" else Decimal("0.0000")
             expense = amount if direction == "expense" else Decimal("0.0000")
@@ -91,22 +90,19 @@ def seed(repository, days, items, *, opening=Decimal("1000.0000"), skip=(), wayb
                 waybill_no=f"WB{day:%m%d}{ordinal}" if waybill else "", source_reference=str(ordinal + 1),
                 source_payload={"BALANCE_ORDER": str(ordinal + 1)},
             ))
-            summaries.append(SummarySnapshot(platform="ronghui", account_id=SOURCE["account"], target_date=day,
-                                             primary_fee_name=name, direction=direction, income=income, expense=expense))
             balance = after
         if day in skip:
             continue
-        capture = CaptureResult(transactions=[], summaries=[], source_site_code=SOURCE["site"],
-                                source_site_name=SOURCE["name"],
-                                validation={"source_total": len(rows), "page_row_counts": [len(rows)]},
-                                summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE)
-        validation = validate_finance_capture_result(capture, rows, summaries, repository=repository)
+        # Each day is cut from a verified period statement, as the statement capture commits it.
+        validation = validate_finance_capture(CaptureEvidence(
+            remote_total=len(rows), page_row_counts=[len(rows)], transactions=rows, summaries=(),
+            intended_write_count=len(rows), period_statement_ref=f"period-test-{tag}"))
         run_id = repository.start_run(batch_id=batch_id, platform="ronghui", account_id=SOURCE["account"],
                                       login_account=SOURCE["account"], session_profile="period-test",
                                       target_date=day, source_site_code=SOURCE["site"],
                                       source_site_name=SOURCE["name"], producer_instance_id=SOURCE["producer"],
                                       producer_generation=1)
-        repository.commit_run_snapshot(run_id=run_id, transactions=rows, summaries=summaries, validation=validation)
+        repository.commit_run_snapshot(run_id=run_id, transactions=rows, summaries=(), validation=validation)
         run_ids[day] = run_id
     repository.finalize_batch(batch_id)
     if days[0].day == 1 and len(days) == len(month_days(days[0].year, days[0].month)):

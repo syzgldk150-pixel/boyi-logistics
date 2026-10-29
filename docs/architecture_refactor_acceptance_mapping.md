@@ -2,7 +2,7 @@
 module: 项目验收
 type: 验收映射
 status: historical
-updated: 2026-09-16
+updated: 2026-10-29
 ---
 
 # 架构 V1 与原 V3.2 验收映射
@@ -59,7 +59,7 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 
 | 组 | 场景 | pytest 文件 | probe |
 |---|---|---|---|
-| A01 | 四个核心业务分别从实际入口到真实业务函数执行 | `tests/test_first_party_action_payloads.py`<br>`tests/test_problem_plugin_production_adapter.py` | daily_scan_statistics, daily_problems |
+| A01 | 四个核心业务分别从实际入口到真实业务函数执行 | `tests/test_problem_plugin_production_adapter.py` | daily_scan_statistics, daily_problems |
 | A02 | 四个独立业务任务共同运行，另一个注入失败 | `tests/test_workflow_runner_durable_admission.py` | daily_concurrency |
 | A03 | 4 个工作槽，1 个任务占资源，至少 4 个不同任务等待该资源，再提交独立任务 | `tests/test_workflow_runner_durable_admission.py` |  |
 | A04 | 同账号不同资源，跨插件／角色／凭据访问同一资源 | `tests/test_workflow_runner_durable_admission.py` |  |
@@ -68,10 +68,10 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 | A07 | 等待跨至少两个租约周期，旧领取与恢复领取竞争 | `tests/test_workflow_runner_durable_admission.py` |  |
 | A08 | 等待取消、运行取消、租约丢失 | `agent/tests/test_tool_executor_cancel.py`<br>`tests/test_workflow_runner_cancellation.py`<br>`tests/test_workflow_runner_durable_admission.py` | scan_cancel_recovery |
 | A09 | 同一 request_id 并发重发至少 20 次 | `tests/test_workflow_runner_durable_admission.py` |  |
-| A10 | 已写响应丢失、确实未写、结果未知 | `agent/tests/test_scan_unknown_write_recovery.py`<br>`tests/test_result_verifier.py`<br>`tests/test_scan_readback_protocol.py`<br>`tests/test_scan_snapshot_recovery_mysql.py`<br>`tests/test_workflow_runner_recovery.py` | scan_recovery, unknown_resource_scope, daily_concurrency |
-| A11 | 超时／重试与取消本次运行 | `tests/test_mysql_orchestration_integration.py`<br>`tests/test_scheduled_task_contracts.py`<br>`tests/test_scheduler_runner_lifecycle_mysql.py`<br>`tests/test_workflow_runner_scheduler_supersession.py` |  |
+| A10 | 已写响应丢失、确实未写、结果未知 | `tests/test_result_verifier.py`<br>`tests/test_scan_readback_protocol.py`<br>`tests/test_scan_snapshot_recovery_mysql.py`<br>`tests/test_workflow_runner_recovery.py` | scan_recovery, unknown_resource_scope, daily_concurrency |
+| A11 | 超时／重试与取消本次运行 | `tests/test_mysql_orchestration_integration.py`<br>`tests/test_scheduler_runner_lifecycle_mysql.py`<br>`tests/test_workflow_runner_scheduler_supersession.py` |  |
 | A12 | 预览、排除、候选选择、确认、过期或配置变化 | `agent/tests/test_feishu_split_selection.py`<br>`tests/test_scan_preview_binding.py`<br>`tests/test_selection_preview_binding.py`<br>`tests/test_workflow_runner_policy_recheck.py` | daily_scan_statistics, daily_problems |
-| A13 | 后台固定按钮、飞书固定指令和已开放定时 | `agent/tests/test_feishu_automation_project_entrypoints.py`<br>`tests/test_automation_project_api.py`<br>`tests/test_automation_project_entrypoints.py`<br>`tests/test_control_plane_execution_boundaries.py`<br>`tests/test_mysql_orchestration_integration.py`<br>`tests/test_scheduled_task_contracts.py` |  |
+| A13 | 后台固定按钮、飞书固定指令和已开放定时 | `agent/tests/test_feishu_automation_project_entrypoints.py`<br>`tests/test_automation_project_api.py`<br>`tests/test_automation_project_entrypoints.py`<br>`tests/test_control_plane_execution_boundaries.py`<br>`tests/test_mysql_orchestration_integration.py` |  |
 | A14 | 飞书资源／Worker／全量账号探测延迟 30 秒或失败 | `agent/tests/test_feishu_resource_catalog.py` | browser_performance |
 | A15 | 单个坏实例、重复 ID、局部依赖故障 | `tests/test_automation_plugin_catalog_batch.py`<br>`tests/test_automation_plugin_platform.py`<br>`tests/test_automation_project_policy_service.py` | customer_collection_flow |
 | A16 | 无可信首次目录、并发刷新、卸载与刷新竞态 | `console/tests/test_plugin_catalog_singleflight.py`<br>`tests/test_automation_plugin_catalog_batch.py` | catalog_delivery |
@@ -79,42 +79,42 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 | A18 | 页面旧快照后项目被停用、权限或绑定变化 | `console/tests/test_plugin_catalog_singleflight.py`<br>`tests/test_automation_project_authorization.py`<br>`tests/test_automation_project_policy_service.py` | customer_collection_flow |
 | A19 | 对单个同步查询注入慢响应，普通执行池饱和 | `tests/test_automation_project_api.py`<br>`tests/test_workflow_runner_durable_admission.py` | catalog_delivery |
 | A20 | 真实 MySQL 8 领取／事务／唯一约束／必要迁移 | `tests/test_mysql_orchestration_integration.py` |  |
-| A21 | 插件安装、设置、启停、定时、升级和多实例 | `tests/test_automation_plugin_lifecycle.py`<br>`tests/test_automation_project_policy_service.py`<br>`tests/test_plugin_service_v2_foundation.py`<br>`tests/test_service_v2_policy_runtime.py` | navigation_probe, run_acceptance, settings_effective, customer_collection_flow, field_maintenance |
+| A21 | 插件安装、设置、启停、定时、升级和多实例 | `tests/test_automation_plugin_lifecycle.py`<br>`tests/test_automation_project_policy_service.py`<br>`tests/test_plugin_service_v2_foundation.py`<br>`tests/test_service_v2_policy_runtime.py` | navigation_probe, run_acceptance, settings_effective, customer_collection_flow |
 | A22 | 录单／OCR、运单、跟踪、回单、客服、财务、登录与导航 | `agent/tests/test_session_broker.py`<br>`console/tests/test_admin_auth.py`<br>`console/tests/test_customer_service_module.py`<br>`console/tests/test_document_mode_switch.py`<br>`console/tests/test_finance_module.py`<br>`console/tests/test_manual_waybill.py`<br>`console/tests/test_menu_registration.py`<br>`console/tests/test_mobile_navigation.py`<br>`console/tests/test_receipts_management.py`<br>`console/tests/test_tracking_query.py`<br>`console/tests/test_waybill_entry_extensions.py`<br>`console/tests/test_waybill_query.py` | navigation_probe, legacy_page_smoke |
 | A23 | 通知失败、可重建展示更新失败 | `agent/tests/test_outbox_dispatcher.py`<br>`tests/test_feishu_readback_delayed.py` | daily_concurrency |
-| A24 | 扫描→统计等真实数据依赖 | `tests/test_sync_arrival_stats_v1_v2_parity.py`<br>`tests/test_sync_scan_codes_v1_v2_parity.py` | daily_scan_statistics, daily_concurrency |
+| A24 | 扫描→统计等真实数据依赖 |  | daily_scan_statistics, daily_concurrency |
 | B01 | 采集插件、AI 或外部资源目录不可用，业务 DB 正常 | `console/tests/test_finance_module.py`<br>`tests/test_module_data_sources_mysql.py` | detail_browser, customer_collection_flow |
-| B02 | 财务采集适配器的外部字段／响应变化 | `tests/test_finance_raw_plugin_protocol.py` |  |
+| B02 | 财务采集适配器的外部字段／响应变化 | `tests/test_finance_statement_plugin_zip.py`<br>`tests/test_finance_statement_plugin_mysql.py` |  |
 | B03 | 隔离环境停用、卸载、重装某采集实例 | `tests/test_module_data_sources_mysql.py` | customer_collection_flow |
-| B04 | 合法插件没有 AI 声明，模型未配置或 API 超时 | `tests/test_automation_plugin_manifest_contract.py`<br>`tests/test_service_v2_harness_contribution_contract.py` | run_acceptance, daily_scan_statistics, daily_problems, daily_concurrency |
+| B04 | 合法插件没有 AI 声明，模型未配置或 API 超时 | `tests/test_service_v2_harness_contribution_contract.py` | run_acceptance, daily_scan_statistics, daily_problems, daily_concurrency |
 | B05 | 同一业务数据分别由允许的不同入口重复提交 | `tests/test_finance_validation.py`<br>`tests/test_module_data_sources_mysql.py` | customer_collection_flow |
-| B06 | 财务采集写入半批后中断，并重新提交 | `tests/test_finance_raw_plugin_protocol.py`<br>`tests/test_module_data_sources_mysql.py` |  |
+| B06 | 财务采集写入半批后中断，并重新提交 | `tests/test_finance_statement_plugin_zip.py`<br>`tests/test_finance_statement_plugin_mysql.py`<br>`tests/test_module_data_sources_mysql.py` |  |
 | B07 | 本次触及模块的依赖与导入边界 | `tests/test_automation_plugin_catalog_batch.py`<br>`tests/test_control_plane_execution_boundaries.py` |  |
 | B08 | 停用某插件后保留固定业务、其他独立任务及既有管理功能 | `tests/test_automation_plugin_lifecycle.py` | customer_collection_flow |
 | C01 | 自动化／财务／客服归属 | `tests/test_automation_plugin_platform.py`<br>`tests/test_plugin_module_management.py` | module_scope |
-| C02 | 所属模块内安装／实例操作 | `tests/test_action_v1_module_installation.py`<br>`tests/test_automation_plugin_lifecycle.py`<br>`tests/test_plugin_module_management.py` | customer_collection_flow, field_maintenance |
-| C03 | 默认设置页 | `tests/test_automation_plugin_code_owned_fields.py`<br>`tests/test_automation_plugin_manifest_contract.py`<br>`tests/test_plugin_module_management.py` | navigation_probe, settings_effective, customer_collection_flow |
+| C02 | 所属模块内安装／实例操作 | `tests/test_automation_plugin_lifecycle.py`<br>`tests/test_plugin_module_management.py` | customer_collection_flow |
+| C03 | 默认设置页 | `tests/test_automation_plugin_code_owned_fields.py`<br>`tests/test_plugin_module_management.py` | navigation_probe, settings_effective, customer_collection_flow |
 | C04 | 专属设置与保存 | `console/tests/test_plugin_settings_initialization.py`<br>`tests/test_automation_plugin_management_api.py`<br>`tests/test_automation_project_policy_service.py`<br>`tests/test_plugin_module_management.py` | custom_settings |
 | C05 | Agent 账号复用 | `agent/tests/test_session_broker.py`<br>`agent/tests/test_session_process_isolation.py`<br>`agent/tests/test_yunda_proxy_session_state.py`<br>`tests/test_automation_project_entrypoints.py`<br>`tests/test_module_data_sources_mysql.py` | customer_collection_flow, settings_effective |
-| C06 | 财务完整用户路径 | `agent/tests/test_finance_sync_service.py`<br>`tests/test_module_data_sources_mysql.py` | field_maintenance, finance_source_state |
-| C07 | 客服完整用户路径 | `agent/tests/test_customer_service_problem_sync_tool.py`<br>`tests/test_module_data_sources_mysql.py` | customer_collection_flow |
+| C06 | 财务完整用户路径 | `tests/test_finance_statement_plugin_zip.py`<br>`tests/test_finance_statement_plugin_mysql.py`<br>`tests/test_module_data_sources_mysql.py` |  |
+| C07 | 客服完整用户路径 | `tests/test_module_data_sources_mysql.py` | customer_collection_flow |
 | C08 | 动态来源注册和历史筛选 | `tests/test_module_data_sources_mysql.py` | navigation_probe, detail_browser, customer_collection_flow |
-| C09 | BI 绑定与数据状态 | `console/tests/test_finance_service.py`<br>`tests/test_module_data_sources_mysql.py` | detail_browser, finance_source_state |
-| C10 | 最后实例卸载和多实例 | `tests/test_lifecycle_disposal_order.py`<br>`tests/test_module_data_sources_mysql.py` | customer_collection_flow |
+| C09 | BI 绑定与数据状态 | `console/tests/test_finance_service.py`<br>`tests/test_module_data_sources_mysql.py` | detail_browser |
+| C10 | 最后实例卸载和多实例 | `tests/test_module_data_sources_mysql.py` | customer_collection_flow |
 | C11 | 替换采集器接续同来源 | `tests/test_module_data_sources_mysql.py` |  |
 | C12 | 多来源、账号与重复业务 | `tests/test_module_data_sources_mysql.py`<br>`tests/test_mysql_orchestration_integration.py` |  |
 | C13 | 旧实例与引用迁移 | `tests/test_module_data_sources_mysql.py`<br>`tests/test_mysql_orchestration_integration.py` | customer_collection_flow, navigation_probe |
 | C14 | 采集与消费解耦 | `tests/test_module_data_sources_mysql.py` | detail_browser, customer_collection_flow |
 | C15 | 分模块轻量列表 | `console/tests/test_plugin_catalog_singleflight.py`<br>`tests/test_automation_plugin_catalog_batch.py`<br>`tests/test_automation_plugin_platform.py`<br>`tests/test_plugin_module_management.py` | browser_performance, catalog_delivery |
-| C16 | 计划、结果与导航 | `agent/tests/test_feishu_automation_project_entrypoints.py`<br>`agent/tests/test_finance_alert_policy.py`<br>`console/tests/test_automation_control_plane_cutover.py`<br>`tests/test_collector_navigation.py`<br>`tests/test_scheduled_task_contracts.py` | navigation_probe, run_acceptance, finance_source_state, customer_collection_flow, field_maintenance |
+| C16 | 计划、结果与导航 | `agent/tests/test_feishu_automation_project_entrypoints.py`<br>`agent/tests/test_finance_analysis_policy.py`<br>`console/tests/test_automation_control_plane_cutover.py`<br>`tests/test_collector_navigation.py` | navigation_probe, run_acceptance, customer_collection_flow |
 | C17 | 固定模块与操作范围 | `console/tests/test_customer_service_module.py`<br>`console/tests/test_document_mode_switch.py`<br>`console/tests/test_finance_module.py`<br>`console/tests/test_manual_waybill.py`<br>`console/tests/test_menu_registration.py`<br>`console/tests/test_permission_registry.py`<br>`console/tests/test_receipts_management.py`<br>`console/tests/test_tracking_query.py`<br>`console/tests/test_waybill_query.py`<br>`tests/test_control_plane_execution_boundaries.py`<br>`tests/test_plugin_module_management.py` | customer_collection_flow |
-| C18 | 部分发布、增量游标与迟到更新 | `tests/test_finance_raw_plugin_protocol.py`<br>`tests/test_first_party_action_payloads.py`<br>`tests/test_module_data_sources_mysql.py` |  |
+| C18 | 部分发布、增量游标与迟到更新 | `tests/test_finance_statement_plugin_zip.py`<br>`tests/test_finance_statement_plugin_mysql.py`<br>`tests/test_module_data_sources_mysql.py` |  |
 | M01 | 常用配置的局部修改与恢复 | `tests/test_automation_project_policy_service.py` | settings_effective |
-| M02 | 一个已接入采集器的字段／解析变化 |  | field_maintenance |
+| M02 | 一个已接入采集器的字段／解析变化 | `tests/test_finance_statement_plugin_zip.py`<br>`tests/test_finance_statement_plugin_mysql.py`（演练待重建，见下文） |  |
 | M03 | 一个真实业务的局部决策变化 |  | decision_maintenance |
-| M04 | 升级失败、在途版本和回退 | `tests/test_automation_plugin_lifecycle.py` | field_maintenance, decision_maintenance |
-| M05 | 独立更新的真实边界与依赖 | `tests/test_action_v1_module_installation.py`<br>`tests/test_plugin_maintenance.py`<br>`tests/test_plugin_service_v2_foundation.py`<br>`tests/test_service_v2_developer_cli.py`<br>`tests/test_service_v2_developer_simulator.py` | plugin_cli_batch, field_maintenance |
-| M06 | Codex 局部维护交付与可复现测试 | `tests/test_low_maintenance_v32_acceptance.py`<br>`tests/test_scan_preview_observation.py`<br>`tests/test_service_v2_developer_cli.py`<br>`tests/test_v32_e2e_fixture_reset.py` | plugin_cli_batch, field_maintenance, decision_maintenance |
+| M04 | 升级失败、在途版本和回退 | `tests/test_automation_plugin_lifecycle.py` | decision_maintenance |
+| M05 | 独立更新的真实边界与依赖 | `tests/test_plugin_maintenance.py`<br>`tests/test_plugin_service_v2_foundation.py`<br>`tests/test_service_v2_developer_cli.py`<br>`tests/test_service_v2_developer_simulator.py` | plugin_cli_batch |
+| M06 | Codex 局部维护交付与可复现测试 | `tests/test_low_maintenance_v32_acceptance.py`<br>`tests/test_scan_preview_observation.py`<br>`tests/test_service_v2_developer_cli.py`<br>`tests/test_v32_e2e_fixture_reset.py` | plugin_cli_batch, decision_maintenance |
 
 ## Probe 实际命令
 
@@ -132,8 +132,6 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 | unknown_resource_scope | `v32_recovery_test` | `python -m tests.v32_acceptance.scan_recovery --physical-scope` |
 | scan_cancel_recovery | `v32_scan_cancel_test` | `python -m tests.v32_acceptance.scan_recovery --cancel-only` |
 | customer_collection_flow | `v32_customer_flow_test` | `python -m tests.v32_acceptance.customer_collection_flow --reset-owned-fixture` |
-| finance_source_state | `v32_m02_test` | `python -m tests.v32_acceptance.finance_source_state --reset-owned-fixture` |
-| field_maintenance | `v32_m02_test` | `python -m tests.v32_acceptance.finance_maintenance --reset-owned-fixture --host-freeze "$FREEZE"` |
 | decision_maintenance | `v32_m03_test` | `python -m tests.v32_acceptance.decision_maintenance --prepare --host-freeze "$FREEZE"` |
 | plugin_cli_batch | `v32_cli_test` | `python -m tests.v32_acceptance.plugin_cli_batch --report "$OUTPUT/plugin-cli-summary.json" --host-freeze "$FREEZE"` |
 
@@ -143,7 +141,7 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 
 新增 `tests/test_waybill_source_coverage*.py` 验证来源身份、半批不发布、精确 upsert 和日尾段，对应 C12/C18 的数据正确性要求，并补充本 V1 寄件查询需求；`console/tests/test_waybill_query.py` 对应 C17。`tests/test_arrival_report_ownership*.py` 与实际签名包业务链验证 A01/A10 中统计报表所有权和未知写；不替代这些整组其它子项。
 
-M02 字段变化入口为 `tests.v32_acceptance.finance_maintenance`；M03 判断变化入口为 `tests.v32_acceptance.decision_maintenance`。两者的正式结论以完整驱动本次生成的报告为准，准备性运行不能代替宿主冻结后的演练。
+M02 字段变化演练原基于旧财务采集包，已随旧包于 2026-10 退役；矩阵把它记为覆盖缺口，需在统计抓取包上重建后才能判定通过。M03 判断变化入口为 `tests.v32_acceptance.decision_maintenance`，正式结论以完整驱动本次生成的报告为准，准备性运行不能代替宿主冻结后的演练。
 
 P4 真实运行命令与证据见 `docs/direct_waybill_query.md`。已完成两平台当前原页查询范围、寄件日期字段与唯一父单详情的只读核验；仅声明当前查询范围，未声明全组织完整或生产 ECS 运行通过。整体验收结果必须由根任务汇总当前源码、当前 JUnit 和本次 fresh probe 后生成。
 

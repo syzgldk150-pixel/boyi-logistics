@@ -27,7 +27,7 @@ from agent.orchestration.models import OperationType, PlanStep, RiskLevel
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.tool_registry import validate_schema_instance
 from service_v2_plugins._shared.build_zip import build_plugin_zip
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,7 +178,7 @@ def test_arrival_stats_v2_payload_has_no_legacy_runtime_import_or_path_mutation(
 
 
 def test_arrival_stats_representative_20k_payloads_fit_only_a_proposed_candidate_cap() -> None:
-    action = load_first_party_action("sync_arrival_stats")
+    action = load_plugin_action("sync_arrival_stats")
     fields = tuple(action._WAYBILL_FIELDS)
     assert len(fields) == 18
     records = [

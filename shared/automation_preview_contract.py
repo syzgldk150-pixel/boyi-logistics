@@ -46,7 +46,7 @@ def normalize_scan_preview_projection(
     raw: Any,
     *,
     expected_invocation_id: str,
-    expected_automation_id: str = "scan_codes",
+    expected_automation_id: str,
 ) -> dict[str, Any] | None:
     """Accept only the frozen public scan preview contract."""
 

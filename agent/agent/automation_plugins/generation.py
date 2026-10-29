@@ -568,7 +568,7 @@ class AutomationRuntimeReconciler:
             # A Provider dependency-tree restore keeps every physical trigger
             # closed until all exact committed process projections are back.
             # Its caller then re-opens each project through the same strict
-            # durable gate (including migration ownership checks).
+            # durable gate.
             if defer_scheduler_enable:
                 gate(snapshot.automation_id, dependency_ready=False)
             if not activation_recovered:

@@ -13,11 +13,9 @@ from types import SimpleNamespace
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from console.app import LocalDocFlowApp
-from console.app_support import AUTOMATION_WORKFLOW_CATALOG
 from console.routes import automation as automation_routes
 from console.services.automation import (
     _automation_plugin_block_warning,
-    build_automation_project_policy_view,
     normalize_automation_plugin_catalog,
 )
 from console.services.automation_projects import (
@@ -29,12 +27,6 @@ from console.services.automation_projects import (
 
 REQUEST_ID = "12345678-1234-4234-8234-123456789abc"
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
-
-
-def test_removed_r7_automations_are_not_in_console_fallback_catalog():
-    task_ids = {str(item.get("task_id") or "") for item in AUTOMATION_WORKFLOW_CATALOG}
-    assert "r7_arrival_checkin" not in task_ids
-    assert "r7_departure_checkin" not in task_ids
 
 
 def _node_host_path(path: Path, node_binary: str) -> str:
@@ -55,6 +47,8 @@ def _plugin_package() -> dict:
         "plugin_id": "finance_action",
         "name": "财务同步动作",
         "version": "1.2.3",
+        "runtime_model": "SERVICE_V2",
+        "plugin_api": "2.0.0",
         "execution_platform": "server",
         "can_schedule": True,
         "worker_required": False,
@@ -87,7 +81,13 @@ def _plugin_package() -> dict:
             "allowed_kinds": ["daily_times", "startup"],
             "max_daily_times": 5,
         },
-        "entrypoints": ["scheduler", "console", "feishu", "webhook"],
+        "entrypoints": ["schedule.daily", "manual.sync", "feishu.sync", "hooks.sync"],
+        "entrypoint_kinds": {
+            "schedule.daily": "scheduler",
+            "manual.sync": "console",
+            "feishu.sync": "feishu",
+            "hooks.sync": "webhook",
+        },
     }
 
 
@@ -111,9 +111,18 @@ def _plugin_instance(automation_id: str, instance_name: str) -> dict:
             "times": ["08:30", "17:45"],
             "enabled": True,
         },
-        "enabled_entrypoints": ["scheduler", "console"],
+        "enabled_entrypoints": ["schedule.daily", "manual.sync"],
         "device": None,
         "missing_requirements": [],
+        "dependency_state": "READY",
+        "target_generation": 7,
+        "committed_generation": 7,
+        "contribution_projection_state": "ACTIVE",
+        "active_contributions": [
+            {"contribution_id": contribution_id, "contribution_kind": kind, "generation": 7,
+             "phase": "COMMITTED", "backend_status": "READY"}
+            for contribution_id, kind in (("schedule.daily", "scheduler"), ("manual.sync", "console"))
+        ],
     }
 
 
@@ -216,32 +225,6 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         _, instances, _ = normalize_automation_plugin_catalog(payload)
         self.assertIsNone(instances[0]["schedule_sha256"])
         self.assertTrue(instances[0]["blocked"])
-
-    def test_daily_sign_account_roles_explain_the_two_external_systems(self):
-        roles = _normalize_plugin_account_roles(
-            [
-                {
-                    "role": "r13_account_id",
-                    "allowed_systems": ["r13"],
-                    "required": True,
-                    "binding_cardinality": "one",
-                },
-                {
-                    "role": "account_id",
-                    "allowed_systems": ["ronghui"],
-                    "required": True,
-                    "binding_cardinality": "one",
-                },
-            ],
-            plugin_id="sync_daily_should_sign",
-        )
-
-        self.assertEqual(
-            ["R13 应签查询账号", "融辉到货与签收核验账号"],
-            [role["label"] for role in roles],
-        )
-        self.assertIn("所属站点范围", roles[0]["hint"])
-        self.assertIn("主单签收证据", roles[1]["hint"])
 
     def test_code_owned_runtime_fields_stay_out_of_browser_configuration(self):
         payload = _catalog_payload()
@@ -394,25 +377,21 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertTrue(instances[0]["menu_actions_allowed"])
         self.assertFalse(instances[0]["enable_allowed"])
 
-    def test_failed_stopped_v2_can_request_uninstall_after_withdrawal(self):
-        for migration in ({}, {"state": "ROLLED_BACK", "role": "TARGET"}):
-            with self.subTest(migration=migration):
-                payload = _catalog_payload()
-                raw = payload["instances"][0]
-                raw.update(runtime_model="SERVICE_V2", enabled=False, configured=True,
-                    state="DISABLED", reconcile_state="ERROR", migration=migration)
-                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
-                self.assertTrue(instances[0]["uninstall_allowed"])
-                self.assertFalse(instances[0]["enable_allowed"])
-                self.assertFalse(instances[0]["lifecycle_actions_allowed"])
+    def test_failed_stopped_v2_can_request_uninstall(self):
+        payload = _catalog_payload()
+        raw = payload["instances"][0]
+        raw.update(runtime_model="SERVICE_V2", enabled=False, configured=True,
+            state="DISABLED", reconcile_state="ERROR")
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+        self.assertTrue(instances[0]["uninstall_allowed"])
+        self.assertFalse(instances[0]["enable_allowed"])
+        self.assertFalse(instances[0]["lifecycle_actions_allowed"])
 
     def test_failed_v2_uninstall_does_not_open_active_or_uncertain_states(self):
         for updates in (
             {"enabled": True}, {"state": "UPGRADING"},
             {"reconcile_state": "BLOCKED_UNKNOWN_WRITE"},
             {"reconcile_state": "DISPOSING"},
-            {"migration": {"state": "TESTING", "role": "TARGET"}},
-            {"migration": {"state": "ROLLED_BACK", "role": "SOURCE"}},
         ):
             with self.subTest(updates=updates):
                 payload = _catalog_payload()
@@ -423,21 +402,18 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 self.assertFalse(instances[0]["uninstall_allowed"])
 
     def test_disposed_v2_uninstall_can_be_retried_without_enabling_project(self):
-        for migration in ({}, {"state": "ROLLED_BACK", "role": "TARGET"}):
-            with self.subTest(migration=migration):
-                payload = _catalog_payload()
-                payload["instances"][0].update(runtime_model="SERVICE_V2", enabled=False,
-                    configured=True, state="UNINSTALLING", reconcile_state="STABLE", migration=migration)
-                _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
-                self.assertTrue(instances[0]["uninstall_allowed"])
-                self.assertFalse(instances[0]["enable_allowed"])
-                self.assertFalse(instances[0]["lifecycle_actions_allowed"])
+        payload = _catalog_payload()
+        payload["instances"][0].update(runtime_model="SERVICE_V2", enabled=False,
+            configured=True, state="UNINSTALLING", reconcile_state="STABLE")
+        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
+        self.assertTrue(instances[0]["uninstall_allowed"])
+        self.assertFalse(instances[0]["enable_allowed"])
+        self.assertFalse(instances[0]["lifecycle_actions_allowed"])
 
     def test_uninstall_retry_keeps_draining_and_unknown_states_closed(self):
         for updates in (
             {"enabled": True}, {"reconcile_state": "DRAINING"},
             {"reconcile_state": "BLOCKED_UNKNOWN_WRITE"},
-            {"migration": {"state": "TESTING", "role": "TARGET"}},
         ):
             with self.subTest(updates=updates):
                 payload = _catalog_payload()
@@ -545,35 +521,19 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             {"kind": "daily_times", "times": ["08:30", "17:45"], "enabled": True},
             instances[0]["schedule"],
         )
-        self.assertEqual(["scheduler", "console"], instances[0]["enabled_entrypoints"])
-        self.assertEqual(["console"], instances[0]["console_entrypoints"])
-        self.assertEqual(["console"], instances[0]["enabled_console_entrypoints"])
+        self.assertEqual(["schedule.daily", "manual.sync"], instances[0]["enabled_entrypoints"])
+        self.assertEqual(["manual.sync"], instances[0]["console_entrypoints"])
+        self.assertEqual(["manual.sync"], instances[0]["enabled_console_entrypoints"])
         self.assertEqual(
             ["console", "scheduler"], instances[0]["enabled_entrypoint_kinds"]
         )
-        self.assertNotIn("contribution_projection_state", instances[0])
+        self.assertEqual("ACTIVE", instances[0]["contribution_projection_state"])
         self.assertFalse(instances[0]["blocked"])
         projected_text = json.dumps({"packages": packages, "instances": instances})
         for forbidden in ("manifest", "install_root", "package_sha256", "policy_hash"):
             self.assertNotIn(forbidden, projected_text)
 
-    def test_legacy_catalog_defaults_to_action_v1_without_changing_version_display(self):
-        packages, instances, _unsupported = normalize_automation_plugin_catalog(
-            _catalog_payload()
-        )
-
-        for projected in (packages[0], instances[0]):
-            self.assertEqual("ACTION_V1", projected["runtime_model"])
-            self.assertEqual("旧版操作", projected["runtime_model_label"])
-            self.assertEqual("1.0.0", projected["plugin_api"])
-            self.assertEqual("1.2.3", projected["active_version"])
-            self.assertEqual("1.2.3", projected["target_version"])
-            self.assertEqual("NOT_APPLICABLE", projected["dependency_state"])
-            self.assertEqual([], projected["provided_services"])
-            self.assertEqual([], projected["blocking_reasons"])
-            self.assertEqual({}, projected["migration"])
-
-    def test_service_v2_catalog_projects_services_versions_migration_and_blocks(self):
+    def test_service_v2_catalog_projects_services_versions_and_blocks(self):
         payload = _catalog_payload()
         v2_metadata = {
             "runtime_model": "SERVICE_V2",
@@ -626,16 +586,6 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 ],
             }
         )
-        payload["instances"][0]["migration"] = {
-            "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
-            "source_automation_id": "finance_action_east_v1",
-            "target_automation_id": "finance_action_east",
-            "state": "TESTING",
-            "test_status": "RUNNING",
-            "entrypoint_owner_automation_id": "finance_action_east_v1",
-            "entrypoint_snapshot_json": {"must": "not leak"},
-        }
-
         packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
 
         package = packages[0]
@@ -661,12 +611,6 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual(
             "缺少服务提供方：plugin.account_pool.session@1",
             instance["blocking_reason_labels"][0],
-        )
-        self.assertEqual("并行验证", instance["migration"]["status_label"])
-        self.assertEqual("真跑验证中", instance["migration"]["test_status_label"])
-        self.assertEqual(
-            "finance_action_east_v1",
-            instance["migration"]["paired_automation_id"],
         )
         projected_text = json.dumps(instance, ensure_ascii=False)
         self.assertNotIn("provider_automation_id", projected_text)
@@ -889,57 +833,6 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 self.assertNotIn("console", projected["enabled_entrypoint_kinds"])
                 self.assertNotIn("<script>", json.dumps(projected, ensure_ascii=False))
 
-    def test_service_v2_catalog_accepts_closed_migration_relation_projection(self):
-        payload = _catalog_payload()
-        payload["instances"][0].update(
-            {
-                "runtime_model": "SERVICE_V2",
-                "plugin_api": ">=2.0.0,<3.0.0",
-                "migration": {
-                    "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
-                    "state": "READY",
-                    "record_version": 4,
-                    "role": "target",
-                    "counterpart_automation_id": "finance_action_east_v1",
-                },
-            }
-        )
-
-        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
-
-        migration = instances[0]["migration"]
-        self.assertEqual("TARGET", migration["role"])
-        self.assertEqual("finance_action_east_v1", migration["paired_automation_id"])
-        self.assertEqual(4, migration["record_version"])
-        self.assertTrue(migration["can_cutover"])
-        self.assertTrue(migration["can_rollback"])
-        self.assertFalse(migration["owns_entrypoints"])
-
-    def test_preparing_migration_remains_visible_but_disables_all_operations(self):
-        payload = _catalog_payload()
-        payload["instances"][0]["migration"] = {
-            "migration_pair_id": "4e19b908-1334-42cc-96e6-85fa164f52af",
-            "source_automation_id": "finance_action_east_v1",
-            "target_automation_id": "finance_action_east_v2",
-            "state": "PREPARING",
-            "role": "TARGET",
-            "entrypoint_owner_automation_id": "finance_action_east_v1",
-            "record_version": 1,
-        }
-
-        _packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
-
-        migration = instances[0]["migration"]
-        self.assertEqual("PREPARING", migration["state"])
-        self.assertEqual("准备迁移项目", migration["status_label"])
-        self.assertEqual("finance_action_east_v1", migration["paired_automation_id"])
-        self.assertEqual("finance_action_east_v1", migration["entrypoint_owner_automation_id"])
-        self.assertFalse(migration["owns_entrypoints"])
-        self.assertFalse(migration["can_mark_ready"])
-        self.assertFalse(migration["can_cutover"])
-        self.assertFalse(migration["can_rollback"])
-        self.assertFalse(migration["can_complete"])
-
     def test_service_v2_operator_block_states_remain_distinct(self):
         expected = {
             "BLOCKED_DEPENDENCY": "依赖阻断",
@@ -987,6 +880,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 "blocking_reasons": [{"token": "secret"}],
             }
         )
+        payload["instances"][0]["runtime_model"] = "FUTURE_RUNTIME"
 
         packages, _instances, _unsupported = normalize_automation_plugin_catalog(payload)
 
@@ -997,7 +891,7 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertEqual("", package["active_version"])
         self.assertEqual("", package["target_version"])
         self.assertEqual([], package["provided_services"])
-        self.assertEqual({}, package["migration"])
+        self.assertNotIn("migration", package)
         self.assertFalse(package["contract_supported"])
         self.assertFalse(package["can_schedule"])
         instance = _instances[0]
@@ -1008,16 +902,15 @@ class AutomationPluginCatalogTests(unittest.TestCase):
         self.assertIn("插件运行时模型不受支持", instance["missing_requirements"])
         self.assertNotIn("secret", repr(package))
 
-    def test_explicit_runtime_aliases_normalize_without_implicit_downgrade(self):
+    def test_runtime_aliases_accept_only_service_v2(self):
         payload = _catalog_payload()
         payload["plugins"][0]["runtime_model"] = "action_v1"
         payload["instances"][0]["runtime_model"] = "service_v2"
 
         packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
 
-        self.assertEqual("ACTION_V1", packages[0]["runtime_model"])
+        self.assertEqual("UNSUPPORTED", packages[0]["runtime_model"])
         self.assertEqual("SERVICE_V2", instances[0]["runtime_model"])
-        self.assertTrue(instances[0]["blocked"])
 
     def test_unknown_schema_and_unavailable_resource_pool_fail_closed(self):
         payload = _catalog_payload()
@@ -1279,7 +1172,6 @@ class AutomationPluginCatalogTests(unittest.TestCase):
             "SWITCHING": "切换中",
             "DRAINING": "排空中",
             "BLOCKED_DEPENDENCY": "依赖阻断",
-            "UNINSTALL_PENDING": "待卸载",
             "FUTURE_AGENT_STATE": "状态未知",
         }
 
@@ -1306,87 +1198,6 @@ class AutomationPluginCatalogTests(unittest.TestCase):
                 )
                 self.assertTrue(instance["blocked"])
                 self.assertFalse(instance["lifecycle_actions_allowed"])
-
-    def test_plugin_account_binding_never_falls_back_to_legacy_or_first_account(self):
-        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
-        plugin = _plugin_instance("finance_action_east", "华东财务同步")
-        plugin["account_bindings"] = {}
-        task = {
-            "task_id": plugin["automation_id"],
-            "tool_name_value": "automation.finance_action_east.run",
-            "provider": "ronghui",
-            "tool_params_json": json.dumps(
-                {"finance_quote_source": "legacy-account"},
-                ensure_ascii=False,
-            ),
-            "plugin": plugin,
-            "can_run_now": True,
-            "plugin_blocked": False,
-            "plugin_warning": "",
-        }
-        accounts = [
-            {
-                "account_id": "first-account",
-                "system": "ronghui",
-                "name": "列表第一项",
-                "is_active": True,
-                "is_default": True,
-                "session_capable": False,
-                "status": {},
-            },
-            {
-                "account_id": "legacy-account",
-                "system": "ronghui",
-                "name": "旧参数账号",
-                "is_active": True,
-                "is_default": False,
-                "session_capable": False,
-                "status": {},
-            },
-        ]
-
-        app._enrich_automation_tasks_with_accounts([task], accounts)
-
-        role = task["account_role_bindings"][0]
-        self.assertEqual("", role["selected_account_id"])
-        self.assertEqual([], role["selected_account_ids"])
-        self.assertEqual("未选择账号", role["blocked_reason"])
-        self.assertTrue(task["account_blocked"])
-        self.assertTrue(task["plugin_blocked"])
-        self.assertFalse(task["can_run_now"])
-
-    def test_inactive_or_expired_saved_account_is_visible_but_blocks_project(self):
-        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
-        plugin = _plugin_instance("finance_action_east", "华东财务同步")
-        task = {
-            "task_id": plugin["automation_id"],
-            "tool_name_value": "automation.finance_action_east.run",
-            "provider": "ronghui",
-            "tool_params_json": "{}",
-            "plugin": plugin,
-            "can_run_now": True,
-            "plugin_blocked": False,
-            "plugin_warning": "",
-        }
-        accounts = [
-            {
-                "account_id": "acct-east",
-                "system": "ronghui",
-                "name": "华东财务账号",
-                "is_active": True,
-                "session_capable": True,
-                "status": {"status": "expired", "label": "登录态失效"},
-            }
-        ]
-
-        app._enrich_automation_tasks_with_accounts([task], accounts)
-
-        role = task["account_role_bindings"][0]
-        self.assertEqual("acct-east", role["selected_account_id"])
-        self.assertFalse(role["options"][0]["binding_usable"])
-        self.assertEqual("已保存账号登录态无效", role["blocked_reason"])
-        self.assertTrue(task["plugin_blocked"])
-
 
 class _MultipartForm(dict):
     def getvalue(self, key: str):
@@ -1426,44 +1237,6 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         )
         return app, captured
 
-    def test_server_only_catalog_does_not_request_workers(self):
-        app = LocalDocFlowApp.__new__(LocalDocFlowApp)
-        app._mysql_console_principal = lambda _user: {
-            "actor_id": "17",
-            "roles": ["super_admin"],
-        }
-        calls = []
-
-        def agent_request(method, endpoint, **kwargs):
-            calls.append((method, endpoint))
-            if endpoint == "/internal/v1/automation/plugins/catalog":
-                return {"ok": True, "data": _catalog_payload()}
-            self.fail(f"unexpected Agent request: {method} {endpoint}")
-
-        app._agent_request = agent_request
-        (
-            packages,
-            instances,
-            workers,
-            unsupported,
-            hidden_automation_ids,
-            warning,
-            can_manage,
-        ) = app._load_automation_plugin_catalog(self._handler())
-
-        self.assertTrue(packages)
-        self.assertTrue(instances)
-        self.assertEqual([], workers)
-        self.assertEqual([], unsupported)
-        self.assertEqual(frozenset(), hidden_automation_ids)
-        self.assertEqual("", warning)
-        self.assertTrue(can_manage)
-        self.assertFalse(hasattr(app, "_automation_hidden_ids"))
-        self.assertEqual(
-            [("GET", "/internal/v1/automation/plugins/catalog")],
-            calls,
-        )
-
     def test_catalog_cache_is_scoped_and_explicit_refresh_bypasses_it(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
         app._mysql_console_principal = lambda _user: {
@@ -1471,7 +1244,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             "roles": ["super_admin"],
         }
         catalog = _catalog_payload()
-        catalog["hidden_automation_ids"] = ["r7_arrival_checkin"]
+        catalog["hidden_automation_ids"] = ["retired_instance"]
         responses = [
             {"ok": True, "data": catalog},
             {"ok": False, "error_code": "CATALOG_DOWN"},
@@ -1484,9 +1257,9 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             self._handler(), refresh_resources=True
         )
 
-        self.assertEqual(frozenset({"r7_arrival_checkin"}), successful[4])
+        self.assertEqual(frozenset({"retired_instance"}), successful[3])
         self.assertEqual(successful, cached)
-        self.assertEqual(frozenset(), failed[4])
+        self.assertEqual(frozenset(), failed[3])
         self.assertFalse(hasattr(app, "_automation_hidden_ids"))
 
     def test_malformed_catalog_instance_blocks_the_entire_catalog(self):
@@ -1504,10 +1277,9 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         self.assertEqual([], result[0])
         self.assertEqual([], result[1])
         self.assertEqual([], result[2])
-        self.assertEqual([], result[3])
-        self.assertEqual(frozenset(), result[4])
-        self.assertIn("实例身份无法核验", result[5])
-        self.assertTrue(result[6])
+        self.assertEqual(frozenset(), result[3])
+        self.assertIn("实例身份无法核验", result[4])
+        self.assertTrue(result[5])
 
     @staticmethod
     def _configuration_payload() -> dict:
@@ -1515,8 +1287,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
             "config": {"region": "east"},
             "account_bindings": {"finance_quote_source": "acct-east"},
             "resource_bindings": {"input_sheet": "phase7.input_sheet"},
-            "enabled_entrypoints": ["scheduler", "console"],
-            "device_id": None,
+            "enabled_entrypoints": ["schedule.daily", "manual.sync"],
             "schedule": {
                 "kind": "daily_times",
                 "times": ["17:45", "08:30"],
@@ -1839,67 +1610,6 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
                 self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
 
-    def test_unknown_write_recovery_forwards_only_request_identity(self):
-        app, captured = self._app()
-        forwarded = {}
-
-        def agent_request(method, endpoint, **kwargs):
-            forwarded.update(method=method, endpoint=endpoint, **kwargs)
-            return {
-                "ok": True,
-                "data": {
-                    "recovery_status": "APPLIED",
-                    "transitioned": True,
-                },
-            }
-
-        app._agent_request = agent_request
-        app._handle_automation_plugin_unknown_write_recovery(
-            self._handler({"request_id": REQUEST_ID}),
-            "arrive_list",
-        )
-
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual("POST", forwarded["method"])
-        self.assertEqual(
-            "/internal/v1/automation/instances/arrive_list/generation/"
-            "recover-current-unknown-write",
-            forwarded["endpoint"],
-        )
-        self.assertEqual({"request_id": REQUEST_ID}, forwarded["payload"])
-        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
-
-    def test_unknown_write_recovery_keeps_isolation_when_evidence_is_unresolved(self):
-        app, captured = self._app()
-        app._agent_request = lambda *_args, **_kwargs: {
-            "ok": True,
-            "data": {"recovery_status": "UNKNOWN", "transitioned": False},
-        }
-
-        app._handle_automation_plugin_unknown_write_recovery(
-            self._handler({"request_id": REQUEST_ID}),
-            "arrive_list",
-        )
-
-        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
-        self.assertEqual(
-            "PLUGIN_RECOVERY_EVIDENCE_UNRESOLVED",
-            captured["payload"]["error"]["code"],
-        )
-
-    def test_unknown_write_recovery_rejects_browser_lease_or_generation(self):
-        for field in ("lease_id", "generation", "evidence"):
-            with self.subTest(field=field):
-                app, captured = self._app()
-                app._agent_request = lambda *_args, **_kwargs: self.fail(
-                    "must not call Agent"
-                )
-                app._handle_automation_plugin_unknown_write_recovery(
-                    self._handler({"request_id": REQUEST_ID, field: "browser-value"}),
-                    "arrive_list",
-                )
-                self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
-
     def test_enable_and_disable_forward_only_cas_state_dto(self):
         for action, enabled in (("enable", True), ("disable", False)):
             with self.subTest(action=action):
@@ -1958,151 +1668,6 @@ class AutomationPluginHandlerTests(unittest.TestCase):
                 )
 
                 self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
-
-    def test_create_migration_pair_forwards_only_closed_server_owned_dto(self):
-        app, captured = self._app()
-        forwarded = {}
-
-        def agent_request(method, endpoint, **kwargs):
-            forwarded.update(method=method, endpoint=endpoint, **kwargs)
-            return {"ok": True, "data": {"state": "TESTING"}}
-
-        app._agent_request = agent_request
-        app._handle_automation_plugin_migration_action(
-            self._handler(
-                {
-                    "source_automation_id": "finance_action_east_v1",
-                    "target_automation_id": "finance_action_east_v2",
-                    "business_key_fields": ["business_date", "sitecode"],
-                    "business_key_namespace": "finance-east",
-                    "request_id": REQUEST_ID,
-                }
-            ),
-            "",
-            "create",
-        )
-
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual("POST", forwarded["method"])
-        self.assertEqual("/internal/v1/automation/migrations", forwarded["endpoint"])
-        uuid.UUID(forwarded["payload"]["migration_pair_id"])
-        self.assertEqual(
-            ["business_date", "sitecode"],
-            forwarded["payload"]["business_key_fields"],
-        )
-        self.assertNotIn("entrypoint_snapshot", json.dumps(forwarded["payload"]))
-        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
-
-    def test_migration_retry_retains_pair_identity_and_pending_status(self):
-        app, captured = self._app()
-        calls = []
-        def pending(_method, _path, **kwargs):
-            calls.append(kwargs["payload"])
-            return {"ok": True, "data": {"state": "PREPARING", "blocking_reason": {"message": "配置缺少字段"}}}
-        app._agent_request = pending
-        body = {"source_automation_id": "finance_action_east", "target_automation_id": "finance_action_v2",
-                "business_key_fields": ["__host_business_date"], "business_key_namespace": None, "request_id": REQUEST_ID}
-        for _ in range(2):
-            app._handle_automation_plugin_migration_action(self._handler(body), "", "create")
-        self.assertEqual(calls[0], calls[1])
-        self.assertEqual(202, captured["status"])
-        self.assertIn("配置缺少字段", captured["payload"]["message"])
-
-    def test_migration_resume_uses_persisted_request_and_current_principal(self):
-        app, captured = self._app()
-        calls = []
-        pair_id = "4e19b908-1334-42cc-96e6-85fa164f52af"
-        original_id = "0a968096-8d35-4bcd-88fe-d7788aeb707f"
-        def upstream(method, path, **kwargs):
-            calls.append((method, path, kwargs))
-            if method == "GET":
-                return {"ok": True, "data": {"migration_pair_id": pair_id, "record_version": 4, "state": "PREPARING",
-                    "create_request_id": original_id, "source_automation_id": "old", "target_automation_id": "new",
-                    "business_key_contract": {"fields": ["__host_business_date"]}}}
-            return {"ok": True, "data": {"state": "TESTING"}}
-        app._agent_request = upstream
-        app._handle_automation_plugin_migration_action(
-            self._handler({"expected_record_version": 4, "confirm": True, "request_id": REQUEST_ID}), pair_id, "resume")
-        self.assertEqual(200, captured["status"])
-        self.assertEqual(original_id, calls[1][2]["payload"]["request_id"])
-        self.assertEqual(pair_id, calls[1][2]["payload"]["migration_pair_id"])
-        self.assertEqual("17", calls[1][2]["console_principal"]["actor_id"])
-
-    def test_create_migration_allows_only_the_reserved_host_business_date_key(self):
-        app, captured = self._app()
-        forwarded = {}
-
-        def agent_request(method, endpoint, **kwargs):
-            forwarded.update(method=method, endpoint=endpoint, **kwargs)
-            return {"ok": True, "data": {"state": "TESTING"}}
-
-        app._agent_request = agent_request
-        app._handle_automation_plugin_migration_action(
-            self._handler(
-                {
-                    "source_automation_id": "finance_action_east_v1",
-                    "target_automation_id": "finance_action_east_v2",
-                    "business_key_fields": ["__host_business_date"],
-                    "business_key_namespace": "finance-east",
-                    "request_id": REQUEST_ID,
-                }
-            ),
-            "",
-            "create",
-        )
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual(["__host_business_date"], forwarded["payload"]["business_key_fields"])
-
-        app, captured = self._app()
-        app._agent_request = lambda *_args, **_kwargs: self.fail("must not call Agent")
-        self._handle_invalid_migration_business_key(app, captured, "__host_created_at")
-
-    def _handle_invalid_migration_business_key(self, app, captured, field):
-        app._handle_automation_plugin_migration_action(
-            self._handler(
-                {
-                    "source_automation_id": "finance_action_east_v1",
-                    "target_automation_id": "finance_action_east_v2",
-                    "business_key_fields": [field],
-                    "business_key_namespace": "finance-east",
-                    "request_id": REQUEST_ID,
-                }
-            ),
-            "",
-            "create",
-        )
-        self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
-
-    def test_cutover_migration_forwards_pair_cas_and_server_reason(self):
-        app, captured = self._app()
-        forwarded = {}
-        pair_id = "4e19b908-1334-42cc-96e6-85fa164f52af"
-
-        def agent_request(method, endpoint, **kwargs):
-            forwarded.update(method=method, endpoint=endpoint, **kwargs)
-            return {"ok": True, "data": {"state": "CUTOVER"}}
-
-        app._agent_request = agent_request
-        app._handle_automation_plugin_migration_action(
-            self._handler(
-                {
-                    "request_id": REQUEST_ID,
-                    "expected_record_version": 3,
-                    "confirm": True,
-                }
-            ),
-            pair_id,
-            "cutover",
-        )
-
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual(
-            f"/internal/v1/automation/migrations/{pair_id}/cutover",
-            forwarded["endpoint"],
-        )
-        self.assertEqual(3, forwarded["payload"]["expected_record_version"])
-        self.assertTrue(forwarded["payload"]["confirm"])
-        self.assertIn("接管自动执行入口", forwarded["payload"]["reason"])
 
     def test_service_v2_inspect_forwards_only_zip_and_request_then_returns_safe_choices(self):
         package_buffer = io.BytesIO()
@@ -2429,40 +1994,6 @@ class AutomationPluginHandlerTests(unittest.TestCase):
         )
         self.assertEqual([handler], called)
 
-    def test_unknown_write_recovery_has_one_explicit_console_route(self):
-        called = []
-        app = SimpleNamespace(
-            _handle_automation_account_post=lambda *_args: False,
-            _handle_automation_plugin_unknown_write_recovery=(
-                lambda handler, automation_id: called.append(
-                    (handler, automation_id)
-                )
-            ),
-        )
-        handler = object()
-        path = "/automations/plugins/arrive_list/recover"
-
-        self.assertTrue(automation_routes.handle_post(app, handler, path, path, {}))
-        self.assertEqual([(handler, "arrive_list")], called)
-
-    def test_migration_cutover_has_one_explicit_console_route(self):
-        called = []
-        app = SimpleNamespace(
-            _handle_automation_account_post=lambda *_args: False,
-            _handle_automation_plugin_migration_action=(
-                lambda handler, pair_id, action: called.append(
-                    (handler, pair_id, action)
-                )
-            ),
-        )
-        handler = object()
-        pair_id = "4e19b908-1334-42cc-96e6-85fa164f52af"
-        path = f"/automations/plugin-migrations/{pair_id}/cutover"
-
-        self.assertTrue(automation_routes.handle_post(app, handler, path, path, {}))
-        self.assertEqual([(handler, pair_id, "cutover")], called)
-
-
 class AutomationPluginSettingsBridgeTests(unittest.TestCase):
     def test_bridge_session_is_bound_to_actor_and_automation(self):
         app = LocalDocFlowApp.__new__(LocalDocFlowApp)
@@ -2585,152 +2116,6 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             autoescape=select_autoescape(["html", "xml"]),
         ).get_template("automation.html")
 
-    def test_catalog_present_instance_uses_one_policy_entry_and_atomic_settings(self):
-        payload = _catalog_payload()
-        resource_role = {
-            "role": "input_sheet",
-            "label": "输入表格",
-            "allowed_kinds": ["feishu_sheet"],
-            "required": True,
-        }
-        payload["plugins"][0]["resource_roles"] = [resource_role]
-        payload["instances"][0]["resource_roles"] = [resource_role]
-        payload["instances"][0]["resource_bindings"] = {
-            "input_sheet": "phase7.bound_sheet"
-        }
-        payload["resources"] = [
-            {
-                "resource_id": "phase7.first_sheet",
-                "name": "列表第一张表",
-                "kind": "feishu_sheet",
-                "status": "available",
-            },
-            {
-                "resource_id": "phase7.bound_sheet",
-                "name": "项目已绑定表格",
-                "kind": "feishu_sheet",
-                "status": "available",
-            },
-        ]
-        packages, instances, _unsupported = normalize_automation_plugin_catalog(payload)
-        plugin = instances[0]
-        task = {
-            "task_id": plugin["automation_id"],
-            "task_mode": "scheduled",
-            "name_value": plugin["instance_name"],
-            "tool_name_value": "automation.legacy.must_not_be_authority",
-            "cron_expression_value": "legacy cron must not be rendered as editor",
-            "schedule_time_values": plugin["schedule"]["times"],
-            "tool_params_json": '{"finance_quote_source":"legacy-account"}',
-            "tool_param_fields": [],
-            "search_text": "finance",
-            "last_activity_value": "",
-            "last_error_summary": "",
-            "is_schedulable": True,
-            "schedule_supported": True,
-            "schedule_editable": True,
-            "has_webhook": False,
-            "enabled_value": True,
-            "can_save": True,
-            "can_run_now": True,
-            "control_plane_only": False,
-            "resource_bindings": [],
-            "account_role_bindings": [
-                {
-                    "field": "finance_quote_source",
-                    "label": "报价来源账号",
-                    "system_label": "TMS融辉",
-                    "required": True,
-                    "binding_cardinality": "one",
-                    "selected_account_id": "acct-east",
-                    "selected_account_ids": ["acct-east"],
-                    "blocked_reason": "",
-                    "options": [
-                        {
-                            "account_id": "acct-first",
-                            "name": "列表第一项",
-                            "status_label": "登录态有效",
-                            "binding_usable": True,
-                        },
-                        {
-                            "account_id": "acct-east",
-                            "name": "华东财务账号",
-                            "status_label": "登录态有效",
-                            "binding_usable": True,
-                        },
-                    ],
-                }
-            ],
-            "plugin": plugin,
-            "plugin_blocked": False,
-            "plugin_warning": "",
-            "plugin_schedule_kind": "daily_times",
-            "plugin_schedule_supported": True,
-            "plugin_schedule_max_daily_times": 5,
-            "plugin_schedule_source": "agent",
-            "plugin_schedule_sha256": "a" * 64,
-            "approval_policy": build_automation_project_policy_view(
-                plugin["automation_id"],
-                {
-                    "automation_id": plugin["automation_id"],
-                    "configured_mode": "REQUIRE_EACH_RUN",
-                    "effective_mode": "REQUIRE_EACH_RUN",
-                    "effective_status": "ACTIVE",
-                    "can_full_auto": True,
-                    "summary": "全部可信入口每次运行审批。",
-                    "updated_by": "Operator",
-                    "updated_at": "2026-08-15 10:00:00",
-                    "policy_version": 2,
-                    "project_configuration_version": 9,
-                },
-            ),
-        }
-        html = self.template.render(
-            app_title="Console",
-            scheduled_tasks=[task],
-            enabled_task_count=1,
-            automation_db_warning="",
-            automation_account_warning="",
-            automation_approval_policy_warning="",
-            automation_plugin_warning="",
-            automation_plugin_packages=packages,
-            unsupported_automation_ids=[],
-            can_manage_plugins=True,
-            can_view_extensions=True,
-            can_manage_approval_policies=True,
-            automation_provider_counts={"ronghui": 1, "yunda": 0},
-            automation_provider_enabled_counts={"ronghui": 1, "yunda": 0},
-        )
-        card = html.split('class="auto-card"', 1)[1].split("</article>", 1)[0]
-
-        self.assertNotIn('href="/extensions"', html)
-        self.assertEqual(1, html.count("data-extension-open"))
-        self.assertIn("data-extension-dialog", html)
-        self.assertNotIn("data-plugin-install-form", html)
-        self.assertIn("华东财务同步", card)
-        self.assertIn("1.2.3", card)
-        self.assertEqual(1, card.count("data-project-policy-toggle"))
-        self.assertEqual(2, card.count("data-project-policy-mode"))
-        self.assertIn("data-plugin-configuration-save", card)
-        self.assertIn("data-plugin-schedule-kind", card)
-        self.assertIn(
-            'data-project-schedule-sha256="' + "a" * 64 + '"',
-            html,
-        )
-        self.assertNotIn("data-plugin-schedule-effect", card)
-        self.assertNotIn("data-plugin-account-role", card)
-        self.assertNotIn("data-plugin-resource-role", card)
-        self.assertNotIn("任务怎么运行", card)
-        self.assertNotIn("允许从哪里启动", card)
-        self.assertNotIn("数据从哪里读取、保存到哪里", card)
-        self.assertNotIn("data-cron-editor", card)
-        self.assertNotIn("policy_hash", card)
-        self.assertIn('name="project-policy-finance_action_east"', card)
-        self.assertIn('data-extension-action="upgrade"', card)
-        self.assertIn('data-extension-action="disable"', card)
-        self.assertIn('data-extension-action="uninstall"', card)
-        self.assertIn("data-extension-upgrade", card)
-
     def test_runtime_technical_details_stay_hidden_without_migration_controls(self):
         template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
             encoding="utf-8"
@@ -2749,7 +2134,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn("数据从哪里读取、保存到哪里", template_source)
         self.assertNotIn("审计不是审批", template_source)
         self.assertNotIn("每次运行都先进入本项目待审批", template_source)
-        self.assertIn("仅允许手动操作", template_source)
+        self.assertNotIn("仅允许手动操作", template_source)
         self.assertIn("{% if task.approval_policy %}", template_source)
         self.assertIn('name="contribution_id"', template_source)
         self.assertIn("task.plugin.console_entrypoints | length > 1", template_source)
@@ -2770,7 +2155,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
             encoding="utf-8"
         )
         script_source = (
-            CONSOLE_DIR / "static" / "automation_approval_policy.js"
+            CONSOLE_DIR / "static" / "automation_plugin_schedule.js"
         ).read_text(encoding="utf-8")
         extension_script = (
             CONSOLE_DIR / "static" / "extensions.js"
@@ -2783,10 +2168,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertEqual(1, template_source.count("data-extension-open"))
         self.assertIn('_automation_extension_install_dialog.html', template_source)
         self.assertIn('/static/extensions.js', template_source)
-        self.assertIn(
-            'form.querySelector(\'input[name="project_plugin_instance"]\')',
-            template_source,
-        )
+        self.assertNotIn("/automations/tasks/save", template_source)
         self.assertNotIn("data-plugin-install", template_source)
         self.assertIn("data-extension-upgrade", template_source)
         self.assertIn("data-extension-action", template_source)
@@ -2815,7 +2197,7 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         if node_binary is None:
             self.skipTest("Node.js is required for the project settings DOM regression")
         dom_test = Path(__file__).with_name("automation_project_settings_dom.test.cjs")
-        script = CONSOLE_DIR / "static" / "automation_approval_policy.js"
+        script = CONSOLE_DIR / "static" / "automation_plugin_schedule.js"
         completed = subprocess.run(
             [
                 node_binary,
@@ -2848,42 +2230,6 @@ class AutomationPluginTemplateTests(unittest.TestCase):
         self.assertNotIn('configurationSave?.addEventListener("click"', script_source)
         self.assertIn(".automation-plugin-settings-feedback", stylesheet)
         self.assertIn(".auto-settings { transition: none; }", stylesheet)
-
-    def test_unknown_write_recovery_uses_exact_work_item_evidence_selection(self):
-        template_source = (CONSOLE_DIR / "templates" / "automation.html").read_text(
-            encoding="utf-8"
-        )
-        script_source = (
-            CONSOLE_DIR / "static" / "automation_approval_policy.js"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("plugin.reconcile_state == 'BLOCKED_UNKNOWN_WRITE'", template_source)
-        self.assertIn('href="/work-items">历史事项与核验', template_source)
-        self.assertIn('href="/work-items">选择历史事项核验', template_source)
-        self.assertNotIn("data-plugin-recover-unknown-write", template_source)
-        self.assertNotIn("recoverUnknownWrite", script_source)
-        evidence_script = (CONSOLE_DIR / "static" / "unknown_write_recovery.js").read_text(encoding="utf-8")
-        self.assertIn("row.recovery_supported !== true", evidence_script)
-        self.assertIn('root.dataset.canVerifyUnknownWrite === "true"', evidence_script)
-        self.assertIn("检查已保存证据", evidence_script)
-        self.assertIn("lease_id: row.lease_id", evidence_script)
-        self.assertIn("run_id: row.run_id", evidence_script)
-
-    def test_unstable_service_v2_state_disables_conflicting_extension_operations(self):
-        source = (CONSOLE_DIR / "templates" / "extensions.html").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn(
-            "data-extension-action=\"disable\" {% if not instance.disable_allowed %}disabled{% endif %}",
-            source,
-        )
-        self.assertIn(
-            "data-extension-action=\"enable\" {% if not instance.enable_allowed %}disabled{% endif %}",
-            source,
-        )
-        self.assertIn("instance.lifecycle_actions_allowed", source)
-
 
 if __name__ == "__main__":
     unittest.main()

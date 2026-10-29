@@ -11,7 +11,6 @@ import pytest
 from agent.tool_registry import ToolRegistry
 from agent.automation_plugins.direct_invocation import DirectPluginInvocationService
 from agent.tms_runtime.direct_business import DirectBusinessError, DirectBusinessService, business_payload
-from agent.tms_runtime.finance_business import FinancePluginBusinessService
 from agent.tms_runtime.receipts_query import query_receipts
 from agent.tms_runtime.scripts import receipts_sync
 
@@ -150,61 +149,6 @@ def finance_policy():
     return SimpleNamespace(_load_contract=lambda _: (SimpleNamespace(plugin_id=manifest.plugin_id, runtime_model="SERVICE_V2"),
         SimpleNamespace(invocation_contracts={"manual_run": target})),
         invoke_trusted_and_wait=AsyncMock(return_value={"success": True, "status": "COMPLETED", "result": {"data": {"verified": True}}}))
-
-
-@pytest.mark.parametrize("params", [{"mode": "sync", "target_date": "2026-09-09", "rescan_days": 7},
-    {"mode": "backfill", "start_date": "2026-09-01", "end_date": "2026-09-09"}, {"mode": "retry", "batch_id": 9}])
-def test_finance_three_actions_resolve_installed_v2_contribution(params):
-    policy = finance_policy()
-    result = asyncio.run(FinancePluginBusinessService(policy, None)({**params, "automation_id": "finance-v2-instance"}, ADMIN, str(uuid4()), 300))
-    assert result["ok"] and "run_id" not in result
-    call = policy.invoke_trusted_and_wait.call_args
-    assert call.args == ("finance-v2-instance",)
-    assert call.kwargs["contribution_id"] == "manual_run"
-    assert call.kwargs["trusted_context"] == {"dynamic_inputs": {"collection_request": params}}
-    assert call.kwargs["actor"].actor_id == ADMIN["actor_id"]
-
-
-@pytest.mark.parametrize("params", [{"mode": "sync", "account_id": "other"},
-    {"mode": "backfill", "start_date": "2026-09-10", "end_date": "2026-09-01"},
-    {"mode": "retry", "batch_id": True}, {"mode": "sync", "session_profile": "other"}])
-def test_finance_rejects_account_override_and_invalid_dates_before_plugin(params):
-    policy = finance_policy()
-    with pytest.raises(DirectBusinessError):
-        asyncio.run(FinancePluginBusinessService(policy, None)({**params, "automation_id": "finance-v2-instance"}, ADMIN, str(uuid4()), 300))
-    policy.invoke_trusted_and_wait.assert_not_awaited()
-
-
-def test_finance_old_static_contract_requires_real_plugin_upgrade():
-    policy = finance_policy()
-    entry, contract = policy._load_contract("finance_bills")
-    contract.invocation_contracts["manual_run"].dynamic_argument_resolvers.clear()
-    policy._load_contract = lambda _: (entry, contract)
-    with pytest.raises(DirectBusinessError) as failure:
-        asyncio.run(FinancePluginBusinessService(policy, None)({"mode": "sync", "automation_id": "finance-v2-instance"}, ADMIN, str(uuid4()), 300))
-    assert failure.value.code == "FINANCE_PLUGIN_UPDATE_REQUIRED"
-    policy.invoke_trusted_and_wait.assert_not_awaited()
-
-
-@pytest.mark.parametrize("plugin_id,runtime_model", [("sync_finance_bills", "ACTION_V1"), ("other_v2", "SERVICE_V2")])
-def test_finance_rejects_non_current_collector(plugin_id, runtime_model):
-    policy = finance_policy()
-    entry, contract = policy._load_contract("finance-v2-instance")
-    entry.plugin_id, entry.runtime_model = plugin_id, runtime_model
-    policy._load_contract = lambda _: (entry, contract)
-    with pytest.raises(DirectBusinessError) as failure:
-        asyncio.run(FinancePluginBusinessService(policy, None)(
-            {"mode": "sync", "automation_id": "finance-v2-instance"}, ADMIN, str(uuid4()), 300))
-    assert failure.value.code == "FINANCE_PLUGIN_REQUIRED"
-    policy.invoke_trusted_and_wait.assert_not_awaited()
-
-
-def test_finance_requires_explicit_collector_instance():
-    policy = finance_policy()
-    with pytest.raises(DirectBusinessError) as failure:
-        asyncio.run(FinancePluginBusinessService(policy, None)({"mode": "sync"}, ADMIN, str(uuid4()), 300))
-    assert failure.value.code == "FINANCE_PLUGIN_REQUIRED"
-    policy.invoke_trusted_and_wait.assert_not_awaited()
 
 
 def test_business_payload_surfaces_task_envelope_reason():

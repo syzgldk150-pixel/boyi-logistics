@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-from agent.automation_plugins.first_party_handler_common import customer_problem_identity
+from agent.automation_plugins.host_primitive_common import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
 from agent.orchestration.models import OrchestrationError, ToolResult, WorkItemStatus
 

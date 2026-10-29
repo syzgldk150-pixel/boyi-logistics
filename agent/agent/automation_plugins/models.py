@@ -13,6 +13,9 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# The ED25519_*/BUILTIN_RELEASE trust sources and ACTION_V1 only decode retired
+# rows that still exist until migration 064 deletes them; nothing installs,
+# lists or runs them.
 class PluginTrustSource(str, Enum):
     ED25519_UPLOAD = "ed25519_upload"
     ED25519_FIRST_PARTY = "ed25519_first_party"
@@ -42,7 +45,6 @@ class PluginVersionState(str, Enum):
 
 
 class PluginUninstallStatus(str, Enum):
-    PENDING = "UNINSTALL_PENDING"
     COMPLETED = "UNINSTALLED"
 
 
@@ -126,12 +128,6 @@ class RuntimeLeaseOutcome(str, Enum):
 
 
 @dataclass(frozen=True)
-class DeviceBinding:
-    device_id: str
-    device_name: str
-
-
-@dataclass(frozen=True)
 class PluginVersionRecord:
     plugin_id: str
     version: str
@@ -144,7 +140,7 @@ class PluginVersionRecord:
     installed_at: datetime = field(default_factory=utc_now)
     release_sha: str | None = None
     install_metadata: Mapping[str, Any] = field(default_factory=dict)
-    runtime_model: PluginRuntimeModel = PluginRuntimeModel.ACTION_V1
+    runtime_model: PluginRuntimeModel = PluginRuntimeModel.SERVICE_V2
     plugin_api: str = "1.0.0"
 
     def detached_manifest(self) -> dict[str, Any]:
@@ -184,7 +180,6 @@ class AutomationProjectConfigRecord:
     resource_bindings_sha256: str
     device_binding_sha256: str
     enabled_entrypoints: tuple[str, ...]
-    device_binding: DeviceBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -195,43 +190,10 @@ class ExecutionBlock:
 
 
 @dataclass(frozen=True)
-class WorkerCleanupRequest:
-    command_id: str
-    automation_id: str
-    version: str
-    device_id: str
-    requested_at: datetime
-    package_sha256: str
-    cleanup_scope: str = "INSTANCE"
-
-
-@dataclass(frozen=True)
-class FirstPartyInstanceSeed:
-    automation_id: str
-    plugin_id: str
-    version: str
-    display_name: str
-    allowed_entrypoints: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class BootstrapResult:
-    created: tuple[str, ...]
-    existing: tuple[str, ...]
-    rejected: Mapping[str, str]
-    superseded: tuple[str, ...] = ()
-
-    @property
-    def ok(self) -> bool:
-        return not self.rejected
-
-
-@dataclass(frozen=True)
 class PluginUninstallResult:
     automation_id: str
     purge_id: str
     status: PluginUninstallStatus
-    pending_cleanup_commands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -266,7 +228,7 @@ class RuntimeGenerationSnapshot:
     enabled_entrypoints: tuple[str, ...]
     execution_metadata: Mapping[str, Any]
     created_at: datetime = field(default_factory=utc_now)
-    runtime_model: PluginRuntimeModel = PluginRuntimeModel.ACTION_V1
+    runtime_model: PluginRuntimeModel = PluginRuntimeModel.SERVICE_V2
     plugin_api: str = "1.0.0"
 
 

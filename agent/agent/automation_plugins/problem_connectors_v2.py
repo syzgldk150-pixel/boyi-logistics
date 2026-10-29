@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 
+from agent.connector_namespaces import SELF_PICKUP_PROBLEM_TOOL, SPLIT_PENDING_PROBLEM_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import (
     ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorInvocationError, ConnectorOperation,
@@ -49,7 +50,7 @@ def build_problem_connectors(reviewed):
     descriptors = []
     for self_pickup in (True, False):
         prefix = "self_pickup" if self_pickup else "split_pending"
-        tool = "self_pickup_problem_upload" if self_pickup else "split_pending_problem_upload"
+        tool = SELF_PICKUP_PROBLEM_TOOL if self_pickup else SPLIT_PENDING_PROBLEM_TOOL
         maximum = 10_000
         source_role = f"{prefix}_source_sheet"
         target_role = "split_pending_target_sheet"

@@ -47,7 +47,7 @@ def test_real_catalog_transport_keeps_healthy_rows_when_bad_identity_is_traceabl
     service._agent_request = lambda *_args, **_options: {"ok": True, "data": catalog}
     result = service._load_automation_plugin_catalog_uncached(SimpleNamespace(current_admin_user={}), module="automation", summary=True)
     assert [row["automation_id"] for row in result[1]] == ["finance_action_south"]
-    assert result[3] == ["finance_action_east"]
+    assert result[2] == ["finance_action_east"]
 
 
 @pytest.mark.parametrize("policy_mode", ["valid", "missing", "duplicate", "error"])
@@ -82,7 +82,7 @@ def test_shared_display_cache_still_separates_roles_and_rechecks_session():
     requests = []
     def fetch(_handler, **options):
         requests.append(options)
-        return ([], [], [], [], frozenset(), "", True)
+        return ([], [], [], frozenset(), "", True)
     service._load_automation_plugin_catalog_uncached = fetch
     def load(actor, roles):
         return service._load_automation_plugin_catalog(SimpleNamespace(current_admin_user={"actor_id": actor, "roles": roles}), module="finance", summary=True)

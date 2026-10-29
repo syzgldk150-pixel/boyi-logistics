@@ -20,10 +20,10 @@ from agent.automation_plugins.connector_registry import (
 )
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext, RegisteredCoreAutomationBrokerAdapter
 from agent.automation_plugins.capability_proxy_v2 import build_service_v2_capability_handler_map
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
-from agent.automation_plugins.first_party_handler_support import _ARRIVE_FIELDS
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
+from agent.automation_plugins.host_primitive_support import _ARRIVE_FIELDS
 from agent.automation_plugins.manifest import canonical_json_bytes
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 from tests.test_automation_plugin_connector_runtime_v2 import _manifest, _Orchestration, _AccountResolver, _grant
 
 
@@ -61,7 +61,7 @@ def _setup(*, connector_builder=build_arrival_connectors, **port_overrides):
     def sheet(resource, layout, records, day):
         writes.append((resource, layout, copy.deepcopy(records), day))
         return {"ok": True, "verified": True, "record_count": len(records) - (1 if layout == "split_pending" else 0)}
-    ports = FirstPartyCoreHandlerPorts(describe_account=descriptor,
+    ports = HostPrimitivePorts(describe_account=descriptor,
         arrive_list_read_page=page([row]), scan_read_page=page(scans),
         waybill_detail_read=lambda _a, code: copy.deepcopy(row) if code == row["tracking_number"] else None,
         read_scan_snapshot=lambda _d: [], read_completed_arrivals_before=lambda _d: [],
@@ -82,7 +82,7 @@ def _setup(*, connector_builder=build_arrival_connectors, **port_overrides):
         account_bindings={"arrival_stats_tms": (_ACCOUNT,)}, resource_bindings={
             f"arrival_stats_{suffix}_sheet": f"isolated-{suffix}-table" for suffix in ("primary","secondary","pending","archive","split_pending")},
         mark_write_started=lambda: calls.append("write-started"))
-    reviewed = build_first_party_core_handler_map(ports)
+    reviewed = build_host_primitive_handler_map(ports)
     if connector_builder is build_list_connectors:
         reviewed[("network.request", "feishu.bitable.replace_snapshot")] = unexpected
     registry = ConnectorRegistry(connector_builder(reviewed))
@@ -111,7 +111,7 @@ def _invoke(registry, context, suffix, operation, arguments):
     (build_list_connectors, "arrive_list_ronghui", "read_page"),
 ])
 def test_arrival_connector_accepts_actual_adapter_column_rows_without_losing_values(monkeypatch, builder, suffix, operation):
-    from plugin_core_adapters.first_party import _arrive_list_read_page
+    from plugin_core_adapters.host_primitives import _arrive_list_read_page
     from agent.tms_runtime.scripts import fetch_dispatch
     from agent.tms_runtime.scripts.login_manager import TMSAuth
     registry, context, row, _calls, _writes = _setup(connector_builder=builder, arrive_list_read_page=_arrive_list_read_page)
@@ -186,7 +186,7 @@ def test_real_arrival_algorithm_reads_through_v2_connectors_with_actual_piece_co
         return receipt
     def broker(operation, **kwargs):
         return adapter.service_invoke_adapter(host,operation,**kwargs)
-    result = load_first_party_action("sync_arrival_stats").run_action({"target_date":_DATE,"dry_run":dry_run},broker)
+    result = load_plugin_action("sync_arrival_stats").run_action({"target_date":_DATE,"dry_run":dry_run},broker)
     assert result["status"] == "SUCCESS"
     assert result["data"]["records"] == (0 if empty_source else 1)
     assert result["data"]["count_result"]["child_scan_rows"] == (0 if empty_source else 1)

@@ -188,7 +188,7 @@ def import_phase7_resources() -> list[str]:
 def repair_missing_fixed_automation_routes() -> list[str]:
     """Restore and reconcile code-owned fixed transport route descriptors.
 
-    Route identities are part of the reviewed first-party command contract.
+    Route identities are part of the reviewed fixed command contract.
     They contain no tenant-selected document/account locator, so recreating a
     missing row is deterministic.  For the Feishu command routes, the route
     key is also code-owned: an old or manually-corrupted value would otherwise

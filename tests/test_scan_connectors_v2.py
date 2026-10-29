@@ -5,12 +5,12 @@ from dataclasses import replace
 import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry, ConnectorInvocationError
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
 from tests.production_connector_support import ConnectorTestHost
 from tests.test_scan_codes_core_handlers import _context, _descriptor
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
 
 def _host(**ports):
@@ -18,7 +18,7 @@ def _host(**ports):
         pytest.fail("This scenario must not call an unrelated infrastructure port")
     ports = {**dict.fromkeys(("scan_read_page","scan_next_submit","scan_next_verify","replace_scan_snapshot"),unexpected),**ports}
     context = replace(_context("service.invoke"),account_bindings={"scan_ronghui":("scan-account",)})
-    handlers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(describe_account=_descriptor,**ports),
+    handlers = build_host_primitive_handler_map(HostPrimitivePorts(describe_account=_descriptor,**ports),
                                                   cursor_secret=secrets.token_bytes(32))
     return ConnectorTestHost(ConnectorRegistry(build_scan_connectors(handlers)),context,"sync_scan_codes_v2")
 
@@ -34,7 +34,7 @@ def test_real_scan_classification_produces_preview_through_production_connector(
     rows = [{"bill_code":"R123456789010001","destination":"A站","scan_type":"到货",
              "scan_time":"2026-09-11 08:00:00","scan_site":"大祥S站"}]
     host = _host(scan_read_page=lambda *_:{"items":rows,"returned":1,"total":1,"total_authoritative":True})
-    result = load_first_party_action("sync_scan_codes").run_action({"target_date":"2026-09-11","dry_run":True},host.broker)
+    result = load_plugin_action("sync_scan_codes").run_action({"target_date":"2026-09-11","dry_run":True},host.broker)
     assert result["status"] == "SUCCESS"
     assert result["data"]["dry_run"] is True
     assert host.calls == [("scan_ronghui","read_page")]

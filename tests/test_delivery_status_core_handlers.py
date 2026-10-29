@@ -7,12 +7,12 @@ import pytest
 
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
-from agent.automation_plugins.first_party_handlers import (
-    FirstPartyCoreHandlerPorts,
-    build_first_party_core_handler_map,
+from agent.automation_plugins.host_primitive_handlers import (
+    HostPrimitivePorts,
+    build_host_primitive_handler_map,
 )
-from plugin_core_adapters.first_party import (
-    build_production_first_party_core_handler_map,
+from plugin_core_adapters.host_primitives import (
+    build_production_host_primitive_handler_map,
 )
 from tools.phase7_mysql_store import CONSOLE_WAYBILL_FIELDS
 
@@ -31,7 +31,7 @@ def _context(
     return CoreBrokerInvocationContext(
         automation_id="delivery-status-east",
         plugin_version="1.0.0",
-        tool_name="sync_delivery_status",
+        tool_name="delivery_status",
         operation=operation,
         action=action,
         role=role,
@@ -62,8 +62,8 @@ def test_closed_delivery_handlers_bind_cursor_account_and_resource() -> None:
             "total_authoritative": True,
         }
 
-    handlers = build_first_party_core_handler_map(
-        FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(
+        HostPrimitivePorts(
             describe_account=lambda account_id: {
                 "account_id": account_id,
                 "system": "ronghui",
@@ -282,7 +282,7 @@ def test_production_delivery_handlers_use_only_low_level_ports() -> None:
                 side_effect=read_projection,
             ),
     ):
-        handlers = build_production_first_party_core_handler_map(
+        handlers = build_production_host_primitive_handler_map(
             account_manager=manager,
             cursor_secret=_SECRET,
         )

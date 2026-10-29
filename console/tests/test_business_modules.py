@@ -84,18 +84,6 @@ def test_mobile_navigation_repairs_retired_module_manager_preference() -> None:
     assert "/tracking" in routes and "/automations" in routes
 
 
-def test_plugin_maintenance_entry_moves_to_system_settings() -> None:
-    root = Path(__file__).resolve().parents[1]
-    env = Environment(loader=FileSystemLoader(root / "templates"), autoescape=True)
-    identity = (root / "templates" / "identity_management.html").read_text(encoding="utf-8")
-    maintenance = (root / "templates" / "plugin_maintenance.html").read_text(encoding="utf-8")
-
-    assert "/settings/system-status" not in identity + maintenance
-    assert '{% if is_super_admin %}<a class="ghost-btn" href="/automations/maintenance">' in identity
-    assert 'href="/settings/accounts">返回系统管理' in maintenance
-    assert "system_status_only" not in env.loader.get_source(env, "admin_accounts.html")[0]
-
-
 def test_legacy_module_get_routes_stay_read_only_and_page_route_redirects() -> None:
     app = _Console({"ok": True, "data": {"items": []}})
     handler = _Handler()

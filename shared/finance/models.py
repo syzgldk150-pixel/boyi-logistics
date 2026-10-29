@@ -47,10 +47,8 @@ class ValidationStatus(str, Enum):
 
 
 class SummarySemantics(str, Enum):
-    """How a source platform's summary rows reconcile to detail rows."""
+    """How a captured day reconciles to its source platform evidence."""
 
-    GROSS_BY_FEE_DIRECTION = "gross_by_fee_direction"
-    SIGNED_NET_BY_FEE = "signed_net_by_fee"
     # A day cut out of a stored platform capture whose statement query
     # already closed the whole period's details item by item.
     PERIOD_STATEMENT = "period_statement"
@@ -325,11 +323,6 @@ class SummarySnapshot:
     @property
     def net_change(self) -> Decimal:
         return self.income - self.expense
-
-    @property
-    def grouping_key(self) -> tuple[str, str, str]:
-        return (self.primary_fee_name, self.secondary_fee_name, self.direction.value)
-
 
 @dataclass(frozen=True)
 class FeeMappingSeed:

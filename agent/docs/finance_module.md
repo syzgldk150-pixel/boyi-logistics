@@ -4,45 +4,38 @@ type: 模块文档
 tags: [融辉, 财务同步, 费用绑定, BI, Decimal, 月度封账, 统计查询抓取]
 related: [project_overview.md, common/finance_data_baseline.md]
 status: active
-updated: 2026-10-23
+updated: 2026-10-29
 ---
 
 # 融辉财务工作台
 
 ## 模块边界
 
-本模块当前只从已完成真实页面验收的融辉财务页面同步逐笔交易、平台汇总和费用项目，并为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计、BI 查询和[月度清点与封账](#月度清点与封账)。2026-08 起的月份改由[统计查询月度抓取](#统计查询月度抓取)按月重新拉取并人工核对。
+本模块为 Console 的 `/modules/finance` 提供统一账本、费用绑定、同步审计、BI 查询和[月度清点与封账](#月度清点与封账)。账本数据由[统计查询月度抓取](#统计查询月度抓取)按月从融辉拉取并人工核对（2026-08 起）；更早月份由已删除的旧逐日采集写入，历史运行、批次和审计原样保留。
 
-本模块是项目唯一的财务架构。生产财务来源由 `shared/finance/sources.py` 的启用注册表统一控制；当前仅启用融辉三个业务账号。韵达适配器只作为待真实页面验收的预留实现，不进入定时、启动补拉、手工同步、重试目标、Console 平台选项或当前失败告警。不得新增 Excel/CSV 工作簿 ETL，也不得在运行失败时回退到历史导出文件、手工汇总或上一次成功值。
+本模块是项目唯一的财务架构。生产财务来源由 `shared/finance/sources.py` 的启用注册表统一控制；当前仅启用融辉三个业务账号，韵达财务未接入。不得新增 Excel/CSV 工作簿 ETL，也不得在运行失败时回退到历史导出文件、手工汇总或上一次成功值。
 
 ## 财务插件与 Host 的维护边界
 
-当前采集编排属于 `service_v2_plugins/sync_finance_bills_v2/payload/`。重扫天数、逻辑目标集合、日期切块、目标数量限制和页大小由包内计划明确提交；Host 核验角色绑定、权限、计划一致性和实际来源证据，不重建另一份业务默认值。分页完整性按本次捕获的实际页大小核对，不能固定按 100 行推断末页。
-
-规则归属调整不改变财务正确性要求：来源总量、明细与汇总、金额反算、极值、余额链及写后回读仍须闭合。字段缺失或采集失败不能用零值、旧快照或历史实现兜底。`tests/test_plugin_business_boundary.py` 覆盖冻结 Host 后改变财务包的页大小、重扫默认值与目标预算。
-
-2026-10-08 修复的是 Host 对显式计划的消费方式，现有财务 ZIP 未换包；本次没有重新采集生产财务数据。通用维护边界见[插件维护入口](../service_v2_plugins/README.md)，本次核验范围见[上线记录](../../docs/plugin_business_boundary_20261008.md)。
+采集只由 `service_v2_plugins/sync_ronghui_finance_statement_v2/payload/` 完成：插件决定请求口径、分页和字段对照，并随抓取提交 `field_mapping` / `request_profile`；Host 核验角色绑定、权限、本次真实请求观测、分页完整性、余额链和统计对账，不重建另一份业务默认值。字段缺失或采集失败不能用零值、旧快照或历史实现兜底。通用维护边界见[插件维护入口](../service_v2_plugins/README.md)。
 
 ## 数据源口径
 
 ### 融辉
 
 - 业务日期：结算日期。
-- 明细调用：`FIND_BALANCE_QRY_WST_WITH_SITE`。
-- 汇总调用：`FIND_BALANCE_QRY_TJ_WST`。
-- 汇总下钻：`FIND_BALANCE_QRY_TJ_DETAIL`。
-- 明细页真实 MiniUI 列绑定为：结算日期 `BALANCE_DATE`、账单日期 `FINANCE_DATE`、结算类型 `BALANCE_TYPE`、带符号金额 `BALANCE_CUR_MONEY_TEXT`、前余额 `BALANCE_PRE_CONFIRM_MONEY`、后余额 `BALANCE_BACK_CONFIRM_MONEY`、流水号 `BALANCE_ORDER`、运单编号 `BILL_CODE`。采集器只使用这组经真实页面验证的字段，不回退到旧 `SETTLEMENT_*` 字段或相似名称。
+- 统计查询：`FIND_BALANCE_QRY_TJ_WST`（按费用项目汇总）。
+- 明细：`FIND_BALANCE_QRY_TJ_DETAIL`（不带费用项目时返回期间全部明细）。
+- 明细页真实 MiniUI 列绑定为：结算日期 `BALANCE_DATE`、账单日期 `FINANCE_DATE`、结算类型 `BALANCE_TYPE`、带符号金额 `BALANCE_CUR_MONEY_TEXT`、前余额 `BALANCE_PRE_CONFIRM_MONEY`、后余额 `BALANCE_BACK_CONFIRM_MONEY`、流水号 `BALANCE_ORDER`、运单编号 `BILL_CODE`。只使用这组经真实页面验证的字段，不回退到相似名称。
 - 每条明细必须通过 `BALANCE_PRE_CONFIRM_MONEY + BALANCE_CUR_MONEY_TEXT = BALANCE_BACK_CONFIRM_MONEY` 的 Decimal 反算；金额字段缺失、空值或格式异常分别显式返回 `FIELD_DRIFT`、`AMOUNT_MISSING` 或 `AMOUNT_INVALID`，不得补零。
 - 稳定源键：响应中的 `GUID`。缺失时本账号、本日期同步失败。
-- 网点编码和名称必须来自当前账号的真实登录上下文，并在财务页网点下拉中精确唯一匹配；禁止根据登录号截取或使用列表第一项。
-- 账号和网点身份先在融辉主壳页面的公开用户上下文中严格核对，再进入财务子页；财务子页未初始化用户上下文时不得误判或绕过校验。
+- 网点编码必须来自当前账号的真实登录上下文；禁止根据登录号截取或使用列表第一项。
 
 ### 韵达（未启用）
 
-- 韵达财务页面尚未完成真实页面、真实请求和逐笔金额校验验收，生产来源状态固定为未启用。
-- 现有 `yunda_finance_adapter.py`、字段模型和费用映射只用于后续接入准备，不构成已上线证据，也不得被调度器或 Console 调用。
+- 韵达财务页面尚未完成真实页面、真实请求和逐笔金额校验验收，生产来源状态固定为未启用，也没有采集代码。
 - 后续启用前必须重新抓取真实登录页、iframe、动态字段、查询请求和响应结构，固化脱敏最小 fixture，并通过分页、唯一键、汇总、余额反算和无数据语义回归测试。
-- 完成验收后只能在共享来源注册表中一次性切换启用状态；同步服务、工具参数、Console 筛选和当前失败统计从该注册表派生，不得分别维护白名单。
+- 完成验收后只能在共享来源注册表中一次性切换启用状态；Console 筛选和当前失败统计从该注册表派生，不得分别维护白名单。
 
 采集层不得保存 Cookie、Token、SSO 参数、验证码、密码或完整请求上下文。非 JSON、登录页、空响应、字段漂移和不确定匹配都必须显式失败。
 
@@ -98,23 +91,13 @@ updated: 2026-10-23
 
 已验证基线若先在当前月出现、之后回溯到更早月份，系统会按实际更早首次出现月补一段有结束月份的同口径审计版本，避免历史交易因上线顺序意外落回待绑定。押金、充值、保证金等运营级资金项通过 `include_in_cost=false` 排除成本指标。
 
-## 同步与回溯
+## 来源与历史数据
 
-- 日常采集插件：`sync_finance_bills_v2`；业务算法在独立 ZIP 中维护，Host 提供原页和账本接口。
-- 页面“刷新数据”和查询仅读取账本，默认日期为本月；没有本月快照时明确无数据。手工同步、回溯、重试根据顶部来源唯一定位已接续采集器，执行其全部绑定来源；多个生产者时须先选来源，未接续时须先配置。不能退回旧 `finance_bills` 实例。
-- 财务采集包 2.0.2 起在 `manual_run` 声明可选 `collection_request`，通过现有 V2 运行时输入携带本次模式、日期和批次；包内将它作为完整请求解析，避免混入实例保存的历史日期。普通数据源页运行及定时仍使用保存设置。核心页面路由与 ZIP 均须升级，旧包明确要求升级，不恢复 V1。
 - 启用来源：由 `shared/finance/sources.py` 唯一声明；当前仅融辉三个业务账号为 `production_ready=true`，韵达为 `production_ready=false`。
-- 定时以财务数据源实例中实际保存并启用的计划为准；历史 `00:10` 模板不代表当前所有实例的时间。
-- Agent 启动只恢复已保存且有效的插件注册与时间计划，不补种旧财务任务或自动发起历史补拉。
-- 默认同批次重扫最近 7 个完整业务日，捕获迟到入账和历史修订。
-- 调度触发时冻结 `scheduled_for` 和目标业务日期；同一任务单实例执行。
-- 日期缺口检查和历史补拉须由明确的插件触发或人工操作发起；失败结束本次，不形成积压待领取任务。
-- 登录恢复或进程重启不补跑旧失败调用；历史快照及失败记录保留，新的调用按当前来源和配置执行。
-- 首次历史回溯按月规划，实际按自然日抓取，粒度比月更小，单日失败可独立重试并避免大范围查询超时。无法确认最早可查日期时记录 `EARLIEST_DATE_UNCONFIRMED`，不得宣称完成全历史。
-- 单账号失败不覆盖该账号旧成功快照；其他账号可提交，批次标记部分失败。
-- 显式同步、补拉和已启用定时只遍历启用来源；显式请求未启用平台或账号必须返回 `FINANCE_SOURCE_NOT_ENABLED`，不得尝试原页采集。
-- 重试历史混合批次时只重试仍启用的失败来源，并返回跳过的未启用来源数量；历史批次与运行记录继续保留审计。若批次只有未启用来源，则明确拒绝重试。
-- BI 当前失败告警只统计启用来源的最新失败状态；历史韵达失败仍可在“同步记录”审计中查看，但不得继续污染“部分来源同步失败”数量。
+- 页面“刷新数据”和查询只读取账本，默认日期为本月；没有本月快照时明确无数据。页面不提供手动同步、历史回溯或批次重试，“同步记录”只读列出批次。
+- 采集只由统计查询抓取插件按月发起，不形成积压待领取任务；登录恢复或进程重启不补跑失败调用。
+- 单账号失败不覆盖该账号旧成功快照；历史快照、批次与失败记录保留审计。
+- BI 当前失败告警只统计启用来源的最新失败状态；历史韵达失败仍可在“同步记录”中查看，但不计入当前失败数量。
 
 ## 统计查询月度抓取
 
@@ -127,7 +110,7 @@ updated: 2026-10-23
 - 发布：插件逐日调用 `publish_capture_day`，把当天非零明细按 `PERIOD_STATEMENT` 口径写入账本运行（引用本次抓取作为汇总证据），再 `finalize_capture`；`finance_platform_capture_days` 记录每天对应的运行。零金额明细（如“收品质罚款” 0 元）没有收支方向，只保留在原始数据中，不进入账本。没有任何结算的月份同样按天发布为“无数据”。
 - 账单日期口径：统计查询直接给出；明细按账单日期在本月的行从本月及相邻月份的抓取中读取，相邻月份未拉取时页面明确提示明细不全。
 - 插件只允许拉取已经结束的月份；拉取后不自动分析。重复拉取同一月份生成新的抓取，账本以最新发布为准；封账检查要求同一来源本月每天都来自同一次抓取。
-- 旧逐日采集 `sync_finance_bills_v2` 的数据源需在“财务数据源”页接续给新插件后停用；接续与切换由用户操作，Host 不自动迁移。
+- 旧逐日采集插件已于 2026-10 删除，其财务数据源已接续给本插件。
 
 ## 提交前校验
 
@@ -135,10 +118,9 @@ updated: 2026-10-23
 
 1. 平台总数、分页行数、唯一行数和写入行数一致。
 2. 稳定源键存在且唯一；同键异内容视为冲突。
-3. 明细与平台汇总按来源声明的口径逐项一致；融辉“统计查询”只提供按费用项目聚合的带符号净额，因此按费用项目净额核对，不从净额反推收入/支出毛额。
-4. 提供收入/支出毛额的平台校验收入、支出和净额；融辉校验总净额，同时保留明细原始收入/支出方向。
-5. 每笔或相邻记录满足期初余额加净变动等于期末余额。
-6. 必填字段、类别新增、金额极值和历史修订可追踪。
+3. 每天的运行都引用本月已核对的统计查询抓取（`PERIOD_STATEMENT` 口径）；明细按费用项目合计已在抓取时与统计查询逐项核对，因此单日不另做汇总对账，明细保留原始收入/支出方向。
+4. 每笔或相邻记录满足期初余额加净变动等于期末余额。
+5. 必填字段、类别新增、金额极值和历史修订可追踪。
 
 只有平台明确返回总数为零才记录“无数据”。校验未通过的运行不得替换成功快照。
 
@@ -224,9 +206,6 @@ API Key 使用环境变量 `AGENT_LLM_CONFIG_MASTER_KEY` 提供的 32 字节 Bas
 - `GET /finance/fee-mappings`
 - `POST /finance/fee-mappings/{id}`
 - `GET /finance/sync-batches`
-- `POST /finance/sync`
-- `POST /finance/backfill`
-- `POST /finance/sync-batches/{id}/retry`
 - `GET /finance/review-cases`
 - `POST /finance/reviews/analyze`
 - `POST /finance/review-cases/{id}/reject`
@@ -240,12 +219,7 @@ API Key 使用环境变量 `AGENT_LLM_CONFIG_MASTER_KEY` 提供的 32 字节 Bas
 - `GET /settings/llm/status`
 - `POST /settings/llm/candidates|models/refresh|test|activate|rollback|credentials/clear`
 
-Console 的 GET 接口查询共享 MySQL 账本。财务数据源页的采集插件经统一 Invocation 执行；
-`POST /finance/sync`、`/finance/backfill` 和 `/finance/sync-batches/{id}/retry` 则在核对真实管理员会话、
-同源请求与稳定请求身份后，通过 `services/business_calls.py` 调用 Agent 的 `finance-collect` 直接业务接口。
-此接口由 `agent/tms_runtime/finance_business.py` 适配已配置采集入口，不提交 `/internal/v1/commands`，
-不返回旧 Run 领取回执，也不进入事项逐次审批。结果与失败由本次调用如实返回。
-平台和来源权限仍须核验，Console 不直接访问第三方页面或登录态。
+Console 的 GET 接口查询共享 MySQL 账本，不直接访问第三方页面或登录态。财务数据源页的统计查询抓取插件经统一 Invocation 执行，结果与失败由本次调用如实返回。
 
 `GET /finance/sync-batches` 在批次汇总之外返回最新失败的 `platform/account_id/target_date/error_code/error_message`，同步记录页可直接定位失败来源。显式无数据日期会以零值进入趋势和账号对比；没有成功或无数据运行的日期不会被静默补零。
 
@@ -269,16 +243,11 @@ Console 的 GET 接口查询共享 MySQL 账本。财务数据源页的采集插
 - 公共领域与仓储：`../shared/finance/`；月度清点与封账：`../shared/finance/periods.py`。
 - 统计查询抓取：插件 `service_v2_plugins/sync_ronghui_finance_statement_v2/`；纯校验与投影 `../shared/finance/platform_capture.py`；保存、按日发布与工作台查询 `../shared/finance/platform_capture_repository.py`；Host 连接器 `plugin_core_adapters/finance_platform_capture.py`（操作声明在 `agent/automation_plugins/finance_connectors_v2.py`）。
 - Agent 经营汇总合同：`agent/business_query.py`；组合根注入：`main.py`；固定失败占位：`tools/business_finance_query_tool.py`。
-- 融辉生产响应适配：`agent/tms_runtime/scripts/ronghui_finance_adapter.py`；韵达预留适配器：`agent/tms_runtime/scripts/yunda_finance_adapter.py`（未启用）。
-- 真实页面发现与只读查询：`agent/tms_runtime/scripts/finance_live_capture.py`。
-- 多账号编排：`tools/finance_sync_service.py`。
-- 工具入口与双重单实例锁：`tools/sync_finance_bills_tool.py`。
-- 插件时间计划：`agent/scheduler.py`；显式财务操作适配：`agent/tms_runtime/finance_business.py`；旧任务模板不代表当前会自动补跑。
 - Console 服务与页面：`../console/finance_service.py`、`../console/templates/finance.html`、`../console/static/finance.js`、`../console/static/finance.css`。
 
 ## 测试原则
 
-测试使用脱敏的最小真实响应结构，不写入真实账号或认证信息。必须覆盖 Decimal 精度、缺失金额、分页重叠、同键异内容、映射月份版本、S/F 方向、跨午夜日期、7 天重扫、重启不自动补拉、账号/网点不匹配、未启用来源拒绝、历史失败告警过滤、BI 与明细对账，以及财务页的响应式和无障碍状态。
+测试使用脱敏的最小真实响应结构，不写入真实账号或认证信息。必须覆盖 Decimal 精度、缺失金额、分页重叠、同键异内容、映射月份版本、S/F 方向、跨午夜日期、账号/网点不匹配、未启用来源拒绝、历史失败告警过滤、BI 与明细对账，以及财务页的响应式和无障碍状态。
 
 统计查询抓取：`tests/test_finance_platform_capture.py` 覆盖分页、网点、期间、源键、余额链、统计对账和单号格式；`tests/test_finance_statement_plugin_mysql.py` 用插件真实业务代码经 Host 连接器写入 MySQL 并核对工作台数据；`tests/test_finance_statement_plugin_zip.py` 以真实 ZIP 在 bwrap 沙箱中经生产 Broker、通用账号请求和财务连接器运行，覆盖三账号整月、零数据月份、关键字段缺失由 Host 拒绝和统计不一致写前停止（需 `RUN_MYSQL_INTEGRATION=1` 与 bubblewrap）。
 

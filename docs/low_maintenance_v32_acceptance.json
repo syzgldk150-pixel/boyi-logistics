@@ -662,7 +662,6 @@
       "tests": [
         "tests/test_direct_plugin_invocation_mysql.py::test_failed_package_has_no_backlog_or_automatic_retry",
         "tests/test_direct_plugin_invocation_mysql.py::test_restart_settles_interrupted_facts_without_execution_or_recovery",
-        "tests/test_scheduled_task_contracts.py",
         "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
@@ -688,10 +687,6 @@
         },
         {
           "reference": "tests/test_direct_plugin_invocation_mysql.py::test_restart_settles_interrupted_facts_without_execution_or_recovery",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_scheduled_task_contracts.py",
           "minimum_cases": 1
         },
         {
@@ -768,7 +763,6 @@
       "tests": [
         "agent/tests/test_feishu_automation_project_entrypoints.py",
         "tests/test_automation_project_entrypoints.py",
-        "tests/test_scheduled_task_contracts.py",
         "tests/test_control_plane_execution_boundaries.py",
         "tests/test_automation_project_api.py",
         "tests/test_direct_daily_plugins_mysql.py",
@@ -799,10 +793,6 @@
         },
         {
           "reference": "tests/test_automation_project_entrypoints.py",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_scheduled_task_contracts.py",
           "minimum_cases": 1
         },
         {
@@ -1197,8 +1187,7 @@
         "tests/test_service_v2_policy_runtime.py",
         "tests/test_plugin_service_v2_foundation.py",
         "probe:settings_effective",
-        "probe:customer_collection_flow",
-        "probe:field_maintenance"
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -1252,10 +1241,6 @@
         },
         {
           "reference": "probe:customer_collection_flow",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
           "minimum_cases": 1
         }
       ],
@@ -1415,8 +1400,6 @@
       "scenario": "扫描→统计等真实数据依赖",
       "requirement": "后续动作不读取未发布／不匹配快照；依赖等待不占满无关执行槽；不得为了并发取消依赖",
       "tests": [
-        "tests/test_sync_scan_codes_v1_v2_parity.py",
-        "tests/test_sync_arrival_stats_v1_v2_parity.py",
         "probe:daily_scan_statistics",
         "probe:daily_concurrency"
       ],
@@ -1437,14 +1420,6 @@
         "probe:daily_concurrency"
       ],
       "required_evidence": [
-        {
-          "reference": "tests/test_sync_scan_codes_v1_v2_parity.py",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_sync_arrival_stats_v1_v2_parity.py",
-          "minimum_cases": 1
-        },
         {
           "reference": "probe:daily_scan_statistics",
           "minimum_cases": 1
@@ -1515,8 +1490,8 @@
       "scenario": "财务采集适配器的外部字段／响应变化",
       "requirement": "在现有真实调用链上，只调整测试适配实现便可产生相同标准账单；核心金额规则、去重和页面查询无需修改；不是无人调用的演示接口",
       "tests": [
-        "probe:field_maintenance",
-        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows"
+        "tests/test_finance_statement_plugin_zip.py",
+        "tests/test_finance_statement_plugin_mysql.py"
       ],
       "minimum_cases": 3,
       "coverage_gaps": [],
@@ -1533,11 +1508,11 @@
       ],
       "required_evidence": [
         {
-          "reference": "probe:field_maintenance",
+          "reference": "tests/test_finance_statement_plugin_zip.py",
           "minimum_cases": 1
         },
         {
-          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
+          "reference": "tests/test_finance_statement_plugin_mysql.py",
           "minimum_cases": 1
         }
       ],
@@ -1585,7 +1560,6 @@
       "requirement": "插件正常安装、配置和执行本来支持的入口；四日常业务不依赖模型；AI 故障不耗尽必要控制容量",
       "tests": [
         "tests/test_service_v2_harness_contribution_contract.py",
-        "tests/test_automation_plugin_manifest_contract.py",
         "probe:run_acceptance",
         "probe:daily_scan_statistics",
         "probe:daily_problems",
@@ -1612,10 +1586,6 @@
       "required_evidence": [
         {
           "reference": "tests/test_service_v2_harness_contribution_contract.py",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_automation_plugin_manifest_contract.py",
           "minimum_cases": 1
         },
         {
@@ -1699,8 +1669,7 @@
         "tests/test_module_data_sources_mysql.py",
         "tests/test_module_data_sources_mysql.py::test_finance_repository_rolls_back_with_autocommit_factory",
         "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
-        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
-        "probe:field_maintenance"
+        "tests/test_finance_statement_plugin_mysql.py"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -1732,11 +1701,7 @@
           "minimum_cases": 1
         },
         {
-          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
+          "reference": "tests/test_finance_statement_plugin_mysql.py",
           "minimum_cases": 1
         }
       ],
@@ -1871,9 +1836,7 @@
       "tests": [
         "tests/test_automation_plugin_lifecycle.py",
         "tests/test_plugin_module_management.py",
-        "tests/test_action_v1_module_installation.py",
-        "probe:customer_collection_flow",
-        "probe:field_maintenance"
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -1902,15 +1865,7 @@
           "minimum_cases": 1
         },
         {
-          "reference": "tests/test_action_v1_module_installation.py",
-          "minimum_cases": 1
-        },
-        {
           "reference": "probe:customer_collection_flow",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
           "minimum_cases": 1
         }
       ],
@@ -1922,7 +1877,6 @@
       "scenario": "默认设置页",
       "requirement": "只有账号需求且无 settings/index.html 的合法插件可安装并用宿主默认页；无账号无需配置；多个必要角色正确显示；不出现 Cookie／Token／数据库等无关输入",
       "tests": [
-        "tests/test_automation_plugin_manifest_contract.py",
         "probe:navigation_probe",
         "tests/test_plugin_module_management.py",
         "tests/test_automation_plugin_code_owned_fields.py",
@@ -1948,10 +1902,6 @@
         "probe:customer_collection_flow"
       ],
       "required_evidence": [
-        {
-          "reference": "tests/test_automation_plugin_manifest_contract.py",
-          "minimum_cases": 1
-        },
         {
           "reference": "probe:navigation_probe",
           "minimum_cases": 1
@@ -2100,9 +2050,7 @@
       "requirement": "真实浏览器从财务安装／迁入已实现采集器、绑定账号、同步到真实业务函数与测试库、选择来源、查看原有明细／BI；金额、业务键、覆盖范围和汇总正确",
       "tests": [
         "tests/test_module_data_sources_mysql.py",
-        "agent/tests/test_finance_sync_service.py",
-        "probe:field_maintenance",
-        "probe:finance_source_state"
+        "tests/test_finance_statement_plugin_mysql.py"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -2126,15 +2074,7 @@
           "minimum_cases": 1
         },
         {
-          "reference": "agent/tests/test_finance_sync_service.py",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:finance_source_state",
+          "reference": "tests/test_finance_statement_plugin_mysql.py",
           "minimum_cases": 1
         }
       ],
@@ -2147,7 +2087,6 @@
       "requirement": "客服模块同样完成实际采集、来源选择、问题件列表与既有统计；不只占位；客服采集不触发上传／回复／发布；内部人工处理字段不被覆盖",
       "tests": [
         "tests/test_module_data_sources_mysql.py",
-        "agent/tests/test_customer_service_problem_sync_tool.py",
         "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
@@ -2168,10 +2107,6 @@
       "required_evidence": [
         {
           "reference": "tests/test_module_data_sources_mysql.py",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "agent/tests/test_customer_service_problem_sync_tool.py",
           "minimum_cases": 1
         },
         {
@@ -2243,8 +2178,7 @@
         "tests/test_module_data_sources_mysql.py",
         "console/tests/test_finance_service.py",
         "tests/test_module_data_sources_mysql.py::test_recent_failed_collection_keeps_published_history",
-        "probe:detail_browser",
-        "probe:finance_source_state"
+        "probe:detail_browser"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -2279,10 +2213,6 @@
         {
           "reference": "probe:detail_browser",
           "minimum_cases": 1
-        },
-        {
-          "reference": "probe:finance_source_state",
-          "minimum_cases": 1
         }
       ],
       "input_side_effect_assertions": "选择来源与类型后刷新可恢复必要选择；查询绑定稳定来源而非插件存活；未成功采集显示尚无数据；失败来源不悄悄从总额剔除；兼容范围内聚合且显示更新差异",
@@ -2294,8 +2224,7 @@
       "requirement": "卸载最后一个采集实例后仍保留来源、历史、人工字段、报表引用和必要溯源；其他实例／共享账号不被误删；在途结束前不删执行环境",
       "tests": [
         "tests/test_module_data_sources_mysql.py",
-        "probe:customer_collection_flow",
-        "tests/test_lifecycle_disposal_order.py"
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -2319,10 +2248,6 @@
         },
         {
           "reference": "probe:customer_collection_flow",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_lifecycle_disposal_order.py",
           "minimum_cases": 1
         }
       ],
@@ -2385,9 +2310,7 @@
         "tests/test_module_data_sources_mysql.py",
         "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
         "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
-        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
-        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
-        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config"
+        "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -2423,14 +2346,6 @@
         {
           "reference": "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
           "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
-          "minimum_cases": 1
         }
       ],
       "input_side_effect_assertions": "既有多账号实例保留角色和计划；不同凭据采同一账本不会在合并中重复计入；不同真实业务不误去重；变更到不同站点不覆盖原历史",
@@ -2444,9 +2359,6 @@
         "tests/test_module_data_sources_mysql.py",
         "tests/test_module_data_sources_mysql.py::test_migration_reentry_is_safe",
         "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
-        "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
-        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
-        "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
         "probe:customer_collection_flow",
         "probe:navigation_probe"
       ],
@@ -2481,18 +2393,6 @@
         },
         {
           "reference": "tests/test_module_data_sources_mysql.py::test_legacy_finance_import_is_incremental_and_reports_missing_identity",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_mysql_orchestration_integration.py::test_017_finance_startup_create_seed_restore_and_reapply_are_exact",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_forward_restore_reapply_and_atomic_config",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_mysql_orchestration_integration.py::test_automation_project_018_partial_rerun_is_safe",
           "minimum_cases": 1
         },
         {
@@ -2618,16 +2518,13 @@
       "scenario": "计划、结果与导航",
       "requirement": "模块采集复用现有 Scheduler，重启和页面迁移不多造 Job；运行记录／通知回到正确模块与来源；回到设置所属页不强制跳自动化；原固定指令语义保留",
       "tests": [
-        "tests/test_scheduled_task_contracts.py",
         "agent/tests/test_feishu_automation_project_entrypoints.py",
         "probe:navigation_probe",
         "probe:run_acceptance",
         "tests/test_collector_navigation.py",
-        "agent/tests/test_finance_alert_policy.py",
+        "agent/tests/test_finance_analysis_policy.py",
         "console/tests/test_automation_control_plane_cutover.py",
-        "probe:finance_source_state",
-        "probe:customer_collection_flow",
-        "probe:field_maintenance"
+        "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -2645,17 +2542,13 @@
         "probe:navigation_probe",
         "probe:run_acceptance",
         "tests/test_collector_navigation.py",
-        "agent/tests/test_finance_alert_policy.py",
+        "agent/tests/test_finance_analysis_policy.py",
         "console/tests/test_automation_control_plane_cutover.py",
         "probe:finance_source_state",
         "probe:customer_collection_flow",
         "probe:field_maintenance"
       ],
       "required_evidence": [
-        {
-          "reference": "tests/test_scheduled_task_contracts.py",
-          "minimum_cases": 1
-        },
         {
           "reference": "agent/tests/test_feishu_automation_project_entrypoints.py",
           "minimum_cases": 1
@@ -2673,7 +2566,7 @@
           "minimum_cases": 1
         },
         {
-          "reference": "agent/tests/test_finance_alert_policy.py",
+          "reference": "agent/tests/test_finance_analysis_policy.py",
           "minimum_cases": 1
         },
         {
@@ -2681,15 +2574,7 @@
           "minimum_cases": 1
         },
         {
-          "reference": "probe:finance_source_state",
-          "minimum_cases": 1
-        },
-        {
           "reference": "probe:customer_collection_flow",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
           "minimum_cases": 1
         }
       ],
@@ -2800,9 +2685,7 @@
         "tests/test_module_data_sources_mysql.py::test_source_identity_continuation_history_and_manual_fields",
         "tests/test_module_data_sources_mysql.py::test_finance_publication_hides_unfinished_batch_and_deduplicates_site",
         "tests/test_module_data_sources_mysql.py::test_host_observed_customer_identity_parser_publication_and_local_query",
-        "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
-        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
-        "probe:field_maintenance",
+        "tests/test_finance_statement_plugin_mysql.py",
         "probe:customer_collection_flow"
       ],
       "minimum_cases": 1,
@@ -2841,15 +2724,7 @@
           "minimum_cases": 1
         },
         {
-          "reference": "tests/test_finance_raw_plugin_protocol.py::test_raw_finance_parser_commits_real_published_rows",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
+          "reference": "tests/test_finance_statement_plugin_mysql.py",
           "minimum_cases": 1
         },
         {
@@ -2900,10 +2775,13 @@
       "scenario": "一个已接入采集器的字段／解析变化",
       "requirement": "按 5.8 冻结宿主，用隔离外部目标复现等价字段变化；仅改并打包对应采集逻辑，经模块升级后输出原标准数据；宿主核心文件摘要、Agent／Console 启动标识不变，原查询／BI 无需修改；不得 mock 整个解析器或只换测试服务数据",
       "tests": [
-        "probe:field_maintenance"
+        "tests/test_finance_statement_plugin_zip.py",
+        "tests/test_finance_statement_plugin_mysql.py"
       ],
       "minimum_cases": 1,
-      "coverage_gaps": [],
+      "coverage_gaps": [
+        "字段变化的候选修复与原版回退演练原基于旧财务采集包，已随旧包退役；需在统计抓取包上重建后才能判定通过。"
+      ],
       "original_requirement": "按 5.8 冻结宿主，用隔离外部目标复现等价字段变化；仅改并打包对应采集逻辑，经模块升级后输出原标准数据；宿主核心文件摘要、Agent／Console 启动标识不变，原查询／BI 无需修改；不得 mock 整个解析器或只换测试服务数据",
       "effective_requirement": "按本文7.2/7.3，用真实当前V2采集包从旧格式失败／差异、候选修复到原版回退；只改目标包及测试版本材料，真实模块升级后标准数据与BI正确；核心摘要和Agent／Console启动身份不变。",
       "effective_scenario": "冻结宿主后的真实V2字段维护",
@@ -2917,7 +2795,11 @@
       ],
       "required_evidence": [
         {
-          "reference": "probe:field_maintenance",
+          "reference": "tests/test_finance_statement_plugin_zip.py",
+          "minimum_cases": 1
+        },
+        {
+          "reference": "tests/test_finance_statement_plugin_mysql.py",
           "minimum_cases": 1
         }
       ],
@@ -2959,7 +2841,6 @@
       "requirement": "目标包校验失败保留原版本；成功切换时在途保持旧快照，新任务用新版本；无关任务持续推进；相同操作重试不重复 Job／写入；恢复前核验配置和契约兼容；业务历史、source_id、账号、计划与报表引用不丢；不把回退代码当成撤销已发生外部写入",
       "tests": [
         "tests/test_automation_plugin_lifecycle.py",
-        "probe:field_maintenance",
         "probe:decision_maintenance"
       ],
       "minimum_cases": 1,
@@ -2980,10 +2861,6 @@
       "required_evidence": [
         {
           "reference": "tests/test_automation_plugin_lifecycle.py",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
           "minimum_cases": 1
         },
         {
@@ -3018,10 +2895,8 @@
         "tests/test_service_v2_developer_simulator.py::test_missing_exact_manifest_python_fails_closed_and_cleans_temp",
         "tests/test_service_v2_developer_simulator.py::test_missing_bubblewrap_fails_closed_without_running_plugin",
         "tests/test_plugin_maintenance.py",
-        "tests/test_action_v1_module_installation.py",
         "tests/test_plugin_service_v2_foundation.py",
-        "probe:plugin_cli_batch",
-        "probe:field_maintenance"
+        "probe:plugin_cli_batch"
       ],
       "minimum_cases": 1,
       "coverage_gaps": [],
@@ -3139,19 +3014,11 @@
           "minimum_cases": 1
         },
         {
-          "reference": "tests/test_action_v1_module_installation.py",
-          "minimum_cases": 1
-        },
-        {
           "reference": "tests/test_plugin_service_v2_foundation.py",
           "minimum_cases": 1
         },
         {
           "reference": "probe:plugin_cli_batch",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
           "minimum_cases": 1
         }
       ],
@@ -3165,7 +3032,6 @@
       "tests": [
         "tests/test_service_v2_developer_cli.py",
         "probe:plugin_cli_batch",
-        "probe:field_maintenance",
         "probe:decision_maintenance",
         "tests/test_low_maintenance_v32_acceptance.py",
         "tests/test_v32_e2e_fixture_reset.py",
@@ -3197,10 +3063,6 @@
         },
         {
           "reference": "probe:plugin_cli_batch",
-          "minimum_cases": 1
-        },
-        {
-          "reference": "probe:field_maintenance",
           "minimum_cases": 1
         },
         {

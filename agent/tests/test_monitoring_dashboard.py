@@ -60,7 +60,6 @@ class MonitoringParsingTests(unittest.TestCase):
                 return_value={"ok": True, "data": {"valueRange": {"values": sheet_values}}},
                 create=True,
             ) as feishu_op,
-            patch("agent.tms_runtime.monitoring.list_scheduled_tasks", return_value=[], create=True),
         ):
             result = monitoring.build_daily_sign_monitoring_snapshot(target_date="2026-05-31", force=True)
 
@@ -74,66 +73,6 @@ class MonitoringParsingTests(unittest.TestCase):
         self.assertEqual("Sheet1!A1:I200", feishu_op.call_args.args[1]["range"])
         self.assertNotIn("sheet-token", str(result))
 
-    def test_daily_sign_snapshot_uses_daily_sign_schedule_for_refresh_metadata(self):
-        current = time.mktime((2026, 5, 31, 14, 5, 0, 0, 0, -1))
-
-        with (
-            patch(
-                "agent.tms_runtime.monitoring.get_workflow_resource",
-                return_value={"spreadsheet_token": "sheet-token", "range": "Sheet1!A2:H200"},
-                create=True,
-            ),
-            patch(
-                "agent.tms_runtime.monitoring.feishu_operation",
-                return_value={"ok": True, "data": {"valueRange": {"values": [["运单编号", "R13应签收时间", "问题件后应签时间"], ["R1", "2026-05-31 23:59:59", ""]]}}},
-                create=True,
-            ),
-            patch(
-                "agent.tms_runtime.monitoring.list_scheduled_tasks",
-                return_value=[
-                    {
-                        "id": "daily_sign_0500",
-                        "tool_name": "sync_daily_should_sign",
-                        "cron_expression": "0 5 * * *",
-                        "enabled": False,
-                    },
-                    {
-                        "id": "daily_sign_1400",
-                        "tool_name": "sync_daily_should_sign",
-                        "cron_expression": "0 14 * * *",
-                        "enabled": True,
-                    },
-                    {
-                        "id": "daily_sign_1530",
-                        "tool_name": "sync_daily_should_sign",
-                        "cron_expression": "30 15 * * *",
-                        "enabled": 1,
-                    },
-                    {
-                        "id": "site_send_1400",
-                        "tool_name": "sync_site_send_list",
-                        "cron_expression": "0 14 * * *",
-                        "enabled": True,
-                    },
-                ],
-                create=True,
-            ),
-            patch("agent.tms_runtime.monitoring.time.time", return_value=current),
-        ):
-            result = monitoring.build_daily_sign_monitoring_snapshot(target_date="2026-05-31", force=True)
-
-        self.assertEqual("2026-05-31 14:00:00", result["updated_at"])
-        self.assertEqual(5100, result["poll_interval_sec"])
-        self.assertEqual(
-            {
-                "time_values": ["14:00", "15:30"],
-                "last_refresh_at": "2026-05-31 14:00:00",
-                "next_refresh_at": "2026-05-31 15:30:00",
-                "source": "scheduled_tasks",
-            },
-            result["refresh_schedule"],
-        )
-
     def test_daily_sign_snapshot_returns_safe_error_without_exposing_sheet_token(self):
         with (
             patch(
@@ -144,7 +83,6 @@ class MonitoringParsingTests(unittest.TestCase):
                 "agent.tms_runtime.monitoring.feishu_operation",
                 return_value={"error": "read failed for secret-sheet-token"},
             ),
-            patch("agent.tms_runtime.monitoring.list_scheduled_tasks", return_value=[]),
         ):
             result = monitoring.build_daily_sign_monitoring_snapshot(target_date="2026-05-31", force=True)
 
@@ -307,7 +245,6 @@ class MonitoringParsingTests(unittest.TestCase):
                 "agent.tms_runtime.monitoring.feishu_operation",
                 return_value={"ok": True, "data": {"valueRange": {"values": [["运单编号", "R13应签收时间", "问题件后应签时间"], ["R1", "2026-05-31 23:59:59", ""]]}}},
             ) as feishu_op,
-            patch("agent.tms_runtime.monitoring.list_scheduled_tasks", return_value=[]),
             patch("agent.tms_runtime.monitoring._schedule_daily_sign_refresh") as schedule_refresh,
         ):
             first = monitoring.build_daily_sign_monitoring_snapshot(target_date="2026-05-31", force=True)

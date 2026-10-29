@@ -5,8 +5,7 @@ from copy import deepcopy
 import re
 from uuid import uuid4
 
-from tests.v32_acceptance.finance_maintenance import wait_invocation
-from tests.v32_acceptance.finance_maintenance_drill import require_complete
+from tests.v32_acceptance.collector_drill import require_complete, wait_invocation
 
 
 def exercise_catalog_guards(*, browser, management, connection_factory,

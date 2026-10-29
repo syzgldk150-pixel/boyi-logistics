@@ -10,7 +10,6 @@ import json
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
-from shared.automation_project_manifest import automation_id_for_reviewed_task
 from shared.logistics_tables import waybill_table
 
 
@@ -203,8 +202,7 @@ class ScheduledTaskRepository:
             """,
             (
                 task["id"],
-                task.get("automation_id")
-                or automation_id_for_reviewed_task(str(task.get("id") or "")),
+                task.get("automation_id"),
                 task["name"],
                 task["tool_name"],
                 json.dumps(task.get("tool_params") or {}, ensure_ascii=False),

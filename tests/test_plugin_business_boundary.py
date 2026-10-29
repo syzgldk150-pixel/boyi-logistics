@@ -1,6 +1,5 @@
 """Real isolated ZIP upgrades against unchanged production Host implementations."""
 
-import copy
 from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
@@ -13,8 +12,6 @@ from agent.orchestration.direct_invocation_previews import confirm_preview, proj
 from agent.orchestration.models import OrchestrationError
 from tests import service_v2_production_protocol_support as support
 from tests.test_arrival_connectors_v2 import _setup
-from tests.test_finance_v2_packaged_protocol import _host as finance_host
-from tests.test_finance_core_adapter import _capture
 from tests.test_problem_connectors_v2 import _host as problem_host
 from tests.test_problem_plugin_core_handlers import _problem_result
 from tests.test_problem_plugin_production_adapter import _split_header, _split_row
@@ -69,7 +66,7 @@ def test_selection_limit_follows_installed_zip_before_an_invocation_is_created(t
     if maximum != 90:
         package_variant(monkeypatch, "payload/action.py", "_MAX_SELECTED = 90", f"_MAX_SELECTED = {maximum}")
     rows = [_split_header(), *[_split_row(f"R{number:011}", expected=3, arrived=1) for number in range(maximum + 1)]]
-    fixture = problem_host("split_pending_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": rows})
+    fixture = problem_host("split_pending_problem", sheet_rows_read=lambda *_: {"complete": True, "rows": rows})
     host = support.PackagedConnectorHost(tmp_path, "split_pending_problem_upload_v2", fixture.registry, fixture.context)
     preview = host.execute({"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}, operation="preview")
     assert preview["status"] == "SUCCESS", preview
@@ -149,7 +146,7 @@ def test_self_pickup_description_can_change_in_the_zip_with_the_host_frozen(tmp_
         return _problem_result(plan, confirmed=operation == "verify")
 
     fixture = problem_host(
-        "self_pickup_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": rows}, problem_action=action
+        "self_pickup_problem", sheet_rows_read=lambda *_: {"complete": True, "rows": rows}, problem_action=action
     )
     host = support.PackagedConnectorHost(tmp_path, "self_pickup_problem_upload_v2", fixture.registry, fixture.context)
     preview = host.execute({"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}, operation="preview")
@@ -178,7 +175,7 @@ def test_split_problem_description_can_change_without_host_reclassification(tmp_
         return _problem_result(plan, confirmed=operation == "verify")
 
     fixture = problem_host(
-        "split_pending_problem_upload",
+        "split_pending_problem",
         sheet_rows_read=lambda *_: {"complete": True, "rows": rows},
         problem_action=action,
     )
@@ -204,42 +201,3 @@ def test_arrival_classification_changes_only_in_package_and_empty_projection_cle
     primary = [item for item in writes if item[0] == "isolated-primary-table"]
     assert primary[0][2][0]["quantity"] == 2
 
-
-def test_finance_smaller_package_pages_are_verified_against_actual_pages(tmp_path, monkeypatch):
-    package_variant(monkeypatch, "payload/action.py", "_PAGE_SIZE = 100", "_PAGE_SIZE = 1")
-
-    def capture(descriptor, day):
-        value = _capture(descriptor, day)
-        second = copy.deepcopy(value.transactions[0])
-        second.update(
-            source_id=second["source_id"] + "-2",
-            bill_code=second["bill_code"] + "-2",
-            old_amount="78.7500",
-            new_amount="77.5000",
-            balance_order="2",
-            source_reference="2",
-            trade_time=f"{day.isoformat()}T09:31:00",
-        )
-        second["source_payload"] = {"BALANCE_ORDER": "2", "BILL_CODE": second["bill_code"]}
-        value.transactions.append(second)
-        value.summaries[0]["expend"] = "2.5000"
-        value.validation.update({"source_total": 2, "page_row_counts": [2]})
-        return value
-
-    host, repository, captures = finance_host(tmp_path, capture_port=capture)
-    result = host.execute({"target_date": "2026-07-11", "rescan_days": 1}, operation="run")
-    assert result["status"] == "SUCCESS", result
-    assert len(captures) == 6 and len(repository.runs) == 3
-    assert result["data"]["written_transactions"] == 6
-
-
-def test_finance_retry_default_and_target_budget_belong_to_package():
-    from plugin_core_adapters.finance import _FinanceBrokerHandlers
-    from tests.first_party_action_payload_support import load_first_party_action
-
-    action = load_first_party_action("sync_finance_bills")
-    action._DEFAULT_RESCAN_DAYS = 3
-    action._MAX_TARGETS = 123
-    plan, digest = action._plan_request({"mode": "retry", "batch_id": 1})
-    _FinanceBrokerHandlers._validate_contract(plan, digest)
-    assert plan["rescan_days"] == 3 and plan["max_targets"] == 123

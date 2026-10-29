@@ -10,10 +10,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
-from agent.automation_plugins.code_owned_fields import (
-    first_party_code_owned_config_fields,
-    first_party_code_owned_plan_fields,
-)
+from agent.automation_plugins.code_owned_fields import code_owned_config_fields
 from agent.automation_plugins.connector_compatibility import (
     ConnectorRequirementContract,
     connector_requirement_for_service,
@@ -27,9 +24,8 @@ from agent.automation_plugins.errors import (
     PluginNotFoundError,
 )
 from agent.automation_plugins.manifest import (
-    AutomationPluginManifest,
     canonical_json_bytes,
-    runtime_descriptor_matches_signed_installation,
+    runtime_descriptor_matches,
 )
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
@@ -49,6 +45,10 @@ from shared.orchestration_repository_support import OrchestrationPersistenceErro
 
 _CATALOG_ENTRIES = ContextVar("plugin_catalog_request_entries", default=None)
 _CATALOG_MANIFESTS = ContextVar("plugin_catalog_request_manifests", default=None)
+_SERVICE_V2_TRUST_SOURCES = frozenset({
+    PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+    PluginTrustSource.BUILTIN_BUNDLE.value,
+})
 
 
 def _display_manifest(version):
@@ -57,11 +57,13 @@ def _display_manifest(version):
     key = (version.runtime_model, _canonical_digest(version.manifest)) if cache is not None else None
     if cache is not None and key in cache:
         return cache[key]
-    manifest = (AutomationPluginManifestV2.from_mapping(version.manifest)
-        if version.runtime_model is PluginRuntimeModel.SERVICE_V2
-        else AutomationPluginManifest.from_mapping(version.manifest))
-    contract = (ServiceV2ProjectContract.from_manifest(manifest)
-        if version.runtime_model is PluginRuntimeModel.SERVICE_V2 else None)
+    if version.runtime_model is not PluginRuntimeModel.SERVICE_V2:
+        raise PluginConflictError(
+            "only service-v2 plugin versions are supported",
+            code="PLUGIN_RUNTIME_MODEL_INVALID",
+        )
+    manifest = AutomationPluginManifestV2.from_mapping(version.manifest)
+    contract = ServiceV2ProjectContract.from_manifest(manifest)
     result = manifest, contract
     if cache is not None:
         cache[key] = result
@@ -104,7 +106,6 @@ class PluginCatalogEntry:
     resource_bindings: Mapping[str, str]
     project_schedule: Mapping[str, Any]
     install_root: str | None
-    device_binding: Mapping[str, str] | None
     install_metadata: Mapping[str, Any]
     project_config_version: int
     project_config_sha256: str
@@ -117,7 +118,7 @@ class PluginCatalogEntry:
     committed_generation: int | None
     reconcile_state: RuntimeReconcileState
     committed_snapshot: RuntimeGenerationSnapshot | None
-    runtime_model: str = PluginRuntimeModel.ACTION_V1.value
+    runtime_model: str = PluginRuntimeModel.SERVICE_V2.value
     plugin_api: str = "1.0.0"
     runtime_mode: str = "on_demand"
     provided_services: tuple[str, ...] = ()
@@ -302,10 +303,9 @@ def _committed_execution_metadata(entry: PluginCatalogEntry) -> dict[str, Any]:
             "install_root": entry.install_root,
         },
     }
-    if not runtime_descriptor_matches_signed_installation(
+    if not runtime_descriptor_matches(
         metadata["runtime_descriptor"],
         expected_runtime_descriptor,
-        schema_version=entry.manifest_schema_version,
     ):
         raise PluginConflictError(
             "committed runtime descriptor differs from its signed installation"
@@ -381,59 +381,35 @@ def _entry_from_project(
 ) -> PluginCatalogEntry:
     version = project.active_version
     manifest, service_contract = _display_manifest(version)
-    if version.runtime_model is PluginRuntimeModel.SERVICE_V2:
-        account_roles = service_contract.account_roles
-        resource_roles = service_contract.resource_roles
-        allowed_entrypoints = service_contract.allowed_entrypoints
-        invocation_contracts = service_contract.invocation_contracts
-        governance_anchor = service_contract.governance_anchor
-        governance_anchor_sha256 = service_contract.governance_anchor_sha256
-        tool_contract = service_contract.tool_contract
-        worker_requirement = {
-            "required": False,
-            "interactive_session": False,
-            "supported_os": [],
-            "queue_deadline_seconds": 60,
-        }
-        execution_platform = "server"
-        scheduling = service_contract.scheduling
-        runtime_permissions = service_contract.runtime_permissions
-        signed_runtime_permissions = service_contract.runtime_permissions
-        project_full_auto_allowed = True
-        provided_services = manifest.provided_services
-        required_services = manifest.required_services
-        manifest_projection = manifest.to_mapping()
-        service_contracts = {
-            "provides": manifest_projection["provides"],
-            "requires": manifest_projection["requires"],
-        }
-        contributions = manifest_projection["contributes"]
-        declared_capabilities = manifest_projection["capabilities"]
-        storage_contract = manifest_projection["storage"]
-        settings_ui = manifest.settings_ui
-    else:
-        signed_manifest = manifest.to_signed_mapping()
-        manifest_projection = signed_manifest
-        account_roles = manifest.account_roles
-        resource_roles = manifest.resource_roles
-        allowed_entrypoints = manifest.allowed_entrypoints
-        invocation_contracts = manifest.invocation_contracts
-        governance_anchor = manifest.governance_anchor
-        governance_anchor_sha256 = manifest.governance_anchor_sha256
-        tool_contract = manifest.tool_contract
-        worker_requirement = manifest.worker_requirement
-        execution_platform = manifest.execution_platform
-        scheduling = manifest.scheduling
-        runtime_permissions = manifest.runtime_permissions
-        signed_runtime_permissions = signed_manifest["runtime_permissions"]
-        project_full_auto_allowed = manifest.project_full_auto_allowed
-        provided_services = ()
-        required_services = ()
-        contributions = {}
-        declared_capabilities = ()
-        storage_contract = {}
-        service_contracts = {}
-        settings_ui = None
+    account_roles = service_contract.account_roles
+    resource_roles = service_contract.resource_roles
+    allowed_entrypoints = service_contract.allowed_entrypoints
+    invocation_contracts = service_contract.invocation_contracts
+    governance_anchor = service_contract.governance_anchor
+    governance_anchor_sha256 = service_contract.governance_anchor_sha256
+    tool_contract = service_contract.tool_contract
+    worker_requirement = {
+        "required": False,
+        "interactive_session": False,
+        "supported_os": [],
+        "queue_deadline_seconds": 60,
+    }
+    execution_platform = "server"
+    scheduling = service_contract.scheduling
+    runtime_permissions = service_contract.runtime_permissions
+    signed_runtime_permissions = service_contract.runtime_permissions
+    project_full_auto_allowed = True
+    provided_services = manifest.provided_services
+    required_services = manifest.required_services
+    manifest_projection = manifest.to_mapping()
+    service_contracts = {
+        "provides": manifest_projection["provides"],
+        "requires": manifest_projection["requires"],
+    }
+    contributions = manifest_projection["contributes"]
+    declared_capabilities = manifest_projection["capabilities"]
+    storage_contract = manifest_projection["storage"]
+    settings_ui = manifest.settings_ui
     if manifest.plugin_id != project.plugin_id or version.plugin_id != project.plugin_id:
         raise PluginConflictError("persisted plugin_id does not match its manifest")
     if manifest.version != version.version:
@@ -473,13 +449,7 @@ def _entry_from_project(
             raise PluginConflictError(
                 "committed generation does not match its immutable plugin version"
             )
-    binding = None
     config = project_configuration.get_project_config(project.automation_id) if project_configuration else None
-    if config is not None and config.device_binding is not None:
-        binding = {
-            "device_id": config.device_binding.device_id,
-            "device_name": config.device_binding.device_name,
-        }
     return PluginCatalogEntry(
         automation_id=project.automation_id,
         plugin_id=project.plugin_id,
@@ -534,7 +504,6 @@ def _entry_from_project(
             else {"kind": "none", "times": [], "enabled": False}
         ),
         install_root=version.install_root,
-        device_binding=binding,
         install_metadata=copy.deepcopy(dict(version.install_metadata)),
         project_config_version=config.config_version if config is not None else 0,
         project_config_sha256=config.config_sha256 if config is not None else "",
@@ -565,7 +534,7 @@ def _entry_from_project(
         settings_ui=(
             copy.deepcopy(dict(settings_ui)) if settings_ui is not None else None
         ),
-        management=management_for(manifest.plugin_id, getattr(manifest, "management", None)),
+        management=management_for(getattr(manifest, "management", None)),
     )
 
 
@@ -613,13 +582,9 @@ def project_contract_fragment(entry: PluginCatalogEntry) -> dict[str, Any]:
         "scheduling": copy.deepcopy(dict(entry.scheduling)),
         "project_full_auto_allowed": entry.project_full_auto_allowed,
         "runtime_permissions": copy.deepcopy(dict(entry.runtime_permissions)),
-        "code_owned_plan_fields": list(
-            first_party_code_owned_plan_fields(
-                automation_id=entry.automation_id,
-                plugin_id=entry.plugin_id,
-                trust_source=entry.trust_source,
-            )
-        ),
+        # Part of every committed contract hash; plugins have no Host-owned
+        # plan fields.
+        "code_owned_plan_fields": [],
         "device_binding": (
             copy.deepcopy(committed_metadata["device_binding"])
             if committed_metadata is not None
@@ -650,13 +615,6 @@ class PluginCatalog:
         repository: AutomationPluginRepositoryPort,
         project_configuration: AutomationProjectConfigurationPort | None = None,
         *,
-        excluded_automation_ids: Sequence[str] = (),
-        excluded_automation_plugins: Mapping[str, str] | None = None,
-        excluded_plugin_ids: Sequence[str] = (),
-        allowed_execution_platforms: Sequence[str] | None = None,
-        migration_pair_provider: (
-            Callable[[str], Mapping[str, Any] | None] | None
-        ) = None,
         account_binding_ready: (
             Callable[[str, Sequence[str]], bool] | None
         ) = None,
@@ -667,94 +625,19 @@ class PluginCatalog:
     ) -> None:
         self._repository = repository
         self._project_configuration = project_configuration
-        self._excluded_automation_ids = frozenset(
-            str(item or "").strip()
-            for item in excluded_automation_ids
-            if str(item or "").strip()
-        )
-        self._excluded_automation_plugins = {
-            str(automation_id or "").strip(): str(plugin_id or "").strip()
-            for automation_id, plugin_id in (excluded_automation_plugins or {}).items()
-            if str(automation_id or "").strip() and str(plugin_id or "").strip()
-        }
-        overlap = self._excluded_automation_ids & self._excluded_automation_plugins.keys()
-        if overlap:
-            raise ValueError(
-                "excluded automation identities cannot use both untyped and typed exclusions"
-            )
-        self._excluded_plugin_ids = frozenset(
-            str(item or "").strip()
-            for item in excluded_plugin_ids
-            if str(item or "").strip()
-        )
-        self._allowed_execution_platforms = (
-            None
-            if allowed_execution_platforms is None
-            else frozenset(
-                str(item or "").strip().lower()
-                for item in allowed_execution_platforms
-                if str(item or "").strip()
-            )
-        )
-        if self._allowed_execution_platforms == frozenset():
-            raise ValueError("allowed execution platforms cannot be empty")
-        self._migration_pair_provider = migration_pair_provider
         self._account_binding_ready = account_binding_ready
         self._contribution_backend_status = contribution_backend_status
         self._connectors = connector_registry or ConnectorRegistry()
 
-    def _project_is_excluded(self, project: PluginInstanceRecord) -> bool:
-        if project.automation_id in self._excluded_automation_ids:
-            return True
-        if (
-            project.automation_id not in self._excluded_automation_plugins
-            and project.plugin_id not in self._excluded_plugin_ids
-            and (self._allowed_execution_platforms is None or (
-                project.active_version.runtime_model is PluginRuntimeModel.SERVICE_V2
-                and "server" in self._allowed_execution_platforms
-            ))
-        ):
-            return False  # Inclusion still requires the full entry validation.
-        try:
-            manifest, _ = _display_manifest(project.active_version)
-        except Exception:
-            # Missing or corrupt platform data remains visible and therefore
-            # fails closed in _entry_from_project instead of being hidden.
-            return False
-        version = project.active_version
-        if (
-            manifest.plugin_id != project.plugin_id
-            or version.plugin_id != project.plugin_id
-            or manifest.version != version.version
-            or manifest.manifest_sha256 != version.manifest_sha256
-        ):
-            return False
-        expected_plugin_id = self._excluded_automation_plugins.get(
-            project.automation_id
-        )
-        if expected_plugin_id is not None:
-            # A legacy identity collision remains visible and fails closed; it
-            # is never hidden merely because its automation_id is reserved.
-            return manifest.plugin_id == expected_plugin_id
-        if manifest.plugin_id in self._excluded_plugin_ids:
-            return True
-        return bool(
-            self._allowed_execution_platforms is not None
-            and (
-                "server"
-                if project.active_version.runtime_model
-                is PluginRuntimeModel.SERVICE_V2
-                else manifest.execution_platform
-            )
-            not in self._allowed_execution_platforms
-        )
+    @staticmethod
+    def _project_is_excluded(project: PluginInstanceRecord) -> bool:
+        """Only Service V2 projects are current; other persisted rows stay hidden."""
+
+        return project.active_version.runtime_model is not PluginRuntimeModel.SERVICE_V2
 
     def excluded_persisted_automation_ids(self) -> frozenset[str]:
-        """Return exact persisted identities omitted by the release scope."""
+        """Return the exact persisted identities that are not Service V2 projects."""
 
-        # Only persisted project identities are safe to expose as hidden IDs.
-        # Static/reserved identifiers must not cause a fallback card to vanish;
-        # a real same-ID project remains visible and fails closed instead.
         _, hidden_automation_ids, _ = self._partition_projects()
         return hidden_automation_ids
 
@@ -815,11 +698,8 @@ class PluginCatalog:
         failures: dict[str, dict[str, str]] = {}
         prefetch = getattr(self._repository, "prefetch_catalog_instances", None)
         if loaded_projects is None and callable(prefetch):
-            prefetch(tuple(item for item in automation_ids if item not in self._excluded_automation_ids))
+            prefetch(automation_ids)
         for automation_id in automation_ids:
-            if automation_id in self._excluded_automation_ids:
-                hidden.add(automation_id)
-                continue
             if loaded_projects is None:
                 try:
                     project = self._repository.get_instance(automation_id)
@@ -874,9 +754,7 @@ class PluginCatalog:
             try:
                 if module is not None:
                     manifest = project.active_version.manifest
-                    ownership = management_for(
-                        project.plugin_id, manifest.get("management")
-                    )
+                    ownership = management_for(manifest.get("management"))
                     if ownership["module"] != module:
                         hidden.add(project.automation_id)
                         continue
@@ -943,8 +821,7 @@ class PluginCatalog:
 
     @staticmethod
     def _code_owned_config_fields(entry: PluginCatalogEntry) -> tuple[str, ...]:
-        return first_party_code_owned_config_fields(
-            automation_id=entry.automation_id,
+        return code_owned_config_fields(
             plugin_id=entry.plugin_id,
             trust_source=entry.trust_source,
         )
@@ -1343,17 +1220,6 @@ class PluginCatalog:
         if module is not None and module not in MODULE_PATHS:
             raise PluginConflictError("unsupported plugin module", code="PLUGIN_MODULE_INVALID")
         entries, hidden_automation_ids, unavailable_projects = self._entries_with_failures(module=module)
-        migrations = {entry.automation_id: self._migration_projection(entry.automation_id) for entry in entries}
-        # Completed source instances remain queryable for audit/maintenance,
-        # but must not appear as duplicate, runnable business cards.
-        retired_ids = {
-            entry.automation_id for entry in entries
-            if entry.runtime_model == PluginRuntimeModel.ACTION_V1.value
-            and (pair := migrations[entry.automation_id])
-            and pair["role"] == "source" and pair["state"] == "COMPLETED"
-        }
-        entries = [entry for entry in entries if entry.automation_id not in retired_ids]
-        hidden_automation_ids = frozenset(hidden_automation_ids) | retired_ids
         # A module filter must not hide providers used by one of its plugins.
         # Account-only actions avoid compiling unrelated projects altogether.
         dependency_entries = self.list() if module and any(entry.required_services for entry in entries) else entries
@@ -1379,9 +1245,7 @@ class PluginCatalog:
                 "runtime_mode": entry.runtime_mode,
                 "provided_services": list(entry.provided_services),
                 "required_services": list(entry.required_services),
-                "execution_platform": entry.execution_platform,
                 "can_schedule": entry.scheduling.get("supported") is True,
-                "worker_required": entry.worker_requirement.get("required") is True,
                 "action_summary": str(entry.tool_contract.get("description") or entry.name),
                 "resource_summary": self._resource_summary(entry),
                 "account_roles": self._safe_account_roles(entry),
@@ -1394,7 +1258,7 @@ class PluginCatalog:
                     if entry.settings_ui is not None
                     else None
                 ),
-                "management": management_for(entry.plugin_id, entry.management),
+                "management": management_for(entry.management),
                 "settings_mode": settings_mode(
                     settings_ui=entry.settings_ui, account_roles=entry.account_roles,
                     resource_roles=entry.resource_roles, config_schema=entry.config_schema,
@@ -1429,7 +1293,6 @@ class PluginCatalog:
                     entry,
                     dependency_statuses.get(entry.automation_id),
                 )[1],
-                "migration": migrations[entry.automation_id],
                 "enabled": entry.enabled,
                 "configured": entry.configured,
                 "state": entry.state,
@@ -1438,9 +1301,7 @@ class PluginCatalog:
                 "committed_generation": entry.committed_generation,
                 "reconcile_state": entry.reconcile_state.value,
                 "project_configuration_version": entry.project_config_version,
-                "execution_platform": entry.execution_platform,
                 "can_schedule": entry.scheduling.get("supported") is True,
-                "worker_required": entry.worker_requirement.get("required") is True,
                 "action_summary": str(entry.tool_contract.get("description") or entry.name),
                 "resource_summary": self._resource_summary(entry),
                 "account_roles": self._safe_account_roles(entry),
@@ -1453,7 +1314,7 @@ class PluginCatalog:
                     if entry.settings_ui is not None
                     else None
                 ),
-                "management": management_for(entry.plugin_id, entry.management),
+                "management": management_for(entry.management),
                 "settings_mode": settings_mode(
                     settings_ui=entry.settings_ui, account_roles=entry.account_roles,
                     resource_roles=entry.resource_roles,
@@ -1473,14 +1334,6 @@ class PluginCatalog:
                 "resource_bindings": copy.deepcopy(dict(entry.resource_bindings)),
                 "schedule": copy.deepcopy(dict(entry.project_schedule)),
                 "schedule_sha256": _json_hash(dict(entry.project_schedule)),
-                "device": (
-                    {
-                        "id": str(entry.device_binding.get("device_id") or ""),
-                        "name": str(entry.device_binding.get("device_name") or ""),
-                    }
-                    if entry.device_binding
-                    else None
-                ),
                 "missing_requirements": self._missing_requirements(entry),
             }
             for entry in entries
@@ -1494,41 +1347,6 @@ class PluginCatalog:
             "unsupported_automation_ids": [],
             "hidden_automation_ids": sorted(hidden_automation_ids),
             "unavailable_projects": unavailable_projects,
-        }
-
-    def _migration_projection(self, automation_id: str) -> dict[str, Any] | None:
-        provider = self._migration_pair_provider
-        if provider is None:
-            return None
-        pair = provider(automation_id)
-        if pair is None:
-            return None
-        pair_id = str(pair.get("migration_pair_id") or "").strip()
-        source = str(pair.get("source_automation_id") or "").strip()
-        target = str(pair.get("target_automation_id") or "").strip()
-        state = str(pair.get("state") or "").strip()
-        record_version = pair.get("record_version")
-        if (
-            not pair_id
-            or automation_id not in {source, target}
-            or not source
-            or not target
-            or not state
-            or isinstance(record_version, bool)
-            or not isinstance(record_version, int)
-            or record_version <= 0
-        ):
-            raise PluginConflictError(
-                "plugin migration catalog projection is invalid",
-                code="PLUGIN_MIGRATION_DATA_INVALID",
-            )
-        is_source = automation_id == source
-        return {
-            "migration_pair_id": pair_id,
-            "state": state,
-            "record_version": record_version,
-            "role": "source" if is_source else "target",
-            "counterpart_automation_id": target if is_source else source,
         }
 
     @staticmethod
@@ -1550,14 +1368,10 @@ class PluginCatalog:
         }
         if not required_resources <= set(entry.resource_bindings):
             missing.append("resource_binding")
-        if entry.worker_requirement.get("required") is True and entry.device_binding is None:
-            missing.append("device_binding")
         return missing
 
     def get(self, automation_id: str) -> PluginCatalogEntry | None:
         safe_automation_id = str(automation_id or "").strip()
-        if safe_automation_id in self._excluded_automation_ids:
-            return None
         cache = self._entry_cache()
         if cache is not None and safe_automation_id in cache:
             return cache[safe_automation_id]
@@ -1653,22 +1467,10 @@ class PluginCatalog:
             *unavailable_projects,
         }
         unsupported = sorted(expected - installed)
-        enabled_builtin = sorted(
-            entry.automation_id
-            for entry in entries
-            if entry.enabled and entry.trust_source == PluginTrustSource.BUILTIN_RELEASE.value
-        )
         invalid_trust = sorted(
             entry.automation_id
             for entry in entries
-            if entry.enabled
-            and entry.trust_source
-            not in {
-                PluginTrustSource.ED25519_UPLOAD.value,
-                PluginTrustSource.ED25519_FIRST_PARTY.value,
-                PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
-                PluginTrustSource.BUILTIN_BUNDLE.value,
-            }
+            if entry.enabled and entry.trust_source not in _SERVICE_V2_TRUST_SOURCES
         )
         unstable = sorted(
             entry.automation_id
@@ -1695,20 +1497,13 @@ class PluginCatalog:
         package_keys = {
             (entry.plugin_id, entry.installed_version)
             for entry in entries
-            if entry.trust_source
-            in {
-                PluginTrustSource.ED25519_UPLOAD.value,
-                PluginTrustSource.ED25519_FIRST_PARTY.value,
-                PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
-                PluginTrustSource.BUILTIN_BUNDLE.value,
-            }
+            if entry.trust_source in _SERVICE_V2_TRUST_SOURCES
         }
         trust_counts: dict[str, int] = {}
         for entry in entries:
             trust_counts[entry.trust_source] = trust_counts.get(entry.trust_source, 0) + 1
         integrity_ok = bool(
             not unsupported
-            and not enabled_builtin
             and not invalid_trust
             and not invalid_runtime
         )
@@ -1717,11 +1512,10 @@ class PluginCatalog:
             "ok": integrity_ok,
             "runnable": runnable,
             "runtime_status": "READY" if runnable else "UNAVAILABLE",
-            "signed_packages": len(package_keys),
+            "packages": len(package_keys),
             "instances": len(entries),
             "trust_sources": dict(sorted(trust_counts.items())),
             "unsupported_automation_ids": unsupported,
-            "enabled_builtin_release": enabled_builtin,
             "invalid_enabled_trust": invalid_trust,
             "unstable_generations": unstable,
             "invalid_enabled_runtime": invalid_runtime,
@@ -1853,29 +1647,19 @@ class CompositeToolRegistry:
         self,
         core_catalog: Any,
         plugin_catalog: PluginCatalog,
-        *,
-        blocked_core_tool_names: Sequence[str] = (),
     ) -> None:
         self._core = core_catalog
         self._plugins = plugin_catalog
-        self._blocked_core_tool_names = frozenset(
-            str(item or "").strip()
-            for item in blocked_core_tool_names
-            if str(item or "").strip()
-        )
 
     @property
     def catalog_hash(self) -> str:
         value = {
             "core": str(self._core.catalog_hash),
             "plugins": self._plugins.catalog_hash,
-            "blocked_core_tools": sorted(self._blocked_core_tool_names),
         }
         return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
     def get_capability(self, tool_name: str) -> Mapping[str, Any] | None:
-        if str(tool_name or "").strip() in self._blocked_core_tool_names:
-            return None
         core = self._core.get_capability(tool_name)
         plugin = self._plugins.get_capability(tool_name)
         if core is None:
@@ -1900,8 +1684,6 @@ class CompositeToolRegistry:
         merged: dict[str, Mapping[str, Any]] = {}
         for capability in [*self._core.list_llm_capabilities(), *self._plugins.list_llm_capabilities()]:
             name = str(capability.get("name") or "")
-            if name in self._blocked_core_tool_names:
-                continue
             current = merged.get(name)
             if current is not None and canonical_json_bytes(dict(current)) != canonical_json_bytes(dict(capability)):
                 raise PluginConflictError(f"conflicting LLM capability: {name}")
@@ -1925,11 +1707,7 @@ class CompositeToolRegistry:
         return self.get_llm_tools()
 
     def list_tools(self) -> list[str]:
-        core_names = {
-            str(name)
-            for name in self._core.list_tools()
-            if str(name) not in self._blocked_core_tool_names
-        }
+        core_names = {str(name) for name in self._core.list_tools()}
         plugin_names = {entry.action_id for entry in self._plugins.list()}
         return sorted(core_names | plugin_names)
 

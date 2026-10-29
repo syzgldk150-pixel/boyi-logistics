@@ -35,14 +35,8 @@ from agent.automation_plugins.direct_invocation import DirectPluginInvocationSer
 from agent.plugin_business_results import PluginBusinessResults
 from agent.tms_runtime.routes import bind_direct_business_service
 from business_composition import build_business_service
-from agent.tms_runtime.finance_business import FinancePluginBusinessService
-from shared.finance.sources import (
-    enabled_finance_account_ids,
-    enabled_finance_platforms,
-    enabled_finance_source_specs,
-)
+from shared.finance.sources import enabled_finance_platforms
 from shared.runtime_events import (
-    publish_finance_alert,
     register_account_session_restored,
     register_finance_alert,
     register_tms_session_alert,
@@ -155,11 +149,6 @@ from agent.automation_plugins.production import (
     build_production_automation_plugin_runtime,
     production_cursor_secret,
 )
-from agent.automation_plugins.first_party import (
-    release_first_party_automation_ids,
-    release_first_party_broker_action_keys,
-    release_first_party_plugin_ids,
-)
 from agent.automation_plugins.management_api import create_automation_plugin_management_router
 from agent.harness import HarnessError
 from agent.harness_api import create_harness_router, harness_error_response
@@ -167,7 +156,6 @@ from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.automation_project_api import create_automation_project_router
 from agent.orchestration.automation_project_entrypoints import (
     AutomationProjectEntrypoints,
-    CommittedAutomationProjectRouteResolver,
     ServiceV2FeishuDispatcher,
     TrustedDynamicArgumentResolver,
 )
@@ -189,23 +177,11 @@ from agent.orchestration.models import (
 )
 from agent.orchestration.outbox_dispatcher import OutboxDispatcher, OutboxDispatcherGroup
 from agent.orchestration.control_plane_retention import ControlPlaneRetentionWorker
-from agent.tms_runtime.account_change_guard import compose_account_change_guards
 from agent.orchestration.plan_validator import PlanValidator
 from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.policy_engine import PolicyEngine
-from agent.orchestration.scheduled_task_approval_service import ScheduledTaskApprovalService
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.orchestration.workflow_runner import WorkflowRunner
-from agent.automation_plugins.release_scope import WINDOWS_WORKER_RELEASE_ENABLED
-
-if WINDOWS_WORKER_RELEASE_ENABLED:
-    from agent.windows_worker.server_api import (
-        FilesystemWorkerPackageArchiveReader,
-        WindowsWorkerServerTransport,
-        build_worker_transport_router,
-        is_worker_transport_path,
-        load_worker_server_signer,
-    )
 from agent.llm_settings import (
     LLMCompatibilityService,
     LLMSettingsError,
@@ -239,7 +215,6 @@ from agent.scheduler import (
     run_scheduled_tasks_now,
     scheduler_release_hold_requested,
     scheduler_runtime_status,
-    seed_phase7_schedule_tasks,
     sync_project_jobs,
 )
 from agent.tms_runtime import router as tms_router
@@ -250,7 +225,7 @@ from agent.tms_runtime.monitoring import configure_feishu_operation
 from agent.tms_runtime.routes import ensure_account_list_cache
 from agent.tms_runtime.routes import update_account_list_cache_status
 from agent.tms_runtime.session_broker import get_session_broker
-from agent.workflow_resource_store import get_saved_workflow_resource, get_workflow_resource, list_workflow_resources
+from agent.workflow_resource_store import get_saved_workflow_resource, list_workflow_resources
 from agent.tool_executor import ToolExecutor
 from feishu.bot import (
     bind_agent_runtime,
@@ -275,7 +250,7 @@ from feishu.notify import (
 )
 from tools.feishu_cli_tool import feishu_operation
 from tools.track_waybill_tool import run_track_waybill
-from plugin_core_adapters import build_production_first_party_core_handler_map
+from plugin_core_adapters import build_production_host_primitive_handler_map
 from shared.orchestration_repository import (
     OrchestrationPersistenceError,
     OrchestrationRepository,
@@ -294,11 +269,8 @@ workflow_runner: WorkflowRunner | None = None
 outbox_dispatcher: OutboxDispatcherGroup | None = None
 control_plane_retention_worker: ControlPlaneRetentionWorker | None = None
 control_plane_service: ControlPlaneService | None = None
-scheduled_task_approval_service: ScheduledTaskApprovalService | None = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
-scheduled_task_approval_bootstrap: dict[str, int] = {}
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
-automation_worker_transport_service: WindowsWorkerServerTransport | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
 feishu_approval_service: FeishuApprovalService | None = None
 _start_time = time.time()
@@ -323,13 +295,6 @@ TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
     "temporarily unavailable",
     "temporary failure",
 )
-FINANCE_FAILURE_RUN_STATUSES = frozenset(
-    {
-        RunStatus.BLOCKED_LOGIN.value,
-        RunStatus.BLOCKED_DATA.value,
-        RunStatus.FAILED_TERMINAL.value,
-    }
-)
 
 
 def _runtime() -> AgentCore:
@@ -348,12 +313,6 @@ def _orchestration_repo() -> OrchestrationRepository:
     if orchestration_repository is None:
         raise RuntimeError("Agent orchestration repository is not initialized")
     return orchestration_repository
-
-
-def _scheduled_task_approvals() -> ScheduledTaskApprovalService:
-    if scheduled_task_approval_service is None:
-        raise RuntimeError("Scheduled task approval service is not initialized")
-    return scheduled_task_approval_service
 
 
 def _automation_project_policies() -> AutomationProjectPolicyService:
@@ -378,12 +337,6 @@ def _automation_plugins() -> ProductionAutomationPluginRuntime:
     if automation_plugin_runtime is None:
         raise RuntimeError("Automation plugin runtime is not initialized")
     return automation_plugin_runtime
-
-
-def _automation_worker_transport() -> WindowsWorkerServerTransport:
-    if automation_worker_transport_service is None:
-        raise RuntimeError("Windows Worker transport is not initialized")
-    return automation_worker_transport_service
 
 
 def _automation_plugin_health() -> dict[str, Any]:
@@ -412,40 +365,6 @@ def _automation_plugin_health() -> dict[str, Any]:
             "generations": {"healthy": False},
             "error_code": getattr(exc, "code", type(exc).__name__.upper())[:64],
         }
-
-
-def _automation_worker_dispatch_health(*, release_hold: bool) -> dict[str, Any]:
-    if not WINDOWS_WORKER_RELEASE_ENABLED:
-        return {
-            "enabled": False,
-            "state": "disabled",
-            "release_hold": False,
-            "active_jobs": 0,
-        }
-    repository = orchestration_repository
-    if repository is None:
-        return {"state": "stopped", "release_hold": True, "active_jobs": 0}
-    try:
-        with repository.unit_of_work() as uow:
-            payload = uow.automation_plugins.worker_dispatch_health(
-                release_hold=release_hold,
-            )
-    except Exception as exc:
-        logger.error(
-            "Automation worker dispatch health failed error=%s",
-            redact_text(exc),
-        )
-        return {
-            "state": "error",
-            "release_hold": True,
-            "active_jobs": 0,
-            "error_code": getattr(exc, "code", type(exc).__name__.upper())[:64],
-        }
-    return {
-        "state": "held" if release_hold else "running",
-        "release_hold": bool(payload.get("release_hold")),
-        "active_jobs": int(payload.get("active_jobs") or 0),
-    }
 
 
 def _orchestration_connection():
@@ -484,24 +403,6 @@ def _resolve_command_accounts(command: Command) -> list[dict]:
     tool_name = str(command.parameters.get("tool_name") or "")
     if tool_name == "sync_customer_service_problems" and not requested:
         active = [row for row in active if str(row.get("system") or "") in {"ronghui", "yunda"}]
-    elif tool_name == "sync_finance_bills":
-        production_sources = {
-            (spec.platform, spec.account_id)
-            for spec in enabled_finance_source_specs()
-        }
-        platform = str(arguments.get("platform") or "").strip().lower()
-        if platform and platform not in enabled_finance_platforms():
-            return []
-        active = [
-            row
-            for row in active
-            if (str(row.get("system") or "").strip().lower(), str(row.get("account_id") or ""))
-            in production_sources
-            and (not platform or str(row.get("system") or "").strip().lower() == platform)
-        ]
-        if requested:
-            requested_set = set(requested)
-            active = [row for row in active if str(row.get("account_id") or "") in requested_set]
     elif requested:
         requested_set = set(requested)
         active = [row for row in active if str(row.get("account_id") or "") in requested_set]
@@ -515,15 +416,6 @@ def _resolve_command_accounts(command: Command) -> list[dict]:
         }
         for row in active
     ]
-
-
-def _active_account_ids() -> tuple[str, ...]:
-    rows = get_account_manager().list_accounts(include_status=False, validate=False)
-    return tuple(
-        str(row.get("account_id") or "").strip()
-        for row in rows
-        if bool(row.get("is_active", True)) and str(row.get("account_id") or "").strip()
-    )
 
 
 def _resolve_command_entities(command: Command) -> list[dict]:
@@ -555,88 +447,8 @@ def _run_plan_steps(run: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(step) for step in raw_steps if isinstance(step, dict)]
 
 
-def _project_finance_failure_event(
-    delivery: dict[str, Any],
-    uow: Any,
-    *,
-    run: dict[str, Any],
-    steps: list[dict[str, Any]],
-    failure_status: str,
-) -> dict[str, Any]:
-    from shared.collector_navigation import finance_failure_ownership
-    finance_steps, navigation = finance_failure_ownership(
-        getattr(uow, "connection", None), str(run.get("run_id") or ""), steps)
-    if not finance_steps and navigation.get("module") != "finance":
-        return {"event_id": delivery.get("event_id"), "projected": False}
-
-    source_payload = delivery.get("payload_json")
-    if not isinstance(source_payload, dict):
-        raise RuntimeError("finance failure source event has an invalid payload")
-    run_id = str(delivery.get("run_id") or "").strip()
-    causation_id = str(delivery.get("event_id") or "").strip()
-    if not run_id or not causation_id:
-        raise RuntimeError("finance failure source event is missing identity")
-    startup_catchup = any(
-        isinstance(step.get("arguments"), dict)
-        and step["arguments"].get("_startup_catchup") is True
-        for step in finance_steps
-    )
-    error_code = redact_text(
-        source_payload.get("error_code") or "FINANCE_SYNC_FAILED"
-    ).strip()[:64]
-    error_summary = redact_text(
-        source_payload.get("error_summary") or "Finance synchronization did not complete"
-    )[:500]
-    failure_event_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:finance.sync.failed:{causation_id}")
-    )
-    receipt = uow.events.append_with_outbox(
-        {
-            "event_id": failure_event_id,
-            "event_type": "finance.sync.failed",
-            "schema_version": 1,
-            "source_system": "agent",
-            "source_event_id": causation_id,
-            "entity_type": "agent_run",
-            "entity_id": run_id,
-            "work_item_id": run.get("work_item_id"),
-            "run_id": run_id,
-            "step_id": None,
-            "occurred_at": delivery.get("occurred_at")
-            or datetime.now(timezone.utc).replace(tzinfo=None),
-            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            "correlation_id": str(
-                delivery.get("correlation_id") or run.get("correlation_id") or ""
-            ),
-            "causation_id": causation_id,
-            "payload": {
-                "run_id": run_id,
-                "status": failure_status,
-                "tool_name": "sync_finance_bills",
-                "error_code": error_code or "FINANCE_SYNC_FAILED",
-                "error_summary": error_summary,
-                "startup_catchup": startup_catchup,
-                "collector_navigation": navigation,
-            },
-        },
-        (
-            {
-                "consumer_name": "finance.failure_alert",
-                "topic": "finance.sync.failed",
-                "partition_key": run_id,
-                "max_attempts": 10,
-            },
-        ),
-    )
-    return {
-        "event_id": delivery.get("event_id"),
-        "projected": True,
-        "finance_failure_event_id": receipt["event"]["event_id"],
-    }
-
-
 def _project_run_completed_event(delivery, uow):
-    """Project governed Run completion and finance failure lifecycle events."""
+    """Project governed Run completion lifecycle events."""
 
     payload = delivery.get("payload_json")
     if (
@@ -646,10 +458,7 @@ def _project_run_completed_event(delivery, uow):
         return {"event_id": delivery.get("event_id"), "projected": False}
 
     target_status = str(payload.get("to") or "").strip()
-    if target_status not in {
-        RunStatus.COMPLETED.value,
-        *FINANCE_FAILURE_RUN_STATUSES,
-    }:
+    if target_status != RunStatus.COMPLETED.value:
         return {"event_id": delivery.get("event_id"), "projected": False}
 
     run_id = str(delivery.get("run_id") or "").strip()
@@ -657,15 +466,6 @@ def _project_run_completed_event(delivery, uow):
     if not isinstance(run, dict):
         raise RuntimeError("run lifecycle event does not match a durable Run")
     steps = _run_plan_steps(run)
-    if target_status in FINANCE_FAILURE_RUN_STATUSES:
-        return _project_finance_failure_event(
-            delivery,
-            uow,
-            run=run,
-            steps=steps,
-            failure_status=target_status,
-        )
-
     if str(run.get("status") or "") != RunStatus.COMPLETED.value:
         raise RuntimeError("completed run event does not match durable Run state")
     tool_names = [
@@ -705,53 +505,6 @@ def _project_run_completed_event(delivery, uow):
         "event_id": delivery.get("event_id"),
         "projected": True,
         "completed_event_id": receipt["event"]["event_id"],
-    }
-
-
-def _finance_sync_failure_handler(delivery, _uow):
-    """Deliver one redacted finance failure alert through the durable outbox."""
-
-    payload = delivery.get("payload_json")
-    if (
-        str(delivery.get("event_type") or "") != "finance.sync.failed"
-        or not isinstance(payload, dict)
-    ):
-        return {"event_id": delivery.get("event_id"), "processed": False}
-    if payload.get("startup_catchup") is True:
-        return {
-            "event_id": delivery.get("event_id"),
-            "processed": True,
-            "suppressed": True,
-            "reason": "startup_catchup",
-        }
-
-    status = str(payload.get("status") or "").strip()
-    if status not in FINANCE_FAILURE_RUN_STATUSES:
-        raise RuntimeError("finance failure event has an unsupported Run status")
-    run_id = str(payload.get("run_id") or delivery.get("run_id") or "").strip()
-    error_code = redact_text(
-        payload.get("error_code") or "FINANCE_SYNC_FAILED"
-    ).strip()[:64]
-    error_summary = redact_text(
-        payload.get("error_summary") or "Finance synchronization did not complete"
-    )[:500]
-    details = f"Run {run_id}; status={status}; {error_summary}"
-    sent = publish_finance_alert(
-        {
-            "anomaly_type": error_code or "FINANCE_SYNC_FAILED",
-            "title": "\u8d22\u52a1\u540c\u6b65\u5931\u8d25\u6216\u963b\u585e",
-            "details": details[:500],
-            "admin_url": "/modules/finance/data-sources",
-            "collector_navigation": payload.get("collector_navigation"),
-        }
-    )
-    if not sent:
-        raise RuntimeError("finance failure alert delivery was not acknowledged")
-    return {
-        "event_id": delivery.get("event_id"),
-        "processed": True,
-        "suppressed": False,
-        "sent": True,
     }
 
 
@@ -1061,9 +814,7 @@ async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global orchestration_repository, workflow_runner, outbox_dispatcher, control_plane_service
     global control_plane_retention_worker
-    global scheduled_task_approval_service, scheduled_task_approval_bootstrap
     global automation_plugin_runtime, automation_project_policy_service
-    global automation_worker_transport_service
     global automation_project_entrypoints
     global feishu_approval_service
     load_agent_environment()
@@ -1089,10 +840,7 @@ async def lifespan(app: FastAPI):
     await runtime.init()
     repository = OrchestrationRepository(_orchestration_connection)
     mysql_version = await asyncio.to_thread(repository.validate_mysql8)
-    await asyncio.to_thread(
-        repository.validate_schema,
-        include_windows_worker=WINDOWS_WORKER_RELEASE_ENABLED,
-    )
+    await asyncio.to_thread(repository.validate_schema)
     logger.info("Orchestration persistence ready mysql=%s", mysql_version)
 
     repaired_routes = await asyncio.to_thread(
@@ -1109,12 +857,11 @@ async def lifespan(app: FastAPI):
     core_catalog = runtime.registry
     account_manager = get_account_manager()
     cursor_secret = production_cursor_secret(os.environ)
-    from agent.automation_plugins.production_connectors import production_connector_broker_action_keys
-    plugin_handlers = build_production_first_party_core_handler_map(
+    from agent.automation_plugins.reviewed_primitives import REVIEWED_HOST_PRIMITIVES
+    plugin_handlers = build_production_host_primitive_handler_map(
         account_manager=account_manager,
         cursor_secret=cursor_secret,
-        allowed_action_keys=(release_first_party_broker_action_keys(core_catalog)
-                             | production_connector_broker_action_keys()),
+        allowed_action_keys=REVIEWED_HOST_PRIMITIVES,
     )
     plugin_runtime = await asyncio.to_thread(
         build_production_automation_plugin_runtime,
@@ -1130,22 +877,6 @@ async def lifespan(app: FastAPI):
     )
     await plugin_runtime.start()
     automation_plugin_runtime = plugin_runtime
-    if WINDOWS_WORKER_RELEASE_ENABLED:
-        worker_server_signer = load_worker_server_signer(
-            private_key_path=str(
-                os.getenv("BOYI_AUTOMATION_WORKER_SERVER_SIGNING_KEY_PATH", "") or ""
-            ).strip(),
-            key_id=str(
-                os.getenv("BOYI_AUTOMATION_WORKER_SERVER_SIGNING_KEY_ID", "") or ""
-            ).strip(),
-        )
-        automation_worker_transport_service = WindowsWorkerServerTransport(
-            orchestration_repository=repository,
-            release_hold_provider=scheduler_release_hold_requested,
-            release_sha=_release_sha(),
-            server_signer=worker_server_signer,
-            package_reader=FilesystemWorkerPackageArchiveReader(plugin_runtime.storage),
-        )
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
     business_finance_query = BusinessFinanceQueryService(
@@ -1176,29 +907,6 @@ async def lifespan(app: FastAPI):
     )
     planner = DeterministicPlanner(catalog)
     validator = PlanValidator(catalog)
-    schedule_policy_service = ScheduledTaskApprovalService(
-        repository,
-        catalog,
-        enabled_finance_platforms=enabled_finance_platforms(),
-        active_account_ids_provider=_active_account_ids,
-        implicit_account_ids_by_tool={
-            "sync_finance_bills": enabled_finance_account_ids(),
-        },
-        bootstrap_allowed_tool_names=release_first_party_plugin_ids(),
-    )
-    scheduled_task_approval_service = schedule_policy_service
-    scheduled_task_approval_bootstrap = await asyncio.to_thread(
-        schedule_policy_service.bootstrap_reviewed_policies
-    )
-    logger.info(
-        "Scheduled approval bootstrap reviewed=%d created=%d existing=%d configured=%d rejected=%d completed=%d",
-        scheduled_task_approval_bootstrap.get("reviewed_candidates", 0),
-        scheduled_task_approval_bootstrap.get("created", 0),
-        scheduled_task_approval_bootstrap.get("already_present", 0),
-        scheduled_task_approval_bootstrap.get("explicitly_configured", 0),
-        scheduled_task_approval_bootstrap.get("rejected", 0),
-        scheduled_task_approval_bootstrap.get("completed", 0),
-    )
     runner_holder: dict[str, WorkflowRunner] = {}
 
     gateway = CommandGateway(
@@ -1210,7 +918,7 @@ async def lifespan(app: FastAPI):
     direct_invocations = DirectPluginInvocationService(
         PluginInvocationRepository(repository),
         plugin_runtime.execution_router,
-        ResultVerifier(plugin_runtime.runtime_repository, plugin_runtime.migration_runtime),
+        ResultVerifier(plugin_runtime.runtime_repository),
         release_hold_provider=scheduler_release_hold_requested,
         saved_resource_provider=get_saved_workflow_resource,
         account_validator=account_manager.require_active_binding_descriptor,
@@ -1219,16 +927,12 @@ async def lifespan(app: FastAPI):
     )
     await direct_invocations.startup()
     runtime.configure_direct_readers({}, invocations=direct_invocations)
-    account_manager.set_credentials_change_guard(compose_account_change_guards(
-        direct_invocations.begin_credentials_change,
-        schedule_policy_service.begin_credentials_change,
-    ))
+    account_manager.set_credentials_change_guard(direct_invocations.begin_credentials_change)
     business_service = build_business_service(
         catalog=core_catalog, plugin_catalog=plugin_runtime.catalog, invocations=direct_invocations)
     bind_direct_business_service(business_service)
     project_policy_service = AutomationProjectPolicyService(
         repository,
-        core_catalog,
         plugin_runtime.catalog,
         command_gateway=gateway,
         wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
@@ -1237,7 +941,6 @@ async def lifespan(app: FastAPI):
         contribution_registry=plugin_runtime.contribution_registry,
         direct_invocations=direct_invocations,
     )
-    business_service.register_call("finance-collect", FinancePluginBusinessService(project_policy_service, core_catalog))
     # Construct a stopped Scheduler and bind its strict projection callbacks
     # before runtime generation recovery. A PENDING_PROJECTION generation may
     # only be acknowledged after the exact Console/Scheduler contribution set
@@ -1270,27 +973,6 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(plugin_runtime.health)
     default_full_auto = {"changed": 0}
     if scheduler_release_hold_requested():
-        bootstrap_automation_ids = release_first_party_automation_ids()
-        if len(bootstrap_automation_ids) != 16:
-            raise RuntimeError(
-                "automation project bootstrap release scope must contain exactly 16 instances"
-            )
-        project_policy_bootstrap = await asyncio.to_thread(
-            project_policy_service.bootstrap_legacy_project_policies,
-            expected_automation_ids=tuple(sorted(bootstrap_automation_ids)),
-            release_sha=_release_sha(),
-        )
-        logger.info(
-            "Automation project policy bootstrap status=%s projects=%d legacy=%d require_each=%d retired_exact=%d",
-            project_policy_bootstrap.get("status", "unknown"),
-            project_policy_bootstrap.get("project_count", 0),
-            project_policy_bootstrap.get("legacy_schedule_only", 0),
-            project_policy_bootstrap.get("require_each_run", 0),
-            project_policy_bootstrap.get("retired_scheduled_exact", 0),
-        )
-        # This conversion is intentionally replayable under the release hold:
-        # its per-project audit marker and super-admin event fence make it safe
-        # after a crash between the 018 bootstrap commit and this step.
         default_full_auto = await asyncio.to_thread(
             project_policy_service.ensure_default_full_auto_policies
         )
@@ -1303,7 +985,6 @@ async def lifespan(app: FastAPI):
     agent_core.identity_access = project_policy_service.identity_access
     policy = PolicyEngine(
         catalog,
-        scheduler_allowlist_provider=schedule_policy_service.allowlist_entries,
         project_policy_provider=project_policy_service.evaluate_invocation,
     )
     approval_service = ApprovalService(
@@ -1322,21 +1003,17 @@ async def lifespan(app: FastAPI):
         notification_lease_seconds=DEFAULT_NOTIFICATION_LEASE_SECONDS,
         identity_access=project_policy_service.identity_access,
     )
-    conversation_routes = CommittedAutomationProjectRouteResolver(
-            catalog=plugin_runtime.catalog,
-            runtime_repository=plugin_runtime.runtime_repository,
-            binding_resolver=plugin_runtime.binding_resolver,
-            resource_provider=get_workflow_resource,
-        )
     from agent.plugin_conversations import PluginConversationService
-    plugin_conversations = PluginConversationService(project_policy_service, route_resolver=conversation_routes)
+    plugin_conversations = PluginConversationService(project_policy_service)
     agent_core.configure_plugin_conversations(plugin_conversations)
     from agent.orchestration.automation_project_entrypoints import ServiceV2WebhookDispatcher
+    plugin_runtime.fixed_entrypoints.bind_webhook_resolver(
+        plugin_runtime.contribution_registry.resolve_active_webhook_route
+    )
     automation_project_entrypoints = AutomationProjectEntrypoints(
         project_policy_service,
-        route_resolver=conversation_routes,
         feishu_actor_resolver=feishu_approval_service.resolve_actor,
-        migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
+        fixed_entrypoints=plugin_runtime.fixed_entrypoints,
         service_v2_webhook_dispatcher=ServiceV2WebhookDispatcher(
             policy_service=project_policy_service,
             contribution_registry=plugin_runtime.contribution_registry,
@@ -1348,7 +1025,6 @@ async def lifespan(app: FastAPI):
         policy_service=project_policy_service,
         contribution_registry=plugin_runtime.contribution_registry,
         resolve_actor=feishu_approval_service.resolve_actor,
-        migration_entrypoint_ownership=plugin_runtime.migration_entrypoint_ownership,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
     harness_gateway = build_read_only_harness_gateway(runtime, repository, finance_summary=business_finance_query.run, invocations=direct_invocations)
@@ -1375,12 +1051,8 @@ async def lifespan(app: FastAPI):
         validator=validator,
         policy=policy,
         approval_service=approval_service,
-        verifier=ResultVerifier(
-            plugin_runtime.runtime_repository,
-            plugin_runtime.migration_runtime,
-        ),
+        verifier=ResultVerifier(plugin_runtime.runtime_repository),
         worker_id=f"{INSTANCE_ID}:runs",
-        protected_step_start_guard=schedule_policy_service.begin_protected_step_start,
         worker_concurrency=_positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 4),
         browser_concurrency=_positive_runtime_int("WORKFLOW_BROWSER_CONCURRENCY", 3),
     )
@@ -1389,7 +1061,6 @@ async def lifespan(app: FastAPI):
     outbox_handlers = {
         "orchestration.run_worker": _noop_outbox_handler,
         "orchestration.audit": _project_run_completed_event,
-        "finance.failure_alert": _finance_sync_failure_handler,
         "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
             gateway.submit,
             delivery,
@@ -1403,7 +1074,6 @@ async def lifespan(app: FastAPI):
         handler_uses_uow = consumer_name not in {
             "feishu.approval",
             "feishu.approval.expiry",
-            "finance.failure_alert",
             "finance.brain",
         }
         dispatchers.append(
@@ -1536,10 +1206,7 @@ async def lifespan(app: FastAPI):
     await plugin_runtime.stop()
     await runtime.close()
     control_plane_service = None
-    scheduled_task_approval_service = None
-    scheduled_task_approval_bootstrap = {}
     automation_plugin_runtime = None
-    automation_worker_transport_service = None
     automation_project_entrypoints = None
     feishu_approval_service = None
     automation_project_policy_service = None
@@ -1579,7 +1246,6 @@ app.include_router(
     create_automation_plugin_management_router(
         service_provider=lambda: _automation_plugins().management,
         actor_provider=lambda request: _require_console_admin_request(request),
-        include_worker_routes=WINDOWS_WORKER_RELEASE_ENABLED,
         scheduler_refresh_provider=lambda: _automation_plugins().service_effect_driver.refresh_contribution_projection(),
         policy_service_provider=_automation_project_policies,
         scheduler_project_sync_provider=lambda automation_id: (
@@ -1595,10 +1261,6 @@ app.include_router(
         availability_provider=service_v2_harness_status,
     )
 )
-if WINDOWS_WORKER_RELEASE_ENABLED:
-    app.include_router(
-        build_worker_transport_router(service_provider=_automation_worker_transport)
-    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -1716,11 +1378,6 @@ async def internal_unhandled_error(request: Request, exc: Exception):
 @app.middleware("http")
 async def require_internal_api_token(request: Request, call_next):
     request.state.console_principal = None
-    if WINDOWS_WORKER_RELEASE_ENABLED and is_worker_transport_path(request.url.path):
-        # Worker routes authenticate a loopback TLS proxy, the paired mTLS
-        # certificate and a signed device envelope.  They never accept the
-        # Console/internal bearer token as a substitute for device identity.
-        return await call_next(request)
     execution_capability = str(
         request.headers.get(EXECUTION_CAPABILITY_HEADER) or ""
     ).strip()
@@ -2099,10 +1756,6 @@ def _internal_health_payload() -> dict[str, Any]:
                     }
                 ),
                 "automation_plugins": _automation_plugin_health(),
-                "automation_workers": _automation_worker_dispatch_health(
-                    release_hold=scheduler_release_hold_requested()
-                ),
-                "scheduled_task_approval_bootstrap": dict(scheduled_task_approval_bootstrap),
                 "tms_session": get_session_broker().health_snapshot(),
             },
             "last_tool_run": runtime.last_tool_info(),
@@ -2181,17 +1834,6 @@ class ApprovalDecisionRequest(TrustedActionRequest):
     approval_id: str | None = None
     plan_hash: str
     comment: str = ""
-
-
-class ScheduledTaskApprovalPolicyRequest(TrustedActionRequest):
-    model_config = ConfigDict(extra="forbid")
-
-    task_ids: list[str]
-    mode: str
-    comment: str = ""
-    request_id: str
-    expected_versions: dict[str, int]
-    expected_configuration_versions: dict[str, int]
 
 
 def _http_request_actor(
@@ -2659,36 +2301,18 @@ async def internal_activate_scheduler_after_release(request: Request):
                 raise RuntimeError("Automation plugin service integrity check failed")
             scheduler_status = begin_scheduler_release_activation(_release_sha())
             runner_status = runner.resume_after_release()
-            if WINDOWS_WORKER_RELEASE_ENABLED:
-                worker_status = _automation_worker_dispatch_health(release_hold=False)
-                worker_ready = (
-                    worker_status.get("state") == "running"
-                    and worker_status.get("release_hold") is False
-                    and int(worker_status.get("active_jobs") or 0) == 0
-                )
-            else:
-                worker_status = {
-                    "enabled": False,
-                    "state": "disabled",
-                    "release_hold": False,
-                    "active_jobs": 0,
-                }
-                worker_ready = True
             if (
                 scheduler_status.get("state") != "running"
                 or bool(scheduler_status.get("release_hold"))
                 != release_marker_present
                 or runner_status.get("state") != "reserved"
                 or runner_status.get("release_hold") is not False
-                or not worker_ready
                 or plugin_status.get("ok") is not True
             ):
                 raise RuntimeError("Release runtimes did not enter the running state")
             # Marker consumption is the final mutation. Explicitly unavailable
             # projects remain blocked by their own runtime status; they do not
             # prevent healthy projects or the scheduler from being activated.
-            # Windows Worker is explicitly out of scope and therefore has no
-            # route, signer or dispatcher gate.
             scheduler_status = consume_scheduler_release_hold(_release_sha())
         except RuntimeError as exc:
             if scheduler_release_hold_requested():
@@ -2717,7 +2341,6 @@ async def internal_activate_scheduler_after_release(request: Request):
         **scheduler_status,
         "workflow_runner": runner.runtime_status(),
         "automation_plugins": plugin_status,
-        "automation_workers": worker_status,
     }
     logger.info(
         "Release hold consumed after all in-scope server runtimes activated"
@@ -2941,45 +2564,6 @@ async def scheduled_tasks():
 async def internal_scheduled_tasks(request: Request):
     _require_console_admin_request(request)
     return api_success({"rows": _runtime().memory.list_scheduled_tasks()})
-
-
-@app.get("/internal/v1/scheduled-task-approval-policies")
-async def internal_scheduled_task_approval_policies(request: Request):
-    _require_console_admin_request(request)
-    return api_success(_scheduled_task_approvals().list_policies())
-
-
-@app.post("/internal/v1/scheduled-task-approval-policies")
-async def update_scheduled_task_approval_policies(
-    req: ScheduledTaskApprovalPolicyRequest,
-    request: Request,
-):
-    actor = _require_console_admin_action(req, request)
-    return api_success(
-        _scheduled_task_approvals().set_policies(
-            task_ids=req.task_ids,
-            mode=req.mode,
-            comment=req.comment,
-            request_id=req.request_id,
-            expected_versions=req.expected_versions,
-            expected_configuration_versions=req.expected_configuration_versions,
-            actor=actor,
-        )
-    )
-
-
-@app.post("/admin/seed-phase7-tasks", deprecated=True)
-async def seed_phase7_tasks():
-    runtime = _runtime()
-    seeded = list(seed_phase7_schedule_tasks(runtime))
-    logger.info("Seeded Phase 7 schedule templates: %s", ", ".join(seeded))
-    scheduler = reload_scheduler(runtime)
-    return {"status": "ok", "seeded": seeded, "scheduler": scheduler}
-
-
-@app.post("/internal/v1/admin/seed-phase7-tasks")
-async def internal_seed_phase7_tasks():
-    return api_success(await seed_phase7_tasks())
 
 
 @app.get("/workflow-resources", deprecated=True)

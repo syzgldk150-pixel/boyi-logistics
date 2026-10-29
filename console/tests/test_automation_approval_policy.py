@@ -89,7 +89,7 @@ class AutomationProjectPolicyProjectionTests(unittest.TestCase):
         normalized = normalize_automation_project_policy_items([legacy_effective])
         self.assertEqual("LEGACY_SCHEDULE_ONLY", normalized[0]["effective_mode"])
         view = build_automation_project_policy_view("clockin_daxiang", normalized[0])
-        self.assertEqual("运行权限待确认", view["label"])
+        self.assertEqual("运行权限不可用", view["label"])
 
     def test_missing_dynamic_project_is_fail_closed_without_policy_downgrade(self):
         view = build_automation_project_policy_view("finance_startup_catchup", None)
@@ -433,53 +433,6 @@ class AutomationProjectPolicyHandlerTests(unittest.TestCase):
         )
         return app, captured
 
-    def test_policy_post_forwards_only_locked_dto_with_signed_principal(self):
-        app, captured = self._app()
-        handler = self._handler(self._policy_payload())
-        forwarded = {}
-
-        def agent_request(method, endpoint, **kwargs):
-            forwarded.update(method=method, endpoint=endpoint, **kwargs)
-            return {"ok": True, "data": {"policy": POLICY_ITEM}}
-
-        app._agent_request = agent_request
-        app._handle_automation_project_approval_policy(handler, "clockin_daxiang")
-
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual("POST", forwarded["method"])
-        self.assertEqual(
-            "/internal/v1/automation-projects/clockin_daxiang/approval-policy",
-            forwarded["endpoint"],
-        )
-        self.assertEqual(self._policy_payload(), forwarded["payload"])
-        self.assertEqual("17", forwarded["console_principal"]["actor_id"])
-        self.assertNotIn("actor", forwarded["payload"])
-        self.assertNotIn("task_ids", forwarded["payload"])
-
-    def test_old_mode_extra_ids_and_non_super_admin_are_rejected(self):
-        invalid_payloads = [
-            {**self._policy_payload(), "mode": "EXACT_SCHEDULE_EXEMPT"},
-            {**self._policy_payload(), "task_ids": ["clockin_daxiang_1830"]},
-            {**self._policy_payload(), "expected_policy_version": 0},
-        ]
-        for payload in invalid_payloads:
-            with self.subTest(payload=payload):
-                app, captured = self._app()
-                app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
-                app._handle_automation_project_approval_policy(
-                    self._handler(payload),
-                    "clockin_daxiang",
-                )
-                self.assertEqual(HTTPStatus.BAD_REQUEST, captured["status"])
-
-        app, captured = self._app()
-        app._agent_request = lambda *args, **kwargs: self.fail("must not call Agent")
-        app._handle_automation_project_approval_policy(
-            self._handler(self._policy_payload(), role="admin"),
-            "clockin_daxiang",
-        )
-        self.assertEqual(HTTPStatus.FORBIDDEN, captured["status"])
-
     def test_pending_get_returns_only_safe_project_summary(self):
         app, captured = self._app()
         handler = self._handler()
@@ -691,15 +644,15 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
             tms_session_credentials={},
         )
 
-    def test_one_project_permission_entry_has_exactly_two_product_options(self):
+    def test_project_permission_is_one_read_only_entry(self):
         html = self._render()
         card = html.split("<article", 1)[1].split("</article>", 1)[0]
 
-        self.assertEqual(1, card.count("data-project-policy-toggle"))
-        self.assertEqual(2, card.count("data-project-policy-mode"))
-        self.assertIn("仅允许手动操作", card)
+        self.assertEqual(1, card.count("data-project-policy-label"))
         self.assertIn("完全自动", card)
-        self.assertNotIn("data-project-policy-comment", card)
+        for removed in ("data-project-policy-toggle", "data-project-policy-mode", "data-project-policy-save",
+                        "data-project-policy-cancel", "仅允许手动操作"):
+            self.assertNotIn(removed, card)
         self.assertNotIn("EXACT_SCHEDULE_EXEMPT", card)
         self.assertNotIn("clockin_daxiang_1830", card)
         self.assertNotIn("策略标识", card)
@@ -712,38 +665,25 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("data-pending-action", html)
         self.assertNotIn("全部审批通过", html)
         self.assertNotIn("全部驳回", html)
-        self.assertIn("data-project-policy-cancel", html)
 
-    def test_non_super_admin_sees_read_only_project_policy(self):
-        html = self._render(can_manage=False)
+    def test_permission_display_is_read_only_for_every_admin(self):
+        for can_manage in (True, False):
+            html = self._render(can_manage=can_manage)
+            self.assertNotIn("data-project-policy-save", html)
+            self.assertNotIn("data-pending-action", html)
 
-        self.assertIn("当前账号只读，需超级管理员修改", html)
-        self.assertNotIn("data-project-policy-save", html)
-        self.assertNotIn("data-pending-action", html)
-
-    def test_javascript_keeps_policy_contract_without_old_approval_execution(self):
+    def test_javascript_has_no_policy_switch_or_old_approval_execution(self):
         source = (
             Path(__file__).resolve().parents[1]
             / "static"
-            / "automation_approval_policy.js"
+            / "automation_plugin_schedule.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("PROJECT_FULL_AUTO", source)
-        self.assertIn(
-            'const RUNTIME_STATUSES = new Set(["READY", "RECONCILING", "UNAVAILABLE"]);',
-            source,
-        )
-        self.assertIn('"active", "reconciling", "unsupported"', source)
-        self.assertIn("完全自动权限会持续保留", source)
-        self.assertNotIn("系统会恢复为需要审批", source)
-        self.assertNotIn("EXACT_SCHEDULE_EXEMPT", source)
-        self.assertIn("expected_policy_version", source)
         self.assertIn("expected_project_configuration_version", source)
-        self.assertNotIn("pending-approvals", source)
-        self.assertNotIn("data-project-policy-comment", source)
         self.assertIn("request_id", source)
-        self.assertNotIn("actOnPending", source)
-        self.assertNotIn("automation:approved-runs", source)
+        for removed in ("REQUIRE_EACH_RUN", "EXACT_SCHEDULE_EXEMPT", "expected_policy_version", "pending-approvals",
+                        "data-project-policy-comment", "actOnPending", "automation:approved-runs"):
+            self.assertNotIn(removed, source)
 
         template_source = (
             Path(__file__).resolve().parents[1] / "templates" / "automation.html"
@@ -752,7 +692,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         self.assertNotIn("pollApprovedBatch", template_source)
         self.assertNotIn("batchTerminalStatuses", template_source)
         self.assertNotIn("已批准，等待执行", template_source)
-        self.assertIn("20261013-schedule-times", template_source)
+        self.assertNotIn("automation_approval_policy.js", template_source)
 
     def test_assets_are_cache_busted_with_project_governance_styles(self):
         static_dir = Path(__file__).resolve().parents[1] / "static"

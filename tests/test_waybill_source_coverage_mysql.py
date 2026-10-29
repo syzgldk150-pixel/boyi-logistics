@@ -499,7 +499,7 @@ def test_real_provider_paging_normalization_database_and_cached_query_chain(data
 def test_actual_nightly_projection_uses_verified_scope_and_rebinds_account(database, monkeypatch):
     from plugin_core_adapters import waybill_query
     from plugin_core_adapters.daily_send import build_production_daily_send_ports
-    from plugin_core_adapters.first_party import _replace_yunda_waybill_projection
+    from plugin_core_adapters.host_primitives import _replace_yunda_waybill_projection
     monkeypatch.setattr(waybill_query, "waybill_connection", database)
     monkeypatch.setattr(waybill_query, "resolve_source_scope", lambda source, account_id:
         WaybillSourceScope(source, "fixture/site", "fixture/all", account_id))

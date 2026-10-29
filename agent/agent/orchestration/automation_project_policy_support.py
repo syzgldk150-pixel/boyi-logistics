@@ -12,21 +12,17 @@ from agent.automation_plugins.catalog_read_scope import catalog_read_transaction
 from agent.orchestration.automation_project_service_v2 import (
     normalize_service_v2_module_slot_context,
 )
-from agent.orchestration.models import Command, OrchestrationError
+from agent.orchestration.models import OrchestrationError
 from agent.orchestration.policy_engine import ProjectPolicyEvaluation
 from agent.orchestration.scan_preview_binding import (
     SCAN_PREVIEW_CONTEXT_KEY,
-    restore_scan_preview_replay,
 )
 from agent.orchestration.selection_preview_binding import (
-    SelectionPreviewExpectation,
-    restore_selection_preview_replay,
     selection_preview_contribution,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectPolicyMode,
-    CompiledAutomationProjectContract,
     canonical_sha256,
 )
 
@@ -105,162 +101,6 @@ _SERVER_CONTEXT_FIELDS = frozenset(
 )
 
 
-def _bootstrap_automation_ids(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, (str, bytes)):
-        raise OrchestrationError(
-            "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
-            "Automation project bootstrap scope must be an identity list",
-        )
-    normalized = tuple(sorted(_automation_id(value) for value in values))
-    if not normalized or len(normalized) != len(set(normalized)):
-        raise OrchestrationError(
-            "PROJECT_POLICY_BOOTSTRAP_SCOPE_INVALID",
-            "Automation project bootstrap scope is empty or duplicated",
-        )
-    return normalized
-
-
-def _bootstrap_project_is_stable(project: Mapping[str, Any] | None) -> bool:
-    if not isinstance(project, Mapping):
-        return False
-    target = project.get("target_generation")
-    committed = project.get("committed_generation")
-    return bool(
-        project.get("migration_authority") in {True, 1}
-        and project.get("enabled") in {True, 1}
-        and str(project.get("state") or "") == "ENABLED"
-        and type(target) is int
-        and type(committed) is int
-        and target > 0
-        and target == committed
-        and str(project.get("reconcile_state") or "") == "STABLE"
-    )
-
-
-def _validate_bootstrap_schedule_set(
-    entry: PluginCatalogEntry,
-    contract: CompiledAutomationProjectContract,
-    rows: Sequence[Mapping[str, Any]],
-) -> None:
-    snapshot = entry.committed_snapshot
-    metadata = snapshot.execution_metadata if snapshot is not None else None
-    schedule = metadata.get("schedule") if isinstance(metadata, Mapping) else None
-    if not isinstance(schedule, Mapping) or set(schedule) != {
-        "kind",
-        "times",
-        "enabled",
-    }:
-        raise OrchestrationError(
-            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-            "Committed project schedule is invalid",
-        )
-    kind = schedule.get("kind")
-    times = schedule.get("times")
-    enabled = schedule.get("enabled")
-    if (
-        kind not in {"none", "daily_times", "startup"}
-        or type(enabled) is not bool
-        or not isinstance(times, list)
-        or any(type(item) is not str for item in times)
-    ):
-        raise OrchestrationError(
-            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-            "Committed project schedule is invalid",
-        )
-    if kind == "none":
-        expected_expressions: tuple[str, ...] = ()
-        if times or enabled:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-                "Committed none schedule is invalid",
-            )
-    elif kind == "startup":
-        expected_expressions = ("@startup",)
-        if times:
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-                "Committed startup schedule is invalid",
-            )
-    else:
-        canonical_times = tuple(sorted(times))
-        if (
-            not canonical_times
-            or tuple(times) != canonical_times
-            or len(canonical_times) != len(set(canonical_times))
-            or any(
-                len(item) != 5
-                or item[2] != ":"
-                or not item[:2].isdigit()
-                or not item[3:].isdigit()
-                or not 0 <= int(item[:2]) <= 23
-                or not 0 <= int(item[3:]) <= 59
-                for item in canonical_times
-            )
-        ):
-            raise OrchestrationError(
-                "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-                "Committed daily schedule is invalid",
-            )
-        quarter_hour_times = tuple(
-            f"{hour:02d}:{minute:02d}"
-            for hour in range(24)
-            for minute in (0, 15, 30, 45)
-        )
-        expected_expressions = (
-            ("*/15 * * * *",)
-            if canonical_times == quarter_hour_times
-            else tuple(
-                f"{int(item[3:])} {int(item[:2])} * * *" for item in canonical_times
-            )
-        )
-    actual_expressions = tuple(
-        str(row.get("cron_expression") or "")
-        for row in sorted(rows, key=lambda item: str(item.get("cron_expression") or ""))
-    )
-    if (
-        actual_expressions != tuple(sorted(expected_expressions))
-        or len(actual_expressions) != len(set(actual_expressions))
-        or any(bool(row.get("enabled")) is not enabled for row in rows)
-    ):
-        raise OrchestrationError(
-            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-            "Committed project task set differs from its schedule",
-        )
-    task_ids = [str(row.get("id") or "").strip() for row in rows]
-    scheduled_snapshot = contract.snapshot.get("scheduled_configurations")
-    if (
-        any(not task_id for task_id in task_ids)
-        or len(task_ids) != len(set(task_ids))
-        or any(
-            str(row.get("automation_id") or "") != contract.automation_id
-            or row.get("automation_generation") != contract.automation_generation
-            or row.get("configuration_version")
-            != contract.project_configuration_version
-            or str(row.get("tool_name") or "")
-            != f"automation.{contract.automation_id}.run"
-            or not isinstance(row.get("tool_params"), Mapping)
-            or f"scheduler:{str(row.get('id') or '')}"
-            not in contract.invocation_contracts
-            or dict(row.get("tool_params") or {})
-            != dict(
-                contract.invocation_contracts[
-                    f"scheduler:{str(row.get('id') or '')}"
-                ].expected_arguments
-            )
-            for row in rows
-        )
-        or not isinstance(scheduled_snapshot, list)
-        or {str(item.get("task_id") or "") for item in scheduled_snapshot}
-        != set(task_ids)
-        or {key for key in contract.invocation_contracts if key.startswith("scheduler:")}
-        != {f"scheduler:{task_id}" for task_id in task_ids}
-    ):
-        raise OrchestrationError(
-            "PROJECT_POLICY_BOOTSTRAP_CONTRACT_INVALID",
-            "Compiled project task identities are incomplete",
-        )
-
-
 def _pending_set_hash(rows: Sequence[Mapping[str, Any]]) -> str:
     identities = []
     for row in sorted(rows, key=lambda item: str(item.get("approval_id") or "")):
@@ -314,63 +154,11 @@ def _policy_summary(
     return "当前项目仅允许有权限的管理员在后台手动执行；自动触发会直接返回未授权。"
 
 
-def _selection_preview_expectation(
-    entry: PluginCatalogEntry,
-    contract: CompiledAutomationProjectContract,
-    *,
-    entrypoint: str | None = None,
-    contribution_id: str | None = None,
-) -> SelectionPreviewExpectation:
-    runtime_model = str(getattr(entry, "runtime_model", "ACTION_V1") or "ACTION_V1")
-    if runtime_model != "SERVICE_V2":
-        return SelectionPreviewExpectation(
-            project_instance_id=entry.automation_id,
-            plugin_id=entry.plugin_id,
-            generation=contract.automation_generation,
-            contract_digest=contract.contract_hash,
-            configuration_version=contract.project_configuration_version,
-        )
-    safe_entrypoint = str(entrypoint or AutomationEntrypoint.CONSOLE.value).strip()
-    declaration = selection_preview_contribution(entry, safe_entrypoint)
-    signed_contribution_id = str((declaration or {}).get("id") or "").strip()
-    if (
-        safe_entrypoint
-        not in {
-            AutomationEntrypoint.CONSOLE.value,
-            AutomationEntrypoint.FEISHU.value,
-        }
-        or not signed_contribution_id
-        or (
-            contribution_id is not None
-            and signed_contribution_id != str(contribution_id).strip()
-        )
-    ):
-        raise OrchestrationError(
-            "SELECTION_PREVIEW_PROJECT_INVALID",
-            "Service v2 selection contributions are incomplete or ambiguous",
-            details={"status": "BLOCKED_DATA"},
-        )
-    title = str(
-        (declaration or {}).get("title") or getattr(entry, "display_name", "") or ""
-    ).strip()
-    return SelectionPreviewExpectation(
-        project_instance_id=entry.automation_id,
-        plugin_id=entry.plugin_id,
-        generation=contract.automation_generation,
-        contract_digest=contract.contract_hash,
-        configuration_version=contract.project_configuration_version,
-        runtime_model="SERVICE_V2",
-        entrypoint=safe_entrypoint,
-        contribution_id=signed_contribution_id,
-        title=title,
-    )
-
-
 def _selection_contribution_id(
     entry: PluginCatalogEntry,
     entrypoint: AutomationEntrypoint,
 ) -> str | None:
-    if str(getattr(entry, "runtime_model", "ACTION_V1") or "ACTION_V1") != "SERVICE_V2":
+    if str(getattr(entry, "runtime_model", None) or "") != "SERVICE_V2":
         return None
     declaration = selection_preview_contribution(entry, entrypoint.value)
     contribution_id = str((declaration or {}).get("id") or "").strip()
@@ -458,121 +246,6 @@ def _trusted_context(
     if entrypoint is AutomationEntrypoint.MODULE_SLOTS:
         return normalize_service_v2_module_slot_context(context)
     return context
-
-
-def _idempotency_key(value: Any) -> str:
-    key = str(value or "").strip()
-    if not key or len(key) > 191:
-        raise OrchestrationError(
-            "IDEMPOTENCY_KEY_REQUIRED",
-            "A bounded stable idempotency key is required",
-        )
-    return key
-
-
-def _validate_command_replay_identity(
-    persisted: Mapping[str, Any],
-    command: Command,
-) -> None:
-    """Reject an idempotency collision while allowing immutable replay bytes."""
-
-    invocation = command.automation_invocation
-    persisted_invocation = persisted.get(
-        "automation_invocation_json",
-        persisted.get("automation_invocation"),
-    )
-    persisted_roles = persisted.get("actor_roles_json", persisted.get("actor_roles"))
-    raw_refs = persisted.get("entity_refs_json", persisted.get("entity_refs"))
-    expected_refs = [ref.to_dict() for ref in command.entity_refs]
-    if (
-        invocation is None
-        or not isinstance(persisted_invocation, Mapping)
-        or str(persisted.get("command_type") or "") != command.command_type
-        or str(persisted.get("source") or "") != command.source
-        or str(persisted.get("idempotency_key") or "") != command.idempotency_key
-        or str(persisted.get("actor_type") or "") != command.actor.actor_type.value
-        or str(persisted.get("actor_id") or "") != command.actor.actor_id
-        or canonical_sha256(persisted_roles) != canonical_sha256(list(command.actor.roles))
-        or canonical_sha256(raw_refs) != canonical_sha256(expected_refs)
-        or persisted_invocation.get("automation_id") != invocation.automation_id
-        or persisted_invocation.get("entrypoint") != invocation.entrypoint.value
-        or persisted_invocation.get("request_id") != invocation.request_id
-    ):
-        raise OrchestrationError(
-            "REQUEST_ID_REUSED",
-            "Request id was already used for a different automation command",
-        )
-
-
-def _locked_command_replay(
-    uow: Any,
-    command: Command,
-    *,
-    actor: Any,
-    trusted_context: Mapping[str, Any],
-    project_instance_id: str,
-    request_id: str,
-    scan_preview_run_id: str | None,
-    selection_preview_run_id: str | None,
-    selected_bill_codes: Sequence[str] | None,
-    expected_selection_contribution_id: str | None,
-    expected_generation: int | None,
-    expected_configuration_version: int | None,
-) -> Mapping[str, Any] | None:
-    # The exact project row is already locked by the caller. Commands are
-    # immutable, and the later unique-key insert owns replay arbitration.
-    # Locking a missing key here gap-locks unrelated requests on an empty
-    # idempotency index and deadlocks their concurrent inserts on MySQL 8.
-    persisted = uow.commands.get_by_idempotency(
-        command.source, command.idempotency_key, for_update=False
-    )
-    if persisted is None:
-        return None
-    if selection_preview_run_id is not None and selected_bill_codes is not None:
-        restored = restore_selection_preview_replay(
-            uow,
-            source=command.source,
-            idempotency_key=command.idempotency_key,
-            actor=actor,
-            trusted_context=trusted_context,
-            project_instance_id=project_instance_id,
-            request_id=request_id,
-            preview_run_id=selection_preview_run_id,
-            selected_bill_codes=selected_bill_codes,
-            expected_entrypoint=command.source,
-            expected_contribution_id=expected_selection_contribution_id,
-            expected_generation=expected_generation,
-            expected_configuration_version=expected_configuration_version,
-        )
-    elif scan_preview_run_id is not None:
-        restored = restore_scan_preview_replay(
-            uow,
-            source=command.source,
-            idempotency_key=command.idempotency_key,
-            actor=actor,
-            trusted_context=trusted_context,
-            project_instance_id=project_instance_id,
-            request_id=request_id,
-            preview_run_id=scan_preview_run_id,
-            expected_generation=expected_generation,
-            expected_configuration_version=expected_configuration_version,
-        )
-    else:
-        _validate_command_replay_identity(persisted, command)
-        restored = command
-    if restored is None:
-        raise OrchestrationError(
-            "REQUEST_ID_REUSED",
-            "Accepted command replay could not be restored",
-        )
-    return {"replay_command": persisted}
-
-
-def _comment(value: Any) -> str:
-    comment = str(value or "").strip()
-    if len(comment) > 500:
-        raise OrchestrationError("COMMENT_TOO_LONG", "Comment exceeds 500 characters")
-    return comment
 
 
 def _positive_int(value: Any, field_name: str) -> int:

@@ -15,7 +15,7 @@ def make_service(reader):
 
 
 def result(name):
-    return ([{"name": name}], [], [], [], frozenset(), "", True)
+    return ([{"name": name}], [], [], frozenset(), "", True)
 
 
 def test_same_actor_module_refresh_joins_and_different_actor_does_not_share():
@@ -60,7 +60,7 @@ def test_inflight_response_cannot_repopulate_cache_after_uninstall_invalidation(
         release.set()
         stale = first.result()
         assert stale[0] == stale[1] == []
-        assert stale[5] == "插件目录已变化，请刷新后继续。"
+        assert stale[4] == "插件目录已变化，请刷新后继续。"
     assert service._load_automation_plugin_catalog(actor, module="automation", summary=True) == result("current")
     assert len(calls) == 2
 
@@ -70,12 +70,12 @@ def test_first_unavailable_catalog_does_not_invent_or_cache_runnable_projects():
     def read(_handler, **scope):
         calls.append(scope)
         if len(calls) == 1:
-            return ([], [], [], [], frozenset(), "isolated Agent unavailable", False)
+            return ([], [], [], frozenset(), "isolated Agent unavailable", False)
         return result("verified-current")
     service = make_service(read)
     actor = SimpleNamespace(current_admin_user={"id": "one", "role": "super_admin"})
     unavailable = service._load_automation_plugin_catalog(actor, module="finance", summary=True)
-    assert unavailable[0] == [] and unavailable[5] == "isolated Agent unavailable" and unavailable[6] is False
+    assert unavailable[0] == [] and unavailable[4] == "isolated Agent unavailable" and unavailable[5] is False
     assert service._load_automation_plugin_catalog(actor, module="finance", summary=True) == result("verified-current")
     assert len(calls) == 2
 

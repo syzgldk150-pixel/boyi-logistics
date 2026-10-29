@@ -310,30 +310,32 @@ class WorkflowRunnerReleaseHoldTests(unittest.TestCase):
                 account_id=None,
                 tool_name="track_waybill",
             )
-            clock_step = _step(
-                operation=OperationType.EXTERNAL_WRITE,
-                account_id="clock-account",
-                tool_name="clock_in_dual",
+            second_tracking_step = _step(
+                operation=OperationType.READ,
+                account_id=None,
+                tool_name="track_waybill",
             )
             tracking_release = await runner._acquire_execution_slot(
                 tracking_step,
                 _plan(tracking_step),
                 {"heavy": True},
             )
-            clock_slot = asyncio.create_task(
+            second_slot = asyncio.create_task(
                 runner._acquire_execution_slot(
-                    clock_step,
-                    _plan(clock_step),
+                    second_tracking_step,
+                    _plan(second_tracking_step),
                     {"heavy": False},
                 )
             )
             await asyncio.sleep(0)
             with self.assertRaises(_ResourceWait):
-                await clock_slot
+                await second_slot
 
             tracking_release()
-            clock_release = await runner._acquire_execution_slot(clock_step, _plan(clock_step), {"heavy": False})
-            clock_release()
+            second_release = await runner._acquire_execution_slot(
+                second_tracking_step, _plan(second_tracking_step), {"heavy": False}
+            )
+            second_release()
 
             ocr_step = _step(
                 operation=OperationType.READ,

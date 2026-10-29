@@ -9,14 +9,13 @@ from typing import Any, Mapping, Sequence
 
 from agent.automation_plugins.catalog import PluginCatalog, PluginCatalogEntry
 from agent.automation_plugins.code_owned_fields import (
-    first_party_code_owned_config_fields,
-    normalize_first_party_code_owned_config,
+    code_owned_config_fields,
+    without_code_owned_config,
 )
 from agent.automation_plugins.errors import PluginConflictError
 from agent.automation_plugins.invocation import compile_instance_arguments
 from agent.automation_plugins.models import (
     AutomationProjectConfigRecord,
-    DeviceBinding,
     PluginRuntimeModel,
 )
 from agent.automation_plugins.ports import (
@@ -201,7 +200,6 @@ class AutomationProjectConfigurationService:
         resource_bindings: Mapping[str, Any],
         enabled_entrypoints: Sequence[str],
         schedule: Mapping[str, Any],
-        device_id: str | None,
         actor_id: str,
         actor_role: str,
         request_id: str,
@@ -226,8 +224,7 @@ class AutomationProjectConfigurationService:
         entry = self._catalog.require(automation_id)
         submitted_config = copy.deepcopy(dict(config))
         code_owned_fields = set(
-            first_party_code_owned_config_fields(
-                automation_id=entry.automation_id,
+            code_owned_config_fields(
                 plugin_id=entry.plugin_id,
                 trust_source=entry.trust_source,
             )
@@ -239,18 +236,16 @@ class AutomationProjectConfigurationService:
                 + ", ".join(sorted(submitted_code_owned_fields)),
                 code="PROJECT_CONFIG_CODE_OWNED_FIELD",
             )
-        normalized_config = normalize_first_party_code_owned_config(
-            automation_id=entry.automation_id,
+        normalized_config = without_code_owned_config(
             plugin_id=entry.plugin_id,
             trust_source=entry.trust_source,
             config=submitted_config,
         )
-        if entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value:
-            # A settings edit keeps the exact Host-owned fields of this
-            # instance; it cannot grant startup mode or supply recheck identities.
-            for field in code_owned_fields:
-                if field in entry.project_config:
-                    normalized_config[field] = copy.deepcopy(entry.project_config[field])
+        # A settings edit keeps the exact Host-owned fields of this instance;
+        # it cannot supply recheck identities.
+        for field in code_owned_fields:
+            if field in entry.project_config:
+                normalized_config[field] = copy.deepcopy(entry.project_config[field])
         validate_schema_instance(
             f"automation.{automation_id}.config",
             normalized_config,
@@ -295,19 +290,6 @@ class AutomationProjectConfigurationService:
             raise PluginConflictError("enabled_entrypoints must be a unique list")
         if not set(sources) <= set(entry.allowed_entrypoints):
             raise PluginConflictError("enabled_entrypoints exceed the signed plugin contract")
-        normalized_device_id = str(device_id or "").strip()
-        device_binding: DeviceBinding | None = None
-        worker_required = entry.worker_requirement.get("required") is True
-        if worker_required:
-            if not normalized_device_id:
-                raise PluginConflictError("a named Worker device binding is required")
-            device_binding = self._bindings.resolve_device_binding(
-                automation_id=automation_id,
-                device_id=normalized_device_id,
-                worker_requirement=entry.worker_requirement,
-            )
-        elif normalized_device_id:
-            raise PluginConflictError("server plugin instances cannot bind a desktop Worker")
         normalized_schedule = normalize_project_schedule(schedule, entry.scheduling)
         contract_witness = {
             "runtime_model": entry.runtime_model,
@@ -361,7 +343,6 @@ class AutomationProjectConfigurationService:
             schedule=normalized_schedule,
             compiled_invocations=compiled_invocations,
             contract_witness=contract_witness,
-            device_binding=device_binding,
             actor_id=str(actor_id).strip(),
             actor_role=str(actor_role).strip(),
             request_id=str(request_id),

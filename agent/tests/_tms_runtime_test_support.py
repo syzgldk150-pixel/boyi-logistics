@@ -21,19 +21,15 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "agent" / "tms_runtime" / "s
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import fetch_pre_arrive_list
 import fetch_dispatch
 import yunda_dispatch_forecast
-from legacy.price_quote import price_tool, yunda_price
 import yunda_waybill_entry
 import yunda_waybill_tracking
 import yunda_send_waybills
 import Send_order
-import auto_departure_r7
 import browser_manager
 import query_waybill_detail as tms_query_waybill_detail
 import tracking_query
-import r7_login
 import waybill_tracking
 import get_qianshou
 
@@ -61,17 +57,11 @@ from tools import (
     arrive_list_sync_tool,
     arrival_stats_sync_tool,
     automation_profile_tool,
-    delivery_status_sync_tool,
     phase7_mysql_store,
     phase7_sync_common,
-    init_waybills_sql_from_feishu_tool,
     query_tool,
-    r7_arrival_checkin_tool,
-    r7_departure_checkin_tool,
-    scan_sync_tool,
     send_order_sync_tool,
     feishu_cli_tool,
-    site_send_list_sync_tool,
     tms_tool,
     track_waybill_tool,
     yunda_dispatch_forecast_sync_tool,

@@ -13,15 +13,15 @@ from agent.automation_plugins.problem_handlers import build_problem_handler_map
 from tests.test_problem_plugin_core_handlers import _SELF_PRIMARY_CAUSE, _SELF_DAXIANG_CAUSE, _query_plan
 from tests.production_connector_support import ConnectorTestHost
 from tests.test_problem_plugin_core_handlers import _ports, _context, _problem_result
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
 
 def _host(tool, **overrides):
     context = _context(tool,"service.invoke","execute","__system__")
-    role_mapping = {"account_id":"self_pickup_primary","daxiang_s_account_id":"self_pickup_daxiang_s"} if tool == "self_pickup_problem_upload" else {"account_id":"split_pending_ronghui"}
+    role_mapping = {"account_id":"self_pickup_primary","daxiang_s_account_id":"self_pickup_daxiang_s"} if tool == "self_pickup_problem" else {"account_id":"split_pending_ronghui"}
     context = replace(context,plugin_version="1.1.0",account_bindings={role_mapping[key]:value for key,value in context.account_bindings.items()})
     handlers = build_problem_handler_map(_ports(**overrides),cursor_secret=secrets.token_bytes(32))
-    return ConnectorTestHost(ConnectorRegistry(build_problem_connectors(handlers)),context,tool+"_v2")
+    return ConnectorTestHost(ConnectorRegistry(build_problem_connectors(handlers)),context,tool+"_upload_v2")
 
 
 @pytest.mark.parametrize("suffix,cause",[("self_pickup_primary_ronghui",_SELF_PRIMARY_CAUSE),
@@ -33,7 +33,7 @@ def test_problem_query_create_verify_use_the_same_bound_plan_and_exact_account(s
         if operation == "query":
             return {"ready":True,"existing":None}
         return _problem_result(plan,confirmed=operation=="verify")
-    host = _host("self_pickup_problem_upload",problem_action=action)
+    host = _host("self_pickup_problem",problem_action=action)
     query = host.invoke(suffix,"query",_query_plan(cause=cause))
     assert query["precondition_ref"].startswith("problemref_")
     create_args = {"bill_code":"R001","precondition_ref":query["precondition_ref"],"problem_cause":cause,
@@ -58,7 +58,7 @@ def test_problem_query_create_verify_use_the_same_bound_plan_and_exact_account(s
 def test_unknown_write_keeps_the_failed_readback_code():
     def action(_account, operation, _plan):
         return {"ready":True,"existing":None} if operation == "query" else {"saved":True}
-    host = _host("self_pickup_problem_upload",problem_action=action)
+    host = _host("self_pickup_problem",problem_action=action)
     query = host.invoke("self_pickup_primary_ronghui","query",_query_plan())
     with pytest.raises(ConnectorInvocationError) as failure:
         host.invoke("self_pickup_primary_ronghui","create",{"bill_code":"R001",
@@ -70,8 +70,8 @@ def test_unknown_write_keeps_the_failed_readback_code():
 def test_split_plugin_runs_its_real_classification_and_preview_through_connectors():
     from tests.test_problem_plugin_production_adapter import _split_header, _split_row
     rows = [_split_header(),_split_row("R12345678901",expected="3",arrived="1")]
-    host = _host("split_pending_problem_upload",sheet_rows_read=lambda *_:{"complete":True,"rows":rows})
-    result = load_first_party_action("split_pending_problem_upload").run_action({"dry_run":True},host.broker)
+    host = _host("split_pending_problem",sheet_rows_read=lambda *_:{"complete":True,"rows":rows})
+    result = load_plugin_action("split_pending_problem_upload").run_action({"dry_run":True},host.broker)
     assert result["status"] == "SUCCESS"
     assert result["data"]["candidate_count"] == 1
     assert result["data"]["candidates"][0]["bill_code"] == "R12345678901"
@@ -79,7 +79,7 @@ def test_split_plugin_runs_its_real_classification_and_preview_through_connector
 
 
 def test_chinese_problem_classification_is_business_text_not_an_absolute_path():
-    host = _host("split_pending_problem_upload")
+    host = _host("split_pending_problem")
     result = host.invoke("split_pending_ronghui","problem_query",{"bill_code":"R001",
         "problem_cause_sha256":"a"*64,"problem_owner_type":"交接异常","problem_type":"少货/分批","update_postpone_days":False})
     assert result["ready"] is True
@@ -92,20 +92,19 @@ def test_problem_sheet_preserves_phone_and_address_column_semantics(prefix, maxi
     row[11] = "123456789012//34/56"
     row[12] = "/湖南省邵阳市测试地址"
     rows = [_split_header(), row]
-    host = _host(prefix + "_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": rows})
+    host = _host(prefix + "_problem", sheet_rows_read=lambda *_: {"complete": True, "rows": rows})
     result = host.invoke(prefix + "_source_sheet", "read_rows", {"end_column": "S", "max_rows": maximum})
     assert result == {"complete": True, "rows": rows}
     assert row[11] == "123456789012//34/56"
     assert row[12] == "/湖南省邵阳市测试地址"
     if prefix == "split_pending":
-        preview = load_first_party_action("split_pending_problem_upload").run_action({"dry_run": True}, host.broker)
+        preview = load_plugin_action("split_pending_problem_upload").run_action({"dry_run": True}, host.broker)
         assert preview["status"] == "SUCCESS"
         assert preview["data"]["candidate_count"] == 1
 
 
 @pytest.mark.parametrize("prefix,maximum", [("self_pickup", 2000), ("split_pending", 5000)])
 @pytest.mark.parametrize("column,value", [
-    (11, "123//etc/passwd"),
     (12, "/etc/passwd"),
     (12, "/湖南省测试地址 https://private.invalid"),
     (12, "/湖南省测试地址 password=fixture-secret"),
@@ -116,7 +115,7 @@ def test_problem_sheet_exceptions_remain_scoped_to_business_columns(prefix, maxi
     from tests.test_problem_plugin_production_adapter import _split_header, _split_row
     row = _split_row("R12345678901", expected=3, arrived=1)
     row[column] = value
-    host = _host(prefix + "_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": [_split_header(), row]})
+    host = _host(prefix + "_problem", sheet_rows_read=lambda *_: {"complete": True, "rows": [_split_header(), row]})
     with pytest.raises(ConnectorSensitiveDataDenied) as failure:
         host.invoke(prefix + "_source_sheet", "read_rows", {"end_column": "S", "max_rows": maximum})
     assert f"array item {column + 1}" in str(failure.value)
@@ -129,12 +128,3 @@ def test_problem_sheet_column_context_cannot_apply_to_other_services_or_operatio
     assert _result_validation_view("connector.boyi.other_source@1", "read_rows", result) is result
     assert _result_validation_view("connector.boyi.self_pickup_source_sheet@1", "other", result) is result
 
-
-def test_problem_sheet_phone_cannot_leak_bound_resource_identity():
-    from tests.test_problem_plugin_production_adapter import _split_header, _split_row
-    row = _split_row("R12345678901", expected=3, arrived=1)
-    row[11] = "123456789012//34/56"
-    host = _host("self_pickup_problem_upload", sheet_rows_read=lambda *_: {"complete": True, "rows": [_split_header(), row]})
-    host.context = replace(host.context, resource_bindings={"self_pickup_source_sheet": "123456789012"})
-    with pytest.raises(ConnectorSensitiveDataDenied):
-        host.invoke("self_pickup_source_sheet", "read_rows", {"end_column": "S", "max_rows": 2000})

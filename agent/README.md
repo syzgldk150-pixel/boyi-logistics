@@ -30,12 +30,10 @@
   Host 采集、存储、回读及受控接口；不复制 V2 业务算法
 - `docs/`
   项目文档、模块说明、代码定位索引
-- `price_scripts/`、`legacy/price_quote/`
-  旧报价脚本的隔离离线参考，不发布、不作为报价入口
 - `../shared/finance/`
   财务领域模型、金额规则、校验、费用映射与共享账本仓储
-- `agent/tms_runtime/scripts/*finance*`、`tools/finance_sync_service.py`
-  融辉真实财务页面采集与多账号同步编排；韵达财务适配器保留但未进入生产调度
+- `service_v2_plugins/sync_ronghui_finance_statement_v2/`、`plugin_core_adapters/finance_platform_capture.py`
+  融辉统计查询月度抓取插件及其 Host 连接器；韵达财务未接入
 
 ## 常见修改入口
 
@@ -107,7 +105,7 @@ cd /home/deng/projects/boyi-logistics/console
 
 - 发布脚本：`deploy/publish_to_ecs.ps1`
 - 发布说明：`deploy/publish_to_ecs.md`
-- 默认经 Tailscale `boyce@100.107.181.3` 发布，使用 `-CheckConnection` 可先执行只读连接检查。默认范围仍为 `auto`；包含 Agent 时必须传入最终提交对应的 V2 退役索引和公钥信任目录，完整命令以[发布手册](deploy/publish_to_ecs.md)为准
+- 默认经 Tailscale `boyce@100.107.181.3` 发布，使用 `-CheckConnection` 可先执行只读连接检查。默认范围为 `auto`，完整命令以[发布手册](deploy/publish_to_ecs.md)为准
 
 ## 先读哪些文档
 

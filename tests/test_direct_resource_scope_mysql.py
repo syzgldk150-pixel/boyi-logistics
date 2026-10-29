@@ -169,9 +169,6 @@ def resources_runtime(direct_repository):  # noqa: F811
                 entry = host.catalog.require(identity)
                 host.management.set_enabled(identity, enabled=True, request_id=str(uuid4()), expected_record_version=entry.record_version, actor=ACTOR)
                 host.targets.reconcile_project(identity)
-                policy = host.policy.get_policy_projection(identity)
-                host.policy.update_policy(identity, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()), comment='Owned HTTP writes only',
-                    expected_policy_version=policy['policy_version'], expected_project_configuration_version=policy['project_configuration_version'], actor=ACTOR)
                 host.targets.reconcile_project(identity)
                 ids[name] = identity
             with DirectFixture(host, saved_resource_provider=resources.get) as runtime:

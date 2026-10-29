@@ -100,7 +100,8 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
                 "resource_bindings": [],
                 "account_role_bindings": [],
                 "plugin": {
-                    "plugin_id": "sync_scan_codes",
+                    "plugin_id": "sync_scan_codes_v2",
+                    "runtime_model": "SERVICE_V2",
                     "record_version": 1,
                     "project_configuration_version": 1,
                     "version": "1.0.22",
@@ -164,231 +165,16 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
         self.assertIn('data-schedule-stack', html)
         self.assertNotIn('data-code-toggle', html)
 
-    def test_control_plane_only_clock_is_read_only(self):
-        html = self._render(
-            {
-                "task_id": "clockin_daxiang_s",
-                "task_mode": "scheduled",
-                "name_value": "网点打卡-大祥S站",
-                "tool_name_value": "clock_in_dual",
-                "cron_expression_value": "33 18 * * *",
-                "schedule_time_values": ["18:33"],
-                "tool_params_json": "{}",
-                "tool_param_fields": [],
-                "search_text": "网点打卡 大祥S站 clock_in_dual",
-                "last_activity_value": "",
-                "sort_order": 1,
-                "is_schedulable": True,
-                "schedule_supported": True,
-                "schedule_editable": False,
-                "has_webhook": False,
-                "enabled_value": True,
-                "is_open": False,
-                "feedback": None,
-                "last_error_summary": "",
-                "last_run_value": "",
-                "webhook_masked_url": "",
-                "webhook_full_url": "",
-                "webhook_path": "",
-                "webhook_token_enabled": False,
-                "webhook_header_name": "X-Agent-Webhook-Token",
-                "webhook_body_json": "{}",
-                "can_save": False,
-                "can_run_now": False,
-                "plugin_blocked": True,
-                "control_plane_only": True,
-                "control_plane_notice": (
-                    "代码锁定的既有自动打卡任务；"
-                    "任务配置只读，但审批策略可以单独设置。"
-                ),
-                "approval_policy": {
-                    "available": True,
-                    "configured_mode": "REQUIRE_EACH_RUN",
-                    "effective_mode": "REQUIRE_EACH_RUN",
-                    "effective_status": "ACTIVE",
-                    "label": "每次运行审批",
-                    "summary": "项目已启用的全部可信入口每次运行都需要审批。",
-                    "can_full_auto": True,
-                    "policy_version": 3,
-                    "project_configuration_version": 7,
-                },
-            }
-        )
-        task_html = html.split("<article", 1)[1].split("</article>", 1)[0]
-
-        self.assertNotIn("data-automation-toggle", task_html)
-        run_button = task_html.split('data-run-now', 1)[0].rsplit('<button', 1)[1]
-        self.assertIn(' disabled ', run_button)
-        self.assertIn('data-start-disabled="当前不可执行"', task_html)
-        self.assertNotIn("data-settings-toggle", task_html)
-        self.assertNotIn("data-schedule-stack", task_html)
-        self.assertIn("任务配置只读，但审批策略可以单独设置", task_html)
-        self.assertIn("当前任务：已启用", task_html)
-        self.assertIn("每次运行审批", task_html)
-        self.assertIn("保存权限", task_html)
-        self.assertIn("全部可信入口每次运行都需要审批", task_html)
-        self.assertNotIn("EXACT_SCHEDULE_EXEMPT", task_html)
-        self.assertNotIn("policy_hash", task_html)
-
-    def test_missing_required_resources_render_resource_editor(self):
-        html = self._render(
-            {
-                "task_id": "arrival_stats",
-                "task_mode": "manual",
-                "name_value": "统计到货数据",
-                "tool_name_value": "sync_arrival_stats",
-                "cron_expression_value": "",
-                "schedule_time_values": [],
-                "tool_params_json": "{}",
-                "tool_param_fields": [],
-                "search_text": "统计到货数据 sync_arrival_stats",
-                "last_activity_value": "",
-                "sort_order": 1,
-                "is_schedulable": False,
-                "schedule_supported": False,
-                "schedule_editable": False,
-                "has_webhook": False,
-                "enabled_value": False,
-                "is_open": True,
-                "feedback": None,
-                "last_error_summary": "",
-                "last_run_value": "",
-                "webhook_masked_url": "",
-                "webhook_full_url": "",
-                "webhook_path": "",
-                "webhook_token_enabled": False,
-                "webhook_header_name": "X-Agent-Webhook-Token",
-                "webhook_body_json": "{}",
-                "resource_blocked": True,
-                "missing_required_resources": [
-                    "phase7.arrive_primary_sheet",
-                    "phase7.arrive_secondary_sheet",
-                    "phase7.stats_archive_sheet",
-                ],
-                "resource_bindings": [
-                    {
-                        "resource_key": "phase7.arrive_primary_sheet",
-                        "required": True,
-                        "configured": False,
-                        "missing": True,
-                        "display_name": "到货清单主表写入配置",
-                        "note": "到货清单主表写入配置。",
-                        "source": "",
-                        "updated_at": "",
-                        "editor_json": "{\n  \"spreadsheet_token\": \"shtxxxxxxxx\"\n}",
-                        "visual_fields": [
-                            {
-                                "path": "spreadsheet_token",
-                                "label": "电子表格 Token",
-                                "value": "shtxxxxxxxx",
-                                "kind": "text",
-                                "secret": True,
-                                "hint": "从飞书电子表格地址中获取。",
-                                "empty_null": False,
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-
-        self.assertIn("缺少运行资源", html)
-        self.assertIn("到货清单主表写入配置", html)
-        self.assertIn('data-resource-path="spreadsheet_token"', html)
-        self.assertIn('type="password"', html)
-        self.assertIn("/automations/resources/save", html)
-        self.assertIn('data-resource-save', html)
-        self.assertIn('data-resource-save-all', html)
-        self.assertIn('data-resources-json-hidden', html)
-        self.assertNotIn("下面是可直接修改的 JSON 模板", html)
-        self.assertNotIn("auto-resource-editor", html)
-
-    def test_configured_resource_renders_saved_json_inside_reconfigure(self):
-        html = self._render(
-            {
-                "task_id": "arrival_stats",
-                "task_mode": "manual",
-                "name_value": "缁熻鍒拌揣鏁版嵁",
-                "tool_name_value": "sync_arrival_stats",
-                "cron_expression_value": "",
-                "schedule_time_values": [],
-                "tool_params_json": "{}",
-                "tool_param_fields": [],
-                "search_text": "缁熻鍒拌揣鏁版嵁 sync_arrival_stats",
-                "last_activity_value": "",
-                "sort_order": 1,
-                "is_schedulable": False,
-                "schedule_supported": False,
-                "schedule_editable": False,
-                "has_webhook": False,
-                "enabled_value": False,
-                "is_open": True,
-                "feedback": None,
-                "last_error_summary": "",
-                "last_run_value": "",
-                "webhook_masked_url": "",
-                "webhook_full_url": "",
-                "webhook_path": "",
-                "webhook_token_enabled": False,
-                "webhook_header_name": "X-Agent-Webhook-Token",
-                "webhook_body_json": "{}",
-                "resource_blocked": False,
-                "missing_required_resources": [],
-                "resource_bindings": [
-                    {
-                        "resource_key": "phase7.arrive_primary_sheet",
-                        "required": True,
-                        "configured": True,
-                        "missing": False,
-                        "display_name": "primary sheet resource",
-                        "note": "primary sheet resource",
-                        "source": "backend_console",
-                        "updated_at": "2026-04-24 17:00:28",
-                        "editor_json": "{\n  \"spreadsheet_token\": \"sht_real_saved\",\n  \"range\": \"8fc516!A2:R200\"\n}",
-                        "visual_fields": [
-                            {
-                                "path": "spreadsheet_token",
-                                "label": "电子表格 Token",
-                                "value": "sht_real_saved",
-                                "kind": "text",
-                                "secret": True,
-                                "hint": "从飞书电子表格地址中获取。",
-                                "empty_null": False,
-                            },
-                            {
-                                "path": "range",
-                                "label": "读取范围",
-                                "value": "8fc516!A2:R200",
-                                "kind": "text",
-                                "secret": False,
-                                "hint": "例如 Sheet1!A2:R200。",
-                                "empty_null": False,
-                            },
-                        ],
-                    }
-                ],
-            }
-        )
-
-        self.assertIn("已配置", html)
-        self.assertIn("重新配置", html)
-        self.assertIn('data-resource-path="range"', html)
-        self.assertIn("sht_real_saved", html)
-        self.assertNotIn("shtxxxxxxxx", html)
-        self.assertNotIn("参数 JSON", html)
-        self.assertNotIn("代码设置", html)
-        self.assertNotIn("auto-json-editor", html)
-
-    def test_settings_save_submit_uses_ajax_and_closes_drawers(self):
+    def test_implicit_form_submit_neither_saves_nor_runs(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "automation.html").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('form.addEventListener("submit", async event =>', source)
-        self.assertIn('event.preventDefault();', source)
-        self.assertIn('fetch("/automations/tasks/save"', source)
+        guard = source.split('form.addEventListener("submit", event => {', 1)[1].split("});", 1)[0]
+        self.assertIn('if (!event.submitter?.getAttribute("formaction"))', guard)
+        self.assertIn("event.preventDefault();", guard)
+        self.assertNotIn("/automations/tasks/save", source)
         self.assertIn("function closeAutomationTaskPanels(form)", source)
-        self.assertIn("closeAutomationTaskPanels(form);", source)
         self.assertNotIn("data-code-toggle", source)
         self.assertNotIn("data-json-editor", source)
 
@@ -423,7 +209,7 @@ class AutomationRunControlsTemplateTests(unittest.TestCase):
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const source = require("node:fs").readFileSync(0, "utf8");
-const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("const resourceEditors ="));
+const controls = source.slice(source.indexOf("function syncRunButtonVisual()"), source.indexOf("    form.addEventListener(\"submit\", event => {"));
 const polling = source.slice(source.indexOf("let resetTerminalOutput = function() {};"), source.indexOf("    // 反馈关闭按钮"))
   .replace("// Invocation history initialization is complete.", "globalThis.pollTest = {startPolling, pollOutput};");
 const submit = source.slice(source.indexOf('    if (runBtn) {\n      runBtn.addEventListener("click"'),

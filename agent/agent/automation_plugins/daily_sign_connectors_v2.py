@@ -1,4 +1,5 @@
 """Infrastructure contracts for the package-owned daily-sign workflow."""
+from agent.connector_namespaces import DAILY_SIGN_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
 from agent.automation_plugins.connector_schemas import CELL, TEXT, array_schema as arr, object_schema as obj, source_record_schema
@@ -99,7 +100,7 @@ def build_daily_sign_connectors(reviewed):
             resource_role=role if resource else None, allowed_resource_kinds=(system,) if resource else (),
             operations=tuple(ConnectorOperation(name=name, effect=Effect(effect),
                 input_schema=_schemas(role, name)[0], output_schema=_schemas(role, name)[1],
-                handler=reviewed_connector_handler(reviewed, tool="sync_daily_should_sign", operation="daily_sign.port",
+                handler=reviewed_connector_handler(reviewed, tool=DAILY_SIGN_TOOL, operation="daily_sign.port",
                     action=f"{role}.{name}", role=role, account=account, resource=resource),
                 max_input_bytes=32*1024*1024, max_output_bytes=10*1024*1024)
                 for name, effect in operations.items())))

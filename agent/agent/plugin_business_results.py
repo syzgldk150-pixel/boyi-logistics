@@ -11,7 +11,7 @@ class PluginBusinessResults:
     def prepare(self, invocation, capability, arguments):
         metadata = capability["_plugin_runtime"]
         prepared = dict(arguments)
-        if metadata["plugin_id"] in {"sync_customer_service_problems", "sync_customer_service_problems_v2"}:
+        if metadata["plugin_id"] == "sync_customer_service_problems_v2":
             with self.repository.unit_of_work() as uow:
                 prepared["recheck_items"] = prepare_customer_rechecks(
                     uow.connection, automation_id=invocation.automation_id, metadata=metadata)
@@ -19,7 +19,7 @@ class PluginBusinessResults:
 
     def publish(self, invocation_id, automation_id, capability, arguments, outcome):
         metadata = capability["_plugin_runtime"]
-        if metadata["plugin_id"] in {"sync_customer_service_problems", "sync_customer_service_problems_v2"}:
+        if metadata["plugin_id"] == "sync_customer_service_problems_v2":
             with self.repository.unit_of_work() as uow:
                 # Serialize business publication against startup settlement;
                 # a late old callback cannot publish after its call ended.

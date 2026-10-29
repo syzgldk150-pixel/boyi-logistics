@@ -8,7 +8,7 @@ import pytest
 
 from agent.orchestration.feishu_approval_service import FeishuApprovalService
 from shared.orchestration_repository import OrchestrationRepository
-from tests.test_manual_unknown_write_mysql import database as database
+from tests.mysql_migrated_database import database as database
 
 
 pytestmark = pytest.mark.skipif(

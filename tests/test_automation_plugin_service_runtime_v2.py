@@ -281,7 +281,6 @@ def _catalog_entry(
         resource_bindings={},
         project_schedule={"kind": "none", "enabled": False},
         install_root=f"/plugins/{plugin_id}/1.0.0",
-        device_binding=None,
         install_metadata={},
         project_config_version=1 if configured else 0,
         project_config_sha256=snapshot.project_config_sha256,
@@ -590,7 +589,6 @@ def test_required_service_coeffect_recovers_and_distinguishes_blocked_provider()
         requires=(required_service,),
     )
     provider = ProductionRuntimeCoeffectProvider(
-        core_catalog=_CoreCatalog(),
         broker_handler_keys=(),
         account_manager=_Accounts(),
         service_registry=registry,
@@ -699,7 +697,6 @@ def test_provider_disable_and_uninstall_withdraw_consumer_schedule_until_restore
 
     gate = _SchedulerGate()
     coeffects = ProductionRuntimeCoeffectProvider(
-        core_catalog=_CoreCatalog(),
         broker_handler_keys=(),
         account_manager=_Accounts(),
         service_registry=services,

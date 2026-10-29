@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -21,58 +20,26 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_TESTS = {
-    "sync_scan_codes": (
-        "tests/test_scan_codes_action_payload.py",
-        "tests/test_scan_codes_core_handlers.py",
-        "tests/test_first_party_action_payloads.py::test_scan_codes_runs_router_to_fresh_server_verifier",
-    ),
-    "sync_arrival_stats": (
-        "tests/test_arrival_production_adapter.py",
-        "tests/test_first_party_action_payloads.py::test_arrival_stats_runs_closed_production_primitives_through_write_verifier",
-    ),
-    "self_pickup_problem_upload": (
-        "tests/test_self_pickup_problem_upload_plugin_action.py",
-        "tests/test_problem_plugin_production_adapter.py",
-    ),
-    "split_pending_problem_upload": (
-        "tests/test_split_pending_problem_upload_plugin_action.py",
-        "tests/test_problem_plugin_production_adapter.py",
-    ),
-    "sync_finance_bills": (
-        "tests/test_sync_finance_bills_action_payload.py",
-        "tests/test_finance_core_adapter.py",
-        "tests/test_finance_plugin_router.py",
-        "tests/test_finance_raw_plugin_protocol.py",
-    ),
-    "sync_customer_service_problems": (
-        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_owns_pagination_dedupe_and_recheck",
-        "tests/test_first_party_action_payloads.py::test_customer_problem_payload_rejects_repeated_cursor",
-        "tests/test_customer_source_plugin_runtime.py",
-    ),
     "sync_scan_codes_v2": (
         "tests/test_sync_scan_codes_service_v2_package.py",
-        "tests/test_sync_scan_codes_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_scan_real_zip_console_preview_stays_read_only",
         "tests/test_production_v2_packaged_protocol.py::test_scan_zip_formal_uses_host_confirmed_plan_and_fresh_readback",
     ),
     "sync_arrival_stats_v2": (
         "tests/test_plugin_business_boundary.py::test_arrival_classification_changes_only_in_package_and_empty_projection_clears",
         "tests/test_sync_arrival_stats_service_v2_package.py",
-        "tests/test_sync_arrival_stats_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_arrival_real_zip_process_writes_calculated_counts_through_production_broker",
         "tests/test_production_v2_packaged_protocol.py::test_arrival_zip_webhook_calculates_without_writing_only_when_requested",
     ),
     "self_pickup_problem_upload_v2": (
         "tests/test_plugin_business_boundary.py::test_self_pickup_description_can_change_in_the_zip_with_the_host_frozen",
         "tests/test_self_pickup_problem_service_v2_package.py",
-        "tests/test_self_pickup_problem_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_self_pickup_zip_preview_selects_both_accounts_and_confirms_real_operations",
     ),
     "split_pending_problem_upload_v2": (
         "tests/test_plugin_business_boundary.py::test_selection_limit_follows_installed_zip_before_an_invocation_is_created",
         "tests/test_plugin_business_boundary.py::test_split_problem_description_can_change_without_host_reclassification",
         "tests/test_split_pending_problem_service_v2_package.py",
-        "tests/test_split_pending_problem_v1_v2_parity.py",
         "tests/test_production_v2_packaged_protocol.py::test_split_zip_executes_selected_problem_and_publishes_ledger",
     ),
     "clockin_daxiang_v2": ("tests/test_clockin_daxiang_service_v2_packages.py",),
@@ -90,11 +57,6 @@ PLUGIN_TESTS = {
         "tests/test_delivery_status_action_payload.py",
         "tests/test_delivery_projection_presence.py",
         "tests/test_delivery_site_production_adapter.py",
-    ),
-    "sync_finance_bills_v2": (
-        "tests/test_plugin_business_boundary.py::test_finance_smaller_package_pages_are_verified_against_actual_pages",
-        "tests/test_plugin_business_boundary.py::test_finance_retry_default_and_target_budget_belong_to_package",
-        "tests/test_finance_v2_packaged_protocol.py",
     ),
     "sync_customer_service_problems_v2": ("tests/test_customer_v2_packaged_protocol.py",),
     "sync_daily_should_sign_v2": (
@@ -121,13 +83,13 @@ def selected_tests(plugin_id: str) -> tuple[str, ...]:
 
 def maintenance_scope(plugin_id: str, paths: list[str]) -> dict[str, Any]:
     selected_tests(plugin_id)
-    local_root = "agent/" + ("service_v2_plugins/" if plugin_id.endswith("_v2") else "legacy/first_party_automation_plugins/") + plugin_id + "/"
+    local_root = "agent/service_v2_plugins/" + plugin_id + "/"
     local_tests = {node.split("::", 1)[0] for node in PLUGIN_TESTS[plugin_id]}
     supporting = [path for path in paths if path not in local_tests and (
         path.endswith('.md') or path.startswith(('tests/', 'agent/tests/', 'console/tests/')))]
     outside = [path for path in paths if not (path.startswith(local_root) or
         path in local_tests or path in supporting)]
-    other_plugins = [path for path in outside if path.startswith(('agent/legacy/first_party_automation_plugins/', 'agent/service_v2_plugins/'))]
+    other_plugins = [path for path in outside if path.startswith('agent/service_v2_plugins/')]
     core = [path for path in outside if path not in other_plugins]
     return {
         "scope": "CORE_UPDATE_REQUIRED" if core else "MULTI_PLUGIN_REVIEW_REQUIRED" if other_plugins else "PLUGIN_ONLY_CANDIDATE",
@@ -135,7 +97,7 @@ def maintenance_scope(plugin_id: str, paths: list[str]) -> dict[str, Any]:
         "changed_paths": paths, "core_paths": core,
         "other_plugin_paths": other_plugins, "supporting_paths": supporting,
         "tests": list(PLUGIN_TESTS[plugin_id]),
-        "meaning": "Source scope only; activation still verifies the signed Host/data/capability contract.",
+        "meaning": "Source scope only; installation still verifies the Host/data/capability contract.",
     }
 
 
@@ -157,14 +119,14 @@ def run_local_tests(plugin_id: str) -> dict[str, Any]:
     if sys.version_info[:2] != (3, 10):
         raise RuntimeError("production plugin tests require Python 3.10")
     nodes = selected_tests(plugin_id)
-    tested_material = v2_test_material(plugin_id) if plugin_id.endswith('_v2') else None
+    tested_material = v2_test_material(plugin_id)
     environment = dict(os.environ)
     environment["PYTHON_DOTENV_DISABLED"] = "1"
     environment["MIGRATION_ENV_FILE"] = os.devnull
     environment["PYTHONPATH"] = os.pathsep.join((str(PROJECT_ROOT / "agent"), str(PROJECT_ROOT)))
     command = [sys.executable, "-m", "pytest", "-q", *nodes]
     completed = subprocess.run(command, cwd=PROJECT_ROOT, env=environment, check=False)
-    changed = tested_material is not None and tested_material != v2_test_material(plugin_id)
+    changed = tested_material != v2_test_material(plugin_id)
     code = completed.returncode or int(changed)
     return {"plugin_id": plugin_id, "command": ["python", "-m", "pytest", "-q", *nodes],
         "exit_code": code, "status": "PASS" if code == 0 else "FAIL",
@@ -198,73 +160,30 @@ def _write_new(path: Path, content: bytes) -> None:
         stream.write(content)
 
 
-def package_plugin(plugin_id: str, output: Path, *, version: str | None,
-                   test_signing: bool, signing_key_env: str | None,
-                   key_id: str | None, expected_material: dict[str, Any] | None = None) -> dict[str, Any]:
+def package_plugin(plugin_id: str, output: Path, *,
+                   expected_material: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build the reviewed Service V2 ZIP; its version belongs in the manifest."""
     selected_tests(plugin_id)
     if output.suffix.lower() != ".zip" or output.is_symlink() or output.exists():
         raise ValueError("output must be a new ZIP path")
-    if plugin_id.endswith("_v2"):
-        if test_signing or signing_key_env or key_id or version:
-            raise ValueError("Service v2 version belongs in its manifest; signing options are ACTION_V1 only")
-        from service_v2_plugins._shared.build_zip import build_plugin_zip
-        from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
+    from service_v2_plugins._shared.build_zip import build_plugin_zip
+    from agent.automation_plugins.package_v2 import verify_unsigned_plugin_zip_v2
 
-        source = PROJECT_ROOT / "agent" / "service_v2_plugins" / plugin_id
-        if expected_material is not None and v2_test_material(plugin_id) != expected_material:
-            raise ValueError('plugin source or selected tests changed after testing; rerun local tests')
-        with tempfile.TemporaryDirectory(prefix="plugin-maintenance-", dir=output.parent) as temporary:
-            candidate = Path(temporary) / "candidate.zip"
-            build_plugin_zip(source, candidate)
-            package = candidate.read_bytes()
-            digest = hashlib.sha256(package).hexdigest()
-            verified = verify_unsigned_plugin_zip_v2(package, transport_sha256=digest)
-            if expected_material is not None and digest != expected_material['package_sha256']:
-                raise ValueError('packaged bytes differ from the tested source material')
-            _write_new(output, package)
-        return {"plugin_id": plugin_id, "version": verified.manifest.version,
-            "runtime_model": "SERVICE_V2", "trust": "UNSIGNED_SUPER_ADMIN_UPLOAD",
-            "package_sha256": hashlib.sha256(package).hexdigest(), "bytes": len(package), "path": str(output.resolve())}
-    if version is None or re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
-        raise ValueError("ACTION_V1 packaging requires an explicit new semantic --version")
-    if test_signing == bool(signing_key_env):
-        raise ValueError("choose --test-signing or one injected --signing-key-env")
-    from Crypto.PublicKey import ECC
-    from agent.automation_plugins.first_party import first_party_payload_files, resolve_first_party_manifests
-    from agent.automation_plugins.manifest import AutomationPluginManifest
-    from agent.automation_plugins.package import Ed25519PackageSigner, Ed25519TrustStore, build_signed_plugin_zip, verify_signed_plugin_zip
-    from agent.tool_registry import ToolRegistry
-
-    source_manifest = resolve_first_party_manifests(ToolRegistry(), _plugin_ids=frozenset({plugin_id}))[plugin_id]
-    mapping = source_manifest.to_mapping()
-    mapping["version"] = version
-    manifest = AutomationPluginManifest.from_mapping(mapping)
-    if test_signing:
-        private_key = ECC.generate(curve="Ed25519")
-        signer_id = "isolated-test-only"
-    else:
-        if not key_id or not signing_key_env or re.fullmatch(r"[A-Z][A-Z0-9_]+", signing_key_env) is None:
-            raise ValueError("injected signing needs --key-id and a valid uppercase environment name")
-        material = os.environ.get(signing_key_env)
-        if not material:
-            raise ValueError("requested signing environment is not injected")
-        try:
-            private_key = ECC.import_key(material)
-        except (ValueError, TypeError, IndexError):
-            raise ValueError("injected signing material is invalid") from None
-        if not private_key.has_private() or private_key.curve != "Ed25519":
-            raise ValueError("injected signing material must be Ed25519")
-        signer_id = key_id
-    signer = Ed25519PackageSigner(key_id=signer_id, private_key=private_key)
-    public_key = private_key.public_key().export_key(format="raw")
-    package = build_signed_plugin_zip(manifest, first_party_payload_files(manifest), signer=signer)
-    verified = verify_signed_plugin_zip(package, verifier=Ed25519TrustStore({signer_id: public_key}))
-    _write_new(output, package)
-    return {"plugin_id": plugin_id, "version": manifest.version,
-        "runtime_model": "ACTION_V1", "trust": "TEST_ONLY" if test_signing else "INJECTED_SIGNER",
-        "key_id": signer_id, "public_key_hex": public_key.hex(),
-        "manifest_sha256": verified.manifest_sha256,
-        "package_sha256": hashlib.sha256(package).hexdigest(), "bytes": len(package)}
+    source = PROJECT_ROOT / "agent" / "service_v2_plugins" / plugin_id
+    if expected_material is not None and v2_test_material(plugin_id) != expected_material:
+        raise ValueError('plugin source or selected tests changed after testing; rerun local tests')
+    with tempfile.TemporaryDirectory(prefix="plugin-maintenance-", dir=output.parent) as temporary:
+        candidate = Path(temporary) / "candidate.zip"
+        build_plugin_zip(source, candidate)
+        package = candidate.read_bytes()
+        digest = hashlib.sha256(package).hexdigest()
+        verified = verify_unsigned_plugin_zip_v2(package, transport_sha256=digest)
+        if expected_material is not None and digest != expected_material['package_sha256']:
+            raise ValueError('packaged bytes differ from the tested source material')
+        _write_new(output, package)
+    return {"plugin_id": plugin_id, "version": verified.manifest.version,
+        "runtime_model": "SERVICE_V2", "trust": "UNSIGNED_SUPER_ADMIN_UPLOAD",
+        "package_sha256": digest, "bytes": len(package), "path": str(output.resolve())}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -274,11 +193,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-ref", help="frozen host commit; changes outside this plugin require core update")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--report", type=Path)
-    parser.add_argument("--version")
-    signer = parser.add_mutually_exclusive_group()
-    signer.add_argument("--test-signing", action="store_true")
-    signer.add_argument("--signing-key-env")
-    parser.add_argument("--key-id")
     args = parser.parse_args(argv)
     scope = maintenance_scope(args.plugin_id, _changed_paths(args.base_ref))
     scope["base_ref"] = args.base_ref
@@ -302,8 +216,6 @@ def main(argv: list[str] | None = None) -> int:
     code = tests["exit_code"]
     if code == 0 and args.action == "package":
         result["artifact"] = package_plugin(args.plugin_id, args.output,
-            version=args.version, test_signing=args.test_signing,
-            signing_key_env=args.signing_key_env, key_id=args.key_id,
             expected_material=tests.get('tested_material'))
     if args.report:
         _write_new(args.report, (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))

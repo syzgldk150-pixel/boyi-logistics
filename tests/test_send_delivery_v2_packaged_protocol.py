@@ -11,7 +11,7 @@ from agent.automation_plugins.daily_send_connectors_v2 import build_daily_send_c
 from agent.automation_plugins.daily_send_handlers import DailySendHandlerPorts, build_daily_send_handler_map
 from agent.automation_plugins.delivery_connectors_v2 import build_delivery_connectors
 from agent.automation_plugins.delivery_site_handlers import DeliverySiteHandlerPorts, build_delivery_site_handler_map
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 
 
@@ -150,7 +150,7 @@ def test_delivery_zip_classifies_signed_rows_and_verifies_both_outputs(tmp_path,
         return {'ok':True,'verified':True,'record_count':len(rows),'before_sha256':'a'*64,'after_sha256':'b'*64,
                 'before_observation_id':str(uuid4()),'after_observation_id':str(uuid4()),'write_response_received':True}
     describe=lambda account:{'account_id':account,'system':'ronghui','session_profile':'isolated'}
-    readers=build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(describe_account=describe,
+    readers=build_host_primitive_handler_map(HostPrimitivePorts(describe_account=describe,
         delivery_list_views=lambda *_:[{'view_id':'pending-view','view_name':'未签收明细'}],
         delivery_list_records=lambda *_:{'items':[{'record_id':'rec1','waybill_no':'R001','status':'未签收'},
                                                 {'record_id':'rec2','waybill_no':'R002','status':'未签收'}],'returned':2,'total':2},
@@ -178,7 +178,7 @@ def test_delivery_zip_no_change_completes_with_read_evidence_and_no_write(tmp_pa
     def unexpected(*_):
         pytest.fail("No-change delivery run must not invent a write")
     describe = lambda account: {"account_id":account, "system":"ronghui", "session_profile":"isolated"}
-    readers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+    readers = build_host_primitive_handler_map(HostPrimitivePorts(
         describe_account=describe,
         delivery_list_views=lambda *_: [{"view_id":"pending-view", "view_name":"未签收明细"}],
         delivery_list_records=lambda *_: {"items":rows, "returned":len(rows), "total":len(rows)},

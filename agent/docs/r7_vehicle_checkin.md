@@ -2,7 +2,7 @@
 module: R7车线每日打卡
 type: 维护手册
 status: active
-updated: 2026-10-22
+updated: 2026-10-29
 ---
 
 # R7车线每日打卡
@@ -50,13 +50,13 @@ updated: 2026-10-22
 - R7 请求及业务核验：`agent/service_v2_plugins/r7_vehicle_checkin_v2/payload/r7_client.py`。
 - 接口路径及读写声明：该插件的 `manifest.json` 中 `http_requests`。
 - 通用账号传输：`agent/agent/automation_plugins/account_http.py`；通用响应字段核验：`http_write_verification.py`。
-- 发布清单：`agent/scripts/first_party_release_scope.py` 单独纳入新包；历史 `r7_arrival_checkin`、`r7_departure_checkin` 继续停用。
+- 发布清单：`agent/scripts/release_scope.py` 的显式包清单；旧 R7 到达/发车打卡已删除。
 - 回归：`tests/test_r7_vehicle_checkin_v2.py` 包含原页结构 HTTP fixtures、真实 Linux 隔离 ZIP/Broker、账号选择、手动/定时/飞书入口、无候选和未知写停止。
 
 在仓库根目录、项目 Python 3.10 环境中执行：
 
 ```bash
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_r7_vehicle_checkin_v2.py tests/test_first_party_release_source_scope.py
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_r7_vehicle_checkin_v2.py tests/test_release_scope.py
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/r7_vehicle_checkin_v2 .task_tmp/r7-vehicle-checkin/r7_vehicle_checkin_v2-1.1.0.zip
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/r7-vehicle-checkin/r7_vehicle_checkin_v2-1.1.0.zip
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/r7-vehicle-checkin/r7_vehicle_checkin_v2-1.1.0.zip

@@ -116,7 +116,7 @@ def _validate_feishu_command_registrations(
     return tool_routes
 
 
-FIRST_PARTY_FEISHU_ROUTE_KEYS = MappingProxyType(
+FIXED_FEISHU_ROUTE_KEYS = MappingProxyType(
     _validate_feishu_command_registrations(FEISHU_COMMAND_REGISTRATIONS)
 )
 
@@ -133,7 +133,7 @@ def _automation_project_request(
         "tool_name": tool_name,
         "params": {},
         "mode": mode,
-        "automation_route_key": FIRST_PARTY_FEISHU_ROUTE_KEYS[tool_name],
+        "automation_route_key": FIXED_FEISHU_ROUTE_KEYS[tool_name],
         "dynamic_inputs": dict(dynamic_inputs or {}),
     }
 
@@ -149,7 +149,7 @@ def is_reserved_feishu_command_text(text: str) -> bool:
     Dynamic Service v2 contributions use this predicate while preparing their
     route batch.  It intentionally delegates to the same deterministic parser
     used at message time so admission cannot create a route that an earlier
-    deterministic login or Action v1 branch will always consume.
+    deterministic login or fixed command branch will always consume.
     The dispatch-forecast family is recognized before parsing because its
     selected fixed target depends on the current profile, while ownership does
     not.

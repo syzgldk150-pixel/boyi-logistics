@@ -38,7 +38,7 @@ def require_service_v2_policy_mode(entry: Any, policy_mode: str) -> None:
     """Keep service-v2 execution automatic while retaining audit evidence."""
 
     if (
-        getattr(entry, "runtime_model", "ACTION_V1") == "SERVICE_V2"
+        getattr(entry, "runtime_model", None) == "SERVICE_V2"
         and policy_mode != AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
     ):
         raise OrchestrationError(
@@ -310,7 +310,7 @@ def require_active_service_v2_module_slot(
     contribution_id = str(getattr(invocation_contract, "contribution_id", "") or "")
     signed = getattr(entry, "invocation_contracts", {}).get(contribution_id)
     if (
-        getattr(entry, "runtime_model", "ACTION_V1") != "SERVICE_V2"
+        getattr(entry, "runtime_model", None) != "SERVICE_V2"
         or getattr(invocation_contract, "entrypoint", "") != "module_slots"
         or not contribution_id
         or not isinstance(route, Mapping)
@@ -424,7 +424,7 @@ def validate_service_v2_compiled_target(
 ) -> None:
     """Bind a compiled v2 invocation to its immutable manifest target."""
 
-    if getattr(entry, "runtime_model", "ACTION_V1") != "SERVICE_V2":
+    if getattr(entry, "runtime_model", None) != "SERVICE_V2":
         return
     target = raw_contract.get("target")
     governance = raw_contract.get("governance")

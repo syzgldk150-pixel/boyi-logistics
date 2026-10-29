@@ -7,13 +7,14 @@ by the production adapters. No plugin code or whole-script fallback runs here.
 from __future__ import annotations
 
 
+from agent.connector_namespaces import ARRIVAL_STATS_TOOL
 from agent.automation_plugins.connector_registry import (
     ConnectorBindingKind, ConnectorDescriptor, ConnectorOperation,
 )
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
 from agent.automation_plugins.list_connectors_v2 import encode_arrive_page_result
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
-from agent.automation_plugins.first_party_handler_support import (
+from agent.automation_plugins.host_primitive_support import (
     _ARRIVE_FIELDS, _ARRIVAL_STATS_FIELDS, _SPLIT_SNAPSHOT_FIELDS, _ARRIVAL_STATS_V1_OPTIONAL_EMPTY_FIELDS,
     _ARRIVAL_SNAPSHOT_FIELDS, _PENDING_FIELDS, _SCAN_READ_FIELDS,
     _SCAN_SNAPSHOT_FIELDS, _SCAN_SOURCE_FIELDS,
@@ -26,7 +27,7 @@ from agent.automation_plugins.connector_schemas import (
 
 
 _ACCOUNT_ROLE = "arrival_stats_tms"
-_TOOL = "sync_arrival_stats"
+_TOOL = ARRIVAL_STATS_TOOL
 
 
 def _records_input(fields, *, optional=(), slot=False):

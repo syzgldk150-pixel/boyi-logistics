@@ -13,7 +13,7 @@ from uuid import uuid4
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.scan_connectors_v2 import build_scan_connectors
 from agent.automation_plugins.arrival_connectors_v2 import build_arrival_connectors
-from plugin_core_adapters.first_party import build_production_first_party_core_handler_map
+from plugin_core_adapters.host_primitives import build_production_host_primitive_handler_map
 from tests.v32_acceptance.daily_protocol import DailyAccounts
 from tests.v32_acceptance.daily_stats_protocol import DailyStatsProtocol
 from tests.v32_acceptance.daily_scan import ACTOR, ROOT, connect, prepare_database, setup_scan, signed_request
@@ -174,8 +174,8 @@ def main():
     accounts = DailyAccounts()
     artifacts = {name: build_artifact(name, runtime_root / name) for name in
                  ('sync_scan_codes_v2', 'sync_arrival_stats_v2')}
-    with LostReplyProtocol() as boundary, boundary.authentication_boundaries(), patch('plugin_core_adapters.first_party.get_account_manager', return_value=accounts), observe_preview_timestamps(runtime_root / 'preview-timing.json'):
-        handlers = build_production_first_party_core_handler_map(cursor_secret=secrets.token_bytes(32),
+    with LostReplyProtocol() as boundary, boundary.authentication_boundaries(), patch('plugin_core_adapters.host_primitives.get_account_manager', return_value=accounts), observe_preview_timestamps(runtime_root / 'preview-timing.json'):
+        handlers = build_production_host_primitive_handler_map(cursor_secret=secrets.token_bytes(32),
             account_manager=accounts, capability_authorizer=boundary.authorize)
         with ManagementFixture(connection_factory=connection_factory, runtime_root=runtime_root, account_manager=accounts,
                 broker_handlers=handlers, enable_directory_faults=False,

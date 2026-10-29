@@ -9,11 +9,10 @@ from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid4
 
-from agent.tms_runtime.scripts.finance_capture_common import CaptureResult
 from shared.data_sources import row_dict
-from shared.finance import FinanceRepository, SummarySemantics
-from shared.finance.models import TransactionRecord, SummarySnapshot
-from tools.finance_sync_service import validate_finance_capture_result
+from shared.finance import FinanceRepository
+from shared.finance.models import TransactionRecord
+from shared.finance.validation import CaptureEvidence, validate_finance_capture
 
 
 def seed_finance(connection_factory, instances):
@@ -41,7 +40,6 @@ def seed_finance(connection_factory, instances):
         source_site = "synthetic-perf-site-" + sha256(str(instance_id).encode()).hexdigest()[:20]
         rows = []
         balance = Decimal("10000.0000")
-        totals = {"income": Decimal("0.0000"), "expense": Decimal("0.0000")}
         for ordinal in range(200):
             direction = "income" if ordinal % 2 == 0 else "expense"
             amount = Decimal(ordinal % 5 + 1).quantize(Decimal("0.0001"))
@@ -55,22 +53,18 @@ def seed_finance(connection_factory, instances):
                 transaction_at=datetime.combine(target, datetime.min.time()) + timedelta(seconds=ordinal),
                 waybill_no=f"SYNTHETIC-{index:03d}-{ordinal:05d}", source_reference=str(ordinal + 1),
                 source_payload={"BALANCE_ORDER": str(ordinal + 1)}))
-            totals[direction] += amount
             balance = after
-        summaries = [SummarySnapshot(platform="ronghui", account_id=account, target_date=target,
-            primary_fee_name="合成性能收入" if direction == "income" else "合成性能支出", direction=direction,
-            income=amount if direction == "income" else Decimal("0.0000"),
-            expense=amount if direction == "expense" else Decimal("0.0000")) for direction, amount in totals.items()]
-        capture = CaptureResult(transactions=[], summaries=[], source_site_code=source_site, source_site_name=f"合成财务来源 {index + 1}",
-            validation={"source_total": len(rows), "page_row_counts": [100, 100]}, summary_semantics=SummarySemantics.SIGNED_NET_BY_FEE)
-        validation = validate_finance_capture_result(capture, rows, summaries, repository=repository)
+        validation = validate_finance_capture(CaptureEvidence(
+            remote_total=len(rows), page_row_counts=[100, 100], transactions=rows, summaries=(),
+            intended_write_count=len(rows), period_statement_ref=f"{stamp}-{index}"))
         if not validation.passed:
             raise ValueError("synthetic finance correctness validation failed")
+        source_site_name = f"合成财务来源 {index + 1}"
         run_id = repository.start_run(batch_id=batch_id, platform="ronghui", account_id=account,
             login_account=account, session_profile="synthetic-performance", target_date=target,
-            source_site_code=source_site, source_site_name=capture.source_site_name,
+            source_site_code=source_site, source_site_name=source_site_name,
             producer_instance_id=instance_id, producer_generation=generation)
-        repository.commit_run_snapshot(run_id=run_id, transactions=rows, summaries=summaries, validation=validation)
+        repository.commit_run_snapshot(run_id=run_id, transactions=rows, summaries=(), validation=validation)
         run_ids.append(run_id)
         expected.extend(rows)
     repository.finalize_batch(batch_id)

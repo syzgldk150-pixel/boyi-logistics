@@ -25,11 +25,11 @@ def test_module_metadata_roundtrips_and_rejects_wrong_install_destination(module
         AutomationPluginManagementService._require_package_module(verified, "automation")
 
 
-def test_legacy_signed_metadata_absence_and_exact_collector_identity():
+def test_undeclared_management_is_an_automation_action():
     source = _manifest_mapping(include_harness=False)
     assert "management" not in AutomationPluginManifestV2.from_mapping(source).to_mapping()
-    assert management_for("sync_finance_bills")["module"] == "finance"
-    assert management_for("looks_like_finance_bills")["module"] == "automation"
+    assert management_for()["module"] == "automation"
+    assert management_for({"purpose": "collector", "module": "finance", "dataset": "finance.transactions", "version": "1"})["module"] == "finance"
 
 
 @pytest.mark.parametrize("change", [{"dataset": "finance.fake"}, {"version": "2"}, {"module": "automation"}, {"default_account": "made_up"}])

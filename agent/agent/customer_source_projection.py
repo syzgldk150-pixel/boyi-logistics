@@ -6,7 +6,7 @@ from collections import defaultdict
 import json
 from typing import Any, Mapping, Sequence
 
-from agent.automation_plugins.first_party_handler_common import customer_problem_identity
+from agent.automation_plugins.host_primitive_common import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
 from agent.automation_plugins.host_observation import customer_observed_result
 from shared.customer_service_repository import CustomerServiceRepository

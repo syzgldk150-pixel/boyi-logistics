@@ -1,4 +1,5 @@
 """Bound source, synchronization lease and storage ports for daily sending."""
+from agent.connector_namespaces import DAILY_SEND_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
 from agent.automation_plugins.connector_schemas import BOOL, COUNT, DATE, TEXT, array_schema as arr, object_schema as obj, source_record_schema
@@ -25,7 +26,7 @@ def build_daily_send_connectors(reviewed):
     for requirement, specs in ((account, source_specs), (resource, resource_specs)):
         role = 'account_id' if requirement == account else 'send_order_bitable'
         operations = tuple(ConnectorOperation(name=name, effect=effect, input_schema=inputs, output_schema=outputs,
-            handler=reviewed_connector_handler(reviewed, tool='sync_daily_send_orders', operation=operation, action=action, role=role,
+            handler=reviewed_connector_handler(reviewed, tool=DAILY_SEND_TOOL, operation=operation, action=action, role=role,
                 account=account if requirement == account else None, account_alias='account_id' if requirement == account else None,
                 resource=resource if requirement == resource else None), max_input_bytes=32*1024*1024, max_output_bytes=10*1024*1024)
             for name, operation, action, effect, inputs, outputs in specs)

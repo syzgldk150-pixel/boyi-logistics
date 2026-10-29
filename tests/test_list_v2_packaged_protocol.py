@@ -9,7 +9,7 @@ import pytest
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.delivery_site_handlers import DeliverySiteHandlerPorts, build_delivery_site_handler_map
-from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.list_connectors_v2 import build_list_connectors
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tests.test_arrival_connectors_v2 import _setup
@@ -29,11 +29,11 @@ def _host(tmp_path, plugin, *, published=False, invalid_readback=False):
         return {"ok":True,"verified":True,"record_count":len(rows)}
     def unexpected(*_):
         raise AssertionError("unrelated operation")
-    ports = FirstPartyCoreHandlerPorts(describe_account=lambda account:{"account_id":account,"system":"ronghui","session_profile":"isolated"},
+    ports = HostPrimitivePorts(describe_account=lambda account:{"account_id":account,"system":"ronghui","session_profile":"isolated"},
         arrive_list_read_page=page([row]), site_send_read_page=page([site,{**site,"tracking_number":"H_RECEIPT"}, {**site,"tracking_number":"R_EXCLUDED","send_site":"邵阳大祥站"}]),
         replace_waybill_snapshot=project,replace_arrival_forecast_snapshot=project,replace_arrive_sheet_resource=sheet,
         read_arrival_report_publication=lambda account, resource, day: {"target_date":day,"statistics_published":published,"record_count":int(published)})
-    reviewed = build_first_party_core_handler_map(ports)
+    reviewed = build_host_primitive_handler_map(ports)
     def fresh_write(resource, rows, day, marker):
         marker()
         writes.append((resource, rows, day))
@@ -45,7 +45,7 @@ def _host(tmp_path, plugin, *, published=False, invalid_readback=False):
     original_sheet = reviewed[("network.request","feishu.sheet.replace")]
     reviewed[("network.request","feishu.sheet.replace")] = lambda context, args: (
         site_handlers[("network.request","feishu.sheet.replace")](context,args)
-        if context.tool_name=="sync_site_send_list" else original_sheet(context,args))
+        if context.tool_name=="site_send" else original_sheet(context,args))
     reviewed[("network.request","feishu.bitable.replace_snapshot")] = site_handlers[("network.request","feishu.bitable.replace_snapshot")]
     registry = ConnectorRegistry(build_list_connectors(reviewed))
     prefix = "arrive_list" if plugin=="sync_arrive_list_v2" else "site_send"

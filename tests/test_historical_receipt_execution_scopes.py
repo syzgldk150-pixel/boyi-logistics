@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import os
-from uuid import uuid4
 
 import pytest
 
@@ -186,47 +185,6 @@ def test_receipt_target_b_cannot_inherit_the_only_physical_key_from_business_res
     # The locator still identifies B and its exact resource-write key, while
     # only A yielded a physical scope. The original account protection stays.
     assert historical_receipt_execution_scope(row, keys) == (keys, "ADDITIONAL_BINDING_SCOPE_UNPROVEN")
-
-
-def _production_case():
-    """Use the actual release compiler, Broker locator and repository JSON format."""
-    from agent.automation_plugins.broker import _extract_write_target_ref
-    from shared.orchestration_repository_support import _json_param
-    from tests.test_automation_plugin_release_generation_stability import _build_release_world
-
-    world = _build_release_world()
-    snapshot = world.snapshots["delivery_status"]
-    metadata = snapshot.execution_metadata
-    assert set(metadata["resource_bindings"]) == {"webhook_route", "delivery_status_bitable"}
-    role = "delivery_status_bitable"
-    resource = metadata["resource_bindings"][role]
-    account = metadata["account_bindings"]["account_id"]
-    assert isinstance(account, str)
-    target, target_hash = _extract_write_target_ref(
-        automation_id=snapshot.automation_id, plugin_id=snapshot.plugin_id,
-        operation="network.request", action="feishu.bitable.write_records", role=role,
-        binding=resource, request_id=str(uuid4()), arguments={"records": []},
-    )
-    physical = ("physical-write", "feishu_bitable", _hash("original-base"), _hash("original-table"))
-    keys = closed_execution_keys([
-        ("account-write", account), physical,
-        ("resource-write", account, snapshot.plugin_id, role, resource, "INTERNAL_PROJECTION_WRITE"),
-        ("resource-write", account, snapshot.plugin_id, "webhook_route",
-         metadata["resource_bindings"]["webhook_route"], "INTERNAL_PROJECTION_WRITE"),
-    ])
-    row = {"automation_id": snapshot.automation_id, "operation": target["operation"], "action": target["action"],
-           "runtime_metadata_json": _json_param(metadata, {}), "runtime_metadata_sha256": _json_hash(metadata),
-           "target_ref_json": _json_param(target, {}), "target_ref_sha256": target_hash}
-    return row, keys, physical
-
-
-def test_real_production_snapshot_route_binding_and_broker_locator_survive_storage_serialization():
-    row, keys, physical = _production_case()
-    before = deepcopy(row)
-    result, reason = historical_receipt_execution_scope(row, keys)
-    assert reason == "ORIGINAL_RESOURCE_SCOPE_DERIVED" and physical in result
-    assert {key[0] for key in result} == {"physical-write", "account-resource"}
-    assert row == before
 
 
 def test_parent_write_requires_captured_parent_scope():

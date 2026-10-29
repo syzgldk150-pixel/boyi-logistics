@@ -12,13 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
-from agent.automation_plugins.manifest import AutomationPluginManifest
 from agent.automation_plugins.manifest_v2 import AutomationPluginManifestV2
 from agent.automation_plugins.models import (
     ExecutionBlock,
     AutomationProjectConfigRecord,
-    DeviceBinding,
-    FirstPartyInstanceSeed,
     PluginInstanceRecord,
     ProjectRuntimeRecord,
     RuntimeCoeffectSnapshot,
@@ -29,22 +26,13 @@ from agent.automation_plugins.models import (
     RuntimeGenerationSnapshot,
     RuntimeLeaseOutcome,
     PluginVersionRecord,
-    WorkerCleanupRequest,
 )
-
-
-@dataclass(frozen=True)
-class BootstrapPersistenceResult:
-    created: tuple[str, ...]
-    existing: tuple[str, ...]
-    superseded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class HardUninstallPreparation:
     purge_id: str
     instance: PluginInstanceRecord
-    cleanup_requests: tuple[WorkerCleanupRequest, ...]
     prepared_at: datetime
     delete_shared_package: bool
 
@@ -92,26 +80,11 @@ class AutomationPluginRepositoryPort(Protocol):
     ) -> PluginInstanceRecord:
         """Stage a desired version while preserving durable policy intent.
 
-        Existing config/account/resource/device bindings are preserved.  The
+        Existing config/account/resource bindings are preserved.  The
         committed generation continues serving until the new package is fully
         prepared and a later generation CAS switches all entrypoints.  A
         failure leaves the old committed generation blocked from new work and
         reports the runtime as unavailable without rewriting the policy mode.
-        """
-
-    def bootstrap_missing(
-        self,
-        versions: Sequence[PluginVersionRecord],
-        instances: Sequence[FirstPartyInstanceSeed],
-        *,
-        release_sha: str,
-    ) -> BootstrapPersistenceResult:
-        """Insert missing built-ins and advance older first-party instances.
-
-        Administrator configuration, bindings, entrypoint choices, schedules
-        and policy mode remain durable while a newer signed release is staged
-        through the normal generation reconciler. Newer installed instances
-        are never downgraded.
         """
 
     def set_enabled(
@@ -161,14 +134,8 @@ class AutomationPluginRepositoryPort(Protocol):
         The transaction must lock the project and re-check RUNNING, VERIFYING
         and WRITE_OUTCOME_UNKNOWN activity. If any exists, it must leave the
         project and policy untouched. On success it creates a short-lived purge
-        journal and returns cleanup directives for explicitly bound devices.
+        journal for the finalize step.
         """
-
-    def persist_cleanup_requests(
-        self,
-        preparation: HardUninstallPreparation,
-    ) -> None:
-        """Persist device cleanup independently of the plugin being deleted."""
 
     def get_hard_uninstall_preparation(
         self,
@@ -176,9 +143,6 @@ class AutomationPluginRepositoryPort(Protocol):
         automation_id: str,
         purge_id: str,
     ) -> HardUninstallPreparation | None: ...
-
-    def all_cleanup_acknowledged(self, preparation: HardUninstallPreparation) -> bool:
-        """True only when every exact device confirmed instance/package cleanup."""
 
     def reserve_hard_uninstall_finalize(
         self,
@@ -269,7 +233,7 @@ class PluginEnvironmentBuilderPort(Protocol):
     def build(
         self,
         version_root: Path,
-        manifest: AutomationPluginManifest | AutomationPluginManifestV2,
+        manifest: AutomationPluginManifestV2,
     ) -> Path: ...
 
 
@@ -309,42 +273,6 @@ class ExecutionCapabilityIssuerPort(Protocol):
 
 
 @runtime_checkable
-class FirstPartyPackageProvider(Protocol):
-    def load_versions(
-        self,
-        *,
-        core_catalog: object,
-        current_release_sha: str,
-        expected_release_sha: str,
-    ) -> Sequence[PluginVersionRecord]: ...
-
-
-@runtime_checkable
-class FirstPartyPackageMaterializerPort(Protocol):
-    def materialize(self, version: PluginVersionRecord) -> PluginVersionRecord:
-        """Create the immutable package root and isolated venv for one built-in."""
-
-    def discard(self, version: PluginVersionRecord) -> None:
-        """Remove an unreferenced root created by ``materialize``."""
-
-
-@runtime_checkable
-class FirstPartyPackageRecoveryMaterializerPort(Protocol):
-    def recover_missing(
-        self,
-        *,
-        persisted: PluginVersionRecord,
-        descriptor: PluginVersionRecord,
-    ) -> PluginVersionRecord | None:
-        """Rebuild one safely missing exact root, or validate an existing root.
-
-        A non-``None`` result identifies the newly built filesystem material
-        only.  Callers must continue using ``persisted`` for all repository
-        registration so recovery cannot replace immutable database bytes.
-        """
-
-
-@runtime_checkable
 class PluginIntegrityVerifierPort(Protocol):
     def verify_install_root(self, runtime_metadata: Mapping[str, object]) -> None: ...
 
@@ -374,7 +302,6 @@ class AutomationProjectConfigurationPort(Protocol):
         automation_id: str,
         *,
         config_schema: Mapping[str, object],
-        worker_requirement: Mapping[str, object],
         request_id: str,
     ) -> AutomationProjectConfigRecord:
         """Create empty config, no schedule and REQUIRE_EACH_RUN authority."""
@@ -400,7 +327,6 @@ class AutomationProjectConfigurationPort(Protocol):
         schedule: Mapping[str, object],
         compiled_invocations: Mapping[str, Mapping[str, object]],
         contract_witness: Mapping[str, object],
-        device_binding: DeviceBinding | None,
         actor_id: str,
         actor_role: str,
         request_id: str,
@@ -434,14 +360,6 @@ class ProjectBindingResolverPort(Protocol):
         resource_id: str,
     ) -> None: ...
 
-    def resolve_device_binding(
-        self,
-        *,
-        automation_id: str,
-        device_id: str,
-        worker_requirement: Mapping[str, object],
-    ) -> DeviceBinding:
-        """Return the exact named-device binding or raise; never reassign."""
 
 
 @dataclass(frozen=True)

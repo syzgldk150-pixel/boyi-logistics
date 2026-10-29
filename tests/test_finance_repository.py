@@ -182,15 +182,10 @@ class FinanceRepositoryTests(unittest.TestCase):
         for name in (
             "create_batch",
             "start_run",
-            "start_failed_run",
             "commit_run_snapshot",
             "mark_run_no_data",
-            "fail_run",
             "finalize_batch",
-            "list_missing_dates",
-            "list_retry_targets",
             "get_validation_context",
-            "seed_fee_mappings",
             "get_summary",
             "get_trend",
             "get_expense_ranking",
@@ -821,19 +816,6 @@ class FinanceRepositoryTests(unittest.TestCase):
         self.assertTrue(all(sql.startswith("SELECT") for sql, _params in records))
         self.assertTrue(records[0][0].startswith("SELECT * FROM finance_sync_runs"))
 
-    def test_seed_mapping_scan_is_limited_to_enabled_platforms(self) -> None:
-        records: list[tuple[str, tuple[Any, ...]]] = []
-
-        seeded = FinanceRepository(lambda: RouterConnection(records)).seed_fee_mappings(
-            seeds=()
-        )
-
-        self.assertEqual(0, seeded)
-        seed_sql, seed_params = records[0]
-        self.assertTrue(seed_sql.startswith("SELECT * FROM finance_fee_items WHERE"))
-        self.assertIn("platform IN", seed_sql)
-        self.assertEqual(enabled_finance_platforms(), seed_params)
-
     def test_verified_seed_extends_to_actual_earlier_backfill_month(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
         seed = FeeMappingSeed(
@@ -954,35 +936,6 @@ class FinanceRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(update[0], "no_data")
 
-    def test_binding_failure_run_uses_null_login_fields_and_is_immediately_failed(self) -> None:
-        records: list[tuple[str, tuple[Any, ...]]] = []
-
-        def router(sql: str, _params: tuple[Any, ...]):
-            if sql.startswith("SELECT id, status FROM finance_sync_batches"):
-                return {"id": 8, "status": "running"}
-            if sql.startswith("SELECT COALESCE(MAX(attempt_no)"):
-                return {"max_attempt": 0}
-            return []
-
-        run_id = FinanceRepository(lambda: RouterConnection(records, router)).start_failed_run(
-            batch_id=8,
-            platform=Platform.RONGHUI,
-            account_id="price_default",
-            target_date="2026-01-02",
-            error_code="ACCOUNT_BINDING_FAILED",
-            error_message="fictional binding failure",
-        )
-        self.assertEqual(run_id, 1)
-        insert_sql, insert_params = next(
-            (sql, params)
-            for sql, params in records
-            if sql.startswith("INSERT INTO finance_sync_runs")
-        )
-        self.assertIn("login_account, session_profile", insert_sql)
-        self.assertIn("NULL, NULL", insert_sql)
-        self.assertIn("failed", insert_params)
-        self.assertNotIn("", insert_params)
-
     def test_historical_sync_batch_rows_retain_disabled_failed_source_details(self) -> None:
         records: list[tuple[str, tuple[Any, ...]]] = []
 
@@ -1056,82 +1009,6 @@ class FinanceRepositoryTests(unittest.TestCase):
         repository = FinanceRepository(lambda: RouterConnection(records, router))
         with self.assertRaisesRegex(ValueError, "total_runs must be an integer count"):
             repository.list_sync_batches()
-
-    def test_batch_commit_proof_uses_one_fresh_read_connection(self) -> None:
-        records: list[tuple[str, tuple[Any, ...]]] = []
-
-        def router(sql: str, _params: tuple[Any, ...]):
-            if "FROM finance_sync_batches" in sql:
-                return {
-                    "id": 31,
-                    "trigger_type": "sync",
-                    "requested_start_date": dt.date(2026, 7, 11),
-                    "requested_end_date": dt.date(2026, 7, 11),
-                    "rescan_days": 1,
-                    "status": "success",
-                    "earliest_date_status": None,
-                    "requested_by": "plugin:v1:proof",
-                }
-            if "FROM finance_sync_runs" in sql:
-                return [
-                    {"status": "success", "total": Decimal("2")},
-                    {"status": "no_data", "total": Decimal("1")},
-                ]
-            return []
-
-        result = FinanceRepository(
-            lambda: RouterConnection(records, router)
-        ).read_batch_commit_proof(31)
-
-        self.assertEqual(31, result["batch_id"])
-        self.assertEqual(
-            {"success": 2, "no_data": 1},
-            result["run_counts"],
-        )
-        self.assertEqual([(31,), (31,)], [params for _sql, params in records])
-        self._assert_placeholder_counts(records)
-
-    def test_run_commit_proof_reads_identity_rows_and_amount_totals(self) -> None:
-        records: list[tuple[str, tuple[Any, ...]]] = []
-
-        def router(sql: str, _params: tuple[Any, ...]):
-            if "FROM finance_sync_runs" in sql:
-                return {
-                    "id": 41,
-                    "batch_id": 31,
-                    "platform": "ronghui",
-                    "account_id": "price_default",
-                    "target_date": dt.date(2026, 7, 11),
-                    "status": "success",
-                    "remote_total": 2,
-                    "unique_row_count": 2,
-                    "written_row_count": 2,
-                }
-            if "FROM finance_transactions" in sql:
-                return {
-                    "transaction_count": 2,
-                    "transaction_unique_count": 2,
-                    "transaction_income": Decimal("3.2500"),
-                    "transaction_expense": Decimal("1.5000"),
-                }
-            if "FROM finance_summary_snapshots" in sql:
-                return {
-                    "summary_count": 2,
-                    "summary_income": Decimal("3.2500"),
-                    "summary_expense": Decimal("1.5000"),
-                }
-            return []
-
-        result = FinanceRepository(
-            lambda: RouterConnection(records, router)
-        ).read_run_commit_proof(41)
-
-        self.assertEqual(2, result["transaction_unique_count"])
-        self.assertEqual(Decimal("3.2500"), result["transaction_income"])
-        self.assertEqual(Decimal("1.5000"), result["summary_expense"])
-        self.assertEqual([(41,), (41,), (41,)], [params for _sql, params in records])
-        self._assert_placeholder_counts(records)
-
 
 if __name__ == "__main__":
     unittest.main()

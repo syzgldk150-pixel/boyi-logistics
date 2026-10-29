@@ -6,12 +6,52 @@ from decimal import Decimal
 import hashlib
 import json
 from collections.abc import Mapping
+from typing import Any
 from uuid import UUID
 
+from agent.connector_namespaces import DAILY_SIGN_TOOL
 from agent.automation_plugins.daily_sign_connectors_v2 import DAILY_SIGN_PORTS
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.execution_boundary import execution_capability_scope
-from plugin_core_adapters.daily_sign import _exact_resource
+
+
+def _exact_resource(
+    resource_id: str,
+    *,
+    kind: str,
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    from agent.workflow_resource_store import get_workflow_resource
+
+    try:
+        raw = get_workflow_resource(resource_id)
+    except Exception as exc:
+        raise PluginExecutionError(
+            "the exact daily-sign resource is unavailable",
+            code="BROKER_RESOURCE_UNAVAILABLE",
+        ) from exc
+    if not isinstance(raw, Mapping):
+        raise PluginExecutionError(
+            "the exact daily-sign resource no longer exists",
+            code="BROKER_RESOURCE_UNAVAILABLE",
+        )
+    resource = dict(raw)
+    metadata = resource.get("_meta")
+    if (
+        resource.get("resource_kind") != kind
+        or not isinstance(metadata, Mapping)
+        or str(metadata.get("resource_key") or "").strip() != resource_id
+    ):
+        raise PluginExecutionError(
+            "the exact daily-sign resource changed kind or identity",
+            code="BROKER_RESOURCE_MISMATCH",
+        )
+    if any(not str(resource.get(field) or "").strip() for field in fields):
+        raise PluginExecutionError(
+            "the exact daily-sign resource configuration is incomplete",
+            code="BROKER_RESOURCE_INVALID",
+        )
+    return resource
 
 
 def _wire(value):
@@ -139,7 +179,7 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                  "read_tracking":"/ronghui_tms_tracking", "read_details":"/query_waybill_detail"}
 
     def invoke(context, arguments, *, role, name):
-        if context.tool_name != "sync_daily_should_sign" or context.role != role:
+        if context.tool_name != DAILY_SIGN_TOOL or context.role != role:
             raise PluginExecutionError("Daily-sign port identity changed", code="BROKER_BINDING_INVALID")
         values = dict(arguments["values"])
         if role == "daily_sign_store":
@@ -218,7 +258,7 @@ def build_daily_sign_port_handlers(*, account_manager, store=None, tms=None, fei
                 # The outer grant belongs to the V2 package name. Only this
                 # reviewed Host port may use the daily-sign TMS read scope;
                 # the capability stays in-process and is revoked after I/O.
-                with execution_capability_scope("sync_daily_should_sign", ttl_seconds=7500):
+                with execution_capability_scope(DAILY_SIGN_TOOL, ttl_seconds=7500):
                     result = _public_tms_result(tms(endpoints[name], request))
                 if name == "read_problems" and isinstance(result, Mapping):
                     payload = result.get("data") if isinstance(result.get("data"), Mapping) else result

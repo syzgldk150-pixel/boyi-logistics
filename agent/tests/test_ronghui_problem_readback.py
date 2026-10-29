@@ -1,9 +1,7 @@
 import unittest
 import hashlib
-import json
 
 from agent.tms_runtime.scripts import ronghui_problem_upload
-from agent.tms_runtime.scripts import ronghui_split_complaint
 
 
 class _Response:
@@ -263,76 +261,6 @@ class RonghuiProblemReadbackTests(unittest.TestCase):
                         RuntimeError("not found")
                     ),
                 },
-            )
-
-
-class RonghuiComplaintReadbackTests(unittest.TestCase):
-    def test_complaint_query_uses_exact_bill_and_login_site(self):
-        session = _Session([{"rows": [_complaint_row()], "total": 1}])
-
-        rows = ronghui_split_complaint.query_registered_complaints(
-            session,
-            bill_code="R1",
-            complaint_list_url=(
-                "https://tms.ronghuiwl.com/widget/home?authenticationKey=auth&pageId=page"
-            ),
-            login_site_code="login-code",
-        )
-
-        self.assertEqual("exception-1", rows[0]["EXCEPTION_ID"])
-        request = session.calls[0]["kwargs"]
-        self.assertEqual("R1", request["data"]["BILL_CODE"])
-        self.assertEqual("login-code", request["data"]["LOGIN_SITE_CODE"])
-        self.assertEqual("auth", request["headers"]["authenticationKey"])
-        self.assertEqual("page", request["headers"]["pageId"])
-
-    def test_complaint_match_requires_unique_complete_exact_row(self):
-        expected = {
-            key: _complaint_row()[key]
-            for key in (
-                "BILL_CODE",
-                "CATEGORY",
-                "EXCEPTION_TYPE",
-                "REMARK",
-                "EXCEPTIONSITE_SIDE_CODE",
-                "EXCEPTIONSITE_SIDE",
-            )
-        }
-        proof = ronghui_split_complaint.match_unique_complaint_registration(
-            [_complaint_row()],
-            expected=expected,
-        )
-        self.assertEqual("exception-1", proof["external_id"])
-        expected_hash = hashlib.sha256(
-            json.dumps(
-                expected,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        self.assertEqual(expected_hash, proof["plan_sha256"])
-        fingerprint_proof = (
-            ronghui_split_complaint.match_unique_complaint_fingerprint(
-                [_complaint_row()],
-                bill_code="R1",
-                external_id="exception-1",
-                plan_sha256=expected_hash,
-            )
-        )
-        self.assertEqual(expected_hash, fingerprint_proof["plan_sha256"])
-
-        with self.assertRaisesRegex(RuntimeError, "2 exact matches"):
-            ronghui_split_complaint.match_unique_complaint_registration(
-                [_complaint_row(), _complaint_row()],
-                expected=expected,
-            )
-        incomplete = _complaint_row()
-        incomplete.pop("STATUS")
-        with self.assertRaisesRegex(RuntimeError, "missing critical fields"):
-            ronghui_split_complaint.match_unique_complaint_registration(
-                [incomplete],
-                expected=expected,
             )
 
 

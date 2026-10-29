@@ -133,26 +133,21 @@ def build_runtime_generation_snapshot(
     desired_config_row: Mapping[str, Any],
     policy_row: Mapping[str, Any],
     generation: int,
-    core_catalog: Any,
     created_at: datetime | None = None,
 ) -> RuntimeGenerationSnapshot:
     """Compile one closed non-secret generation from desired core-owned state."""
 
     if type(generation) is not int or generation <= 0:
         raise PluginConflictError("runtime generation must be a positive integer")
-    is_v2 = entry.runtime_model == PluginRuntimeModel.SERVICE_V2.value
-    allowed_trust_sources = (
-        {
-            PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
-            PluginTrustSource.BUILTIN_BUNDLE.value,
-        }
-        if is_v2
-        else {
-            PluginTrustSource.ED25519_FIRST_PARTY.value,
-            PluginTrustSource.ED25519_UPLOAD.value,
-        }
-    )
-    if entry.trust_source not in allowed_trust_sources:
+    if entry.runtime_model != PluginRuntimeModel.SERVICE_V2.value:
+        raise PluginConflictError(
+            "only service-v2 plugin projects can build a generation",
+            code="PLUGIN_RUNTIME_MODEL_INVALID",
+        )
+    if entry.trust_source not in {
+        PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
+        PluginTrustSource.BUILTIN_BUNDLE.value,
+    }:
         raise PluginConflictError(
             "plugin trust source does not match its runtime model",
             code="PLUGIN_TRUST_SOURCE_INVALID",
@@ -184,20 +179,6 @@ def build_runtime_generation_snapshot(
         raise PluginConflictError("server plugin device binding digest is invalid")
 
     anchor = copy.deepcopy(dict(entry.governance_anchor))
-    if not is_v2:
-        core_capability = core_catalog.get_capability(str(anchor.get("name") or ""))
-        if not isinstance(core_capability, Mapping):
-            raise PluginConflictError("governed core capability disappeared")
-        if any(
-            key not in core_capability
-            or canonical_json_bytes(core_capability[key])
-            != canonical_json_bytes(value)
-            for key, value in anchor.items()
-        ):
-            raise PluginConflictError(
-                "governed core capability changed beneath the signed action",
-                code="PLUGIN_GOVERNANCE_ANCHOR_MISMATCH",
-            )
     if _digest(anchor) != entry.governance_anchor_sha256:
         raise PluginConflictError("signed governance anchor digest is invalid")
 
@@ -223,27 +204,6 @@ def build_runtime_generation_snapshot(
             "desired managed-resource bindings are incomplete",
             code="PLUGIN_RESOURCE_BINDING_INVALID",
         )
-    webhook_enabled = (
-        any(
-            isinstance(entry.invocation_contracts.get(source), Mapping)
-            and entry.invocation_contracts[source].get("contribution_kind") == "webhook"
-            for source in entrypoints
-        )
-        if is_v2
-        else "webhook" in entrypoints
-    )
-    if (
-        not is_v2
-        and webhook_enabled
-        and (
-            "webhook_route" not in declared_resource_roles
-            or "webhook_route" not in resource_bindings
-        )
-    ):
-        raise PluginConflictError(
-            "an enabled Webhook entrypoint requires an explicit route resource",
-            code="PLUGIN_WEBHOOK_ROUTE_REQUIRED",
-        )
     action_contract = copy.deepcopy(dict(entry.tool_contract))
     runtime_descriptor = {
         "install_metadata": {
@@ -251,9 +211,7 @@ def build_runtime_generation_snapshot(
             "install_root": entry.install_root,
         },
         "runtime": copy.deepcopy(dict(entry.runtime)),
-        # Generation identity follows the exact signed manifest bytes.  Older
-        # schema-v1 packages omitted broker ``effect``; Catalog keeps a
-        # conservative normalized view for execution separately.
+        # Generation identity follows the exact installed manifest bytes.
         "runtime_permissions": copy.deepcopy(dict(entry.signed_runtime_permissions)),
         "account_roles": [copy.deepcopy(dict(item)) for item in entry.account_roles],
         "resource_roles": [copy.deepcopy(dict(item)) for item in entry.resource_roles],
@@ -282,17 +240,12 @@ def build_runtime_generation_snapshot(
         "runtime_descriptor": runtime_descriptor,
         "action_contract": action_contract,
         "governance_anchor": anchor,
+        "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
+        "plugin_api": entry.plugin_api,
+        "service_contracts": copy.deepcopy(dict(entry.service_contracts)),
+        "contributions": copy.deepcopy(dict(entry.contributions)),
+        "storage_contract": copy.deepcopy(dict(entry.storage_contract)),
     }
-    if is_v2:
-        execution_metadata.update(
-            {
-                "runtime_model": PluginRuntimeModel.SERVICE_V2.value,
-                "plugin_api": entry.plugin_api,
-                "service_contracts": copy.deepcopy(dict(entry.service_contracts)),
-                "contributions": copy.deepcopy(dict(entry.contributions)),
-                "storage_contract": copy.deepcopy(dict(entry.storage_contract)),
-            }
-        )
     observed_at = created_at or datetime.now(timezone.utc)
     if observed_at.tzinfo is None:
         raise PluginConflictError("runtime generation timestamp must be timezone-aware")

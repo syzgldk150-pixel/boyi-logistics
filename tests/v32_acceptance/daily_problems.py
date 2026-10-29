@@ -27,10 +27,6 @@ def setup_split(management):
     management.management.set_enabled(automation_id, enabled=True, request_id=str(uuid4()),
         expected_record_version=entry.record_version, actor=ACTOR)
     management.targets.reconcile_project(automation_id)
-    policy = management.policy.get_policy_projection(automation_id)
-    management.policy.update_policy(automation_id, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()),
-        comment='Explicit isolated daily split synthetic write authorization', expected_policy_version=policy['policy_version'],
-        expected_project_configuration_version=policy['project_configuration_version'], actor=ACTOR)
     return automation_id
 
 

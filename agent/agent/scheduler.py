@@ -10,7 +10,7 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -18,14 +18,7 @@ from apscheduler.schedulers.base import STATE_PAUSED, STATE_RUNNING, STATE_STOPP
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from agent.automation_plugins.release_scope import (
-    DEFERRED_R7_LEGACY_SCHEDULE_GENERATION,
-    DEFERRED_R7_PLUGIN_IDS,
-)
-from agent.orchestration.models import Actor, ActorType, OrchestrationError
-from agent.task_templates import PHASE7_SCHEDULED_TASK_TEMPLATES
-from shared.automation_project_manifest import get_first_party_automation_project
-from shared.finance.sources import enabled_finance_platforms
+from agent.orchestration.models import Actor, ActorType
 from shared.redaction import redact_text
 
 
@@ -35,18 +28,11 @@ _automation_project_invoker: Any | None = None
 _include_startup_catchup_for_process = False
 _scheduler_reload_lock = RLock()
 _automation_project_job_tombstones: set[str] = set()
-FINANCE_MISFIRE_GRACE_SECONDS = 3600
+FIRE_TIME_LOOKBACK_SECONDS = 3600
 EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS = 60
-FINANCE_SCHEDULE_TASK_ID = "finance_bills_0010"
-FINANCE_STARTUP_TASK_ID = "finance_startup_catchup"
 AUTOMATION_JOB_OWNER_MARKER = "_boyi_automation_owner_v1"
 SCHEDULER_RELEASE_HOLD_ENV = "BOYI_SCHEDULER_RELEASE_HOLD_FILE"
 SCHEDULER_RELEASE_HOLD_NAME = "scheduler-release.pause"
-SCHEDULER_ACCEPTANCE_RETRY_DELAYS_SECONDS = (2.0, 10.0, 30.0)
-
-
-class DeferredR7ScheduleIdentityError(RuntimeError):
-    """A persisted R7 row no longer matches the reviewed migration identity."""
 
 
 class ScheduledTaskIdentityConflictError(RuntimeError):
@@ -201,83 +187,10 @@ def emergency_withdraw_automation_project_jobs(automation_id: str) -> dict[str, 
         return evidence
 
 
-def _deferred_r7_legacy_schedule_task_ids() -> frozenset[str]:
-    task_ids: set[str] = set()
-    for automation_id in DEFERRED_R7_PLUGIN_IDS:
-        definition = get_first_party_automation_project(automation_id)
-        if definition is None or definition.tool_name not in DEFERRED_R7_PLUGIN_IDS:
-            raise RuntimeError("Deferred R7 release scope has no reviewed migration template")
-        task_ids.update(definition.scheduled_task_ids)
-    return frozenset(task_ids)
-
-
-DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS = _deferred_r7_legacy_schedule_task_ids()
-
-
-def _enabled_finance_platform_filter() -> dict[str, str]:
-    """Narrow scheduled calls when exactly one production platform is live."""
-
-    platforms = enabled_finance_platforms()
-    if not platforms:
-        raise RuntimeError("没有已上线的财务来源，不能调度财务同步")
-    if len(platforms) == 1:
-        return {"platform": platforms[0]}
-    return {}
-
-
-def _is_deferred_r7_legacy_schedule(
-    *,
-    task_id: str,
-    tool_name: str,
-    automation_id: str,
-    automation_generation: int | None,
-) -> bool:
-    """Recognize only the code-reviewed migration-018 R7 legacy identity."""
-
-    if automation_id not in DEFERRED_R7_PLUGIN_IDS:
-        return False
-    definition = get_first_party_automation_project(automation_id)
-    if definition is None or definition.tool_name not in DEFERRED_R7_PLUGIN_IDS:
-        return False
-    return (
-        task_id in definition.scheduled_task_ids
-        and tool_name == definition.tool_name
-        and type(automation_generation) is int
-        and automation_generation == DEFERRED_R7_LEGACY_SCHEDULE_GENERATION
-    )
-
-
-def _deferred_r7_schedule_must_not_register(task: dict[str, Any]) -> bool:
-    """Return true for an exact deferred row; reject every related drift."""
-
-    task_id = str(task.get("id") or "")
-    normalized_task_id = task_id.strip()
-    tool_name = str(task.get("tool_name") or "")
-    persisted_project_id = str(task.get("automation_id") or "")
-    project_id = persisted_project_id.strip()
-    normalized_tool_name = tool_name.strip()
-    if (
-        normalized_task_id not in DEFERRED_R7_LEGACY_SCHEDULE_TASK_IDS
-        and project_id not in DEFERRED_R7_PLUGIN_IDS
-        and normalized_tool_name not in DEFERRED_R7_PLUGIN_IDS
-    ):
-        return False
-    if _is_deferred_r7_legacy_schedule(
-        task_id=task_id,
-        tool_name=tool_name,
-        automation_id=persisted_project_id,
-        automation_generation=task.get("automation_generation"),
-    ):
-        return True
-    raise DeferredR7ScheduleIdentityError(
-        "Deferred R7 scheduled task does not match its reviewed migration identity"
-    )
-
-
 def _latest_scheduled_fire_time(trigger: CronTrigger, now: datetime) -> datetime | None:
     """Return the latest fire time still inside the configured misfire window."""
 
-    cursor = now - timedelta(seconds=FINANCE_MISFIRE_GRACE_SECONDS + 1)
+    cursor = now - timedelta(seconds=FIRE_TIME_LOOKBACK_SECONDS + 1)
     candidate = trigger.get_next_fire_time(None, cursor)
     latest = None
     for _ in range(10_000):
@@ -299,12 +212,6 @@ def init_scheduler(
     _include_startup_catchup_for_process = include_startup_catchup
     _scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     try:
-        seeded = ensure_control_plane_schedule_tasks(agent_core)
-        if seeded:
-            logger.info("Seeded control-plane schedule tasks: %s", ", ".join(seeded))
-    except Exception as exc:
-        logger.warning("Control-plane schedule initialization failed: %s", exc)
-    try:
         _load_tasks_from_db(
             agent_core,
             automation_project_invoker=automation_project_invoker,
@@ -313,327 +220,9 @@ def init_scheduler(
         raise
     except Exception as exc:
         logger.warning("Scheduled task loading failed: %s", exc)
-    if _include_startup_catchup_for_process:
-        try:
-            _add_finance_startup_catchup_job(
-                agent_core,
-                automation_project_invoker=automation_project_invoker,
-            )
-        except Exception as exc:
-            logger.warning("Finance startup catch-up initialization failed: %s", exc)
-    else:
-        logger.info("Startup catch-up disabled; only future explicit schedule occurrences run")
+    if not _include_startup_catchup_for_process:
+        logger.info("Startup tasks disabled; only future explicit schedule occurrences run")
     return _scheduler
-
-
-def ensure_finance_schedule_task(agent_core) -> bool:
-    """Seed the locked finance template only when the row is absent."""
-
-    return FINANCE_SCHEDULE_TASK_ID in _seed_locked_schedule_tasks(
-        agent_core,
-        frozenset({FINANCE_SCHEDULE_TASK_ID}),
-    )
-
-
-def ensure_control_plane_schedule_tasks(agent_core) -> tuple[str, ...]:
-    """Seed every safe template disabled when absent; preserve existing rows."""
-
-    return seed_phase7_schedule_tasks(agent_core)
-
-
-def seed_phase7_schedule_tasks(agent_core) -> tuple[str, ...]:
-    """Insert all missing safe templates while preserving every existing row."""
-
-    return _seed_locked_schedule_tasks(
-        agent_core,
-        frozenset(_task_templates_by_id()),
-    )
-
-
-def _task_templates_by_id() -> dict[str, dict[str, Any]]:
-    templates: dict[str, dict[str, Any]] = {}
-    for task in PHASE7_SCHEDULED_TASK_TEMPLATES:
-        task_id = str(task.get("id") or "").strip()
-        if not task_id:
-            raise RuntimeError("A schedule template has no id")
-        if task_id in templates:
-            raise RuntimeError(f"Duplicate schedule template id: {task_id}")
-        templates[task_id] = task
-    return templates
-
-
-def _seed_locked_schedule_tasks(agent_core, task_ids: frozenset[str]) -> tuple[str, ...]:
-    """Seed exactly ``task_ids`` while preserving any persisted override."""
-
-    existing_ids = {
-        str(row.get("id") or "").strip()
-        for row in agent_core.memory.list_scheduled_tasks()
-        if isinstance(row, dict)
-    }
-    templates = {
-        task_id: task
-        for task_id, task in _task_templates_by_id().items()
-        if task_id in task_ids
-    }
-    if set(templates) != set(task_ids):
-        raise RuntimeError("A locked control-plane schedule template is missing or duplicated")
-    seeded: list[str] = []
-    for task_id in sorted(task_ids):
-        if task_id in existing_ids:
-            continue
-        agent_core.memory.upsert_scheduled_task(copy.deepcopy(templates[task_id]))
-        seeded.append(task_id)
-    return tuple(seeded)
-
-
-def _add_finance_startup_catchup_job(
-    agent_core,
-    *,
-    automation_project_invoker: Any | None = None,
-    startup_gate_provider: Any | None = None,
-) -> None:
-    """Perform the bounded startup gap scan through the same control plane."""
-
-    startup_task = _finance_startup_schedule_task(agent_core)
-    if startup_task is None:
-        logger.info("Finance startup catch-up skipped because its independent task is disabled")
-        return
-    automation_owner = _task_automation_owner(startup_task)
-    if automation_owner is None:
-        logger.warning("Finance startup catch-up has no stable automation owner")
-        return
-    if _automation_project_job_is_tombstoned(automation_owner):
-        logger.warning(
-            "Finance startup catch-up suppressed by the process tombstone: %s",
-            automation_owner,
-        )
-        return
-
-    provider = (
-        startup_gate_provider
-        or getattr(agent_core, "finance_startup_gate_provider", None)
-        or _agent_finance_startup_gate_provider(agent_core)
-    )
-    try:
-        registration_occurrence = _finance_startup_occurrence(startup_task)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Finance startup catch-up was not registered: "
-            "FINANCE_STARTUP_GATE_INVALID_OCCURRENCE"
-        )
-        return
-    if not _finance_startup_gate_allows(
-        startup_task,
-        occurrence=registration_occurrence,
-        provider=provider,
-    ):
-        logger.warning("Finance startup catch-up was not registered: STARTUP_GATE_BLOCKED")
-        return
-
-    async def startup_catchup(
-        _boyi_automation_owner_v1: str | None = None,
-    ) -> None:
-        _validate_automation_job_owner_marker(
-            expected_owner=automation_owner,
-            actual_owner=_boyi_automation_owner_v1,
-        )
-        # Use one stable logical occurrence per task-contract version and
-        # business day. Repeated starts on the same version therefore reuse the
-        # same Command/Run instead of starting another arbitrary wall-clock scan.
-        scheduled_for = datetime.now(ZoneInfo("Asia/Shanghai")).replace(
-            hour=0,
-            minute=10,
-            second=0,
-            microsecond=0,
-        )
-        try:
-            # Registration is only advisory: runtime/lease state can change
-            # while APScheduler waits for its DateTrigger.
-            if not _finance_startup_gate_allows(
-                startup_task,
-                occurrence=_finance_startup_occurrence(startup_task, scheduled_for),
-                provider=provider,
-            ):
-                logger.warning("Finance startup catch-up skipped: STARTUP_GATE_BLOCKED")
-                return
-            result = await _execute_scheduled_tool(
-                agent_core,
-                task_id=FINANCE_STARTUP_TASK_ID,
-                tool_name=str(startup_task.get("tool_name") or ""),
-                arguments=copy.deepcopy(startup_task.get("tool_params") or {}),
-                scheduled_for=scheduled_for,
-                cron_expression="@startup",
-                configuration_version=int(startup_task.get("configuration_version") or 1),
-                automation_id=startup_task.get("automation_id"),
-                automation_generation=startup_task.get("automation_generation"),
-                automation_project_invoker=automation_project_invoker,
-            )
-            if not isinstance(result, dict) or not result.get("success"):
-                logger.error("Startup finance catch-up did not complete: %s", _result_error(result))
-        except Exception as exc:
-            logger.error("Startup finance catch-up failed: %s", str(exc)[:200])
-
-    if _scheduler is None:
-        raise RuntimeError("scheduler is not initialized")
-    trigger = DateTrigger(
-        run_date=datetime.now().astimezone() + timedelta(seconds=15),
-        timezone="Asia/Shanghai",
-    )
-    with _scheduler_reload_lock:
-        if _automation_project_job_is_tombstoned(automation_owner):
-            return
-        _scheduler.add_job(
-            startup_catchup,
-            trigger,
-            id="finance_startup_catchup",
-            kwargs={AUTOMATION_JOB_OWNER_MARKER: automation_owner},
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-        )
-
-
-def _finance_startup_occurrence(
-    task: Mapping[str, Any],
-    scheduled_for: datetime | None = None,
-) -> str:
-    """Stable identity shared by the gate and scheduler idempotency key."""
-
-    current = scheduled_for or datetime.now(ZoneInfo("Asia/Shanghai")).replace(
-        hour=0, minute=10, second=0, microsecond=0
-    )
-    if current.tzinfo is None:
-        raise ValueError("finance startup occurrence must be timezone-aware")
-    automation_id = str(task.get("automation_id") or "").strip()
-    generation = task.get("automation_generation")
-    version = task.get("configuration_version")
-    if not automation_id or type(generation) is not int or type(version) is not int:
-        raise ValueError("finance startup task has no exact project occurrence")
-    return (
-        f"scheduler:{FINANCE_STARTUP_TASK_ID}:v{version}:"
-        f"{automation_id}:g{generation}:{current.isoformat()}"
-    )
-
-
-def _finance_startup_gate_allows(
-    task: Mapping[str, Any],
-    *,
-    occurrence: str,
-    provider: Any,
-) -> bool:
-    """Read only Agent-side state; malformed/unavailable evidence blocks."""
-
-    if provider is None:
-        logger.warning("Finance startup catch-up gate unavailable: FINANCE_STARTUP_GATE_UNAVAILABLE")
-        return False
-    try:
-        reader = getattr(provider, "check_finance_startup_occurrence", provider)
-        if not callable(reader):
-            return False
-        result = reader(
-            automation_id=str(task.get("automation_id") or "").strip(),
-            generation=task.get("automation_generation"),
-            configuration_version=task.get("configuration_version"),
-            occurrence=occurrence,
-            idempotency_key=_finance_startup_command_idempotency(task, occurrence),
-        )
-    except Exception:
-        logger.warning("Finance startup catch-up gate failed: FINANCE_STARTUP_GATE_UNAVAILABLE")
-        return False
-    required = {
-        "runnable", "runtime_status", "scheduler_enabled",
-        "unresolved_run", "unresolved_lease", "unresolved_receipt",
-    }
-    if not isinstance(result, Mapping) or set(result) != required:
-        logger.warning("Finance startup catch-up gate failed: FINANCE_STARTUP_GATE_INVALID_EVIDENCE")
-        return False
-    return (
-        result["runnable"] is True
-        and result["runtime_status"] == "READY"
-        and result["scheduler_enabled"] is True
-        and all(result[key] is False for key in (
-            "unresolved_run", "unresolved_lease", "unresolved_receipt"
-        ))
-    )
-
-
-def _agent_finance_startup_gate_provider(agent_core: Any) -> Any | None:
-    """Build the read-only gate from the Agent's already-bound repository.
-
-    The scheduler must not query Console storage.  ``AgentCore`` is configured
-    by the composition root before scheduler registration, so this adapter is
-    available only in the Agent process.  If binding is absent, callers fail
-    closed rather than treating that absence as a ready runtime.
-    """
-
-    repository = getattr(agent_core, "_orchestration_repository", None)
-    if not callable(getattr(repository, "unit_of_work", None)):
-        return None
-    from agent.automation_plugins.runtime_repository import (
-        MySQLAutomationPluginRuntimeAdapter,
-    )
-
-    return MySQLAutomationPluginRuntimeAdapter(repository)
-
-
-def _finance_startup_command_idempotency(
-    task: Mapping[str, Any],
-    occurrence: str,
-) -> str:
-    """Recover the existing stable Command identity from the richer gate key."""
-
-    generation = task.get("automation_generation")
-    version = task.get("configuration_version")
-    automation_id = str(task.get("automation_id") or "").strip()
-    if (
-        not automation_id
-        or type(generation) is not int
-        or type(version) is not int
-    ):
-        raise ValueError("finance startup task has no exact project occurrence")
-    prefix = (
-        f"scheduler:{FINANCE_STARTUP_TASK_ID}:v{version}:"
-        f"{automation_id}:g{generation}:"
-    )
-    if not occurrence.startswith(prefix):
-        raise ValueError("finance startup occurrence does not match its task binding")
-    scheduled_iso = occurrence[len(prefix):]
-    if not scheduled_iso:
-        raise ValueError("finance startup occurrence has no scheduled instant")
-    return f"scheduler:{FINANCE_STARTUP_TASK_ID}:v{version}:{scheduled_iso}"
-
-
-def _finance_startup_schedule_task(agent_core) -> dict[str, Any] | None:
-    """Return the enabled task that independently owns startup gap scanning."""
-
-    for row in agent_core.memory.list_scheduled_tasks():
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("id") or "").strip() != FINANCE_STARTUP_TASK_ID:
-            continue
-        enabled = row.get("enabled")
-        if not (enabled is True or type(enabled) is int and enabled == 1):
-            return None
-        automation_id = str(row.get("automation_id") or "").strip()
-        expected_tool = (
-            f"automation.{automation_id}.run"
-            if automation_id
-            else "sync_finance_bills"
-        )
-        if str(row.get("tool_name") or "") != expected_tool or str(
-            row.get("cron_expression") or ""
-        ) != "@startup":
-            logger.error("Finance startup task has an invalid persisted binding")
-            return None
-        if automation_id and (
-            type(row.get("automation_generation")) is not int
-            or int(row["automation_generation"]) <= 0
-        ):
-            logger.error("Finance startup task has no committed project generation")
-            return None
-        return row
-    return None
 
 
 def _load_tasks_from_db(
@@ -642,12 +231,10 @@ def _load_tasks_from_db(
     automation_project_invoker: Any | None = None,
     include_startup_tasks: bool | None = None,
 ) -> None:
-    """Validate and register every enabled non-finance schedule task.
+    """Validate and register every enabled plugin schedule task.
 
-    Finance startup catch-up deliberately remains owned by its dedicated gate
-    below.  Every other ``@startup`` row is a normal, project-bound scheduled
-    occurrence and is registered here when this process is allowed to run
-    startup work.
+    ``@startup`` rows are normal, project-bound scheduled occurrences and are
+    registered here when this process is allowed to run startup work.
     """
     if include_startup_tasks is None:
         include_startup_tasks = _include_startup_catchup_for_process
@@ -655,12 +242,8 @@ def _load_tasks_from_db(
         agent_core,
         include_startup_tasks=include_startup_tasks,
     )
-    plan, deferred_task_ids, _finance_startup_expected, invalid_tasks = registration_plan
-    if deferred_task_ids:
-        logger.warning(
-            "Deferred R7 scheduled tasks were not registered: %s",
-            ", ".join(sorted(deferred_task_ids)),
-        )
+    plan, retired_task_ids, invalid_tasks = registration_plan
+    _log_retired_scheduled_tasks(retired_task_ids)
     _log_invalid_scheduled_tasks(invalid_tasks)
 
     for task, is_startup in plan:
@@ -693,14 +276,16 @@ def _scheduled_task_registration_plan(
 ) -> tuple[
     list[tuple[dict[str, Any], bool]],
     list[str],
-    bool,
     list[dict[str, str]],
 ]:
     """Validate rows independently while preserving global task identities.
 
-    A malformed row is quarantined from the in-memory scheduler without
-    preventing unrelated valid rows from running. Duplicate non-empty task IDs
-    remain a global conflict because no row can safely own that scheduler ID.
+    Only plugin project rows (``automation.<automation_id>.run``) are current
+    schedules; a row naming a bare tool is a retired V1 schedule and is never
+    registered. A malformed project row is quarantined from the in-memory
+    scheduler without preventing unrelated valid rows from running. Duplicate
+    non-empty task IDs remain a global conflict because no row can safely own
+    that scheduler ID.
     """
 
     tasks = list(agent_core.memory.list_enabled_scheduled_tasks())
@@ -723,9 +308,8 @@ def _scheduled_task_registration_plan(
             )
         registered_ids.add(task_id)
 
-    deferred_task_ids: list[str] = []
+    retired_task_ids: list[str] = []
     plan: list[tuple[dict[str, Any], bool]] = []
-    finance_startup_expected = False
     invalid_tasks: list[dict[str, str]] = []
     for index, task in enumerate(tasks):
         if not isinstance(task, dict):
@@ -744,19 +328,13 @@ def _scheduled_task_registration_plan(
         ):
             continue
         try:
-            is_deferred = _deferred_r7_schedule_must_not_register(task)
-            if is_deferred:
-                deferred_task_ids.append(str(task.get("id") or ""))
+            if not str(task.get("tool_name") or "").strip().startswith("automation."):
+                retired_task_ids.append(str(task.get("id") or ""))
                 continue
             task_id = str(task.get("id") or "").strip()
             if not task_id:
                 raise ValueError("Enabled scheduled task has no id")
             cron_expression = str(task.get("cron_expression") or "").strip()
-            if task_id == FINANCE_STARTUP_TASK_ID:
-                # ``@startup`` is owned by the dedicated startup gate below.
-                _validate_finance_startup_task(task)
-                finance_startup_expected = include_startup_tasks
-                continue
             if cron_expression == "@startup":
                 _validate_startup_project_task(task)
                 if include_startup_tasks:
@@ -766,7 +344,7 @@ def _scheduled_task_registration_plan(
             plan.append((task, False))
         except Exception as exc:
             invalid_tasks.append(_scheduled_task_issue(task, exc))
-    return plan, deferred_task_ids, finance_startup_expected, invalid_tasks
+    return plan, retired_task_ids, invalid_tasks
 
 
 def _scheduled_task_issue(
@@ -779,6 +357,14 @@ def _scheduled_task_issue(
         "error_code": type(exc).__name__.upper()[:64],
         "error_summary": redact_text(exc)[:200],
     }
+
+
+def _log_retired_scheduled_tasks(task_ids: list[str]) -> None:
+    if task_ids:
+        logger.warning(
+            "Retired V1 scheduled tasks were not registered: %s",
+            ", ".join(sorted(task_ids)),
+        )
 
 
 def _log_invalid_scheduled_tasks(issues: list[dict[str, str]]) -> None:
@@ -837,7 +423,7 @@ def _validate_cron_task(task: Mapping[str, Any]) -> None:
     if len(cron_expression.split()) != 5:
         raise ValueError(f"Invalid cron expression for task {task_id}: {cron_expression}")
     _task_configuration_version(task)
-    _validate_project_task_identity(task, startup=False)
+    _validate_project_task_identity(task)
     minute, hour, day, month, day_of_week = cron_expression.split()
     # Parse before mutating the live scheduler so invalid ranges fail closed.
     CronTrigger(
@@ -854,30 +440,16 @@ def _validate_startup_project_task(task: Mapping[str, Any]) -> None:
     if str(task.get("cron_expression") or "").strip() != "@startup":
         raise ValueError("Startup project task must use @startup")
     _task_configuration_version(task)
-    _validate_project_task_identity(task, startup=True)
+    _validate_project_task_identity(task)
 
 
-def _validate_finance_startup_task(task: Mapping[str, Any]) -> None:
-    if str(task.get("cron_expression") or "").strip() != "@startup":
-        raise ValueError("Finance startup task must use @startup")
-    _task_configuration_version(task)
-    automation_id = str(task.get("automation_id") or "").strip()
-    if not automation_id:
-        raise ValueError("Finance startup task has no explicit project identity")
-    _validate_project_task_identity(task, startup=True)
-
-
-def _validate_project_task_identity(task: Mapping[str, Any], *, startup: bool) -> None:
+def _validate_project_task_identity(task: Mapping[str, Any]) -> None:
     automation_id = str(task.get("automation_id") or "").strip()
     tool_name = str(task.get("tool_name") or "").strip()
     if not isinstance(task.get("tool_params") or {}, Mapping):
         raise ValueError("Scheduled task parameters must be an object")
     if not automation_id:
-        if startup:
-            raise ValueError("@startup task must have an explicit project identity")
-        if tool_name.startswith("automation."):
-            raise ValueError("Scheduled automation task is missing an explicit project identity")
-        return
+        raise ValueError("Scheduled automation task is missing an explicit project identity")
     if tool_name != f"automation.{automation_id}.run":
         raise ValueError("Scheduled automation tool identity does not match its project")
     generation = task.get("automation_generation")
@@ -1004,12 +576,6 @@ def _add_job(
             if scheduled_for is None:
                 raise RuntimeError("Unable to determine a stable scheduled fire time")
             arguments = copy.deepcopy(tp or {})
-            if not project_id and tn == "sync_finance_bills":
-                for key, value in _enabled_finance_platform_filter().items():
-                    arguments.setdefault(key, value)
-                arguments["target_date"] = (
-                    scheduled_for.date() - timedelta(days=1)
-                ).isoformat()
             result = await _execute_scheduled_tool(
                 agent_core,
                 task_id=tid,
@@ -1030,37 +596,14 @@ def _add_job(
             logger.error("Scheduled task failed: %s -> %s", tid, str(exc)[:200])
             await asyncio.to_thread(_update_task_status, agent_core, tid, "error", {"error": str(exc)})
 
-    options: dict[str, Any] = {}
-    registry = getattr(agent_core, "registry", None)
-    capability = (
-        registry.get_capability(tool_name)
-        if not automation_id and registry is not None and hasattr(registry, "get_capability")
-        else None
-    )
-    operation_type = (
-        str(capability.get("operation_type") or "")
-        if isinstance(capability, dict)
-        else ""
-    )
-    if automation_id or operation_type == "external_write":
-        # External writes are never replayed concurrently.  A missed in-memory
-        # occurrence gets only a short grace window; durable Command
-        # idempotency still protects duplicate submissions for the same exact
-        # scheduled timestamp.
-        options = {
-            "max_instances": 1,
-            "coalesce": True,
-            "misfire_grace_time": EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS,
-        }
-    if tool_name == "sync_finance_bills" or automation_id in {
-        "finance_bills",
-        "finance_startup_catchup",
-    }:
-        options = {
-            "max_instances": 1,
-            "coalesce": True,
-            "misfire_grace_time": FINANCE_MISFIRE_GRACE_SECONDS,
-        }
+    # Plugin occurrences are never replayed concurrently. A missed in-memory
+    # occurrence gets only a short grace window; the Invocation idempotency
+    # key still protects duplicate submissions for the same scheduled instant.
+    options: dict[str, Any] = {
+        "max_instances": 1,
+        "coalesce": True,
+        "misfire_grace_time": EXTERNAL_WRITE_MISFIRE_GRACE_SECONDS,
+    }
     if _scheduler is None:
         raise RuntimeError("scheduler is not initialized")
     owner_kwargs = (
@@ -1113,111 +656,42 @@ async def _execute_scheduled_tool(
         # collide with an immutable legacy Command instead of submitting the
         # newly governed occurrence.
         startup_identity = f"v{configuration_version}"
-        project_id = str(automation_id or "").strip()
-        if project_id and project_id != FINANCE_STARTUP_TASK_ID:
-            if type(automation_generation) is not int or automation_generation <= 0:
-                raise RuntimeError(
-                    "Scheduled automation project has no committed generation"
-                )
+        if type(automation_generation) is int and automation_generation > 0:
             startup_identity += f":g{automation_generation}"
         idempotency_key = f"scheduler:{task_id}:{startup_identity}:{scheduled_iso}"
     project_id = str(automation_id or "").strip()
-    if project_id:
-        expected_tool = f"automation.{project_id}.run"
-        if tool_name != expected_tool:
-            raise RuntimeError(
-                "Scheduled automation tool identity does not match its project"
-            )
-        if type(automation_generation) is not int or automation_generation <= 0:
-            raise RuntimeError(
-                "Scheduled automation project has no committed generation"
-            )
-        invoker = automation_project_invoker or _automation_project_invoker
-        if invoker is None or not hasattr(invoker, "invoke_trusted_and_wait"):
-            raise RuntimeError("Scheduled automation project invoker is unavailable")
-        acceptance = {"accepted": False}
-
-        async def mark_accepted(_receipt: Any) -> None:
-            acceptance["accepted"] = True
-
-        async def submit_project_once() -> Any:
-            return await invoker.invoke_trusted_and_wait(
-                project_id,
-                entrypoint="scheduler",
-                request_id=idempotency_key,
-                actor=Actor(
-                    ActorType.SCHEDULER,
-                    task_id,
-                    roles=("system",),
-                    authenticated_by="apscheduler",
-                ),
-                trusted_context=execution_context,
-                idempotency_key=idempotency_key,
-                expected_automation_generation=automation_generation,
-                expected_project_configuration_version=configuration_version,
-                on_accepted=mark_accepted,
-            )
-
-        # A failed occurrence ends here. No delayed business submission exists.
-        return await submit_project_once()
-    if str(tool_name or "").startswith("automation."):
+    if not project_id:
         raise RuntimeError(
             "Scheduled automation command is missing an explicit project identity"
         )
-    acceptance = {"accepted": False}
-
-    def mark_submitted(_receipt: Mapping[str, Any]) -> None:
-        acceptance["accepted"] = True
-
-    async def submit_tool_once() -> Any:
-        return await agent_core.execute_tool(
-            tool_name,
-            arguments,
-            actor=Actor(ActorType.SCHEDULER, task_id, roles=("system",)),
-            source="scheduler",
-            idempotency_key=idempotency_key,
-            execution_context=execution_context,
-            on_submitted=mark_submitted,
+    expected_tool = f"automation.{project_id}.run"
+    if tool_name != expected_tool:
+        raise RuntimeError(
+            "Scheduled automation tool identity does not match its project"
         )
-
-    return await _retry_unaccepted_persistence(
-        submit_tool_once,
-        accepted=lambda: acceptance["accepted"],
+    if type(automation_generation) is not int or automation_generation <= 0:
+        raise RuntimeError(
+            "Scheduled automation project has no committed generation"
+        )
+    invoker = automation_project_invoker or _automation_project_invoker
+    if invoker is None or not hasattr(invoker, "invoke_trusted_and_wait"):
+        raise RuntimeError("Scheduled automation project invoker is unavailable")
+    # A failed occurrence ends here. No delayed business submission exists.
+    return await invoker.invoke_trusted_and_wait(
+        project_id,
+        entrypoint="scheduler",
+        request_id=idempotency_key,
+        actor=Actor(
+            ActorType.SCHEDULER,
+            task_id,
+            roles=("system",),
+            authenticated_by="apscheduler",
+        ),
+        trusted_context=execution_context,
+        idempotency_key=idempotency_key,
+        expected_automation_generation=automation_generation,
+        expected_project_configuration_version=configuration_version,
     )
-
-
-async def _retry_unaccepted_persistence(
-    submit_once: Callable[[], Awaitable[Any]],
-    *,
-    accepted: Callable[[], bool],
-) -> Any:
-    """Retry only a Command acceptance that never returned a receipt."""
-
-    retry_delays = SCHEDULER_ACCEPTANCE_RETRY_DELAYS_SECONDS
-    for attempt in range(len(retry_delays) + 1):
-        try:
-            result = await submit_once()
-        except OrchestrationError as exc:
-            if (
-                accepted()
-                or exc.code != "PERSISTENCE_UNAVAILABLE"
-                or attempt >= len(retry_delays)
-            ):
-                raise
-        else:
-            persistence_unavailable = (
-                isinstance(result, Mapping)
-                and str(result.get("error_code") or "").strip().upper()
-                == "PERSISTENCE_UNAVAILABLE"
-            )
-            if (
-                accepted()
-                or not persistence_unavailable
-                or attempt >= len(retry_delays)
-            ):
-                return result
-        await asyncio.sleep(retry_delays[attempt])
-    raise AssertionError("scheduler acceptance retry loop exhausted unexpectedly")
 
 
 def _update_task_status(agent_core, task_id: str, status: str, result: Any) -> None:
@@ -1505,13 +979,12 @@ def _reload_scheduler_locked(
     if _scheduler is None:
         return {"initialized": False, "jobs": 0, "job_ids": []}
 
-    # Validate all regular rows first. The finance startup path intentionally
-    # retains its historic gate-and-log behavior and is registered separately.
+    # Validate all rows before touching the live scheduler.
     registration_plan = _scheduled_task_registration_plan(
         agent_core,
         include_startup_tasks=_include_startup_catchup_for_process,
     )
-    plan, deferred_task_ids, _finance_startup_expected, invalid_tasks = registration_plan
+    plan, retired_task_ids, invalid_tasks = registration_plan
     if strict and invalid_tasks:
         _log_invalid_scheduled_tasks(invalid_tasks)
         raise ScheduledTaskReloadError(invalid_tasks)
@@ -1546,19 +1019,6 @@ def _reload_scheduler_locked(
                 continue
             desired_job_ids.add(task_id)
 
-        if _include_startup_catchup_for_process:
-            # The special finance job must be removed first so an unavailable
-            # gate cannot leave behind an obsolete startup action.
-            existing_finance_job = _scheduler.get_job(FINANCE_STARTUP_TASK_ID)
-            if existing_finance_job is not None:
-                _scheduler.remove_job(FINANCE_STARTUP_TASK_ID)
-            _add_finance_startup_catchup_job(
-                agent_core,
-                automation_project_invoker=_automation_project_invoker,
-            )
-            if _scheduler.get_job(FINANCE_STARTUP_TASK_ID) is not None:
-                desired_job_ids.add(FINANCE_STARTUP_TASK_ID)
-
         for job in list(_scheduler.get_jobs()):
             if job.id not in desired_job_ids:
                 _scheduler.remove_job(job.id)
@@ -1566,11 +1026,7 @@ def _reload_scheduler_locked(
         _restore_scheduler_jobs(previous_jobs)
         raise
 
-    if deferred_task_ids:
-        logger.warning(
-            "Deferred R7 scheduled tasks were not registered: %s",
-            ", ".join(sorted(deferred_task_ids)),
-        )
+    _log_retired_scheduled_tasks(retired_task_ids)
     all_invalid_tasks = [*invalid_tasks, *registration_failures]
     _log_invalid_scheduled_tasks(all_invalid_tasks)
     jobs = _scheduler.get_jobs()
@@ -1579,7 +1035,7 @@ def _reload_scheduler_locked(
         "jobs": len(jobs),
         "job_ids": [job.id for job in jobs],
         "invalid_tasks": all_invalid_tasks,
-        "deferred_task_ids": deferred_task_ids,
+        "retired_task_ids": retired_task_ids,
     }
 
 

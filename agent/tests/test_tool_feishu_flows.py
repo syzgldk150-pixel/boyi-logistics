@@ -6,6 +6,10 @@ from _tms_runtime_test_support import *  # noqa: F403
 from agent.orchestration.models import Actor, ActorType
 
 
+# Commands the current plugin packages declare for their fixed Feishu routes.
+_DECLARED_FEISHU_COMMANDS = frozenset({"扫描", "自提到货问题件", "分批", "统计到货数据", "arrive-list"})
+
+
 class _FakeAutomationProjectEntrypoints:
     def __init__(self) -> None:
         self.status = "COMPLETED"
@@ -22,7 +26,10 @@ class _FakeAutomationProjectEntrypoints:
             account_bindings={"account_id": "business-primary"},
         )
 
-    async def invoke_feishu(self, **kwargs):
+    async def dispatch(self, **kwargs):
+        """Stand in for the Service V2 dispatcher: only declared commands match."""
+        if kwargs.get("command_text") not in _DECLARED_FEISHU_COMMANDS:
+            return None
         self.calls.append(dict(kwargs))
         return {
             "success": self.status == "COMPLETED",
@@ -41,6 +48,13 @@ class ToolFeishuFlowTests(unittest.TestCase):
         )
         self.project_entrypoints_patch.start()
         self.addCleanup(self.project_entrypoints_patch.stop)
+        self.dispatcher_patch = patch.object(
+            message_handler,
+            "_SERVICE_V2_FEISHU_DISPATCHER",
+            self.project_entrypoints,
+        )
+        self.dispatcher_patch.start()
+        self.addCleanup(self.dispatcher_patch.stop)
         self.command_context_token = message_handler._COMMAND_CONTEXT.set(
             message_handler.FeishuCommandContext(
                 event_id="legacy-flow-event",
@@ -57,113 +71,25 @@ class ToolFeishuFlowTests(unittest.TestCase):
             {"AGENT_INTERNAL_API_TOKEN": "test-internal-token"},
             clear=False,
         )
-        self.send_order_sql_patch = patch(
-            "tools.send_order_sync_tool.sync_console_waybills",
-            return_value={"ok": True, "upserted": 0, "updates": 0, "creates": 0, "deleted_stale": 0},
-        )
-        self.yunda_send_sql_patch = patch(
-            "tools.yunda_send_waybills_sync_tool.sync_console_waybills",
-            return_value={"ok": True, "upserted": 0, "updates": 0, "creates": 0, "deleted_stale": 0},
-        )
-        self.delivery_status_sql_patch = patch(
-            "tools.delivery_status_sync_tool.update_console_waybill_statuses",
-            return_value={"ok": True, "updated": 0, "status": "signed"},
-        )
         self.internal_token_patch.start()
-        self.send_order_sql_mock = self.send_order_sql_patch.start()
         self.addCleanup(self.internal_token_patch.stop)
-        self.yunda_send_sql_mock = self.yunda_send_sql_patch.start()
-        self.delivery_status_sql_mock = self.delivery_status_sql_patch.start()
-        self.addCleanup(self.send_order_sql_patch.stop)
-        self.addCleanup(self.yunda_send_sql_patch.stop)
-        self.addCleanup(self.delivery_status_sql_patch.stop)
 
     def test_direct_router_does_not_map_scan_query_to_scan_sync_tool(self):
         request = direct_tool_router.direct_tool_request_from_text("查扫描记录")
 
         self.assertIsNone(request)
 
-    def test_fixed_feishu_route_obeys_testing_cutover_and_rollback_owner(self):
-        class _FakeAgent:
-            async def execute_tool(self, *_args, **_kwargs):
-                raise AssertionError("fixed project route must not call a legacy tool directly")
-
-            async def handle_message(self, *_args, **_kwargs):
-                raise AssertionError("fixed project route must not reach the LLM")
-
-        class _MigrationDispatcher:
-            def __init__(self, owner):
-                self.owner = owner
-                self.dispatches = []
-
-            def fixed_feishu_owner(self, **kwargs):
-                self.owner_request = kwargs
-                return self.owner
-
-            async def dispatch(self, **kwargs):
-                self.dispatches.append(kwargs)
-                return {"status": "COMPLETED", "success": True}
-
-        async def _fake_reply_text(
-            _chat_id,
-            _text,
-            receive_id_type="chat_id",
-            *,
-            reply_type="text",
-        ):
-            del receive_id_type, reply_type
-
-        for state, owner, expected_v1_calls, expected_v2_calls in (
-            ("TESTING", "ACTION_V1", 1, 0),
-            ("CUTOVER", "SERVICE_V2", 0, 1),
-            ("ROLLED_BACK", "ACTION_V1", 1, 0),
-        ):
-            with self.subTest(state=state):
-                self.project_entrypoints.calls.clear()
-                dispatcher = _MigrationDispatcher(owner)
-                with (
-                    patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-                    patch("feishu.message_handler.get_pending", return_value=None),
-                    patch.object(
-                        message_handler,
-                        "_SERVICE_V2_FEISHU_DISPATCHER",
-                        dispatcher,
-                    ),
-                    patch(
-                        "feishu.message_handler._reply_text",
-                        side_effect=_fake_reply_text,
-                    ),
-                ):
-                    asyncio.run(
-                        message_handler._process_and_reply(
-                            "统计到货数据",
-                            "user-1",
-                            "chat-1",
-                        )
-                    )
-
-                self.assertEqual(expected_v1_calls, len(self.project_entrypoints.calls))
-                self.assertEqual(expected_v2_calls, len(dispatcher.dispatches))
-                self.assertEqual(
-                    "builtin.arrival_stats",
-                    dispatcher.owner_request["source_route_key"],
-                )
-
-    def test_cutover_fixed_feishu_route_fails_closed_when_v2_projection_is_missing(self):
+    def test_fixed_feishu_route_fails_closed_when_v2_projection_is_missing(self):
         replies: list[tuple[str, str]] = []
 
         class _FakeAgent:
             async def execute_tool(self, *_args, **_kwargs):
-                raise AssertionError("cutover must not fall back to an Action-v1 tool")
+                raise AssertionError("a fixed route must not fall back to a core tool")
 
             async def handle_message(self, *_args, **_kwargs):
-                raise AssertionError("cutover must not fall back to the LLM")
+                raise AssertionError("a fixed route must not fall back to the LLM")
 
         class _MissingTargetDispatcher:
-            @staticmethod
-            def fixed_feishu_owner(**_kwargs):
-                return "SERVICE_V2"
-
             @staticmethod
             async def dispatch(**_kwargs):
                 return None
@@ -296,8 +222,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
             asyncio.run(message_handler._process_and_reply("扫描", "user-1", "chat-1"))
 
         self.assertNotIn("execute_tool", calls)
-        self.assertEqual("builtin.scan_codes", self.project_entrypoints.calls[-1]["route_key"])
-        self.assertEqual({}, self.project_entrypoints.calls[-1]["envelope"]["body"])
+        self.assertEqual("扫描", self.project_entrypoints.calls[-1]["command_text"])
+        self.assertIsNone(self.project_entrypoints.calls[-1]["preview_invocation_id"])
         self.assertTrue(replies)
 
     def test_feishu_invalid_tracking_number_replies_without_tool_execution(self):
@@ -394,11 +320,11 @@ class ToolFeishuFlowTests(unittest.TestCase):
             patch("feishu.message_handler.get_pending", return_value=None),
             patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
         ):
-            asyncio.run(message_handler._process_and_reply("执行一次arrivelist脚本", "user-1", "chat-1"))
+            asyncio.run(message_handler._process_and_reply("arrive-list", "user-1", "chat-1"))
 
         self.assertNotIn("execute_tool", calls)
-        self.assertEqual("builtin.arrive_list", self.project_entrypoints.calls[-1]["route_key"])
-        self.assertEqual({}, self.project_entrypoints.calls[-1]["envelope"]["body"])
+        self.assertEqual("arrive-list", self.project_entrypoints.calls[-1]["command_text"])
+        self.assertNotIn("runtime_inputs", self.project_entrypoints.calls[-1])
         self.assertTrue(replies)
 
     def _assert_quote_auth_failure_stays_in_plugin(self, error_code):
@@ -502,8 +428,8 @@ class ToolFeishuFlowTests(unittest.TestCase):
         self.assertEqual([], admin_calls)
         self.assertEqual([], pending_calls)
         self.assertEqual(
-            "builtin.arrival_stats",
-            self.project_entrypoints.calls[-1]["route_key"],
+            "统计到货数据",
+            self.project_entrypoints.calls[-1]["command_text"],
         )
         self.assertTrue(replies)
 
@@ -558,7 +484,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
             patch("feishu.message_handler._post_admin", side_effect=AssertionError("stale auth retry should not send code")),
             patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
         ):
-            asyncio.run(message_handler._process_and_reply("ç»Ÿè®¡", "user-1", "chat-1"))
+            asyncio.run(message_handler._process_and_reply("统计", "user-1", "chat-1"))
 
         self.assertEqual([], calls)
         self.assertEqual([], pending_calls)
@@ -613,14 +539,14 @@ class ToolFeishuFlowTests(unittest.TestCase):
             patch("feishu.message_handler.clear_pending") as clear_pending,
             patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
         ):
-            asyncio.run(message_handler._process_and_reply("ç»Ÿè®¡", "user-1", "chat-1"))
+            asyncio.run(message_handler._process_and_reply("统计", "user-1", "chat-1"))
 
         clear_pending.assert_called_once_with("chat-1")
         self.assertEqual([], calls)
         self.assertEqual(1, len(self.project_entrypoints.calls))
         self.assertEqual(
-            "builtin.arrival_stats",
-            self.project_entrypoints.calls[-1]["route_key"],
+            "统计到货数据",
+            self.project_entrypoints.calls[-1]["command_text"],
         )
         self.assertTrue(replies)
 

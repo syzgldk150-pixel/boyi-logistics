@@ -41,7 +41,6 @@ class AutomationProjectGroupingTests(unittest.TestCase):
             [],
             list(plugin_instances or []),
             [],
-            [],
             hidden_automation_ids,
             plugin_warning,
             False,
@@ -49,7 +48,6 @@ class AutomationProjectGroupingTests(unittest.TestCase):
         service._load_automation_project_policies = lambda _handler, _tasks: ("", False)
         service._fetch_automation_accounts = account_fetch or (lambda **_kwargs: ([], ""))
         service._mysql_console_principal = lambda _user: account_principal
-        service._enrich_automation_tasks_with_accounts = lambda _tasks, _accounts: None
         service._send_html = lambda _handler, _body: None
 
         service._render_automations(SimpleNamespace(current_admin_user={"username": "admin"}), {})
@@ -71,7 +69,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
                     scopes.append(scope)
                     if age is not None:
                         handler.automation_catalog_snapshot_age_seconds = age
-                    return ([], [], [], [], frozenset(), "", False)
+                    return ([], [], [], frozenset(), "", False)
 
                 service = AutomationServiceMixin.__new__(AutomationServiceMixin)
                 service.repository = SimpleNamespace(list_scheduled_tasks=lambda: [], list_workflow_resources=lambda: [])

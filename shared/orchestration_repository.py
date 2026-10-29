@@ -20,9 +20,6 @@ from shared.orchestration_repository_support import (
     _json_param, _json_value, _optional_text, _required_text, _row_dict, _rows,
     _safe_comment, _safe_error, _status,
 )
-from shared.automation_unknown_write_recovery import (
-    recover_unknown_automation_write as _recover_unknown_automation_write,
-)
 from shared import automation_run_lookup, orchestration_schema
 from shared.connection_reuse import acquire_transaction_connection, release_transaction_connection
 from shared.orchestration_evidence_lookup import EvidenceLookupMixin
@@ -2864,11 +2861,9 @@ class OrchestrationUnitOfWork:
         connection.rollback()
         self._completed = True
 
-    def validate_schema(self, *, include_windows_worker: bool = True) -> None:
+    def validate_schema(self) -> None:
         self._require_active()
-        required_tables, required_columns = orchestration_schema.orchestration_schema_requirements(
-            include_windows_worker=include_windows_worker
-        )
+        required_tables, required_columns = orchestration_schema.orchestration_schema_requirements()
         with self.commands.cursor() as cursor:
             cursor.execute(
                 "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()"
@@ -2969,10 +2964,6 @@ class OrchestrationUnitOfWork:
             },
             "outbox": event_receipt["outbox"],
         }
-
-    # The configuration-free function is also the public bound UoW method;
-    # keep its signature and transaction logic in one place.
-    recover_unknown_automation_write = _recover_unknown_automation_write
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
         connection = self.connection

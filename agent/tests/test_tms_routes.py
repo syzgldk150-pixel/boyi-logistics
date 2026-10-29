@@ -11,6 +11,7 @@ from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.scripts import ronghui_waybill_proxy, yunda_waybill_proxy
 from console.services.agent_api import AgentApiServiceMixin
 from fastapi.responses import JSONResponse
+from agent.connector_namespaces import DAILY_SIGN_TOOL
 
 
 class TMSRoutesTests(unittest.TestCase):
@@ -808,12 +809,12 @@ class TMSRoutesTests(unittest.TestCase):
         async def fake_execute_target(name, req):
             return 200, {"ok": False, "error_code": "AUTH_REQUIRED", "message": "当前未登录或登录态已过期。"}
 
-        capability = issue_execution_capability("sync_scan_codes", ttl_seconds=30)
+        capability = issue_execution_capability(DAILY_SIGN_TOOL, ttl_seconds=30)
         try:
             with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
                 response = self.client.post(
-                    "/tms/scan_next",
-                    json={"params": {"items": []}, "timeout_sec": 30},
+                    "/tms/get_qianshou",
+                    json={"params": {"r13_account_id": "r13-project-selected"}, "timeout_sec": 30},
                     headers={EXECUTION_CAPABILITY_HEADER: capability},
                 )
         finally:
@@ -831,7 +832,7 @@ class TMSRoutesTests(unittest.TestCase):
             self.assertEqual(req.params["page_size"], 1)
             return 200, {"ok": True, "data": []}
 
-        capability = issue_execution_capability("sync_daily_should_sign", ttl_seconds=30)
+        capability = issue_execution_capability(DAILY_SIGN_TOOL, ttl_seconds=30)
         try:
             with patch("agent.tms_runtime.routes.execute_target", side_effect=fake_execute_target):
                 response = self.client.post(
@@ -849,7 +850,7 @@ class TMSRoutesTests(unittest.TestCase):
         self.assertTrue(response.json()["ok"])
 
     def test_daily_sign_capability_cannot_invoke_customer_service_write_action(self):
-        capability = issue_execution_capability("sync_daily_should_sign", ttl_seconds=30)
+        capability = issue_execution_capability(DAILY_SIGN_TOOL, ttl_seconds=30)
         try:
             with patch("agent.tms_runtime.routes.execute_target") as execute_target:
                 response = self.client.post(
@@ -905,11 +906,7 @@ class TMSRoutesTests(unittest.TestCase):
                 dispatch_module.TaskRequest(params={}, timeout_sec=30),
             )
 
-        for target_name in (
-            "get_qianshou",
-            "self_pickup_problem_upload",
-            "split_pending_problem_upload",
-        ):
+        for target_name in ("get_qianshou",):
             with self.subTest(target_name=target_name):
                 status_code, payload = asyncio.run(_run_target(target_name))
 

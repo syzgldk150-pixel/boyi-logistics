@@ -2,7 +2,7 @@
 module: 寄件查询
 type: 业务说明
 status: active
-updated: 2026-10-22
+updated: 2026-10-30
 ---
 
 # 寄件数据查询与覆盖范围（架构 V1 / P4）
@@ -93,7 +93,7 @@ updated: 2026-10-22
 先按 [验收环境与命令入口](architecture_refactor_acceptance_mapping.md) 定义 `isolated`，只连接独立的 loopback MySQL 8 测试实例并禁止加载 dotenv；测试会创建并删除自己随机命名的测试库。临时目录均在项目内。
 
 ```bash
-isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests/test_waybill_source_coverage_mysql.py tests/test_daily_send_production_adapter.py tests/test_daily_send_core_handlers.py tests/test_daily_send_plugin_router.py tests/test_yunda_source_contracts.py tests/test_first_party_core_handlers.py tests/test_first_party_action_payloads.py agent/tests/test_phase7_sync_tools.py --junitxml=.task_tmp/v1-report/p4-scoped-nightly.xml -o junit_family=legacy
+isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests/test_waybill_source_coverage_mysql.py tests/test_daily_send_production_adapter.py tests/test_daily_send_core_handlers.py tests/test_daily_send_plugin_router.py tests/test_yunda_source_contracts.py tests/test_host_primitive_handlers.py agent/tests/test_phase7_sync_tools.py --junitxml=.task_tmp/v1-report/p4-scoped-nightly.xml -o junit_family=legacy
 ```
 
 本次实际通过结果和每个用例名在 `p4-scoped-nightly.xml`，原始输出在同目录 `p4-scoped-nightly.log`。新增 `tests/test_waybill_query_profiles.py` 验证上述真实页面结构、实际账号使用登记和取消时等待线程真正结束。组合回归见 `p4-final.xml` / `p4-final.log`；仅以文件内结果为准，迁移环境错误不能计为通过。涵盖真实分页协议→现有转换→MySQL→查询，生产夜间 projection→MySQL，原生融辉单号详情→局部 upsert，源/账号/权限隔离、尾段补全和失败保留；外部 HTTP 与身份观察边界使用明确合成数据，业务函数与数据库使用实际实现。

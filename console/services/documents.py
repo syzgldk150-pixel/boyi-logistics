@@ -912,8 +912,8 @@ class DocumentServiceMixin:
     ) -> dict[str, Any]:
         # A stale UI catalog is useful for display, but never selects a quote provider.
         catalog = self._load_automation_plugin_catalog_uncached(handler)
-        if catalog[5]:
-            raise ValueError(str(catalog[5]))
+        if catalog[4]:
+            raise ValueError(str(catalog[4]))
         instances = [item for item in catalog[1] if item.get("plugin_id") == "quote_prices_v2"]
         if len(instances) != 1:
             raise ValueError("请在自动化中配置唯一的三平台报价插件项目。")

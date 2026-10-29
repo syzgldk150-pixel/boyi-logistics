@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any, Awaitable, Protocol
 from zoneinfo import ZoneInfo
 
+from agent.connector_namespaces import CLOCK_IN_TOOL
 from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
@@ -83,7 +84,7 @@ _MAX_SERVICE_CALL_DEPTH = 8
 _INVOCATION_MANIFEST_CACHE_LIMIT = 128
 _REVIEWED_CLOCK_OPERATION = "browser.invoke"
 _SERVICE_V2_CLOCK_OPERATION = "browser.session"
-_CLOCK_TOOL_NAME = "clock_in_dual"
+_CLOCK_TOOL_NAME = CLOCK_IN_TOOL
 _CLOCK_ACTIONS = (
     "ronghui.clock.precheck",
     "ronghui.clock.submit",

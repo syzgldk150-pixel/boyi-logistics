@@ -1,4 +1,5 @@
 """Production scan primitives with bound accounts and server readback."""
+from agent.connector_namespaces import SCAN_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import (
     ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation,
@@ -6,7 +7,7 @@ from agent.automation_plugins.connector_registry import (
 from agent.automation_plugins.connector_schemas import (
     BOOL, COUNT, CURSOR, DATE, TEXT, array_schema as array, object_schema as obj,
 )
-from agent.automation_plugins.first_party_handler_support import (
+from agent.automation_plugins.host_primitive_support import (
     _SCAN_SNAPSHOT_FIELDS, _SCAN_SNAPSHOT_TIME_FIELD, _SCAN_SOURCE_FIELDS,
 )
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
@@ -24,7 +25,7 @@ def build_scan_connectors(reviewed):
 
     def operation(name, action, effect, input_schema, output_schema, *, projection=False):
         return ConnectorOperation(name=name,effect=effect,input_schema=input_schema,output_schema=output_schema,
-            handler=reviewed_connector_handler(reviewed,tool="sync_scan_codes",
+            handler=reviewed_connector_handler(reviewed,tool=SCAN_TOOL,
                 operation="projection.invoke" if projection else "browser.invoke",action=action,role="account_id",
                 account=account,account_alias="account_id"),max_input_bytes=64*1024*1024,max_output_bytes=10*1024*1024)
 

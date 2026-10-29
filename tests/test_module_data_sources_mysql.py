@@ -299,10 +299,10 @@ def test_finance_publication_hides_unfinished_batch_and_deduplicates_site(databa
 def test_host_observed_customer_identity_parser_publication_and_local_query(database,
         direction, required_policy, publish_site, notify_site, expected_count):
     from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
-    from agent.automation_plugins.first_party_handlers import FirstPartyCoreHandlerPorts, build_first_party_core_handler_map
+    from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
     from agent.automation_plugins.models import GenerationVerificationContext
     from agent.customer_source_projection import publish_customer_collection
-    from tests.first_party_action_payload_support import load_first_party_action
+    from tests.plugin_action_payload_support import load_plugin_action
 
     fixture, name = database
     organization = "synthetic-host-source-" + uuid4().hex
@@ -325,17 +325,17 @@ def test_host_observed_customer_identity_parser_publication_and_local_query(data
                     "PROBLEM_CAUSE": "隔离原始字段进入插件", "REVERSION_STATUS": "未回复", "REVERSION": "",
                     "REVERSION_DATE": "2026-09-07 10:00:00"}}],
             "stats": {"total": 1, "returned": 1, "total_authoritative": True}}
-    handlers = build_first_party_core_handler_map(FirstPartyCoreHandlerPorts(
+    handlers = build_host_primitive_handler_map(HostPrimitivePorts(
         describe_account=lambda value: {"account_id": value, "system": "ronghui", "session_profile": "synthetic-session"},
         customer_action=read_protocol), cursor_secret=b"synthetic-source-test-secret-32-bytes")
     def broker(operation, *, action, role, arguments):
         context = CoreBrokerInvocationContext(automation_id=producer, plugin_version="1.0.0",
-            generation=1, tool_name="sync_customer_service_problems", operation=operation,
+            generation=1, tool_name="customer_problem", operation=operation,
             action=action, role=role, account_ids=(account,), account_bindings={role: (account,)})
         response = handlers[(operation, action)](context, arguments)
         calls.append({"action": action, "result": response})
         return response
-    result = load_first_party_action("sync_customer_service_problems").run_action({"direction": direction}, broker)
+    result = load_plugin_action("sync_customer_service_problems").run_action({"direction": direction}, broker)
     assert result["status"] == "SUCCESS"
     assert result["data"]["records"][0]["problem_text"] == "隔离原始字段进入插件"
     verification = GenerationVerificationContext(automation_id=producer, generation=1,
@@ -367,7 +367,7 @@ def test_host_observed_customer_identity_parser_publication_and_local_query(data
                     VALUES(%s,'synthetic-raw-guid','received','详情关闭保留人工备注',1,UTC_TIMESTAMP(6))""", (source_id,))
             empty_source[0] = True
             calls.clear()
-            detail_result = load_first_party_action("sync_customer_service_problems").run_action(
+            detail_result = load_plugin_action("sync_customer_service_problems").run_action(
                 {"direction": direction, "recheck_items": result["data"]["records"]}, broker)
             assert detail_result["status"] == "SUCCESS" and detail_result["data"]["records"] == []
             detail_verification = replace(verification, host_call_observations=tuple(calls))

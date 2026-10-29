@@ -12,7 +12,6 @@ import json
 from shared import automation_plugin_repository as _repository
 from shared.plugin_json import plugin_json_digest as _exact_json_hash
 from shared.automation_plugin_generation_runtime_repository import (
-    migration_owned_scheduler_enabled as _migration_owned_scheduler_enabled,
     scheduler_contribution_binding as _scheduler_contribution_binding,
 )
 
@@ -213,11 +212,7 @@ def _apply_scheduled_task_projection(
         enabled_entrypoints=enabled_entrypoints,
         schedule_expressions=expressions,
     )
-    physical_scheduler_enabled = _migration_owned_scheduler_enabled(
-        cursor,
-        automation_id=automation_id,
-        desired_enabled=bool(desired_schedule["enabled"] and scheduler_enabled),
-    )
+    physical_scheduler_enabled = bool(desired_schedule["enabled"] and scheduler_enabled)
     scheduler_contract = (
         compiled_invocations.get(scheduler_entrypoint, {})
         if scheduler_entrypoint is not None

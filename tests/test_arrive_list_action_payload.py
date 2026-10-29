@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
 
 def test_empty_source_reports_verified_snapshot_and_clears_all_sinks() -> None:
-    action_module = load_first_party_action("sync_arrive_list")
+    action_module = load_plugin_action("sync_arrive_list")
     calls: list[str] = []
 
     def broker(operation, *, action, role, arguments):

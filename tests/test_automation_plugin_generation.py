@@ -1240,26 +1240,13 @@ def test_unready_coeffect_never_applies_or_commits() -> None:
 
 
 def test_unauthenticated_session_does_not_block_structural_generation_commit() -> None:
-    snapshot = _snapshot(1, "1.0.0")
-    anchor = {"name": "action-a", "version": "1.0.0"}
+    snapshot = _service_v2_snapshot(1, "1.0.0")
     metadata = dict(snapshot.execution_metadata)
     metadata.update(
         {
             "account_bindings": {"source": "acct-1"},
-            "resource_bindings": {},
-            "governance_anchor": anchor,
             "runtime_descriptor": {
                 **dict(metadata["runtime_descriptor"]),
-                "runtime_permissions": {
-                    "broker_operations": [
-                        {
-                            "operation": "browser.invoke",
-                            "action": "fetch",
-                            "roles": ["source"],
-                            "effect": "read",
-                        }
-                    ]
-                },
                 "account_roles": [
                     {
                         "role": "source",
@@ -1267,16 +1254,10 @@ def test_unauthenticated_session_does_not_block_structural_generation_commit() -
                         "required": True,
                     }
                 ],
-                "resource_roles": [],
             },
         }
     )
     snapshot = replace(snapshot, execution_metadata=metadata)
-
-    class _CoreCatalog:
-        @staticmethod
-        def get_capability(name: str) -> Mapping[str, str] | None:
-            return anchor if name == "action-a" else None
 
     class _UnauthenticatedAccountManager:
         def __init__(self) -> None:
@@ -1298,11 +1279,10 @@ def test_unauthenticated_session_does_not_block_structural_generation_commit() -
 
     account_manager = _UnauthenticatedAccountManager()
     repository = _MemoryGenerationRepository()
-    reconciler, driver = _reconciler(
+    reconciler, _driver = _reconciler(
         repository,
         coeffects=ProductionRuntimeCoeffectProvider(
-            core_catalog=_CoreCatalog(),
-            broker_handler_keys=(("browser.invoke", "fetch"),),
+            broker_handler_keys=(),
             account_manager=account_manager,
         ),
     )
@@ -1322,7 +1302,6 @@ def test_unauthenticated_session_does_not_block_structural_generation_commit() -
     assert repository.runtime
     assert repository.runtime.reconcile_state == RuntimeReconcileState.STABLE
     assert repository.generations[1].state == RuntimeGenerationState.COMMITTED
-    assert driver.applied == ["package:1.0.0", "broker:1"]
     assert account_manager.session_checks == 0
     assert health.healthy is True
 

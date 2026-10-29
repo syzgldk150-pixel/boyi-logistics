@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
-import os
 import re
 import sys
 from decimal import Decimal, InvalidOperation
@@ -18,27 +16,17 @@ from agent.workflow_resource_store import get_workflow_resource
 from shared.yunda_console_waybill import build_console_waybill_from_yunda_data
 from service_v2_plugins.sync_yunda_send_waybills_v2.payload.yunda_send_fields import FIELD_NAMES
 from tools.feishu_cli_tool import feishu_operation
-from tools.phase7_mysql_store import sync_console_waybills
 from tools.phase7_sync_common import (
     bind_explicit_account_id,
-    build_range_from_template,
     require_explicit_account_id,
-    sync_sheet_snapshot,
-    tms_auth_error_result,
 )
-from tools.tms_tool import call_http_service
 
 
 RESOURCE_KEY = "phase7.yunda_send_waybills_bitable"
-SHEET_RESOURCE_KEY = "phase7.yunda_send_waybills_sheet"
 DEFAULT_BASE_TOKEN = "Fcm8b2H7wayK1UsYLjlcFmWhnMh"
 DEFAULT_TABLE_ID = "tblNHfIVVeaTBB7Y"
 DEFAULT_SPREADSHEET_TOKEN = "GILYss6KhhBBuRt9FPWcXbben7c"
-DEFAULT_SHEET_REF = "Sheet1"
-DEFAULT_SHEET_TEMPLATE_RANGE = f"{DEFAULT_SHEET_REF}!A2:A2"
-DEFAULT_SHEET_CLEAR_END_ROW = 5000
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
-NO_FETCHED_ROWS_REASON = "no_fetched_rows"
 INDEX_FIELD_NAME = "运单编号"
 INDEX_FIELD_ALIASES = (INDEX_FIELD_NAME, "5.14编号", "运单号")
 FIELD_ALIASES = {
@@ -179,60 +167,11 @@ def _resolve_bitable_target(params: dict[str, Any]) -> tuple[str, str]:
     return DEFAULT_BASE_TOKEN, DEFAULT_TABLE_ID
 
 
-def _config_value(params: dict[str, Any], resource: dict[str, Any], *keys: str) -> str:
-    for source in (params, resource):
-        for key in keys:
-            value = source.get(key)
-            if value not in (None, ""):
-                return str(value).strip()
-    return ""
-
-
 def _qualify_sheet_range(value_range: str, sheet_ref: str) -> str:
     text = str(value_range or "").strip()
     if not text or "!" in text:
         return text
     return f"{sheet_ref}!{text}"
-
-
-def _resolve_sheet_params(params: dict[str, Any], row_count: int) -> dict[str, Any]:
-    try:
-        resource = get_workflow_resource(SHEET_RESOURCE_KEY) or {}
-    except Exception:
-        resource = {}
-    if not isinstance(resource, dict):
-        resource = {}
-
-    sheet_ref = _config_value(params, resource, "sheet_id", "sheet_name") or DEFAULT_SHEET_REF
-    template_range = (
-        _config_value(params, resource, "sheet_range", "range")
-        or DEFAULT_SHEET_TEMPLATE_RANGE
-    )
-    template_range = _qualify_sheet_range(template_range, sheet_ref)
-    write_range = build_range_from_template(
-        template_range,
-        max(row_count, 1),
-        len(FIELD_NAMES),
-    )
-
-    clear_range = _config_value(params, resource, "sheet_clear_range", "clear_range")
-    if clear_range:
-        clear_range = _qualify_sheet_range(clear_range, sheet_ref)
-    else:
-        clear_range = build_range_from_template(
-            template_range,
-            max(DEFAULT_SHEET_CLEAR_END_ROW - 1, 1),
-            len(FIELD_NAMES),
-        )
-
-    return {
-        "spreadsheet_token": (
-            _config_value(params, resource, "sheet_spreadsheet_token", "spreadsheet_token")
-            or DEFAULT_SPREADSHEET_TOKEN
-        ),
-        "range": write_range,
-        "clear_range": clear_range,
-    }
 
 
 def _extract_items(payload: Any) -> list[dict[str, Any]]:
@@ -480,30 +419,6 @@ def _build_sheet_values(rows: list[dict[str, Any]], *, target_date: dt.date) -> 
 
 
 
-def _sync_sheet_copy(rows: list[dict[str, Any]], params: dict[str, Any], *, target_date: dt.date) -> dict[str, Any]:
-    if params.get("sync_sheet") is False or params.get("_skip_sheet_sync") is True:
-        return {"ok": True, "skipped": True, "rows": 0}
-    values = _build_sheet_values(rows, target_date=target_date)
-    if not values:
-        _emit_progress(
-            "Skip Yunda send waybill sheet sync",
-            rows=0,
-            reason=NO_FETCHED_ROWS_REASON,
-        )
-        return {"ok": True, "skipped": True, "rows": 0, "reason": NO_FETCHED_ROWS_REASON}
-    sheet_params = {
-        **params,
-        **_resolve_sheet_params(params, len(values)),
-    }
-    _emit_progress(
-        "开始同步韵达寄件运单电子表格",
-        rows=len(values),
-        range=sheet_params.get("range"),
-        clear_range=sheet_params.get("clear_range"),
-    )
-    return sync_sheet_snapshot(SHEET_RESOURCE_KEY, values, sheet_params)
-
-
 def _weight_volume_text(row: dict[str, Any]) -> str:
     parts: list[str] = []
     for label, field_name in (
@@ -516,14 +431,6 @@ def _weight_volume_text(row: dict[str, Any]) -> str:
         if value:
             parts.append(f"{label} {value}")
     return " / ".join(parts)
-
-
-def _freight_fee_text(row: dict[str, Any]) -> str:
-    for field_name in ("现付", "月结", "提付"):
-        value = _text_from_field_value(row.get(field_name))
-        if value:
-            return value
-    return ""
 
 
 def _scan_status_text(row: dict[str, Any]) -> str:
@@ -551,97 +458,6 @@ def _console_waybill_records(rows: list[dict[str, Any]], *, target_date: dt.date
             raise ValueError("Yunda console record identity is missing")
         records.append(mapped)
     return records
-
-
-def _existing_record_index(
-    base_token: str,
-    table_id: str,
-    params: dict[str, Any],
-    *,
-    index_field_name: str,
-) -> tuple[dict[str, str] | None, dict[str, Any]]:
-    limit = int(params.get("list_limit") or 500)
-    max_pages = int(params.get("list_max_pages") or 50)
-    offset = 0
-    pages: list[dict[str, Any]] = []
-    index: dict[str, str] = {}
-    for _page_index in range(max_pages):
-        list_result = feishu_operation(
-            "list_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "limit": limit,
-                "offset": offset,
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        pages.append(list_result)
-        if "error" in list_result:
-            return None, {"pages": pages, "error": list_result.get("error")}
-        items = _extract_items(list_result)
-        for item in items:
-            record_id = str(item.get("record_id") or "").strip()
-            fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
-            waybill_no = _normalize_waybill(fields.get(index_field_name))
-            if not record_id or not waybill_no or waybill_no in index or record_id in index.values():
-                return None, {"error": "Yunda Bitable identity is missing or duplicated"}
-            index[waybill_no] = record_id
-        if len(items) < limit:
-            return index, {"pages": pages, "indexed": len(index)}
-        offset += limit
-    return None, {"error": "Yunda Bitable pagination exceeded max_pages"}
-
-
-def _existing_record_ids_for_date(
-    base_token: str,
-    table_id: str,
-    params: dict[str, Any],
-    *,
-    date_field_name: str,
-    target_date: dt.date,
-) -> tuple[list[str] | None, dict[str, Any]]:
-    limit = int(params.get("list_limit") or 500)
-    max_pages = int(params.get("list_max_pages") or 50)
-    offset = 0
-    pages: list[dict[str, Any]] = []
-    record_ids: list[str] = []
-    seen_record_ids: set[str] = set()
-    target_date_text = target_date.isoformat()
-    for _page_index in range(max_pages):
-        list_result = feishu_operation(
-            "list_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "limit": limit,
-                "offset": offset,
-                "as": params.get("as", "bot"),
-                "dry_run": bool(params.get("dry_run", False)),
-            },
-        )
-        pages.append(list_result)
-        if "error" in list_result:
-            return None, {"pages": pages, "error": list_result.get("error")}
-        items = _extract_items(list_result)
-        for item in items:
-            record_id = str(item.get("record_id") or "").strip()
-            if not record_id or record_id in seen_record_ids:
-                continue
-            seen_record_ids.add(record_id)
-            fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
-            if _date_text_from_field_value(fields.get(date_field_name)) == target_date_text:
-                record_ids.append(record_id)
-        if len(items) < limit:
-            break
-        offset += limit
-    return record_ids, {
-        "pages": pages,
-        "scanned": len(seen_record_ids),
-        "target_date_record_ids": record_ids,
-        "date_field_name": date_field_name,
-    }
 
 
 def _build_records(
@@ -728,225 +544,6 @@ def _build_request_body(params: dict[str, Any], target_date: dt.date) -> dict[st
     }
 
 
-def _run_yunda_send_waybills_sync_for_date(params: dict[str, Any], target_date: dt.date) -> dict[str, Any]:
-    _emit_progress("开始拉取韵达寄件运单", target_date=target_date.isoformat())
-    tms_result = call_http_service("/yunda_send_waybills", _build_request_body(params, target_date))
-    if auth_error := tms_auth_error_result(tms_result):
-        return auth_error
-    if service_error := _tms_service_error(tms_result):
-        return service_error
-    payload = _extract_tms_payload(tms_result)
-    if payload is None or not isinstance(payload.get("records"), list):
-        return {"error": "yunda_send_waybills 返回格式异常", "raw": tms_result}
-    rows = [row for row in payload.get("records", []) if isinstance(row, dict)]
-    _emit_progress("韵达寄件运单拉取完成", rows=len(rows), total=payload.get("total"))
-
-    if params.get("sql_only"):
-        console_records = _console_waybill_records(rows, target_date=target_date)
-        if params.get("dry_run"):
-            return {
-                "ok": True,
-                "source": "yunda_send_waybills",
-                "dry_run": True,
-                "sql_only": True,
-                "target_date": target_date.isoformat(),
-                "total": payload.get("total"),
-                "fetched": len(rows),
-                "planned_sql_upserts": len(console_records),
-            }
-
-        sql_result: dict[str, Any] = {"ok": True, "skipped": True, "upserted": 0, "deleted_stale": 0}
-        if params.get("sync_sql") is not False:
-            try:
-                sql_result = sync_console_waybills(
-                    console_records,
-                    source="yunda",
-                    account_id=require_explicit_account_id(params, label="waybill publication"),
-                    target_date=target_date,
-                    replace_date=False,
-                )
-                if sql_result.get("ok") is not True:
-                    return {"ok": False, "partial": True, "error": "寄件来源范围尚未核实，未更新 SQL 数据", "sql_result": sql_result, "error_code": sql_result.get("error_code")}
-            except Exception as exc:
-                return {
-                    "error": "SQL 写入韵达寄件运单失败",
-                    "source": "yunda_send_waybills",
-                    "sql_only": True,
-                    "target_date": target_date.isoformat(),
-                    "total": payload.get("total"),
-                    "fetched": len(rows),
-                    "sql_error": str(exc),
-                }
-        _emit_progress(
-            "韵达寄件运单 SQL 回填完成",
-            sql_upserted=sql_result.get("upserted", 0),
-            sql_deleted_stale=sql_result.get("deleted_stale", 0),
-        )
-        return {
-            "ok": True,
-            "source": "yunda_send_waybills",
-            "sql_only": True,
-            "target_date": target_date.isoformat(),
-            "total": payload.get("total"),
-            "fetched": len(rows),
-            "updates": 0,
-            "creates": 0,
-            "deleted": 0,
-            "written": 0,
-            "sql_upserted": sql_result.get("upserted", 0),
-            "sql_updates": sql_result.get("updates", 0),
-            "sql_creates": sql_result.get("creates", 0),
-            "sql_deleted_stale": sql_result.get("deleted_stale", 0),
-            "sql_result": sql_result,
-        }
-
-    base_token, table_id = _resolve_bitable_target(params)
-    field_result = _ensure_fields(base_token, table_id, params)
-    if "error" in field_result:
-        return {"error": field_result["error"], "field_result": field_result, "fetched": len(rows)}
-
-    primary_field_name = str(field_result.get("primary_field_name") or "").strip() or None
-    field_name_map = field_result.get("field_name_map") if isinstance(field_result.get("field_name_map"), dict) else {}
-    if not field_name_map:
-        field_name_map = _build_field_name_map(
-            set(FIELD_NAMES),
-            primary_field_name=primary_field_name,
-            create_missing=True,
-        )
-    if params.get("dry_run"):
-        records, update_count, create_count = _build_records(
-            rows,
-            existing_by_waybill={},
-            field_name_map=field_name_map,
-            target_date=target_date,
-        )
-        console_records = _console_waybill_records(rows, target_date=target_date)
-        sheet_values = _build_sheet_values(rows, target_date=target_date)
-        return {
-            "ok": True,
-            "source": "yunda_send_waybills",
-            "dry_run": True,
-            "target_date": target_date.isoformat(),
-            "total": payload.get("total"),
-            "fetched": len(rows),
-            "planned": len(records),
-            "planned_updates": update_count,
-            "planned_creates": create_count,
-            "planned_sql_upserts": len(console_records),
-            "planned_sheet_rows": len(sheet_values),
-            "field_result": field_result,
-            "records": records,
-        }
-
-    existing_by_waybill, list_result = _existing_record_index(
-        base_token, table_id, params,
-        index_field_name=str(field_name_map.get(INDEX_FIELD_NAME) or INDEX_FIELD_NAME),
-    )
-    if existing_by_waybill is None:
-        return {"error": "飞书现有运单编号缺失、重复或读取不完整", "list_result": list_result, "fetched": len(rows)}
-    records, update_count, create_count = _build_records(
-        rows,
-        existing_by_waybill=existing_by_waybill,
-        field_name_map=field_name_map,
-        target_date=target_date,
-    )
-    delete_result: dict[str, Any] = {"ok": True, "requested": 0, "deleted": 0, "results": []}
-
-    write_result: dict[str, Any] = {"ok": True, "requested": 0, "written": 0, "results": []}
-    if records:
-        _emit_progress("开始写入韵达寄件运单", rows=len(records), updates=update_count, creates=create_count)
-        write_result = feishu_operation(
-            "write_records",
-            {
-                "base_token": base_token,
-                "table_id": table_id,
-                "records": records,
-                "as": params.get("as", "bot"),
-            },
-        )
-        if "error" in write_result or write_result.get("errors"):
-            return {
-                "error": "飞书写入韵达寄件运单失败",
-                "fetched": len(rows),
-                "updates": update_count,
-                "creates": create_count,
-                "deleted": delete_result.get("deleted", 0),
-                "delete_result": delete_result,
-                "write_result": write_result,
-            }
-
-    sql_result: dict[str, Any] = {"ok": True, "skipped": True, "upserted": 0, "deleted_stale": 0}
-    if params.get("sync_sql") is not False:
-        console_records = _console_waybill_records(rows, target_date=target_date)
-        try:
-            sql_result = sync_console_waybills(
-                console_records,
-                source="yunda",
-                account_id=require_explicit_account_id(params, label="waybill publication"),
-                target_date=target_date,
-                replace_date=True,
-            )
-            if sql_result.get("ok") is not True:
-                return {"ok": False, "partial": True, "error": "寄件来源范围尚未核实，未更新 SQL 数据", "sql_result": sql_result, "error_code": sql_result.get("error_code")}
-        except Exception as exc:
-            return {
-                "error": "SQL 写入韵达寄件运单失败",
-                "fetched": len(rows),
-                "updates": update_count,
-                "creates": create_count,
-                "written": write_result.get("written", 0),
-                "deleted": delete_result.get("deleted", 0),
-                "sql_error": str(exc),
-                "delete_result": delete_result,
-                "write_result": write_result,
-            }
-
-    sheet_result = _sync_sheet_copy(rows, params, target_date=target_date)
-    if "error" in sheet_result:
-        return {
-            "error": sheet_result["error"],
-            "fetched": len(rows),
-            "updates": update_count,
-            "creates": create_count,
-            "written": write_result.get("written", 0),
-            "deleted": delete_result.get("deleted", 0),
-            "sql_upserted": sql_result.get("upserted", 0),
-            "sheet_result": sheet_result,
-            "delete_result": delete_result,
-            "write_result": write_result,
-            "sql_result": sql_result,
-        }
-
-    _emit_progress(
-        "韵达寄件运单同步完成",
-        written=write_result.get("written", 0),
-        sql_upserted=sql_result.get("upserted", 0),
-        sheet_rows=sheet_result.get("rows", 0),
-    )
-    return {
-        "ok": True,
-        "source": "yunda_send_waybills",
-        "target_date": target_date.isoformat(),
-        "total": payload.get("total"),
-        "fetched": len(rows),
-        "updates": update_count,
-        "creates": create_count,
-        "deleted": delete_result.get("deleted", 0),
-        "written": write_result.get("written", 0),
-        "sql_upserted": sql_result.get("upserted", 0),
-        "sql_updates": sql_result.get("updates", 0),
-        "sql_creates": sql_result.get("creates", 0),
-        "sql_deleted_stale": sql_result.get("deleted_stale", 0),
-        "sheet_rows": sheet_result.get("rows", 0),
-        "field_result": field_result,
-        "list_result": list_result,
-        "delete_result": delete_result,
-        "write_result": write_result,
-        "sql_result": sql_result,
-        "sheet_result": sheet_result,
-    }
-
-
 def _summarize_date_result(result: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "target_date": result.get("target_date"),
@@ -982,88 +579,3 @@ def _summarize_date_result(result: dict[str, Any]) -> dict[str, Any]:
             summary["error_code"] = result.get("error_code")
     return {key: value for key, value in summary.items() if value not in (None, "")}
 
-
-def _range_result(params: dict[str, Any], dates: list[dt.date]) -> dict[str, Any]:
-    _emit_progress(
-        "开始范围同步韵达寄件运单",
-        start_date=dates[0].isoformat(),
-        end_date=dates[-1].isoformat(),
-        days=len(dates),
-    )
-    date_results: list[dict[str, Any]] = []
-    raw_results: list[dict[str, Any]] = []
-    per_date_params = {**params, "_skip_sheet_sync": True}
-    for target_date in dates:
-        result = _run_yunda_send_waybills_sync_for_date(per_date_params, target_date)
-        raw_results.append(result)
-        date_results.append(_summarize_date_result(result))
-        if result.get("error") or not result.get("ok"):
-            return {
-                "error": f"韵达寄件运单范围同步失败，失败日期：{target_date.isoformat()}",
-                "source": "yunda_send_waybills",
-                "start_date": dates[0].isoformat(),
-                "end_date": dates[-1].isoformat(),
-                "failed_date": target_date.isoformat(),
-                "completed_days": len(date_results) - 1,
-                "per_date": date_results,
-                "raw_error": result,
-            }
-
-    total = sum(_safe_int(result.get("total")) for result in raw_results)
-    fetched = sum(_safe_int(result.get("fetched")) for result in raw_results)
-    updates = sum(_safe_int(result.get("updates")) for result in raw_results)
-    creates = sum(_safe_int(result.get("creates")) for result in raw_results)
-    deleted = sum(_safe_int(result.get("deleted")) for result in raw_results)
-    written = sum(_safe_int(result.get("written")) for result in raw_results)
-    sql_upserted = sum(_safe_int(result.get("sql_upserted")) for result in raw_results)
-    sql_deleted_stale = sum(_safe_int(result.get("sql_deleted_stale")) for result in raw_results)
-    range_payload: dict[str, Any] = {
-        "ok": True,
-        "source": "yunda_send_waybills",
-        "start_date": dates[0].isoformat(),
-        "end_date": dates[-1].isoformat(),
-        "days": len(dates),
-        "total": total,
-        "fetched": fetched,
-        "updates": updates,
-        "creates": creates,
-        "deleted": deleted,
-        "written": written,
-        "sql_upserted": sql_upserted,
-        "sql_deleted_stale": sql_deleted_stale,
-        "per_date": date_results,
-    }
-    if params.get("sql_only"):
-        range_payload["sql_only"] = True
-    if params.get("dry_run"):
-        range_payload.update(
-            {
-                "dry_run": True,
-                "planned": sum(_safe_int(result.get("planned")) for result in raw_results),
-                "planned_updates": sum(_safe_int(result.get("planned_updates")) for result in raw_results),
-                "planned_creates": sum(_safe_int(result.get("planned_creates")) for result in raw_results),
-                "planned_sql_upserts": sum(_safe_int(result.get("planned_sql_upserts")) for result in raw_results),
-            }
-        )
-    return range_payload
-
-
-def run_yunda_send_waybills_sync(params: dict[str, Any]) -> dict[str, Any]:
-    params = params or {}
-    try:
-        dates = _date_range(params)
-    except ValueError as exc:
-        return {"error": str(exc), "source": "yunda_send_waybills"}
-    if len(dates) == 1:
-        return _run_yunda_send_waybills_sync_for_date(params, dates[0])
-    return _range_result(params, dates)
-
-
-def main() -> None:
-    params = json.loads(sys.stdin.read() or "{}")
-    result = run_yunda_send_waybills_sync(params)
-    print(json.dumps(result, ensure_ascii=False, default=str))
-
-
-if __name__ == "__main__":
-    main()

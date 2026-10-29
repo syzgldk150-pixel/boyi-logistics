@@ -8,10 +8,6 @@ MODULE_DATASETS = {
     "finance": "finance.transactions",
     "customer_service": "customer_service.problems",
 }
-LEGACY_COLLECTOR_MODULES = {
-    "sync_finance_bills": "finance",
-    "sync_customer_service_problems": "customer_service",
-}
 MODULE_PATHS = {
     "automation": "/automations",
     "finance": "/modules/finance/data-sources",
@@ -38,13 +34,10 @@ def validate_management(value: Any) -> dict[str, str]:
     return result
 
 
-def management_for(plugin_id: str, declared: Any = None) -> dict[str, str]:
-    """Explicit migration for the two existing collectors; other legacy packages are actions."""
+def management_for(declared: Any = None) -> dict[str, str]:
+    """A package without a declared contract is an ordinary automation action."""
     if declared is not None:
         return validate_management(declared)
-    module = LEGACY_COLLECTOR_MODULES.get(plugin_id)
-    if module is not None:
-        return {"purpose": "collector", "module": module, "dataset": MODULE_DATASETS[module], "version": "1"}
     return {"purpose": "action", "module": "automation", "dataset": "", "version": ""}
 
 

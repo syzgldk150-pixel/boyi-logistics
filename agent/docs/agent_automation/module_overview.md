@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-23
+updated: 2026-10-29
 ---
 
 ## 当前执行边界
@@ -166,7 +166,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 ## 报价
 
 - **实现与核验**：`service_v2_plugins/quote_prices_v2/` 是三平台报价的唯一业务实现；飞书与 Console 调用同一 V2 项目。2026-10-11/12 已与融辉、韵达、百世原页逐项核对当前普通货物报价。使用条件、金额口径、局限与安装步骤见[三平台报价](../three_platform_quote.md)；实际可用状态以实例记录为准。
-- 原 `tools/price_tool.py` 与 `agent/tms_runtime/scripts/{get_price,yunda_price,batch_price}.py` 已迁到 `legacy/price_quote/`，只作离线参考。系统工具目录和 TMS target 不再提供新报价入口，禁止回调旧脚本或以旧结果掩盖新插件失败。
+- 旧报价工具与脚本已删除；系统工具目录和 TMS target 不提供报价入口，禁止以其他结果掩盖插件失败。
 - 一次查询必须提供 `address`、`weight`（kg）和 `volume`（m³）；重量、体积为有限正数，无默认体积。缺失或歧义先澄清。飞书支持裸 `地址,重量,体积` 及报价前缀，体积也可解析明确的厘米尺寸表达式；Console 保留输入精度，不按金额精度截断重量或体积。
 - 项目按 `ronghui_quote`、`yunda_quote`、`best_quote` 三个角色绑定精确账号，复用各自已保存登录态。不固定 `price_default`，不任选候选或回落到其他账号。每次重新读取平台地址解析、产品与费用，缺字段或匹配不唯一明确失败，不填入猜测金额或旧值。
 - 源码的飞书入口提交 typed project invocation，完成后分别显示融辉、韵达、百世结果；Console 手工录单报价只选择唯一且生效的项目与 Console contribution，以同一请求 UUID 读取本次 Invocation。返回的自提与派送报价分开处理，Console 只比较用户选定送货方式，保留勇胜待维护项。
@@ -178,7 +178,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 |---|---|
 | 文本路由 | `agent/direct_tool_router.py` |
 | 插件项目飞书入口与精确路由 | `agent/orchestration/automation_project_entrypoints.py` + `feishu/message_handler.py` |
-| 三平台报价独立包 | `service_v2_plugins/quote_prices_v2/` + `../console/services/documents.py`；旧报价代码仅在 `legacy/price_quote/` |
+| 三平台报价独立包 | `service_v2_plugins/quote_prices_v2/` + `../console/services/documents.py` |
 | 自动化 Profile 状态 | `agent/automation_profile.py` |
 | pending 存储 | `agent/pending_actions.py` |
 | 消息状态机（三态 pending） | `feishu/message_handler.py` 的 `_process_and_reply` |

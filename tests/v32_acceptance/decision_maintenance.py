@@ -128,17 +128,12 @@ def setup_instance(management, artifact):
         account_bindings=accounts,
         resource_bindings={"self_pickup_source_sheet": RESOURCE_ID}, request_id=str(uuid4()),
         enabled_entrypoints=("execute_console",) if artifact is not None else entry.current_enabled_entrypoints,
-        schedule=entry.project_schedule, device_id=None,
+        schedule=entry.project_schedule, 
         expected_project_configuration_version=entry.project_config_version, actor=ACTOR)
     entry = management.catalog.require(automation_id)
     management.management.set_enabled(automation_id, enabled=True, request_id=str(uuid4()),
         expected_record_version=entry.record_version, actor=ACTOR)
     management.targets.reconcile_project(automation_id)
-    projection = management.policy.get_policy_projection(automation_id)
-    management.policy.update_policy(automation_id, mode='PROJECT_FULL_AUTO', request_id=str(uuid4()),
-        comment='Explicit isolated M03 synthetic write authorization',
-        expected_policy_version=projection['policy_version'],
-        expected_project_configuration_version=projection['project_configuration_version'], actor=ACTOR)
     management.targets.reconcile_project(automation_id)
     return automation_id
 

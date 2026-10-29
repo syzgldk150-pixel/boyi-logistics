@@ -13,10 +13,10 @@ from agent.automation_plugins.problem_handlers import (
 )
 
 
-from tests.first_party_action_payload_support import load_first_party_action
+from tests.plugin_action_payload_support import load_plugin_action
 
-_SELF_PRIMARY_CAUSE = load_first_party_action("self_pickup_problem_upload")._PRIMARY_CAUSE
-_SELF_DAXIANG_CAUSE = load_first_party_action("self_pickup_problem_upload")._DAXIANG_CAUSE
+_SELF_PRIMARY_CAUSE = load_plugin_action("self_pickup_problem_upload")._PRIMARY_CAUSE
+_SELF_DAXIANG_CAUSE = load_plugin_action("self_pickup_problem_upload")._DAXIANG_CAUSE
 
 
 def _query_plan(bill_code="R001", cause=_SELF_PRIMARY_CAUSE):
@@ -40,12 +40,12 @@ def _context(
 ) -> CoreBrokerInvocationContext:
     account_bindings = (
         {"account_id": (_ACCOUNT,), "daxiang_s_account_id": (_DAXIANG,)}
-        if tool == "self_pickup_problem_upload"
+        if tool == "self_pickup_problem"
         else {"account_id": (_ACCOUNT,)}
     )
     resource_bindings = (
         {"self_pickup_source_sheet": _SOURCE}
-        if tool == "self_pickup_problem_upload"
+        if tool == "self_pickup_problem"
         else {
             "split_pending_source_sheet": _SPLIT_SOURCE,
             "split_pending_target_sheet": _SPLIT_TARGET,
@@ -135,7 +135,7 @@ def test_handler_map_is_exact_and_sheet_read_does_not_expose_bindings() -> None:
         ("ledger.invoke", "daily_sign.problem_event.upsert"),
     }
     context = _context(
-        "self_pickup_problem_upload",
+        "self_pickup_problem",
         "network.request",
         "feishu.sheet.read_rows",
         "self_pickup_source_sheet",
@@ -163,7 +163,7 @@ def test_self_pickup_precondition_is_short_opaque_one_time_and_plan_bound() -> N
         cursor_secret=_SECRET,
     )
     query_context = _context(
-        "self_pickup_problem_upload",
+        "self_pickup_problem",
         "browser.invoke",
         "ronghui.problem.query",
         "account_id",
@@ -220,7 +220,7 @@ def test_problem_write_authorizes_once_before_receipt_and_query_does_not() -> No
         cursor_secret=_SECRET,
     )
     query_context = _context(
-        "self_pickup_problem_upload",
+        "self_pickup_problem",
         "browser.invoke",
         "ronghui.problem.query",
         "account_id",
@@ -267,7 +267,7 @@ def test_problem_write_requires_authoritative_readback_and_verify_is_fresh() -> 
         cursor_secret=_SECRET,
     )
     query_context = _context(
-        "self_pickup_problem_upload",
+        "self_pickup_problem",
         "browser.invoke",
         "ronghui.problem.query",
         "account_id",
@@ -293,7 +293,7 @@ def test_problem_write_requires_authoritative_readback_and_verify_is_fresh() -> 
 
     cause_hash = hashlib.sha256("有发未到".encode()).hexdigest()
     verify_context = _context(
-        "split_pending_problem_upload",
+        "split_pending_problem",
         "browser.invoke",
         "ronghui.problem.verify",
         "account_id",
@@ -315,7 +315,7 @@ def test_problem_write_requires_authoritative_readback_and_verify_is_fresh() -> 
 def test_split_projection_disables_complaint_state_and_requires_exact_role() -> None:
     handlers = build_problem_handler_map(_ports(), cursor_secret=_SECRET)
     result_context = _context(
-        "split_pending_problem_upload",
+        "split_pending_problem",
         "projection.invoke",
         "split_pending.result.upsert",
         "split_pending_target_sheet",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import hashlib
 from dataclasses import replace
@@ -20,7 +19,6 @@ from agent.orchestration.models import (
     ActorType,
     CommandReceipt,
     OperationType,
-    OrchestrationError,
     Plan,
     PlanStep,
     RiskLevel,
@@ -36,7 +34,6 @@ from shared.automation_project_authorization import (
 from shared.account_execution_locks import AccountExecutionLockUnavailable
 from shared.orchestration_repository import InvalidStateError
 from shared.waybill_entry_extensions import (
-    WAYBILL_ENTRY_DRAFT_FIELDS,
     WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID,
 )
 
@@ -930,7 +927,7 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
     def setUp(self) -> None:
         self.repository = _Repository()
         self.contract = _contract()
-        self.entry = SimpleNamespace(automation_id=AUTOMATION_ID, runtime_model="ACTION_V1", plugin_id="policy_fixture", committed_snapshot={})
+        self.entry = SimpleNamespace(automation_id=AUTOMATION_ID, runtime_model="SERVICE_V2", plugin_id="policy_fixture", committed_snapshot={})
         self.direct = _DirectCalls(self.repository)
         def capability(_snapshot):
             return {"name": self.contract.tool_name, "operation_type": self.contract.operation_type,
@@ -946,13 +943,15 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
         patch("agent.orchestration.direct_project_invocation.PluginExecutionRouter._service_contribution_capability", side_effect=lambda capability, **_: capability).start()
         self.gateway = _Gateway(self.repository)
         self.woken_run_ids: list[str] = []
+        # Every project is Service V2; its exact committed contribution is active.
+        self.contribution_registry = _ContributionRegistry()
         self.service = AutomationProjectPolicyService(
             self.repository,
-            core_catalog=SimpleNamespace(),
             plugin_catalog=_Catalog(self.entry),
             command_gateway=self.gateway,
             wake_runner=self.woken_run_ids.append,
             direct_invocations=self.direct,
+            contribution_registry=self.contribution_registry,
         )
         self.service._load_contract = lambda _automation_id: (  # type: ignore[method-assign]
             self.entry,
@@ -971,7 +970,6 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
     ) -> AutomationProjectPolicyService:
         service = AutomationProjectPolicyService(
             self.repository,
-            core_catalog=SimpleNamespace(),
             plugin_catalog=_Catalog(self.entry),
             command_gateway=self.gateway,
             wake_runner=self.woken_run_ids.append,

@@ -77,57 +77,9 @@ _SENSITIVE_KEYS = (
     "token",
 )
 _BROKER_FRAME_PREFIX = b"BOYI-BROKER-V2 "
-_MAX_BROKER_LEGACY_REQUEST_BYTES = 10 * 1024 * 1024
+_MAX_BROKER_FRAME_HEADER_BYTES = 64 * 1024
 _MAX_BROKER_COMPRESSED_REQUEST_BYTES = 16 * 1024 * 1024
 _MAX_BROKER_REQUEST_BYTES = 64 * 1024 * 1024
-_RECOVERABLE_WRITE_ACTIONS = frozenset(
-    {
-        ("arrive_list", "projection.invoke", "waybill.snapshot.replace"),
-        ("arrive_list", "projection.invoke", "arrival.forecast_snapshot.replace"),
-        ("arrive_list", "network.request", "feishu.sheet.replace"),
-        ("arrival_stats", "projection.invoke", "scan.snapshot.replace"),
-        ("arrival_stats", "projection.invoke", "scan.snapshot.cleanup"),
-        ("arrival_stats", "projection.invoke", "waybill.snapshot.replace"),
-        ("arrival_stats", "projection.invoke", "arrival.snapshot.replace"),
-        ("arrival_stats", "projection.invoke", "split_pending.snapshot.refresh"),
-        ("arrival_stats", "network.request", "feishu.sheet.replace"),
-        ("arrival_stats", "network.request", "feishu.sheet.add"),
-        ("daily_sign", "ledger.invoke", "daily_sign.authoritative_sync"),
-        ("delivery_status", "network.request", "feishu.bitable.write_records"),
-        ("delivery_status", "projection.invoke", "waybill.delivery_status.update"),
-        ("finance_startup_catchup", "ledger.invoke", "finance.batch.acquire"),
-        ("finance_startup_catchup", "ledger.invoke", "finance.source_snapshot.write"),
-        ("finance_startup_catchup", "ledger.invoke", "finance.projection.commit"),
-        ("scan_codes", "projection.invoke", "scan.snapshot.replace"),
-        ("scan_codes", "browser.invoke", "ronghui.scan_next.submit"),
-    }
-)
-# Recovery eligibility belongs to the signed package identity, never to a
-# mutable/reusable automation instance id.  The public compatibility constant
-# above intentionally remains project-oriented for management contracts; this
-# internal close-set controls the strict pre-write extractor.
-_RECOVERABLE_WRITE_PLUGIN_ACTIONS = frozenset(
-    {
-        ("sync_arrive_list", "projection.invoke", "waybill.snapshot.replace"),
-        ("sync_arrive_list", "projection.invoke", "arrival.forecast_snapshot.replace"),
-        ("sync_arrive_list", "network.request", "feishu.sheet.replace"),
-        ("sync_arrival_stats", "projection.invoke", "scan.snapshot.replace"),
-        ("sync_arrival_stats", "projection.invoke", "scan.snapshot.cleanup"),
-        ("sync_arrival_stats", "projection.invoke", "waybill.snapshot.replace"),
-        ("sync_arrival_stats", "projection.invoke", "arrival.snapshot.replace"),
-        ("sync_arrival_stats", "projection.invoke", "split_pending.snapshot.refresh"),
-        ("sync_arrival_stats", "network.request", "feishu.sheet.replace"),
-        ("sync_arrival_stats", "network.request", "feishu.sheet.add"),
-        ("sync_daily_should_sign", "ledger.invoke", "daily_sign.authoritative_sync"),
-        ("sync_delivery_status", "network.request", "feishu.bitable.write_records"),
-        ("sync_delivery_status", "projection.invoke", "waybill.delivery_status.update"),
-        ("sync_finance_bills", "ledger.invoke", "finance.batch.acquire"),
-        ("sync_finance_bills", "ledger.invoke", "finance.source_snapshot.write"),
-        ("sync_finance_bills", "ledger.invoke", "finance.projection.commit"),
-        ("sync_scan_codes", "projection.invoke", "scan.snapshot.replace"),
-        ("sync_scan_codes", "browser.invoke", "ronghui.scan_next.submit"),
-    }
-)
 _TARGET_REF_FIELDS = frozenset(
     {
         "schema", "automation_id", "operation", "action", "role_sha256",
@@ -143,72 +95,10 @@ _IDEMPOTENCY_FIELDS = ("idempotency_key", "contract_sha256")
 _RECORD_COLLECTION_FIELDS = (
     "records", "values", "bill_codes", "outcomes", "transactions", "items",
 )
-# This field is an internal, core-handler-to-broker contract. A signed write
-# normally has to cross the durable write-attempt marker. The sole exception
-# is a verified empty-input no-op, where crossing that boundary would itself
-# create a false unknown-write recovery obligation. It is removed before the
-# response reaches plugin payload code.
+# Connector handlers flag a verified empty-input write with this field. The
+# Connector path records the write start before invoking the handler, so the
+# flag is only result metadata that the Connector schema admits.
 VERIFIED_WRITE_NOOP_FIELD = "_broker_verified_write_noop_v1"
-_VERIFIED_WRITE_NOOP_CONTRACTS = {
-    (
-        "sync_yunda_dispatch_forecast",
-        "network.request",
-        "feishu.bitable.append_yunda_dispatch_forecast",
-    ): ("records", frozenset({"records", "target_date", "ensure_fields"})),
-    (
-        "sync_site_send_list",
-        "network.request",
-        "feishu.bitable.replace_snapshot",
-    ): ("records", frozenset({"records", "target_date"})),
-    (
-        "sync_site_send_list",
-        "network.request",
-        "feishu.sheet.replace",
-    ): ("values", frozenset({"values", "target_date"})),
-}
-
-
-def recoverable_write_action_contracts() -> frozenset[tuple[str, str, str]]:
-    """Expose the Broker close-set for signed-manifest contract tests."""
-
-    return _RECOVERABLE_WRITE_ACTIONS
-
-
-def _is_verified_write_noop(
-    result: Mapping[str, Any],
-    *,
-    grant: BrokerGrant,
-    request: Mapping[str, Any],
-) -> bool:
-    """Accept only the narrow closed result shape for a write no-op."""
-
-    contract = _VERIFIED_WRITE_NOOP_CONTRACTS.get(
-        (grant.tool_name, request.get("operation"), request.get("action"))
-    )
-    arguments = request.get("arguments")
-    if contract is None or not isinstance(arguments, Mapping):
-        return False
-    collection_key, required_keys = contract
-    original_collection = arguments.get(collection_key)
-    return (
-        set(arguments) == required_keys
-        and type(original_collection) is list
-        and not original_collection
-        and result.get(VERIFIED_WRITE_NOOP_FIELD) is True
-        and result.get("committed") is True
-        and result.get("verified") is True
-        and type(result.get("record_count")) is int
-        and result.get("record_count") == 0
-        and type(result.get("readback_count")) is int
-        and result.get("readback_count") == 0
-        and type(result.get("written")) is int
-        and result.get("written") == 0
-        and isinstance(result.get("readback_sha256"), str)
-        and len(str(result["readback_sha256"])) == 64
-        and all(character in "0123456789abcdef" for character in str(result["readback_sha256"]).lower())
-        and isinstance(result.get("evidence_ref"), str)
-        and bool(str(result["evidence_ref"]).strip())
-    )
 
 
 def _sha256_text(value: str) -> str:
@@ -278,55 +168,9 @@ def _optional_locator_text(arguments: Mapping[str, Any], fields: Sequence[str]) 
     return next(iter(values)) if len(values) == 1 else ""
 
 
-def _require_locator_arguments(action: str, arguments: Mapping[str, Any]) -> None:
-    """Validate only the closed public shape needed to locate a write."""
-
-    list_actions = {
-        "waybill.snapshot.replace", "arrival.forecast_snapshot.replace",
-        "scan.snapshot.replace", "arrival.snapshot.replace",
-        "split_pending.snapshot.refresh", "feishu.sheet.replace",
-        "feishu.sheet.add", "feishu.bitable.write_records",
-    }
-    if action == "ronghui.scan_next.submit":
-        if not isinstance(arguments.get("items"), list):
-            raise PluginExecutionError(
-                "write locator requires scan items",
-                code="WRITE_ATTEMPT_LOCATOR_INVALID",
-            )
-    elif action in list_actions:
-        if not any(isinstance(arguments.get(field), list) for field in ("records", "values")):
-            raise PluginExecutionError(
-                "write locator requires records or values",
-                code="WRITE_ATTEMPT_LOCATOR_INVALID",
-            )
-    elif action == "scan.snapshot.cleanup":
-        value = arguments.get("retention_days")
-        if type(value) is not int or value <= 0:
-            raise PluginExecutionError("write locator retention is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-    elif action == "waybill.delivery_status.update":
-        if not isinstance(arguments.get("bill_codes"), list) or not isinstance(arguments.get("status"), str):
-            raise PluginExecutionError("write locator delivery update is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-    elif action == "finance.batch.acquire":
-        if arguments.get("schema_version") != 1 or not isinstance(arguments.get("contract"), Mapping):
-            raise PluginExecutionError("write locator finance batch is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-    elif action == "finance.source_snapshot.write":
-        if type(arguments.get("batch_id")) is not int or not isinstance(arguments.get("target_date"), str):
-            raise PluginExecutionError("write locator finance snapshot is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-    elif action == "finance.projection.commit":
-        if type(arguments.get("batch_id")) is not int or not isinstance(arguments.get("outcomes"), list):
-            raise PluginExecutionError("write locator finance commit is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-    elif action == "daily_sign.authoritative_sync":
-        # The signed daily-sign payload has a closed but intentionally
-        # versioned argument schema.  Its entire canonical content is hashed.
-        return
-    else:
-        raise PluginExecutionError("write locator action is unsupported", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-
-
 def _extract_write_target_ref(
     *,
     automation_id: str,
-    plugin_id: str | None = None,
     operation: str,
     action: str,
     role: str,
@@ -336,40 +180,17 @@ def _extract_write_target_ref(
 ) -> tuple[dict[str, Any], str]:
     """Build a payload-free locator before adapter invocation.
 
-    Only the explicitly recoverable signed packages use the closed,
-    action-specific validation.  Every other signed write receives the same
-    redacted durable receipt shape through a permissive generic locator so a
-    newly protected write cannot regress existing first-party behavior.
+    Every protected write receives the same redacted durable receipt shape;
+    known date, batch, run and idempotency fields are hashed when present.
     """
 
     if not isinstance(arguments, Mapping) or not isinstance(role, str) or not role.strip():
         raise PluginExecutionError("write locator input is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-    locator_arguments = arguments
-    if plugin_id == "sync_finance_bills_v2" and operation == "service.invoke" and action == "write_snapshot":
-        from agent.automation_plugins.finance_connectors_v2 import ROLES
-
-        # The current finance Connector receives its business inputs inside the
-        # Service V2 envelope. Keep the full envelope hash, but locate the batch
-        # only for the reviewed Connector that actually crossed the write marker.
-        if arguments.get("service") in {f"connector.boyi.{item}@1" for item in ROLES}:
-            locator_arguments = arguments.get("arguments")
-            if arguments.get("operation") != action or not isinstance(locator_arguments, Mapping):
-                raise PluginExecutionError("finance write locator is invalid", code="WRITE_ATTEMPT_LOCATOR_INVALID")
-            _require_locator_arguments("finance.source_snapshot.write", locator_arguments)
-    strict = (str(plugin_id or ""), operation, action) in _RECOVERABLE_WRITE_PLUGIN_ACTIONS
-    if strict:
-        _require_locator_arguments(action, arguments)
-        business_date = _first_text(arguments, _DATE_FIELDS, label="business date")
-        batch = _first_text(arguments, _BATCH_FIELDS, label="batch")
-        run = _first_text(arguments, _RUN_FIELDS, label="run")
-        idempotency = _first_text(arguments, _IDEMPOTENCY_FIELDS, label="idempotency")
-        record_count = _record_count(arguments)
-    else:
-        business_date = _optional_locator_text(locator_arguments, _DATE_FIELDS)
-        batch = _optional_locator_text(locator_arguments, _BATCH_FIELDS)
-        run = _optional_locator_text(locator_arguments, _RUN_FIELDS)
-        idempotency = _optional_locator_text(locator_arguments, _IDEMPOTENCY_FIELDS)
-        record_count = _generic_record_count(locator_arguments)
+    business_date = _optional_locator_text(arguments, _DATE_FIELDS)
+    batch = _optional_locator_text(arguments, _BATCH_FIELDS)
+    run = _optional_locator_text(arguments, _RUN_FIELDS)
+    idempotency = _optional_locator_text(arguments, _IDEMPOTENCY_FIELDS)
+    record_count = _generic_record_count(arguments)
     content_sha256 = hashlib.sha256(canonical_json_bytes(dict(arguments))).hexdigest()
     target_ref = {
         "schema": 1,
@@ -722,7 +543,6 @@ class LocalBrokerCapabilityIssuer:
                 code="BROKER_OPERATION_DENIED",
             )
         contract = matches[0]
-        legacy_fields = {"operation", "action", "roles", "effect"}
         v2_fields = {
             "operation",
             "action",
@@ -733,19 +553,7 @@ class LocalBrokerCapabilityIssuer:
             "dynamic_effect",
         }
         v2_limited_fields = v2_fields | {"per_action_limit"}
-        if set(contract) == legacy_fields:
-            # ACTION_V1's signed broker wire contract is immutable and only
-            # carries the historical read/write effect.  Keep it byte-for-byte
-            # compatible; Service v2 never accepts this abbreviated shape.
-            effect = contract.get("effect")
-            if effect not in {"read", "write"} or operation == "service.invoke":
-                raise PluginExecutionError(
-                    "signed broker operation contract is invalid",
-                    code="BROKER_CONTRACT_INVALID",
-                )
-            broker_effect = effect
-            dynamic_effect = False
-        elif frozenset(contract) in {
+        if frozenset(contract) in {
             frozenset(v2_fields),
             frozenset(v2_limited_fields),
         }:
@@ -990,7 +798,6 @@ class LocalBrokerCapabilityIssuer:
             try:
                 target_ref, target_ref_sha256 = _extract_write_target_ref(
                     automation_id=str(receipt_context["automation_id"]),
-                    plugin_id=str(receipt_context["plugin_id"]),
                     operation=operation,
                     action=action,
                     role=role,
@@ -1018,14 +825,6 @@ class LocalBrokerCapabilityIssuer:
                 scope = held_scope if held_scope is not None else (scope or current.grant.execution_resource_keys)
                 if scope:
                     receipt['execution_resource_keys_json'] = [list(key) for key in scope]
-                if (
-                    receipt_context["plugin_id"] == "sync_scan_codes"
-                    and operation == "projection.invoke"
-                    and action == "scan.snapshot.replace"
-                ):
-                    from shared.scan_snapshot_recovery import closed_scan_payload
-
-                    receipt["scan_recovery_payload_json"] = closed_scan_payload(arguments)
                 recorder(receipt)
             except Exception:
                 with self._lock:
@@ -1225,7 +1024,7 @@ class LocalCoreAutomationBroker:
         self._server = await asyncio.start_unix_server(
             self._handle,
             path=str(path),
-            limit=_MAX_BROKER_LEGACY_REQUEST_BYTES + 1,
+            limit=_MAX_BROKER_FRAME_HEADER_BYTES,
         )
         path.chmod(0o600)
 
@@ -1293,26 +1092,18 @@ class LocalCoreAutomationBroker:
             else:
                 result = await self._invoke_adapter(prepared)
             public_result = dict(result)
-            if prepared.mark_write_started is not None and not prepared.dynamic_effect:
-                verified_noop = _is_verified_write_noop(
-                    public_result,
-                    grant=prepared.grant,
-                    request=request,
+            if (
+                prepared.mark_write_started is not None
+                and not prepared.dynamic_effect
+                and not prepared.mark_write_started.started()
+            ):
+                # A write adapter that returns without crossing the marker
+                # has not established a durable boundary and must never be
+                # treated as a successful invocation.
+                raise PluginExecutionError(
+                    "core broker write adapter did not mark its started boundary",
+                    code="WRITE_ATTEMPT_START_NOT_RECORDED",
                 )
-                if verified_noop and prepared.mark_write_started.started():
-                    raise PluginExecutionError(
-                        "core broker write no-op crossed its started boundary",
-                        code="WRITE_ATTEMPT_NOOP_MARKED",
-                    )
-                if not verified_noop and not prepared.mark_write_started.started():
-                    # A write adapter that returns without crossing the marker
-                    # has not established a durable boundary and must never be
-                    # treated as a successful invocation.
-                    raise PluginExecutionError(
-                        "core broker write adapter did not mark its started boundary",
-                        code="WRITE_ATTEMPT_START_NOT_RECORDED",
-                    )
-                public_result.pop(VERIFIED_WRITE_NOOP_FIELD, None)
             host_evidence_ref: str | None = None
             if prepared.operation in _SERVICE_V2_OPERATIONS:
                 # Registry output schemas describe only ``data``.  A distinct
@@ -1380,13 +1171,10 @@ class LocalCoreAutomationBroker:
 
     @staticmethod
     async def _read_request_payload(reader: asyncio.StreamReader) -> bytes:
-        """Read one bounded request, accepting the legacy line protocol.
+        """Read one bounded, compressed length-prefixed request frame.
 
-        Current signed packages use a compressed length-prefixed frame so a
-        legitimate snapshot is not constrained by ``StreamReader.readline``.
-        The decoded request remains strictly bounded. Older committed
-        generations keep their original newline protocol until their leases
-        drain.
+        The frame keeps a legitimate snapshot out of ``StreamReader.readline``;
+        the decoded request remains strictly bounded.
         """
 
         try:
@@ -1402,12 +1190,10 @@ class LocalCoreAutomationBroker:
                 code="BROKER_REQUEST_INVALID",
             )
         if not first_line.startswith(_BROKER_FRAME_PREFIX):
-            if len(first_line) > _MAX_BROKER_LEGACY_REQUEST_BYTES:
-                raise PluginExecutionError(
-                    "core broker request is too large",
-                    code="BROKER_REQUEST_TOO_LARGE",
-                )
-            return first_line[:-1]
+            raise PluginExecutionError(
+                "core broker request is not a framed request",
+                code="BROKER_REQUEST_INVALID",
+            )
 
         raw_length = first_line[len(_BROKER_FRAME_PREFIX) : -1]
         if not raw_length.isdigit() or len(raw_length) > 9:

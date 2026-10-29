@@ -193,119 +193,6 @@ MANUAL_EXTRA_FIELD_LABELS = {
     "cod_amount": "代收金额",
 }
 
-AUTOMATION_RESOURCE_NOTES = {
-    "phase7.send_order_bitable": "当日寄件数据的多维表格配置。",
-    "phase7.delivery_status_bitable": "查询并更新签收状态定时扫描的多维表格配置。",
-    "phase7.delivery_status_webhook": "旧版签收状态工作流的兼容 webhook 映射。",
-    "phase7.price_query_webhook": "旧版价格查询工作流的兼容 webhook 映射。",
-    "phase7.r13_credentials": "旧版每日应签账号配置，仅用于识别历史资源；控制平面不会读取，请迁移到统一账号管理。",
-    "phase7.daily_sign_bitable": "每日应签数据的多维表格配置。",
-    "phase7.daily_sign_sheet": "每日应签结果写入表格配置。",
-    "phase7.site_send_bitable": "网点出港清单的多维表格配置。",
-    "phase7.site_send_sheet": "网点出港清单结果写入表格配置。",
-    "phase7.arrive_primary_sheet": "每日到货表写入配置，S 列保存每单实际到达数量。",
-    "phase7.arrive_secondary_sheet": "每日到货备用表写入配置。",
-    "phase7.yunda_dispatch_forecast_bitable": "韵达网点派件量预测主单表的多维表格配置。",
-    "phase7.yunda_send_waybills_bitable": "韵达寄件运单管理数据的多维表格配置。",
-    "phase7.yunda_send_waybills_sheet": "韵达寄件运单管理数据的普通电子表格副本配置；默认从第 2 行起清空后重写。",
-    "phase7.scan_webhook": "旧版扫描数据工作流的兼容 webhook 映射。",
-    "phase7.scan_flow_webhook": "扫描后续流程 webhook 配置。",
-    "phase7.stats_webhook": "旧版到货统计工作流的兼容 webhook 映射。",
-    "phase7.stats_archive_sheet": "到货统计归档表配置。",
-    "phase7.split_pending_source_sheet": "分批及有发未到问题件来源表；固定读取每日到货表 A:S。",
-    "phase7.split_pending_target_sheet": "分批及有发未到表当前快照；固定保留 A:S 表头和未齐运单。",
-    "phase7.stats_flow_webhook": "到货统计后续流程 webhook 配置。",
-}
-
-AUTOMATION_RESOURCE_JSON_EXAMPLES = {
-    "phase7.send_order_bitable": {
-        "base_token": "appxxxxxxxx",
-        "table_id": "tblxxxxxxxx",
-    },
-    "phase7.delivery_status_bitable": {
-        "base_token": "Fcm8b2H7wayK1UsYLjlcFmWhnMh",
-        "table_id": "tblX96gGAuBfJrtW",
-        "view_name": "未签收明细",
-        "view_id": "veweDmbdIS",
-    },
-    "phase7.delivery_status_webhook": {
-        "path": "webhook/sign-status",
-    },
-    "phase7.price_query_webhook": {
-        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx",
-    },
-    "phase7.daily_sign_bitable": {
-        "base_token": "appxxxxxxxx",
-        "table_id": "tblxxxxxxxx",
-    },
-    "phase7.daily_sign_sheet": {
-        "spreadsheet_token": "shtxxxxxxxx",
-        "range": "Sheet1!A2:G200",
-        "clear_range": "Sheet1!A2:H200",
-    },
-    "phase7.site_send_bitable": {
-        "base_token": "appxxxxxxxx",
-        "table_id": "tblxxxxxxxx",
-    },
-    "phase7.site_send_sheet": {
-        "spreadsheet_token": "shtxxxxxxxx",
-        "range": "Sheet1!A2:Q200",
-        "clear_range": "Sheet1!A2:Q200",
-    },
-    "phase7.arrive_primary_sheet": {
-        "spreadsheet_token": "shtxxxxxxxx",
-        "range": "Sheet1!A2:R200",
-        "clear_range": "Sheet1!A2:R200",
-        "title_range": "Sheet1!A1:R1",
-    },
-    "phase7.arrive_secondary_sheet": {
-        "spreadsheet_token": "shtxxxxxxxx",
-        "range": "Sheet1!A2:R200",
-        "clear_range": "Sheet1!A2:R200",
-        "title_range": "Sheet1!A1:R1",
-    },
-    "phase7.yunda_dispatch_forecast_bitable": {
-        "base_token": "Et8sboZiSahfhYsa0i3c6hkwnXg",
-        "table_id": "tblT43ay2KjeXdC0",
-    },
-    "phase7.yunda_send_waybills_bitable": {
-        "base_token": "Fcm8b2H7wayK1UsYLjlcFmWhnMh",
-        "table_id": "tblNHfIVVeaTBB7Y",
-    },
-    "phase7.yunda_send_waybills_sheet": {
-        "spreadsheet_token": "GILYss6KhhBBuRt9FPWcXbben7c",
-        "range": "Sheet1!A2:A2",
-        "clear_range": "Sheet1!A2:Y5000",
-    },
-    "phase7.scan_webhook": {
-        "path": "webhook/phase7/scan",
-    },
-    "phase7.scan_flow_webhook": {
-        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx",
-    },
-    "phase7.stats_webhook": {
-        "path": "webhook/phase7/stats",
-    },
-    "phase7.stats_archive_sheet": {
-        "spreadsheet_token": "shtxxxxxxxx",
-        "default_write_range": "A1:S199",
-    },
-    "phase7.split_pending_source_sheet": {
-        "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
-        "sheet_id": "8fc516",
-        "range": "8fc516!A1:S5000",
-    },
-    "phase7.split_pending_target_sheet": {
-        "spreadsheet_token": "F0NVsI5dlhaWugtw14YcmdrQnvh",
-        "sheet_id": "bNhh7u",
-        "range": "bNhh7u!A1:S1",
-        "clear_range": "bNhh7u!A2:S5000",
-    },
-    "phase7.stats_flow_webhook": {
-        "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx",
-    },
-}
-
 YUNDA_ENTRY_ACTIONS = dict(YUNDA_MANUAL_ENTRY_ROUTE_ACTIONS)
 
 YUNDA_LIVE_PROXY_PREFIX = "/ocr/yunda/live"
@@ -327,9 +214,6 @@ RONGHUI_RECEIPT_ENTRY_MENU_TEXTS = {
     "send": "寄方回单跟踪",
     "receive": "派方回单处理",
 }
-RECEIPT_QUERY_AGENT_TIMEOUT_SEC = 75
-RECEIPT_QUERY_SOURCE_TIMEOUT_SEC = 12
-RECEIPT_QUERY_MAX_PAGES = 5
 RECEIPT_DETAIL_KEYS = (
     "recipient_name",
     "recipient_address",
@@ -340,7 +224,6 @@ RECEIPT_DETAIL_KEYS = (
     "volume",
     "waybill_no",
 )
-RECEIPT_DETAIL_REQUIRED_KEYS = set(RECEIPT_DETAIL_KEYS)
 RONGHUI_LIVE_ALLOWED_PREFIXES = RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES
 RONGHUI_DIRECT_ATTACHMENT_HOSTS = {"rhk13.obs.cn-east-3.myhuaweicloud.com"}
 RECEIPT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
@@ -348,369 +231,9 @@ RECEIPT_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 RECEIPT_REMARK_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})-(\d{10})(?!\d)")
 RECEIPT_REMARK_KEY_FRAGMENTS = ("note", "remark", "memo", "comment", "备注")
 
-AUTOMATION_TASK_RESOURCE_REQUIREMENTS = {
-    "send_order": [
-        {"resource_key": "phase7.send_order_bitable", "required": True},
-    ],
-    "delivery_status": [
-        {"resource_key": "phase7.delivery_status_bitable", "required": True},
-        {"resource_key": "phase7.delivery_status_webhook", "required": False},
-    ],
-    "daily_sign": [
-        {"resource_key": "phase7.daily_sign_bitable", "required": True},
-        {"resource_key": "phase7.daily_sign_sheet", "required": True},
-    ],
-    "site_send": [
-        {"resource_key": "phase7.site_send_bitable", "required": True},
-        {"resource_key": "phase7.site_send_sheet", "required": True},
-    ],
-    "arrive_list": [
-        {"resource_key": "phase7.arrive_primary_sheet", "required": True},
-        {"resource_key": "phase7.arrive_secondary_sheet", "required": True},
-    ],
-    "yunda_dispatch_forecast": [
-        {"resource_key": "phase7.yunda_dispatch_forecast_bitable", "required": False},
-    ],
-    "yunda_send_waybills": [
-        {"resource_key": "phase7.yunda_send_waybills_bitable", "required": False},
-        {"resource_key": "phase7.yunda_send_waybills_sheet", "required": False},
-    ],
-    "scan_codes": [
-        {"resource_key": "phase7.scan_webhook", "required": False},
-        {"resource_key": "phase7.scan_flow_webhook", "required": False},
-    ],
-    "arrival_stats": [
-        {"resource_key": "phase7.stats_webhook", "required": False},
-        {"resource_key": "phase7.arrive_primary_sheet", "required": True},
-        {"resource_key": "phase7.arrive_secondary_sheet", "required": True},
-        {"resource_key": "phase7.stats_archive_sheet", "required": True},
-        {"resource_key": "phase7.stats_flow_webhook", "required": False},
-    ],
-    "split_pending_problem_upload": [
-        {"resource_key": "phase7.split_pending_source_sheet", "required": True},
-        {"resource_key": "phase7.split_pending_target_sheet", "required": True},
-    ],
-}
-
-AUTOMATION_TASK_NOTES = {
-    "send_order": "夜间同步当日寄件数据。",
-    "send_order_2150": "夜间同步当日寄件数据。",
-    "clockin_daxiang": "大祥站双打卡自动化任务。",
-    "clockin_daxiang_1830": "大祥站双打卡自动化任务。",
-    "clockin_daxiang_s": "大祥 S 站双打卡自动化任务。",
-    "clockin_daxiang_s_1830": "大祥 S 站双打卡自动化任务。",
-    "daily_sign": "每日应签同步任务。",
-    "daily_sign_0500": "每日应签同步任务。",
-    "daily_sign_0700": "每日应签同步任务。",
-    "daily_sign_0900": "每日应签同步任务。",
-    "daily_sign_1400": "每日应签同步任务。",
-    "daily_sign_1530": "每日应签同步任务。",
-    "daily_sign_1800": "每日应签同步任务。",
-    "site_send": "网点出港清单同步任务。",
-    "site_send_0500": "网点出港清单同步任务。",
-    "site_send_0530": "网点出港清单同步任务。",
-    "site_send_1800": "网点出港清单同步任务。",
-    "site_send_1900": "网点出港清单同步任务。",
-    "site_send_1930": "网点出港清单同步任务。",
-    "site_send_2000": "网点出港清单同步任务。",
-    "site_send_2030": "网点出港清单同步任务。",
-    "site_send_2100": "网点出港清单同步任务。",
-    "arrive_list": "融辉派件预报基础清单同步任务。",
-    "arrive_list_0830": "融辉派件预报基础清单同步任务。",
-    "arrive_list_0930": "融辉派件预报基础清单同步任务。",
-    "yunda_dispatch_forecast": "韵达网点派件量预测主单表同步任务。",
-    "yunda_dispatch_forecast_1700": "韵达网点派件量预测主单表同步任务。",
-    "yunda_send_waybills": "韵达寄件运单管理同步任务。",
-    "self_pickup_problem_upload": "自提到货问题件；默认先预览候选单号。",
-    "split_pending_problem_upload": "刷新当前未齐快照并上传少货/分批或有发未到问题件。",
-}
-
-AUTOMATION_WORKFLOW_CATALOG = [
-    {
-        "task_id": "send_order",
-        "display_name": "获取当日寄件数据",
-        "tool_name": "sync_daily_send_orders",
-        "note": "夜间同步当日寄件数据。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务",
-        "schedule_summary": "",
-        "default_tool_params": {
-            "account_id": "price_default",
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "price_default"},
-        ],
-        "order": 10,
-    },
-    {
-        "task_id": "delivery_status",
-        "display_name": "查询并更新签收状态",
-        "tool_name": "sync_delivery_status",
-        "note": "定时扫描寄件数据表中未签收记录，查询最新签收状态，已签收则写回飞书多维表格；仍兼容旧 webhook 入参。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务 / 手动执行 / 外部调用",
-        "schedule_summary": "",
-        "webhook_resource_key": "phase7.delivery_status_webhook",
-        "webhook_fallback_path": "/webhook/sign-status",
-        "webhook_body_template": {
-            "BILL_CODE": "YS20260401001",
-            "RECORD_ID": "recxxxxxxxxxxxxxxxx",
-            "account_id": "ronghui_default",
-        },
-        "default_tool_params": {"account_id": "ronghui_default"},
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 20,
-    },
-    {
-        "task_id": "daily_sign",
-        "display_name": "每日应签",
-        "tool_name": "sync_daily_should_sign",
-        "note": "每日应签同步任务。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务",
-        "schedule_summary": "",
-        "default_tool_params": {
-            "r13_account_id": "r13_default",
-            "account_id": "ronghui_daxiang_s",
-            "days": 7,
-        },
-        "account_roles": [
-            {"label": "R13 应签查询账号", "field": "r13_account_id", "system": "r13", "default_account_id": "r13_default"},
-            {"label": "融辉到货与签收核验账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
-        ],
-        "order": 40,
-    },
-    {
-        "task_id": "site_send",
-        "display_name": "网点出港清单",
-        "tool_name": "sync_site_send_list",
-        "note": "网点出港清单同步任务。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务",
-        "schedule_summary": "",
-        "default_tool_params": {"account_id": "ronghui_default"},
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 50,
-    },
-    {
-        "task_id": "customer_problems_shadow",
-        "display_name": "客服问题件事项影子采集",
-        "tool_name": "sync_customer_service_problems",
-        "note": "只读遍历全部融辉、韵达账号的发布给我和我发布的列表，并保存新旧口径对账证据。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务 / 手动重新核验",
-        "schedule_summary": "每 15 分钟",
-        "default_tool_params": {"direction": "both"},
-        "account_roles": [],
-        "order": 55,
-    },
-    {
-        "task_id": "clockin_daxiang",
-        "display_name": "网点打卡-大祥",
-        "tool_name": "clock_in_dual",
-        "note": "大祥站双打卡是代码锁定的既有自动任务；参数仍只读，审批策略由超级管理员单独配置。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务",
-        "schedule_summary": "",
-        "control_plane_only": True,
-        "default_tool_params": {},
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 60,
-    },
-    {
-        "task_id": "clockin_daxiang_s",
-        "display_name": "网点打卡-大祥S站",
-        "tool_name": "clock_in_dual",
-        "note": "大祥 S 站双打卡是代码锁定的既有自动任务；参数仍只读，审批策略由超级管理员单独配置。",
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务",
-        "schedule_summary": "",
-        "control_plane_only": True,
-        "default_tool_params": {},
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
-        ],
-        "order": 70,
-    },
-    {
-        "task_id": "arrive_list",
-        "display_name": "arrive-list",
-        "tool_name": "sync_arrive_list",
-        "note": "融辉派件预报基础清单同步任务。",
-        "system_badges": [{"label": "融辉", "icon": "truck", "tone": "neutral"}],
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务",
-        "schedule_summary": "",
-        "default_tool_params": {
-            "account_id": "ronghui_default",
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 80,
-    },
-    {
-        "task_id": "yunda_dispatch_forecast",
-        "display_name": "韵达派件预测主单表",
-        "tool_name": "sync_yunda_dispatch_forecast",
-        "note": "韵达网点派件量预测主单表同步任务；使用韵达独立登录态，默认拉取次日应派数据。",
-        "provider": "yunda",
-        "system_badges": [{"label": "韵达", "icon": "truck", "tone": "neutral"}],
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务 / 飞书韵达派件预测",
-        "schedule_summary": "每天 17:00",
-        "default_tool_params": {
-            "account_id": "yunda_default",
-            "dest_brch": "56739382",
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "yunda", "default_account_id": "yunda_default"},
-        ],
-        "order": 85,
-    },
-    {
-        "task_id": "yunda_send_waybills",
-        "display_name": "韵达寄件运单同步",
-        "tool_name": "sync_yunda_send_waybills",
-        "note": "韵达寄件运单管理同步任务；使用韵达独立登录态，默认拉取当天寄件运单，补充快件跟踪详情和小眼睛解密字段后按运单号更新飞书多维表格。",
-        "provider": "yunda",
-        "system_badges": [{"label": "韵达", "icon": "truck", "tone": "neutral"}],
-        "task_mode": "scheduled",
-        "trigger_label": "定时任务 / 飞书韵达寄件运单",
-        "schedule_summary": "",
-        "default_tool_params": {
-            "account_id": "yunda_default",
-            "ensure_fields": False,
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "yunda", "default_account_id": "yunda_default"},
-        ],
-        "order": 86,
-    },
-    {
-        "task_id": "scan_codes",
-        "display_name": "获取并扫描数据",
-        "tool_name": "sync_scan_codes",
-        "note": "飞书机器人菜单“扫描”、外部调用或后台立即执行，刷新扫描数据并批量执行下一步扫描。",
-        "task_mode": "manual",
-        "trigger_label": "机器人菜单 / 外部调用",
-        "schedule_summary": "机器人菜单 / 外部调用 / 手动执行",
-        "webhook_resource_key": "phase7.scan_webhook",
-        "webhook_body_template": {
-            "trigger_flow": False,
-        },
-        "default_tool_params": {
-            "target_date": "",
-            "trigger_flow": False,
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 90,
-    },
-    {
-        "task_id": "arrival_stats",
-        "display_name": "统计到货数据",
-        "tool_name": "sync_arrival_stats",
-        "note": "飞书机器人菜单“统计”、外部调用或后台立即执行，生成到货统计并更新归档表。",
-        "task_mode": "manual",
-        "trigger_label": "机器人菜单 / 外部调用",
-        "schedule_summary": "机器人菜单 / 外部调用 / 手动执行",
-        "webhook_resource_key": "phase7.stats_webhook",
-        "webhook_body_template": {
-            "account_id": "ronghui_default",
-            "trigger_flow": False,
-        },
-        "default_tool_params": {
-            "account_id": "ronghui_default",
-            "trigger_flow": False,
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 100,
-    },
-    {
-        "task_id": "self_pickup_problem_upload",
-        "display_name": "自提到货问题件",
-        "tool_name": "self_pickup_problem_upload",
-        "note": "读取飞书每日到货表中邵阳自提部及邵阳大祥S站自提且已到齐单号，预览后上传“开单为自提件”问题件；默认不上传截图。",
-        "task_mode": "manual",
-        "trigger_label": "飞书自提到货问题件预览 / 确认",
-        "schedule_summary": "飞书自提到货问题件预览 / 确认",
-        "console_disabled_reason": "请到飞书预览并选择运单",
-        "default_tool_params": {
-            "dry_run": True,
-            "account_id": "ronghui_self_pickup_problem",
-            "daxiang_s_account_id": "ronghui_daxiang_s",
-        },
-        "account_roles": [
-            {"label": "自提部账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_self_pickup_problem"},
-            {"label": "大祥S站账号", "field": "daxiang_s_account_id", "system": "ronghui", "default_account_id": "ronghui_daxiang_s"},
-        ],
-        "order": 110,
-    },
-    {
-        "task_id": "split_pending_problem_upload",
-        "display_name": "分批/未到问题件上传",
-        "tool_name": "split_pending_problem_upload",
-        "note": "读取每日到货表，刷新分批及有发未到工作表与业务数据库当前快照，并逐单上传融辉问题件。",
-        "task_mode": "manual",
-        "trigger_label": "飞书分批预览 / 选择 / 确认",
-        "schedule_summary": "飞书分批预览 / 选择 / 确认",
-        "console_disabled_reason": "请到飞书预览并选择运单",
-        "default_tool_params": {
-            "dry_run": True,
-            "account_id": "ronghui_default",
-        },
-        "account_roles": [
-            {"label": "运行账号", "field": "account_id", "system": "ronghui", "default_account_id": "ronghui_default"},
-        ],
-        "order": 120,
-    },
-]
-
-AUTOMATION_WORKFLOW_BY_ID = {
-    str(item.get("task_id", "") or ""): item
-    for item in AUTOMATION_WORKFLOW_CATALOG
-}
-
-CONTROL_PLANE_ONLY_AUTOMATION_TASK_IDS = frozenset(
-    task_id
-    for task_id, workflow in AUTOMATION_WORKFLOW_BY_ID.items()
-    if workflow.get("control_plane_only") is True
-)
-CONTROL_PLANE_ONLY_AUTOMATION_MESSAGE = (
-    "这两条打卡的时间、账号与参数仍由代码锁定；"
-    "此处不能修改任务配置或立即执行，但超级管理员可以单独设置审批策略。"
-)
-
 AUTOMATION_PROVIDER_LABELS = {
     "ronghui": "融辉",
     "yunda": "韵达",
-}
-
-AUTOMATION_SESSION_PROFILES = {
-    "ronghui": {
-        "label": "融辉",
-        "dot_label": "融辉",
-        "console_prefix": "/automations/tms-session",
-        "agent_prefix": "/internal/v1/admin/tms/session",
-        "login_kind": "image",
-    },
-    "yunda": {
-        "label": "韵达",
-        "dot_label": "韵达",
-        "console_prefix": "/automations/yunda-session",
-        "agent_prefix": "/internal/v1/admin/tms/yunda-session",
-        "login_kind": "password",
-    },
 }
 
 AUTOMATION_ACCOUNT_SYSTEM_LABELS = {
@@ -722,34 +245,6 @@ AUTOMATION_ACCOUNT_SYSTEM_LABELS = {
 }
 
 AUTOMATION_ACCOUNT_SYSTEM_ORDER = ("ronghui", "yunda", "r7", "r13", "best")
-
-AUTOMATION_DEFAULT_ACCOUNT_IDS = {
-    "ronghui": "ronghui_default",
-    "yunda": "yunda_default",
-    "r7": "r7_default",
-    "r13": "r13_default",
-}
-
-AUTOMATION_RUN_TIMEOUTS = {
-    "sync_delivery_status": 1800,
-    "sync_arrive_list": 3600,
-    "sync_scan_codes": 21600,
-    "sync_arrival_stats": 7200,
-    "sync_yunda_dispatch_forecast": 1800,
-    "sync_yunda_send_waybills": 1800,
-    "self_pickup_problem_upload": 7200,
-    "split_pending_problem_upload": 7200,
-}
-
-AUTOMATION_LONG_RUNNING_TOOLS = {
-    "sync_arrive_list",
-    "sync_scan_codes",
-    "sync_arrival_stats",
-    "sync_yunda_dispatch_forecast",
-    "sync_yunda_send_waybills",
-    "self_pickup_problem_upload",
-    "split_pending_problem_upload",
-}
 
 UI_LABELS = {
     "ready": "就绪",
@@ -867,13 +362,6 @@ def automation_field_hint(path: str) -> str:
     return AUTOMATION_FIELD_HINTS.get(path, AUTOMATION_FIELD_HINTS.get(tail, ""))
 
 
-def automation_resource_display_name(resource_key: str) -> str:
-    note = str(AUTOMATION_RESOURCE_NOTES.get(resource_key, "") or "").strip()
-    if note:
-        return note.rstrip("。.")
-    return automation_field_label(resource_key)
-
-
 def _automation_field_tail(path: str) -> str:
     return str(path or "").rsplit(".", 1)[-1]
 
@@ -881,14 +369,6 @@ def _automation_field_tail(path: str) -> str:
 def _automation_field_is_secret(path: str) -> bool:
     tail = _automation_field_tail(path).lower()
     return tail in AUTOMATION_SECRET_FIELD_NAMES or tail.endswith("_token")
-
-
-def _parse_resource_editor_json(editor_json: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(str(editor_json or "{}"))
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def flatten_automation_fields(data: dict[str, Any], prefix: str = "") -> list[dict[str, Any]]:
@@ -993,58 +473,6 @@ def build_daily_cron_expression(time_value: str) -> str | None:
     return f"{minute} {hour} * * *"
 
 
-def extract_task_time_value(task_id: str) -> str:
-    raw = str(task_id or "").strip()
-    match = _TASK_TIME_SUFFIX_RE.fullmatch(raw)
-    if not match:
-        return ""
-    return f"{match.group('hour')}:{match.group('minute')}"
-
-
-def normalize_task_group_id(task_id: str) -> str:
-    raw = str(task_id or "").strip()
-    match = _TASK_SLOT_ID_RE.fullmatch(raw)
-    normalized = match.group("base") if match else raw
-    time_match = _TASK_TIME_SUFFIX_RE.fullmatch(normalized)
-    return time_match.group("base") if time_match else normalized
-
-
-def task_group_slot_index(task_id: str) -> int:
-    raw = str(task_id or "").strip()
-    match = _TASK_SLOT_ID_RE.fullmatch(raw)
-    if match:
-        try:
-            return int(match.group("slot"))
-        except ValueError:
-            return 0
-    time_value = extract_task_time_value(raw)
-    if not time_value:
-        return 0
-    hour_text, minute_text = time_value.split(":", 1)
-    return int(hour_text) * 60 + int(minute_text)
-
-
-def build_task_group_id(base_task_id: str, position: int) -> str:
-    if position == 0:
-        return base_task_id
-    return f"{base_task_id}__slot_{position}"
-
-
-def build_task_schedule_id(
-    base_task_id: str,
-    *,
-    cron_expression: str = "",
-    schedule_time: str = "",
-    position: int = 0,
-) -> str:
-    time_value = str(schedule_time or "").strip()
-    if not time_value and cron_expression:
-        time_value = str(parse_daily_cron_expression(cron_expression).get("time_value", "") or "").strip()
-    if time_value and build_daily_cron_expression(time_value):
-        return f"{base_task_id}_{time_value.replace(':', '')}"
-    return build_task_group_id(base_task_id, position)
-
-
 def normalize_task_display_name(name: str) -> str:
     raw = str(name or "").strip()
     if not raw:
@@ -1055,57 +483,8 @@ def normalize_task_display_name(name: str) -> str:
     return str(match.group("base") or "").strip(" -_")
 
 
-def automation_task_note(task_id: str) -> str:
-    normalized = normalize_task_group_id(task_id)
-    workflow = AUTOMATION_WORKFLOW_BY_ID.get(normalized, {})
-    if workflow.get("note"):
-        return str(workflow.get("note") or "")
-    return AUTOMATION_TASK_NOTES.get(task_id, AUTOMATION_TASK_NOTES.get(normalized, ""))
-
-
-def automation_workflow_definition(task_id: str) -> dict[str, Any]:
-    return AUTOMATION_WORKFLOW_BY_ID.get(normalize_task_group_id(task_id), {})
-
-
-def automation_task_control_plane_only(task_id: str) -> bool:
-    return normalize_task_group_id(task_id) in CONTROL_PLANE_ONLY_AUTOMATION_TASK_IDS
-
-
-def automation_task_provider(
-    task_id: str,
-    workflow: dict[str, Any] | None = None,
-    tool_name: str = "",
-) -> str:
-    workflow = workflow or automation_workflow_definition(task_id)
-    provider = str(workflow.get("provider") or "").strip().lower()
-    normalized = normalize_task_group_id(task_id)
-    tool_name_value = str(tool_name or workflow.get("tool_name") or "").strip()
-    if provider in AUTOMATION_PROVIDER_LABELS:
-        return provider
-    if normalized.startswith("yunda_") or tool_name_value == "sync_yunda_dispatch_forecast":
-        return "yunda"
-    return "ronghui"
-
-
 def automation_provider_label(provider: str) -> str:
     return AUTOMATION_PROVIDER_LABELS.get(provider, AUTOMATION_PROVIDER_LABELS["ronghui"])
-
-
-def normalize_automation_session_profile(profile: Any) -> str:
-    raw = str(profile or "").strip().lower()
-    aliases = {
-        "": "ronghui",
-        "default": "ronghui",
-        "tms": "ronghui",
-        "rh": "ronghui",
-        "ronghui": "ronghui",
-        "yunda": "yunda",
-        "yd": "yunda",
-    }
-    normalized = aliases.get(raw, raw)
-    if normalized not in AUTOMATION_SESSION_PROFILES:
-        return "ronghui"
-    return normalized
 
 
 def webhook_token_header_name() -> str:
@@ -1119,81 +498,6 @@ def webhook_token_enabled() -> bool:
             or os.getenv("AGENT_WEBHOOK_TOKEN", "").strip()
         )
     )
-
-
-def automation_webhook_public_base_url(agent_base_url: str) -> str:
-    candidate = (
-        os.getenv("DOCFLOW_AGENT_PUBLIC_BASE_URL", "").strip()
-        or os.getenv("AGENT_PUBLIC_BASE_URL", "").strip()
-    )
-    return candidate.rstrip("/") if candidate else ""
-
-
-def mask_sensitive_webhook(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return "未配置"
-    if len(raw) <= 18:
-        return raw[:6] + "••••" + raw[-4:]
-    return raw[:12] + "••••••" + raw[-8:]
-
-
-def resolve_automation_webhook_info(
-    task_id: str,
-    *,
-    workflow_resources: dict[str, dict[str, Any]],
-    agent_base_url: str,
-) -> dict[str, Any]:
-    workflow = automation_workflow_definition(task_id)
-    resource_key = str(workflow.get("webhook_resource_key", "") or "").strip()
-    resource = workflow_resources.get(resource_key, {}) if resource_key else {}
-    config = resource.get("config") if isinstance(resource, dict) else {}
-    if not isinstance(config, dict):
-        config = {}
-
-    resource_path = str(config.get("path", "") or "").strip()
-    fallback_path = str(workflow.get("webhook_fallback_path", "") or "").strip()
-    normalized_path = ""
-    if resource_path:
-        normalized_path = "/" + resource_path.strip("/")
-    elif fallback_path:
-        normalized_path = fallback_path if fallback_path.startswith("/") else "/" + fallback_path
-
-    public_base_url = automation_webhook_public_base_url(agent_base_url)
-    if public_base_url and normalized_path:
-        full_url = f"{public_base_url}{normalized_path}"
-    else:
-        full_url = normalized_path
-
-    return {
-        "resource_key": resource_key,
-        "path": normalized_path,
-        "full_url": full_url,
-        "masked_url": mask_sensitive_webhook(full_url or normalized_path),
-        "token_enabled": webhook_token_enabled(),
-        "header_name": webhook_token_header_name(),
-        "body_example": workflow.get("webhook_body_template")
-        or {
-            "task_id": normalize_task_group_id(task_id),
-            "task_name": workflow.get("display_name") or task_id,
-            "tool_name": workflow.get("tool_name") or "",
-        },
-    }
-
-
-def build_virtual_task_defaults(task_id: str) -> dict[str, Any]:
-    workflow = automation_workflow_definition(task_id)
-    default_params = workflow.get("default_tool_params")
-    if not isinstance(default_params, dict):
-        default_params = {}
-    return {
-        "task_id": normalize_task_group_id(task_id),
-        "name": str(workflow.get("display_name", "") or normalize_task_display_name(task_id)),
-        "tool_name": str(workflow.get("tool_name", "") or ""),
-        "tool_params": json.loads(json.dumps(default_params, ensure_ascii=False)),
-        "enabled": False,
-        "task_mode": str(workflow.get("task_mode", "manual") or "manual"),
-    }
 
 
 def normalize_schedule_times(values: list[str]) -> list[str]:
@@ -1330,98 +634,6 @@ def automation_run_feedback_message(*, error_code: Any, status: Any) -> str:
             "任务状态暂时无法确认，请稍后刷新。",
         ),
     )
-
-
-def automation_runtime_feedback_meta(
-    *,
-    ok: bool,
-    cancelled: bool,
-    success_message: str,
-    error_message: str,
-) -> dict[str, str]:
-    if cancelled:
-        return {
-            "status": "cancelled",
-            "title": "本次执行已取消",
-            "message": error_message or "已取消执行",
-            "status_label": "已取消",
-        }
-    if ok:
-        return {
-            "status": "success",
-            "title": "最近一次立即执行",
-            "message": success_message,
-            "status_label": "执行成功",
-        }
-    return {
-        "status": "error",
-        "title": "最近一次执行失败",
-        "message": error_message or "任务执行失败",
-        "status_label": "执行失败",
-    }
-
-
-def automation_task_resource_requirements(task_id: str) -> list[dict[str, Any]]:
-    entries = AUTOMATION_TASK_RESOURCE_REQUIREMENTS.get(normalize_task_group_id(task_id), [])
-    requirements: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for entry in entries:
-        resource_key = str(entry.get("resource_key", "") or "").strip()
-        if not resource_key or resource_key in seen:
-            continue
-        seen.add(resource_key)
-        requirements.append(
-            {
-                "resource_key": resource_key,
-                "required": bool(entry.get("required", True)),
-                "note": AUTOMATION_RESOURCE_NOTES.get(resource_key, ""),
-            }
-        )
-    return requirements
-
-
-def build_automation_resource_bindings(
-    task_id: str,
-    workflow_resources: dict[str, dict[str, Any]],
-    *,
-    resource_overrides: dict[str, dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    resource_overrides = resource_overrides or {}
-    bindings: list[dict[str, Any]] = []
-    for requirement in automation_task_resource_requirements(task_id):
-        resource_key = str(requirement.get("resource_key", "") or "").strip()
-        resource_row = workflow_resources.get(resource_key, {}) if resource_key else {}
-        override_row = resource_overrides.get(resource_key, {})
-        configured = bool(resource_row)
-        example_config = AUTOMATION_RESOURCE_JSON_EXAMPLES.get(resource_key, {})
-        if override_row.get("config_json") is not None:
-            editor_json = str(override_row.get("config_json") or "")
-        elif configured:
-            config = resource_row.get("config")
-            if isinstance(config, dict):
-                editor_json = json.dumps(config, ensure_ascii=False, indent=2)
-            else:
-                editor_json = str(resource_row.get("config_json") or "")
-        else:
-            editor_json = json.dumps(example_config, ensure_ascii=False, indent=2)
-        visual_config = _parse_resource_editor_json(editor_json)
-        if not visual_config and isinstance(example_config, dict):
-            visual_config = dict(example_config)
-        bindings.append(
-            {
-                "resource_key": resource_key,
-                "display_name": automation_resource_display_name(resource_key),
-                "required": bool(requirement.get("required", True)),
-                "configured": configured,
-                "missing": not configured,
-                "note": str(requirement.get("note", "") or ""),
-                "source": str(resource_row.get("source", "") or ""),
-                "updated_at": str(resource_row.get("updated_at", "") or ""),
-                "editor_json": editor_json,
-                "visual_fields": flatten_automation_fields(visual_config),
-            }
-        )
-    return bindings
 
 
 def quality_issue_messages(issue_codes: list[str]) -> list[str]:
@@ -2253,9 +1465,6 @@ class DocumentService:
                 continue
             image_paths.append(candidate)
         return image_paths or [processed_abspath]
-
-    def _runtime_relpath(self, absolute_path: Path) -> str:
-        return str(absolute_path.relative_to(self.settings.runtime_dir)).replace("\\", "/")
 
     def _now_string(self) -> str:
         return datetime.now().isoformat(timespec="seconds")

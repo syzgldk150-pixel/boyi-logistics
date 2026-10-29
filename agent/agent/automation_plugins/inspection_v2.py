@@ -156,7 +156,7 @@ def service_v2_wizard_projection(
             if getattr(manifest, "settings_ui", None) is not None
             else None
         ),
-        "management": management_for(manifest.plugin_id, getattr(manifest, "management", None)),
+        "management": management_for(getattr(manifest, "management", None)),
         "settings_mode": settings_mode(
             settings_ui=manifest.settings_ui, account_roles=manifest.account_roles,
             resource_roles=manifest.resource_roles, config_schema=manifest.config_schema,

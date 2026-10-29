@@ -48,9 +48,6 @@ DISABLED_ACTIVE_ORIGINAL_PAGE_TARGETS = frozenset(
 COMPAT_TOOL_BY_TARGET: dict[str, str] = {
     "receipts_audit": "receipts_audit",
     "receipts_sync": "receipts_sync",
-    "clock_in_dual": "clock_in_dual",
-    "self_pickup_problem_upload": "self_pickup_problem_upload",
-    "split_pending_problem_upload": "split_pending_problem_upload",
 }
 
 CUSTOMER_SERVICE_TOOL_BY_ACTION = {
@@ -786,38 +783,6 @@ def _normalize_customer_service_params(
     return _without_empty_values(normalized)
 
 
-def _normalize_clock_in_dual_params(params: dict[str, Any]) -> dict[str, Any]:
-    nested = params.get("params") if isinstance(params.get("params"), dict) else {}
-
-    def selected(*names: str) -> Any:
-        for source in (params, nested):
-            for name in names:
-                value = source.get(name)
-                if value not in (None, ""):
-                    return value
-        return None
-
-    normalized = _without_empty_values(
-        {
-            "account_id": selected("account_id", "accountId"),
-            "sitecode": selected("sitecode"),
-            "sitefbcode": selected("sitefbcode"),
-            "sitename": selected("sitename", "site_name"),
-            "sitefbname": selected("sitefbname", "site_fb_name"),
-            "first_type": selected("first_type"),
-            "second_type": selected("second_type"),
-            "delay_seconds": selected("delay_seconds"),
-        }
-    )
-    delay = normalized.get("delay_seconds")
-    if isinstance(delay, str):
-        try:
-            normalized["delay_seconds"] = float(delay.strip())
-        except ValueError:
-            pass
-    return normalized
-
-
 def _normalize_compatibility_params(
     endpoint_name: str,
     params: dict[str, Any],
@@ -829,8 +794,6 @@ def _normalize_compatibility_params(
     if endpoint_name == "customer_service_problem":
         action = str(params.get("action") or "query").strip().lower()
         return _normalize_customer_service_params(action, params)
-    if endpoint_name == "clock_in_dual":
-        return _normalize_clock_in_dual_params(params)
     return dict(params)
 
 

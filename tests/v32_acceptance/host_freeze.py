@@ -16,12 +16,10 @@ import subprocess
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _CODE_SUFFIXES = {".py", ".js", ".css", ".html", ".sql", ".sh"}
 _EXCLUDED_PARTS = {
-    "tests", "docs", "examples", "config", "first_party_automation_plugins",
-    "service_v2_plugins", "__pycache__",
+    "tests", "docs", "examples", "config", "service_v2_plugins", "__pycache__",
 }
 _DEPENDENCIES = {
-    "agent/requirements.txt", "agent/requirements.lock",
-    "agent/windows_worker_requirements.lock", "console/requirements.txt",
+    "agent/requirements.txt", "agent/requirements.lock", "console/requirements.txt",
     "console/requirements.lock", "agent/tools/registry.yaml",
     "agent/extension_sdk/schemas/manifest-v2.schema.json",
 }

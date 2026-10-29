@@ -12,7 +12,7 @@ AI 精确运行查询读取 Invocation 与历史 Run；寄件回读按业务日�
 
 扫描、自提及分批预览支持实际 Service V2 实例 UUID；卡片按插件身份提供预览/确认，输出按 Agent 返回的 Invocation 插件身份区分预览类型，正式确认仍由 Agent 核验同实例、当前代次、发起人及有效期。详见 `../docs/plugin-platform-v2.md`。
 
-插件迁移维护入口为 `/automations/maintenance`，从系统管理页（`/settings/accounts`，仅超级管理员可见）进入，只允许真实超级管理员会话。它复用现有迁移 API、当前目录和 CAS，不参与普通自动化列表，不自动执行业务；每日业务使用宿主业务日期标识。安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
+安装检查必须覆盖真实 V2 ZIP 的多账号角色、逐动作调用上限和无标题的飞书/Webhook/Event 贡献，未知字段仍拒绝。
 
 ## 当前身份与统一对话边界
 
@@ -49,7 +49,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 
 - `/harness` 是不可停用的业务查询与插件执行模块，对用户统一显示为“AI 助手”。页面、代理和浏览器脚本分别位于 `templates/harness.html`、`services/harness.py`、`routes/harness.py` 和 `static/harness.js`；浏览器提交规范请求 UUID、Agent Session UUID 和有界自然中文消息；`/harness/plugin-actions` 仅额外接受会话已签发的 Invocation UUID、status/confirm/cancel 与候选下标，动态内容只用 `textContent` 渲染。Session/Message POST 只接受真实 MySQL `admin/super_admin` 会话与同源请求，再通过既有签名 principal 调用 Agent `/internal/v1/harness/*`；Basic/emergency 明确拒绝。Console 不托管模型、不选择 service/operation/账号/资源、不读取数据库业务数据，也不回退旧工具。页面显示欢迎提示、自然中文建议、对话、插件本次执行状态及候选确认、输入框；连接状态只作为读屏实时文本，内部过程、证据、工具摘要和常驻状态条不得显示。Session 仅当前服务进程保存，模型未配置、超时或供应商异常必须给出明确中文建议。消息与插件操作代理至少等待 60 秒，让 Agent 自身 30 秒模型上限的中文超时先返回；Agent 的 AI 工具目录在一次插件目录 `read_scope()` 快照和 `reuse_transaction_connections()` 内构建，不得逐个工具新建 RDS 连接（逐条读取曾使建会话超过 30 秒）。
 - `/work-items` 与 `/work-items/{id}` 仅承载历史、Evidence 和精确未知写核验，不是新业务的审批/领取入口，不进入日常侧栏；Console 只代理 Agent，不直读控制平面表。新操作在业务页面显示本次直接结果或 Invocation 状态。
-- 事项详情的历史写入检查使用 `static/unknown_write_recovery.js` 和既有控制平面服务；仅超级管理员检查服务端保存证据，按精确事项/Run/lease 核验，不恢复旧任务。既有事项 GET 的 `unknown_write_recoveries[].write_attempts` 只透传共享层白名单回执诊断，不返回原始范围、定位器或业务行。支持范围与核心迁移规则见 `../docs/historical_write_recovery.md`。
+- 事项详情的历史写入记录由 `static/unknown_write_recovery.js` 只读展示（只用 `textContent`），不提供核验、恢复或重放入口；既有事项 GET 的 `unknown_write_recoveries[].write_attempts` 只透传共享层白名单回执诊断，不返回原始范围、定位器或业务行。规则见 `../docs/historical_write_recovery.md`。
 - 普通页面读写使用 `services/business_calls.py` 调用 `/internal/v1/business/{operation}`，返回真实业务结果；自动化只调用 `/internal/v1/automation-projects/{automation_id}/invoke`。动作、账号和资源来自服务器已验证绑定，不由浏览器注入。插件已真实启动才显示执行中；同实例活跃或资源不足明确拒绝，不展示旧 Run 排队或自动重试。
 - 控制平面写请求只接受真实 MySQL 管理员会话和同源 Origin/Referer。Basic Auth 明确拒绝；服务端从会话生成私有 principal 并签名，浏览器 actor、roles、source、authenticated_by 和同名私有标记均不能覆盖。`control_plane_role` 只有 `admin`/`super_admin`，高风险审批只允许后者。
 - 浏览器通过 `X-Browser-Request-UUID` 提供每次用户动作的稳定 UUID，服务端生成 `console:{admin_id}:{command_type}:{uuid}`；缺失或格式错误显式失败。approve/reject 只转发 approval ID、plan hash 和 comment。
@@ -57,36 +57,35 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 执行记录由 `services/automation_invocation_history.py` 经签名项目 `/invocations` 读取，仅打开输出或恢复曾打开的输出时请求；按真实来源、状态和 `invocation_phase` 恢复预览/正式阶段，不重放历史。输出使用完整快照替换，历史选择与当前活跃调用控制分离，取消始终绑定当前调用 ID；查看记录不回写调度运行事实。
 - 精确 `scan_codes` 项目的 Console 手工入口固定为两步：首次点击只生成服务端 `dry_run` 预览，预览 Invocation 完成后只展示 Agent 公共投影中的日期、页数、记录数、待扫描数、批次数和失效时间；“确认执行”必须生成新的浏览器 UUID，并只向专用 Console 路由提交 `task_id=scan_codes` 与该公共 `preview_invocation_id`。确认响应不确定时保留同一 UUID 取回原调用结果，不能重复确认已消费预览；本次未知写事实保留，新的明确触发可创建新预览。浏览器不得提交 `dry_run`、Evidence、摘要哈希或运单集合；正式 Invocation 不再投影为新预览，任一过期、漂移、重复消费或治理关闭错误均显式阻断且不回退旧扫描链路。
 - 补充信息表单只允许显式 `note/account_id/argument_updates`；参数更新必须是 JSON 对象。普通说明只作审计 note，Console 不解析自然语言为账号或工具参数。
-- 自动化页按 `automation_id` 每个项目只有一个运行方式事实：ACTION_V1 管理员仍可显式切换 `REQUIRE_EACH_RUN/PROJECT_FULL_AUTO`；SERVICE_V2 只用普通用户可理解的文案显示“完全自动”，不展示运行模型、版本、Host API、服务 ID、迁移术语或逐次审批，即使 Agent 中存在遗留漂移策略行也只接受固定全自动安全投影。权限意图与 `runnable/runtime_status` 分开投影；保存 v1 权限不创建 runtime 代际，配置同步中显示原权限模式但禁止运行旧配置。
+- 自动化页按 `automation_id` 每个项目只有一个运行方式事实：Service V2 固定完全自动，页面只用普通用户可理解的文案只读显示“完全自动”，不提供运行方式切换，不展示运行模型、版本、Host API、服务 ID 或逐次审批，即使 Agent 中存在遗留漂移策略行也只接受固定全自动安全投影。权限意图与 `runnable/runtime_status` 分开投影；配置同步中禁止运行旧配置。
 - 新调用不创建项目卡待审批队列。旧待审批集合仅为历史只读兼容；不得用旧审批数量或孤儿 Run 状态阻止新的插件调用。
 
 ## 自动化项目与插件边界
 
 - Webhook/Event 状态中的所有 `READY` 简称都必须解释为“持久注册与当前进程可信 `ServiceV2ManagedIngress` 绑定同时有效”的离线 backend；未绑定调用返回 `PROJECT_RUNTIME_PROJECTION_STALE`。该状态不代表公网入口、外部事件源或可靠投递。
-- Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。自动化列表成员只来自 Agent Catalog 实例与持久化定时行，静态工作流元数据只提供文案/排序，禁止在 Catalog 不可用时补出虚拟项目卡。目录返回的 `hidden_automation_ids` 只包含真实持久化、当前发行明确排除的身份，Console 不维护第二套隐藏名单；同 ID 合法碰撞仍保留为阻断卡。任一原始实例被规范化丢弃时整个 Catalog 投影失败关闭，不得静默显示部分列表。任何持久化定时行若无法关联到已安装实例，Console 只能显示普通用户可理解的“扩展信息缺失”阻断提示，禁止运行和配置；纯服务器目录不请求 Windows Worker 列表。
+- Agent 的 `/internal/v1/automation/plugins/catalog` 是动作包与项目实例的运行权威。自动化列表成员只来自 Agent Catalog 实例与持久化定时行，静态工作流元数据只提供文案/排序，禁止在 Catalog 不可用时补出虚拟项目卡。目录返回的 `hidden_automation_ids` 只包含真实持久化、当前发行明确排除的身份，Console 不维护第二套隐藏名单；同 ID 合法碰撞仍保留为阻断卡。任一原始实例被规范化丢弃时整个 Catalog 投影失败关闭，不得静默显示部分列表。任何持久化定时行若无法关联到已安装实例，Console 只能显示普通用户可理解的“扩展信息缺失”阻断提示，禁止运行和配置。
 - `/automations` 是插件和自动化的唯一日常入口，统一承载 Catalog 列表、安装、升级、启停、手动执行、取消、定时、运行输出、插件专属设置和按 `automation_id` 卸载。侧栏不得出现“扩展中心”；`/extensions` 与旧详情 GET 只重定向到自动化及对应插件筛选，旧生命周期 POST 返回 410。两者继续复用同一个 Agent Catalog、实例仓储、包目录和生命周期状态机，不新增第二套管理面。页面顶部“功能插件 / 财务 / 客服”分类标签分别链接 `/automations` 与财务、客服数据源页（同一模板），只显示当前身份可打开的模块；财务、客服采集插件仍在各自数据源页管理，不混入功能插件列表。查看仅对真实非 legacy MySQL `admin/super_admin` 开放，写操作只允许 `super_admin`；浏览器不得获得包路径、原始 Manifest、凭据或内部资源标识。
 
 - 自动化侧边栏点击后必须立即更新选中态并显示可访问骨架，不等待 Agent、账号、权限或飞书请求完成。自动化页（侧栏部分导航与整页打开）在 60 秒新鲜期后可继续使用最多 12 小时的安全 Catalog 快照，命中时立即返回，并以本次请求捕获的管理员身份在后台单飞刷新一次（刷新失败不写缓存，已有变更清缓存的代次规则不变）；快照超过 5 分钟时页面顶部提示其大致时间与后台更新状态，超出窗口或服务重启后首次读取仍同步等待 Agent。账号和权限外部读取限时 3 秒；真实页面完成后替换骨架。折叠卡片使用延迟渲染，页面隐藏时运行轮询至少退避到 5 秒。安装、升级、启停、卸载和显式资源刷新仍必须立即清缓存。卡片只按当前 Invocation 的真实启动、执行、核验和终态显示；资源不足或同实例仍在运行时明确拒绝，不新增排队状态或把未启动显示成已执行。插件卡片不得恢复“任务怎么运行”“允许从哪里启动”“数据从哪里读取、保存到哪里”等统一业务表单；插件业务字段只在该实例设置页出现；账号引用和平铺常用参数可使用宿主简单设置，Console 卡片只保留执行、取消、启停、定时、权限、状态、输出、升级和卸载。
 - 自动化首屏把账号快照放入工作线程时，必须先从当前 HTTP handler 捕获真实 MySQL 管理员 principal 并显式传入 Agent 请求；不得依赖工作线程继承请求上下文，也不得在 principal 丢失时把正常账号误报为不存在。
 - 安装与升级只允许同源、真实 MySQL `super_admin` 会话。自动化页右上角“安装扩展”支持点击或拖入 ZIP，先以 `package/request_id` 无副作用检查，再以同一 ZIP、稳定请求 UUID 和闭合 intent 安装；Service v2 intent 精确只含 `instance_name/permissions_confirmed`，不得提交通用配置、账号、资源、入口、定时、项目 ID、设备、Manifest、摘要、路径、服务或操作。安装后创建默认停用且未配置的独立实例；重复安装同一版本生成互不影响的实例。升级、启停和卸载只作用于路径中的精确 `automation_id` 并使用 CAS；最后一个引用卸载后才清理共享包和隔离环境。
 - Service v2 业务设置不再由自动化卡片统一渲染账号、入口、数据来源或保存位置。Manifest 可选声明固定 `settings_ui.entry=settings/index.html` 和 `bridge_api=1.0.0`；账号引用和平铺常用参数可使用宿主简单设置页；复杂必填配置或资源角色仍需专属设置页。点击“设置”进入 `/automations/{automation_id}/settings`，包内页面运行在无 `allow-same-origin` 的 sandbox iframe，CSP 禁止外网、顶层跳转、弹窗、下载和非包内资源，只能经会话绑定、来源校验的 `postMessage` 桥读取自身配置、脱敏账号状态、脱敏飞书目录并保存不透明引用。插件设置 CAS 只更新配置/绑定且保留定时；Console 调度 CAS 只更新时间计划且保留插件设置。目录投影提供当前定时的 `schedule_sha256`；卡片以 `data-project-schedule-sha256` 携带摘要，保存时作为 `expected_schedule_sha256` 回传，并与配置版本一起校验 CAS。只改“每天指定时间”的时间点由 Agent 直接保存、不切换插件代次，成功后以服务端返回的最新摘要作为下一次比较基准。卡片标题行的定时开关拨动后立即走同一保存接口（连同设置面板中尚未保存的时间），结果显示在卡片摘要；明确拒绝时开关拨回原位，结果未确认时保留开关并要求用同一请求点“保存定时计划”重试；不可保存的卡片开关为禁用态。
-- Catalog 的 v2 增量字段只通过 Console 白名单投影：`runtime_model/plugin_api/active_version/target_version/dependency_state/provided_services/migration/blocking_reasons/entrypoint_kinds`。仅缺失运行模型字段按历史 `ACTION_V1` 展示；显式未知值标记为 `UNSUPPORTED` 并阻断运行、启用和生命周期操作。v2 必须分别显示依赖阻断、需要配置、账号未登录和写入结果未知，不能把 `BLOCKED_UNKNOWN_WRITE` 折叠为普通异常；迁移区只展示状态、验证状态、配对项目与当前入口归属，不投影快照、Provider 内部标识或其他原始字段；持久化 `PREPARING` 迁移显示“准备迁移项目”，并禁用验证就绪、接管、回滚和完成操作。v1 入口仍固定为四类历史值；v2 入口按规范 contribution ID 与 Agent 提供的 `entrypoint_kinds` 映射展示和保存，浏览器只回传选中的 ID 列表，最终子集仍由 Agent 项目合同校验。SERVICE_V2 手工执行只向 Agent 提交所选 console `contribution_id`，不得让浏览器指定服务名、操作、账号或运行参数；其治理区固定展示完全自动和“审计不是审批”，不显示逐次审批选项。
-- Service v2 的运行入口归一化额外只消费 Agent 白名单 `active_contributions` 与 `contribution_projection_state`；状态只接受 `ACTIVE/STALE/INACTIVE`，每条 active 记录只接受 `contribution_id/contribution_kind/generation/phase/backend_status`。Manifest 声明的 `entrypoints/entrypoint_kinds/enabled_entrypoints` 继续用于设置展示；实际 `console_entrypoints` 与 `enabled_console_entrypoints` 只从当前 committed generation 的 exact `COMMITTED/READY` Console 记录派生，已启用入口种类可同时安全展示 Console/Scheduler/Feishu/Webhook/Event 状态。Feishu、Webhook 与 Event contribution 绝不进入浏览器手工调用清单；Webhook 的 `managed_webhook_router READY` 只表示无网络宿主 Dispatcher backend，Event 的 `managed_event_dispatcher READY` 只表示 `durable=false`、接受前可能丢失的离线 best-effort backend，`durable=true` 仍为 `CAPABILITY_UNAVAILABLE` 且不得降级。二者都不表示公网或生产入口所有权。缺字段、重复或跨代的记录只关闭对应入口，未知状态或 stale/inactive 则关闭整组运行入口。真实 event source、payload/version、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程仲裁、数据库迁移、部署和生产故障注入仍为 `PRODUCTION_GATED`。此规则不改变 runtime events、Outbox、Host `event.publish`、`ACTION_V1`、Webhook 或 Feishu，也不允许插件提供或注入自定义 HTML/CSS/JavaScript 前端。
+- Catalog 的 v2 字段只通过 Console 白名单投影：`runtime_model/plugin_api/active_version/target_version/dependency_state/provided_services/blocking_reasons/entrypoint_kinds`。只接受明确的 `SERVICE_V2`；缺失或其他运行模型一律标记为 `UNSUPPORTED` 并阻断运行、启用和生命周期操作。必须分别显示依赖阻断、需要配置、账号未登录和写入结果未知，不能把 `BLOCKED_UNKNOWN_WRITE` 折叠为普通异常；不投影快照、Provider 内部标识或其他原始字段。入口按规范 contribution ID 与 Agent 提供的 `entrypoint_kinds` 映射展示和保存，浏览器只回传选中的 ID 列表，最终子集仍由 Agent 项目合同校验。手工执行只向 Agent 提交所选 console `contribution_id`，不得让浏览器指定服务名、操作、账号或运行参数；治理区只读显示完全自动和“审计不是审批”。
+- Service v2 的运行入口归一化额外只消费 Agent 白名单 `active_contributions` 与 `contribution_projection_state`；状态只接受 `ACTIVE/STALE/INACTIVE`，每条 active 记录只接受 `contribution_id/contribution_kind/generation/phase/backend_status`。Manifest 声明的 `entrypoints/entrypoint_kinds/enabled_entrypoints` 继续用于设置展示；实际 `console_entrypoints` 与 `enabled_console_entrypoints` 只从当前 committed generation 的 exact `COMMITTED/READY` Console 记录派生，已启用入口种类可同时安全展示 Console/Scheduler/Feishu/Webhook/Event 状态。Feishu、Webhook 与 Event contribution 绝不进入浏览器手工调用清单；Webhook 的 `managed_webhook_router READY` 只表示无网络宿主 Dispatcher backend，Event 的 `managed_event_dispatcher READY` 只表示 `durable=false`、接受前可能丢失的离线 best-effort backend，`durable=true` 仍为 `CAPABILITY_UNAVAILABLE` 且不得降级。二者都不表示公网或生产入口所有权。缺字段、重复或跨代的记录只关闭对应入口，未知状态或 stale/inactive 则关闭整组运行入口。真实 event source、payload/version、Outbox fan-out、ACK/retry/dead-letter/replay、跨进程仲裁、数据库迁移、部署和生产故障注入仍为 `PRODUCTION_GATED`。此规则不改变 runtime events、Outbox、Host `event.publish`、Webhook 或 Feishu，也不允许插件提供或注入自定义 HTML/CSS/JavaScript 前端。
 - TASK-EXT-010 的 `waybill_entry.actions/validators` 只挂载本地博益手工录单 frame `/ocr/boyi/frame`，不进入韵达/融辉跨域原页。`_render_document` 只消费 Agent 的 `{slot,handle,title}` 安全投影；模板只使用固定 Host HTML/JS/CSS，title 经 Jinja autoescape，动态反馈只经 `textContent` 写入，绝不解释插件前端。动作按钮的浏览器 POST `/waybill-entry/extensions/{slot}/{handle}/invoke` 必须同源、具有真实 MySQL 管理员 Session，header `X-Browser-Request-UUID` 与 body UUID 一致，body 精确为 `{request_id,waybill}`；19 个字段从 `shared.waybill_entry_extensions` 导入传入 Jinja，JavaScript 不复制业务字段表，也不提交项目、service、operation、effect、账号、资源、Actor、角色或任意 args。validator 不在客户端作为保存门禁：`_handle_manual_waybill` 在实际 `apply_manual_waybill` 前从同一 POST 的 19 个 `field_*` 构造闭合 draft，以服务端 UUID 和签名 principal 调 Agent `/validators/invoke-active`；invalid、不可达、超时、畸形响应或 active 集合漂移都显式阻止本次，稳定空集合才恢复核心原生保存。GET 投影失败只影响展示，不会被旧 DOM 当作 validator 集合。只允许 `read/compute`，无数据库迁移；真实外部写、生产数据库、真实 TMS/飞书和部署继续 `PRODUCTION_GATED`。
-- 插件主状态与代际协调状态合并显示：`INSTALLED/ENABLED/DISABLED + STABLE` 可启用、升级或配置；准备、等待依赖、切换、排空、未知写隔离和错误状态禁用运行。停用保留精确 CAS 入口；已停用的失败 V2 实例可经服务端核验无活跃调用、未知写及依赖占用后卸载，不能用卸载绕过未核验写入。 已撤回或无迁移的 V2 在卸载撤销完成且协调状态 STABLE 后可重试卸载；仍走原 CAS、受保护写检查及精确清理入口，排空中与未知写状态不开放重试。
-- `BLOCKED_UNKNOWN_WRITE` 项目可向 `super_admin` 显示“核验并恢复”，但浏览器只生成请求 UUID；Console 只把该 UUID 和签名管理员身份转发给 Agent，不接收或推断 generation、lease、receipt、evidence，也不把 `UNKNOWN` 显示成成功或解除隔离。
+- 插件主状态与代际协调状态合并显示：`INSTALLED/ENABLED/DISABLED + STABLE` 可启用、升级或配置；准备、等待依赖、切换、排空、未知写隔离和错误状态禁用运行。停用保留精确 CAS 入口；已停用的失败实例可经服务端核验无活跃调用、未知写及依赖占用后卸载，不能用卸载绕过未核验写入；卸载撤销完成且协调状态 STABLE 后可重试卸载，仍走原 CAS、受保护写检查及精确清理入口，排空中与未知写状态不开放重试。
+- `BLOCKED_UNKNOWN_WRITE` 项目只显示写入结果未知并保持隔离，Console 不提供核验或恢复操作，也不把 `UNKNOWN` 显示成成功。
 - 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/device_id/schedule/request_id/expected_project_configuration_version`。`enabled_entrypoints` 允许签名清单任意子集和空集；高级设置以标准 switch 独立控制系统定时、后台手动、飞书消息和外部验签请求。关闭定时保留时间配置但不注册 Job，关闭后台时执行按钮必须明确显示入口已关闭。Console 可转发最多 96 个规范时间点；保存后必须区分 `ACTIVE/DISABLED/ENTRYPOINT_DISABLED/BLOCKED_GENERATION/REFRESH_FAILED`，后两种保留原请求 UUID 供精确重试，不得把“配置已落库”误报成“运行中定时已生效”。
 - 后台账号页允许当前 Console 超级管理员创建/撤销飞书审批绑定码；页面不得展示 `open_id/chat_id`。绑定后飞书角色实时继承账号当前 `control_plane_role/is_active`；旧审批通知/1/2 协议只保留历史核验，不为新插件创建审批队列。
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
-- 迁移入口归属：`TESTING/READY` 保留原 V1 入口，超级管理员仅可显式验证 V2；`CUTOVER/COMPLETED` 开放 V2，`ROLLED_BACK` 恢复原入口。已审阅映射复制原定时、飞书和 Webhook 设置；停用定时保留时间但不启用。未知入口或损坏配置明确失败，不猜测映射。固定飞书保留命令仅对应迁移目标可接管，既有 pending/登录/确认优先级不变；完成后不新建同源 pair，V2 升级沿用既有归属。具体合同见 `../docs/plugin-platform-v2.md`。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
-- 每日应签 V2 的账号角色为 `daily_sign_r13`（必填，读取该 R13 账号所属站点范围和应签清单）与 `daily_sign_tms`（可选的历史融辉配置，当前运行不调用）。“R13 应签查询账号/融辉到货与签收核验账号”文案只用于旧 V1 实例的历史展示。账号都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
+- 每日应签 V2 的账号角色为 `daily_sign_r13`（必填，读取该 R13 账号所属站点范围和应签清单）与 `daily_sign_tms`（可选的历史融辉配置，当前运行不调用）。账号都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
 - 资源池投影只允许 `resource_id/name/kind/status` 四个字段，Token、表格 ID、读写范围、文件路径、配置哈希/版本及原始配置不得进入 Console 或浏览器。飞书资源只显示 Agent 按当前文档名与工作表名解析的实时名称，不使用 Console 静态业务别名或内部资源 ID；改名随服务端短时缓存刷新。项目卡按签名 manifest 的 resource role 与 kind 精确生成候选，已有选择也必须重新核验可用性；不默认选择第一项。资源池不可用、descriptor 多/缺字段、必填资源未选、已停用或 kind 不匹配时，原卡显示阻断原因并 fail closed。
-- Console 自动化服务按职责拆分：`services/automation.py` 保留既有任务投影、运行控制、页面组合和兼容会话逻辑，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目级权限、历史审批只读投影、插件目录和项目配置；`services/automation_plugin_management.py` 维护 ZIP 上传、实例生命周期、设置桥、v2 迁移及未知写恢复，并由 `AutomationServiceMixin` 组合复用；`routes/automation.py` 是当前插件生命周期入口，`routes/extensions.py` 只保留 GET 重定向与 POST 410。原 `services.automation` 的公共导入保持兼容。
+- Console 自动化服务按职责拆分：`services/automation.py` 保留任务投影、运行控制和页面组合，纯 preview 合同、字段校验和调度分组 helper 位于 `services/automation_preview_support.py`；`services/automation_projects.py` 维护项目权限只读投影、插件目录和项目配置；`services/automation_plugin_management.py` 维护 ZIP 上传、实例生命周期和设置桥，并由 `AutomationServiceMixin` 组合复用；`routes/automation.py` 是当前插件生命周期入口，`routes/extensions.py` 只保留 GET 重定向与 POST 410。原 `services.automation` 的公共导入保持兼容。
 
 `scheduled_tasks`、`workflow_resources`、`waybills` 和 `boyi_waybills` 的结构由 Agent 发布迁移统一管理；Console 只做业务读写，不在启动或请求路径中建表、改表或忽略迁移错误。前两张表必须通过 `shared/runtime_repositories.py` 访问。
 
-迁移 `014` 仅把遗留任务规范化为当前契约，不能作为免审授权；后续迁移增加任务配置版本、项目级权限与不可变审计事件。既有逐 Cron 策略只用于迁移兼容；Console 的新权限入口始终按项目配置。外部写的未知结果不能显示为成功。
+迁移 `014` 等历史迁移只作建库记录，不能作为免审授权；外部写的未知结果不能显示为成功。
 
 Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生命周期、认证门禁和请求分发。认证、自动化、监控/财务、客服、回单/运单、TMS 代理、OCR 文档业务分别维护在 `services/` 的领域 mixin 中，路由识别维护在 `routes/`。所有 Console 运行时表均由 `../agent/migrations/` 统一创建，`database.py` 只验证和读写。
 
@@ -115,7 +114,6 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `static/style.css`
 - 改自动化页 UI、表单结构、保存交互：
   - `templates/automation.html`
-  - `static/automation_approval_policy.js`
   - `services/automation.py`
   - `services/automation_projects.py`
   - `services/automation_project_contributions.py`（只负责 Service v2 exact active contribution 白名单归一化）
@@ -200,7 +198,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `app.py`
   - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 异常审批 / 月度封账 / 运单财务 / 同步记录”页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
   - “月度封账”页签读取 `GET /finance/periods/{YYYY-MM}`。逐项核对（`POST .../confirmations`）与缺运单号异常确认知悉（`POST /finance/anomalies/{id}/acknowledge`）需 `finance.manage`；封账与反结账（`.../close`、`.../reopen`）只允许真实 MySQL 超级管理员，路由权限与处理器双重校验。所有写入要求同源会话以及 body 与 `X-Browser-Request-UUID` 一致。检查、快照、锁定与漂移规则只在 `shared/finance/periods.py`，Console 不重算；规则见 `../agent/docs/finance_module.md` 的“月度清点与封账”。页签顶部“平台原始数据”展示本月统计查询抓取、按费用项目的两种日期口径金额、单号格式与归类提示（只作参考，不改绑定）；网点金额下钻只读 `GET /finance/periods/{YYYY-MM}/platform-details`（`finance.read`，每页 50 行，可展开原始字段），口径见同文档“统计查询月度抓取”。
-  - 财务查询经共享账本直接读取，不触发采集。同步、回填和重试从所选来源的已接续生产者唯一确定实例，经 `/internal/v1/business/finance-collect` 调用当前 Service V2 `manual_run`；多实例或未接续时明确提示，不使用旧 `finance_bills` 默认实例。财务包 2.0.2 起以可选 `collection_request` 接收本次日期，后台显示对应 Invocation。真实管理员、同源、稳定浏览器 UUID 和精确账号绑定均保留，不创建事项审批或 Command/Run；不传凭据。
+  - 财务查询经共享账本直接读取，不触发采集；页面不再提供手动同步、历史回溯或批次重试，“同步记录”只读列出批次。统计查询月度抓取在财务数据源页由 `sync_ronghui_finance_statement_v2` 实例的 Console 入口发起。
   - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
   - Console 与 Agent 必须连接同一套 Agent MySQL；同步记录返回最新失败账号/日期/错误，显式无数据账号和日期展示零值，缺失/失败日期不得补零；同步请求超时需覆盖 Agent 工具的长回溯上限。
   - 当前生产只展示和调度共享来源注册表中启用的融辉三个财务角色；韵达财务适配器保持禁用。逐笔汇总、平台汇总与 signed-net 不一致必须显式失败，不能补零或继续发布。
@@ -292,7 +290,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 ## 固定业务模块
 
 - 16 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新调用 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
-- 插件管理不是固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的非固定 `ACTION_V1/SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
+- 插件管理不是固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的 `SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
 - `/settings/modules` 只重定向到 `/settings/accounts`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。原 `/settings/system-status` 页面、菜单与 `console.menu.system_status.view` 权限已删除（返回 404）。
 
 - 插件专属设置页必须先安装宿主消息监听器，再给隔离 iframe 设置 `src`，防止缓存子页的首次配置请求丢失；时序回归见 `tests/test_plugin_settings_initialization.py`，真实保存／改绑／历史恢复验收见 `../tests/v32_acceptance/custom_settings.py`。

@@ -1,59 +1,23 @@
-"""Release checks separate immutable generation material from current host times."""
+"""Release windows check current host times against the committed V2 task set."""
 import copy
+import hashlib
+import json
 
 import pytest
 
-from tests.test_automation_project_release_manifest_preflight import preflight, _valid_world  # noqa: F401
+from scripts import scheduled_write_window as window
 from tests.test_v2_maintenance_mysql import database  # noqa: F401
 
 
-def _host_timer_world(preflight):
-    contract, schedules, backups, projects = _valid_world(preflight)
-    automation_id = "send_order"
-    project = projects[automation_id]
-    original = next(copy.deepcopy(row) for row in schedules.values()
-                    if row["automation_id"] == automation_id)
-    for task_id in tuple(schedules):
-        if schedules[task_id]["automation_id"] == automation_id:
-            schedules.pop(task_id)
-    cron = "17 22 * * *"
-    task_id = contract["stable_schedule_task_id"](automation_id, cron)
-    schedules[task_id] = dict(original, id=task_id, cron_expression=cron)
-    project["desired_schedule_json"] = {"kind": "daily_times", "times": ["22:17"], "enabled": True}
-    project["desired_schedule_sha256"] = preflight._canonical_sha256(project["desired_schedule_json"])
-    # The committed snapshot and its digest intentionally retain the old times.
-    return contract, schedules, backups, projects, task_id
+@pytest.fixture
+def preflight():
+    return window
 
 
-def _validate(preflight, world):
-    contract, schedules, backups, projects, _ = world
-    preflight._validate_release_projects_and_tasks(
-        contract, schedules=schedules, backups=backups, projects=projects,
-        expect_initial_production_manifest=False,
-    )
-
-
-def test_release_accepts_host_times_without_rewriting_generation(preflight):
-    _validate(preflight, _host_timer_world(preflight))
-
-
-@pytest.mark.parametrize("drift", ["task_times", "task_generation", "generation_digest", "timer_digest", "enabled"])
-def test_release_rejects_timer_or_generation_drift(preflight, drift):
-    world = _host_timer_world(preflight)
-    project, task = world[3]["send_order"], world[1][world[4]]
-    if drift == "task_times":
-        task["cron_expression"] = "18 22 * * *"
-    elif drift == "task_generation":
-        task["automation_generation"] += 1
-    elif drift == "generation_digest":
-        project["generation_schedule_sha256"] = "f" * 64
-    elif drift == "timer_digest":
-        project["desired_schedule_sha256"] = "f" * 64
-    else:
-        project["desired_schedule_json"]["enabled"] = False
-        project["desired_schedule_sha256"] = preflight._canonical_sha256(project["desired_schedule_json"])
-    with pytest.raises(preflight.AutomationProjectReleaseManifestError):
-        _validate(preflight, world)
+def _canonical_sha256(value):
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
 
 
 def _v2_rows(preflight):
@@ -75,7 +39,7 @@ def _v2_rows(preflight):
         "automation_generation": 3, "committed_generation": 3, "target_generation": 3,
         "tool_name": "automation.v2-clockin.run", "cron_expression": "17 22 * * *", "enabled": 1,
         "configuration_version": 7, "config_version": 7,
-        "desired_schedule_json": desired, "desired_schedule_sha256": preflight._canonical_sha256(desired),
+        "desired_schedule_json": desired, "desired_schedule_sha256": _canonical_sha256(desired),
         "snapshot_json": snapshot, "project_enabled": 1, "project_state": "ENABLED",
         "reconcile_state": "STABLE", "generation_state": "COMMITTED", "policy_mode": "PROJECT_FULL_AUTO",
     }]
@@ -91,10 +55,7 @@ def _v2_validate(preflight, rows):
         def fetchall(self):
             return rows
 
-    return preflight.typed_project_scheduled_write_crons(
-        Cursor(), error_class=preflight.AutomationProjectReleaseManifestError,
-        scheduled_write_operation_types=frozenset({"external_write"}),
-    )
+    return preflight.project_scheduled_write_crons(Cursor())
 
 
 def test_v2_release_uses_current_host_times_and_keeps_generation_snapshot(preflight):
@@ -121,8 +82,8 @@ def test_v2_release_rejects_projection_drift(preflight, drift):
         rows[0]["desired_schedule_sha256"] = "f" * 64
     else:
         rows[0]["desired_schedule_json"]["enabled"] = False
-        rows[0]["desired_schedule_sha256"] = preflight._canonical_sha256(rows[0]["desired_schedule_json"])
-    with pytest.raises(preflight.AutomationProjectReleaseManifestError):
+        rows[0]["desired_schedule_sha256"] = _canonical_sha256(rows[0]["desired_schedule_json"])
+    with pytest.raises(preflight.ScheduledWriteWindowError):
         _v2_validate(preflight, rows)
 
 
@@ -130,13 +91,13 @@ def test_v2_release_rejects_projection_drift(preflight, drift):
 def test_v2_disabled_schedules_validate_their_complete_physical_set(preflight, kind, times, cron):
     rows = _v2_rows(preflight)
     desired = {"kind": kind, "times": times, "enabled": False}
-    rows[0].update(desired_schedule_json=desired, desired_schedule_sha256=preflight._canonical_sha256(desired),
+    rows[0].update(desired_schedule_json=desired, desired_schedule_sha256=_canonical_sha256(desired),
                    enabled=0, cron_expression=cron, task_id=None if cron is None else "disabled-task")
     rows[0]["snapshot_json"]["execution_metadata"]["schedule"] = copy.deepcopy(desired)
     assert _v2_validate(preflight, rows) == ()
     if cron is not None:
         rows[0].update(task_id=None, cron_expression=None)
-        with pytest.raises(preflight.AutomationProjectReleaseManifestError, match="PROJECT_SCHEDULE_ROWS_MISMATCH"):
+        with pytest.raises(preflight.ScheduledWriteWindowError, match="PROJECT_SCHEDULE_ROWS_MISMATCH"):
             _v2_validate(preflight, rows)
 
 
@@ -166,10 +127,7 @@ def test_v2_projection_query_detects_entirely_missing_tasks_mysql(preflight, dat
 
     def validate(host):
         with host.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
-            return preflight.typed_project_scheduled_write_crons(
-                cursor, error_class=preflight.AutomationProjectReleaseManifestError,
-                scheduled_write_operation_types=frozenset({"external_write"}),
-            )
+            return preflight.project_scheduled_write_crons(cursor)
 
     with ManagementFixture(connection_factory=connect, runtime_root=tmp_path / "runtime",
                            enable_directory_faults=False) as host:
@@ -181,5 +139,5 @@ def test_v2_projection_query_detects_entirely_missing_tasks_mysql(preflight, dat
         with host.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
             cursor.execute("DELETE FROM scheduled_tasks WHERE automation_id=%s", (project,))
             uow.commit()
-        with pytest.raises(preflight.AutomationProjectReleaseManifestError, match="PROJECT_SCHEDULE_ROWS_MISMATCH"):
+        with pytest.raises(preflight.ScheduledWriteWindowError, match="PROJECT_SCHEDULE_ROWS_MISMATCH"):
             validate(host)

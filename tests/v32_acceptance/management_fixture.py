@@ -1,4 +1,4 @@
-"""Real MySQL plugin lifecycle/catalog and signed HTTP fixture for list QA.
+"""Real MySQL plugin lifecycle/catalog and signed-administrator HTTP fixture for list QA.
 
 Execution and binding ports remain explicitly unavailable until a full runtime
 is composed. This fixture never fabricates a successful business execution.
@@ -23,7 +23,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 import pymysql
 import httpx
-from Crypto.PublicKey import ECC
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -37,7 +36,6 @@ from agent.automation_plugins.management import AutomationPluginManagementServic
 from agent.automation_plugins.management_api import create_automation_plugin_management_router
 from agent.automation_plugins.management_repository import MySQLAutomationPluginManagementRepository
 from agent.automation_plugins.mysql_repository import MySQLAutomationPluginRepositoryAdapter
-from agent.automation_plugins.package import Ed25519TrustStore
 from agent.automation_plugins.runtime_repository import MySQLAutomationPluginCatalogRepositoryAdapter, MySQLAutomationProjectConfigurationReadAdapter
 from agent.automation_plugins.runtime_repository import MySQLAutomationPluginRuntimeAdapter
 from agent.automation_plugins.production import (
@@ -54,7 +52,6 @@ from agent.orchestration.automation_project_api import create_automation_project
 from agent.orchestration.automation_project_policy_service import AutomationProjectPolicyService
 from agent.orchestration.automation_project_entrypoints import TrustedDynamicArgumentResolver
 from agent.orchestration.command_gateway import CommandGateway
-from agent.tool_registry import ToolRegistry
 from shared.contracts import api_failure
 from shared.orchestration_repository import OrchestrationRepository
 from shared.plugin_management import MODULE_DATASETS
@@ -133,8 +130,8 @@ class EmptyIsolatedAccountDirectory:
 
 class ManagementFixture:
     def __init__(self, *, connection_factory=None, runtime_root=None, account_manager=None,
-                 broker_handlers=None, resource_provider=None, upload_signature_verifier=None,
-                 enable_directory_faults=True, migration_account_bindings=None, connector_registry=None,
+                 broker_handlers=None, resource_provider=None,
+                 enable_directory_faults=True, connector_registry=None,
                  contribution_backend_status=None, resource_catalog_provider=None):
         self.startup_id = str(uuid4())
         if not os.environ.get("AGENT_DB_NAME", "").endswith("_test") or os.environ.get("AGENT_DB_HOST") != "127.0.0.1":
@@ -153,27 +150,22 @@ class ManagementFixture:
         self.external_delay_seconds = 30
         self.fault_phase = "measurement"
         self.fault_calls = []
-        self.fault_http_paths = ("/internal/v1/admin/accounts", "/internal/v1/automation/workers")
+        self.fault_http_paths = ("/internal/v1/admin/accounts",)
         self.enable_directory_faults = bool(enable_directory_faults)
         self.repository = OrchestrationRepository(connection_factory or connect)
         self.packages = MySQLAutomationPluginRepositoryAdapter(
             self.repository, release_hold_provider=lambda: False,
-            migration_account_bindings=migration_account_bindings,
         )
         self.catalog = PluginCatalog(
             MySQLAutomationPluginCatalogRepositoryAdapter(self.repository),
             MySQLAutomationProjectConfigurationReadAdapter(self.repository),
-            allowed_execution_platforms=("server",),
-            migration_pair_provider=self.packages.get_catalog_migration_pair,
             connector_registry=connector_registry,
             contribution_backend_status=contribution_backend_status,
         )
         self.management_repository = MySQLAutomationPluginManagementRepository(self.repository)
-        self.core_catalog = ToolRegistry()
         self.runtime_repository = MySQLAutomationPluginRuntimeAdapter(self.repository)
         self.binding_resolver = ProductionProjectBindingResolver(
             account_manager=self.account_manager, resource_provider=resource_provider or (lambda _id: None),
-            worker_repository=self.management_repository,
         )
         self.service_registry = ServiceRegistry(connector_registry=connector_registry)
         from agent.automation_plugins.runtime_backend_availability import RuntimeContributionBackendAvailability
@@ -187,7 +179,7 @@ class ManagementFixture:
         self.reconciler = AutomationRuntimeReconciler(
             repository=self.runtime_repository,
             coeffects=ProductionRuntimeCoeffectProvider(
-                core_catalog=self.core_catalog, broker_handler_keys=handler_keys,
+                broker_handler_keys=handler_keys,
                 account_manager=self.account_manager, binding_resolver=self.binding_resolver,
                 service_registry=self.service_registry,
                 connector_registry=connector_registry,
@@ -196,7 +188,7 @@ class ManagementFixture:
         )
         self.targets = MySQLRuntimeTargetService(
             orchestration_repository=self.repository, catalog=self.catalog,
-            core_catalog=self.core_catalog, runtime_repository=self.runtime_repository,
+            runtime_repository=self.runtime_repository,
             reconciler=self.reconciler, catalog_repository=self.packages,
         )
         self.driver.restore_from_repository(self.runtime_repository)
@@ -204,8 +196,6 @@ class ManagementFixture:
         self.lifecycle = AutomationPluginService(
             repository=self.packages, storage=self.storage,
             environments=LockedVirtualEnvironmentBuilder(),
-            upload_signature_verifier=upload_signature_verifier or Ed25519TrustStore({"v32-test": ECC.generate(curve="Ed25519").public_key().export_key(format="raw")}),
-            allowed_execution_platforms=("server",),
         )
         self.configuration = AutomationProjectConfigurationService(
             catalog=self.catalog, repository=self.management_repository,
@@ -213,14 +203,14 @@ class ManagementFixture:
         )
         self.management = AutomationPluginManagementService(
             catalog=self.catalog, lifecycle=self.lifecycle,
-            configuration=self.configuration, worker_repository=self.management_repository,
+            configuration=self.configuration,
             target_service=self.targets, package_repository=self.packages,
             storage=self.storage, release_hold_provider=lambda: False,
             resource_catalog_provider=resource_catalog_provider or self.delayed_external_resources,
             contribution_registry=self.contribution_registry,
         )
         self.policy = AutomationProjectPolicyService(
-            self.repository, ToolRegistry(), self.catalog,
+            self.repository, self.catalog,
             dynamic_resolver=TrustedDynamicArgumentResolver(),
             release_hold_provider=lambda: False,
             command_gateway=CommandGateway(self.repository),
@@ -271,7 +261,6 @@ class ManagementFixture:
         self.app.include_router(create_automation_plugin_management_router(
             service_provider=lambda: self.management, actor_provider=actor_provider,
             policy_service_provider=lambda: self.policy,
-            include_worker_routes=False,
         ))
         self.app.include_router(create_automation_project_router(
             service_provider=lambda: self.policy, actor_provider=actor_provider,

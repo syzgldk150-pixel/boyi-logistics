@@ -283,24 +283,6 @@ class _FinalizingGenerationLeases:
         self.outcomes.append(values["outcome"])
 
 
-def test_scan_preview_requires_plugin_claim_and_core_zero_write_proof():
-    result = _scan_result(dry_run=True)
-    accepted = ResultVerifier().verify(
-        _scan_step(dry_run=True),
-        _generation_bound_scan(result, requires_write=False, started_writes=0),
-        _scan_capability(),
-    )
-    assert accepted.accepted is True
-
-    result["meta"]["postcondition_evidence"]["0"]["details"]["write_attempted"] = True
-    rejected = ResultVerifier().verify(
-        _scan_step(dry_run=True),
-        _generation_bound_scan(result, requires_write=False, started_writes=0),
-        _scan_capability(),
-    )
-    assert rejected.code == "POSTCONDITION_UNVERIFIED"
-
-
 @pytest.mark.parametrize("batch_count", [0, 2])
 def test_scan_formal_requires_complete_batch_proof_and_count_conservation(batch_count):
     leases = _FinalizingGenerationLeases()
@@ -316,28 +298,6 @@ def test_scan_formal_requires_complete_batch_proof_and_count_conservation(batch_
     )
     assert outcome.accepted is True
     assert leases.outcomes
-
-
-def test_scan_formal_missing_verification_or_tampered_conservation_is_rejected():
-    result = _scan_result(dry_run=False, batch_count=2)
-    result["meta"]["postcondition_evidence"]["0"]["details"][
-        "verification_evidence_refs"
-    ].pop()
-    missing = ResultVerifier(_FinalizingGenerationLeases()).verify(
-        _scan_step(dry_run=False),
-        _generation_bound_scan(result, requires_write=True, started_writes=3),
-        _scan_capability(),
-    )
-    assert missing.code == "POSTCONDITION_UNVERIFIED"
-
-    result = _scan_result(dry_run=False, batch_count=2)
-    result["data"]["scanned"] = 1
-    tampered = ResultVerifier(_FinalizingGenerationLeases()).verify(
-        _scan_step(dry_run=False),
-        _generation_bound_scan(result, requires_write=True, started_writes=3),
-        _scan_capability(),
-    )
-    assert tampered.code == "POSTCONDITION_UNVERIFIED"
 
 
 def test_write_finalization_persistence_failure_remains_unknown_and_recoverable():

@@ -101,41 +101,6 @@ def scheduler_contribution_binding(
     return entrypoint, enabled
 
 
-def migration_owned_scheduler_enabled(
-    cursor: Any,
-    *,
-    automation_id: str,
-    desired_enabled: bool,
-) -> bool:
-    """Return whether the physical scheduler belongs to this project now."""
-
-    from shared.automation_plugin_v2_repository import _select_authoritative_migration_pair
-
-    cursor.execute(
-        """
-        SELECT *
-        FROM automation_plugin_migration_pairs
-        WHERE (source_automation_id=%s OR target_automation_id=%s)
-        ORDER BY created_at, migration_pair_id
-        """,
-        (automation_id, automation_id),
-    )
-    rows = [_decode_row(row, ("entrypoint_snapshot_json",)) or {} for row in _rows(cursor)]
-    pair = _select_authoritative_migration_pair(rows, automation_id=automation_id)
-    if pair is None:
-        return desired_enabled
-    state = str(pair.get("state") or "")
-    source_id = str(pair.get("source_automation_id") or "")
-    target_id = str(pair.get("target_automation_id") or "")
-    if automation_id == source_id:
-        return bool(
-            desired_enabled and state in {"PREPARING", "TESTING", "READY", "ROLLED_BACK"}
-        )
-    if automation_id == target_id:
-        return bool(desired_enabled and state in {"CUTOVER", "COMPLETED"})
-    raise OrchestrationPersistenceError("migration pair owner is invalid")
-
-
 def set_project_dependency_scheduler_gate(
     repository: Any,
     automation_id: str,
@@ -240,11 +205,6 @@ def set_project_dependency_scheduler_gate(
                         and normalized["enabled"]
                         and scheduler_enabled
                         and expressions
-                        and migration_owned_scheduler_enabled(
-                            cursor,
-                            automation_id=project_id,
-                            desired_enabled=True,
-                        )
                     )
         cursor.execute(
             "UPDATE scheduled_tasks SET enabled=%s WHERE automation_id=%s",

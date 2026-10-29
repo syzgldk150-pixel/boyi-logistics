@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from agent.connector_namespaces import DAILY_SEND_TOOL
 from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
@@ -31,7 +32,7 @@ BitableWritePort = Callable[[str, list[dict[str, Any]]], Mapping[str, Any]]
 ProjectionReplacePort = Callable[[list[dict[str, Any]], str, Mapping[str, Any]], Mapping[str, Any]]
 
 
-_TOOL = "sync_daily_send_orders"
+_TOOL = DAILY_SEND_TOOL
 _ACCOUNT_ROLE = "account_id"
 _RESOURCE_ROLE = "send_order_bitable"
 _MAX_RECORDS = 10_000

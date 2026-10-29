@@ -2,12 +2,12 @@
 module: 三平台报价
 type: 维护手册
 status: active
-updated: 2026-10-12
+updated: 2026-10-29
 ---
 
 # 三平台报价
 
-`quote_prices_v2` 1.0.4 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不再提供 `get_price`，旧报价脚本只保留在 `agent/legacy/price_quote/`，不发布或作为回退。
+`quote_prices_v2` 1.0.4 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不提供报价工具，旧报价脚本已删除。
 
 ## 输入与结果
 

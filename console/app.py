@@ -16,7 +16,6 @@ from console.services.tms_proxy import TmsProxyServiceMixin
 from console.services.automation import AutomationServiceMixin
 from console.services.documents import DocumentServiceMixin
 from console.services.business_modules import BusinessModulesServiceMixin
-from console.services.extensions import ExtensionsServiceMixin
 from console.services.waybill_entry_extensions import WaybillEntryExtensionsServiceMixin
 from console.services.warehouse_monitor import WarehouseMonitorServiceMixin
 from console.navigation import (
@@ -54,7 +53,6 @@ class LocalDocFlowApp(
     AutomationServiceMixin,
     WaybillEntryExtensionsServiceMixin,
     DocumentServiceMixin,
-    ExtensionsServiceMixin,
     BusinessModulesServiceMixin,
     WarehouseMonitorServiceMixin,
 ):
@@ -407,17 +405,8 @@ class LocalDocFlowApp(
             self._handle_customer_service_attachment_upload(handler)
             return
 
-        if path == "/finance/sync":
-            self._handle_finance_post(handler, "sync")
-            return
-        if path == "/finance/backfill":
-            self._handle_finance_post(handler, "backfill")
-            return
         if re.fullmatch(r"/finance/fee-mappings/\d+", path):
             self._handle_finance_post(handler, "save_mapping", path=path)
-            return
-        if re.fullmatch(r"/finance/sync-batches/\d+/retry", path):
-            self._handle_finance_post(handler, "retry_batch", path=path)
             return
 
         if path == "/tracking/query":
@@ -473,38 +462,11 @@ class LocalDocFlowApp(
         if path == "/templates/save":
             self._handle_template_save(handler)
             return
-        if path == "/automations/resources/save":
-            self._handle_automation_resource_save(handler)
-            return
-        if path == "/automations/tasks/save":
-            self._handle_automation_task_save(handler)
-            return
         if path == "/automations/tasks/run-now":
             self._handle_automation_task_run_now(handler)
             return
         if path == "/automations/tasks/cancel":
             self._handle_automation_task_cancel(handler)
-            return
-        if path == "/automations/admin/import-phase7-resources":
-            self._handle_automation_admin_action(
-                handler,
-                endpoint="/internal/v1/admin/import-phase7-resources",
-                success_message="Phase 7 资源已重新导入。",
-            )
-            return
-        if path == "/automations/admin/seed-phase7-tasks":
-            self._handle_automation_admin_action(
-                handler,
-                endpoint="/internal/v1/admin/seed-phase7-tasks",
-                success_message="Phase 7 默认任务模板已写入并重载调度。",
-            )
-            return
-        if path == "/automations/admin/reload":
-            self._handle_automation_admin_action(
-                handler,
-                endpoint="/internal/v1/admin/reload",
-                success_message="智能服务运行配置已重新加载。",
-            )
             return
         if path.startswith("/documents/") and path.endswith("/review"):
             document_id = self._parse_document_id(path)

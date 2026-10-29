@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from agent.scheduler import _execute_scheduled_tool
 from shared.customer_service_repository import CustomerServiceRepository
-from tests.v32_acceptance.finance_maintenance import wait_invocation
+from tests.v32_acceptance.collector_drill import wait_invocation
 
 
 def exercise_scheduler_entry(*, management, connection_factory, automation_id, source_id, supplier, actor):
@@ -19,7 +19,7 @@ def exercise_scheduler_entry(*, management, connection_factory, automation_id, s
         return management.management.save_configuration(automation_id,
             config=entry.project_config, account_bindings=entry.account_bindings,
             resource_bindings=entry.resource_bindings, enabled_entrypoints=entrypoints,
-            schedule=schedule, device_id=None, request_id=str(uuid4()),
+            schedule=schedule,  request_id=str(uuid4()),
             expected_project_configuration_version=entry.project_config_version, actor=actor)
 
     def business_rows():

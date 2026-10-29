@@ -12,23 +12,19 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import hashlib
+import hmac
 import json
-from typing import Any, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 from agent.automation_plugins.account_context import account_context_read
+from agent.connector_namespaces import FINANCE_STATEMENT_TOOL
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
+from agent.automation_plugins.errors import PluginExecutionError
+from agent.automation_plugins.finance_connectors_v2 import ROLES as _ROLES
 from agent.automation_plugins.manifest import canonical_json_bytes
-from plugin_core_adapters.finance import (
-    _ROLES,
-    _FinanceBrokerHandlers,
-    _business_date,
-    _error,
-    _require_context,
-    _role_accounts,
-    _strict,
-    _text,
-)
-from shared.finance import SummarySemantics
+from agent.tms_runtime.account_manager import AutomationAccountManager, get_account_manager
+from agent.tms_runtime.errors import TMSAuthStateError
+from shared.finance import FinanceRepository, SummarySemantics
 from shared.finance.models import TransactionRecord
 from shared.finance.platform_capture import PlatformCaptureError, build_platform_capture
 from shared.finance.validation import CaptureEvidence, validate_finance_capture
@@ -38,6 +34,77 @@ PUBLISH_DAY_ACTION = "finance.platform_capture.publish_day"
 FINALIZE_ACTION = "finance.platform_capture.finalize"
 _PAGE_FIELDS = {"request", "body", "evidence_ref", "response"}
 _MAX_PAGES = 120
+
+RepositoryFactory = Callable[[], Any]
+
+
+def _error(message: str, code: str) -> PluginExecutionError:
+    return PluginExecutionError(message, code=code)
+
+
+def _strict(value: Mapping[str, Any], fields: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise _error(f"{label} fields are invalid", "BROKER_ARGUMENT_INVALID")
+    return dict(value)
+
+
+def _text(value: object, label: str, *, maximum: int = 512) -> str:
+    if value is None or isinstance(value, (bool, Mapping, list, tuple, set)):
+        raise _error(f"{label} is invalid", "BROKER_ARGUMENT_INVALID")
+    result = str(value).strip()
+    if not result or len(result) > maximum:
+        raise _error(f"{label} is invalid", "BROKER_ARGUMENT_INVALID")
+    return result
+
+
+def _business_date(value: object, label: str = "target_date") -> str:
+    text = _text(value, label, maximum=10)
+    try:
+        parsed = dt.date.fromisoformat(text)
+    except ValueError as exc:
+        raise _error(f"{label} must use YYYY-MM-DD", "BROKER_ARGUMENT_INVALID") from exc
+    if parsed.isoformat() != text:
+        raise _error(f"{label} must use YYYY-MM-DD", "BROKER_ARGUMENT_INVALID")
+    return text
+
+
+def _require_context(
+    context: CoreBrokerInvocationContext,
+    *,
+    operation: str,
+    action: str,
+    roles: Collection[str],
+) -> None:
+    if (
+        context.tool_name != FINANCE_STATEMENT_TOOL
+        or context.operation != operation
+        or context.action != action
+        or context.role not in set(roles)
+    ):
+        raise _error("finance broker context is invalid", "BROKER_CONTEXT_INVALID")
+
+
+def _role_accounts(context: CoreBrokerInvocationContext) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for role in _ROLES:
+        values = context.account_bindings.get(role)
+        if not isinstance(values, tuple) or len(values) != 1:
+            raise _error(
+                "finance requires one exact account for every logical role",
+                "BROKER_ROLE_UNBOUND",
+            )
+        account_id = str(values[0] or "").strip()
+        if not account_id:
+            raise _error("finance account binding is empty", "BROKER_ROLE_UNBOUND")
+        result[role] = account_id
+    if len(set(result.values())) != len(_ROLES):
+        raise _error(
+            "finance logical roles must use distinct accounts",
+            "BROKER_ACCOUNT_MISMATCH",
+        )
+    if context.role in result and tuple(context.account_ids) != (result[context.role],):
+        raise _error("finance selected binding changed", "BROKER_ACCOUNT_MISMATCH")
+    return result
 
 
 def _canonical(value: Any) -> Any:
@@ -51,7 +118,75 @@ class _ContextManifest:
         self.account_roles = ({"role": role, "allowed_systems": ["ronghui"]},)
 
 
-class _FinancePlatformCaptureHandlers(_FinanceBrokerHandlers):
+class _FinancePlatformCaptureHandlers:
+    def __init__(
+        self,
+        *,
+        account_manager: AutomationAccountManager,
+        repository_factory: RepositoryFactory,
+        cursor_secret: bytes,
+    ) -> None:
+        if not isinstance(cursor_secret, bytes) or len(cursor_secret) < 32:
+            raise ValueError("finance cursor secret must contain at least 32 bytes")
+        self._manager = account_manager
+        self._repository_factory = repository_factory
+        self._secret = bytes(cursor_secret)
+
+    @staticmethod
+    def _mark_write_started(context: CoreBrokerInvocationContext) -> None:
+        if context.mark_write_started is not None:
+            context.mark_write_started()
+
+    def _evidence(
+        self,
+        context: CoreBrokerInvocationContext,
+        purpose: str,
+        value: Mapping[str, Any],
+    ) -> str:
+        material = canonical_json_bytes(
+            {
+                "automation_id": context.automation_id,
+                "plugin_version": context.plugin_version,
+                "operation": context.operation,
+                "action": context.action,
+                "role": context.role,
+                "purpose": purpose,
+                "value": dict(value),
+            }
+        )
+        digest = hmac.new(self._secret, material, hashlib.sha256).hexdigest()
+        return f"finance:{purpose}:evidence:v1:{digest}"
+
+    def _descriptor(self, account_id: str) -> Mapping[str, Any]:
+        try:
+            descriptor = self._manager.require_active_binding_descriptor(account_id)
+        except TMSAuthStateError as exc:
+            raise _error(
+                "the exact finance account is unavailable",
+                "BROKER_ACCOUNT_UNAVAILABLE",
+            ) from exc
+        if not isinstance(descriptor, Mapping):
+            raise _error("finance account descriptor is invalid", "BROKER_ACCOUNT_INVALID")
+        result = dict(descriptor)
+        if str(result.get("account_id") or "").strip() != account_id:
+            raise _error("finance account resolver changed the binding", "BROKER_ACCOUNT_MISMATCH")
+        if str(result.get("system") or "").strip().lower() != "ronghui":
+            raise _error("finance requires Ronghui accounts", "BROKER_ACCOUNT_SYSTEM_MISMATCH")
+        credentials = self._manager.public_credentials(account_id)
+        login_account = str((credentials or {}).get("username") or "").strip()
+        if not login_account:
+            raise _error(
+                "finance account has no public login identity",
+                "BROKER_ACCOUNT_UNAVAILABLE",
+            )
+        result["login_account"] = login_account
+        if not str(result.get("session_profile") or "").strip():
+            raise _error(
+                "finance account has no session profile binding",
+                "BROKER_ACCOUNT_UNAVAILABLE",
+            )
+        return result
+
     def _verified_pages(
         self,
         context: CoreBrokerInvocationContext,
@@ -274,3 +409,26 @@ class _FinancePlatformCaptureHandlers(_FinanceBrokerHandlers):
             ("ledger.invoke", PUBLISH_DAY_ACTION): self.publish_platform_capture_day,
             ("ledger.invoke", FINALIZE_ACTION): self.finalize_platform_capture,
         }
+
+
+def _default_repository_factory() -> FinanceRepository:
+    from agent.workflow_resource_store import _connect
+
+    return FinanceRepository(_connect)
+
+
+def build_production_finance_statement_handler_map(
+    *,
+    cursor_secret: bytes,
+    account_manager: AutomationAccountManager | None = None,
+    repository_factory: RepositoryFactory | None = None,
+) -> dict[tuple[str, str], Any]:
+    handlers = _FinancePlatformCaptureHandlers(
+        account_manager=account_manager or get_account_manager(),
+        repository_factory=repository_factory or _default_repository_factory,
+        cursor_secret=cursor_secret,
+    )
+    return handlers.platform_capture_handler_map()
+
+
+__all__ = ["build_production_finance_statement_handler_map"]

@@ -15,7 +15,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from agent.api_contracts import EnvelopedRoute
@@ -29,7 +29,6 @@ from agent.automation_plugins.errors import (
 )
 from agent.automation_plugins.management import (
     AutomationPluginManagementService,
-    MigrationPreparationPersistedError,
 )
 from agent.orchestration.models import Actor
 from shared.connection_reuse import reuse_transaction_connections
@@ -87,29 +86,6 @@ class PluginDataPurgeRequest(BaseModel):
     confirm: Literal[True]
 
 
-class PluginMigrationCreateRequest(BaseModel):
-    """Closed DTO; the server derives all project/configuration snapshots."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    migration_pair_id: str = Field(min_length=36, max_length=36)
-    source_automation_id: str = Field(min_length=1, max_length=128)
-    target_automation_id: str = Field(min_length=1, max_length=128)
-    business_key_fields: list[str] = Field(min_length=1, max_length=8)
-    business_key_namespace: str | None = Field(default=None, min_length=1, max_length=96)
-    request_id: str = Field(min_length=1, max_length=64)
-    reason: str = Field(min_length=1, max_length=500)
-
-
-class PluginMigrationOperationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    expected_record_version: int = Field(ge=1)
-    request_id: str = Field(min_length=1, max_length=64)
-    reason: str = Field(min_length=1, max_length=500)
-    confirm: Literal[True]
-
-
 class PluginScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -125,7 +101,6 @@ class PluginConfigurationRequest(BaseModel):
     account_bindings: dict[str, Any]
     resource_bindings: dict[str, Any]
     enabled_entrypoints: list[str] = Field(max_length=64)
-    device_id: str | None = Field(default=None, max_length=128)
     schedule: PluginScheduleRequest
     request_id: str = Field(min_length=1, max_length=64)
     expected_project_configuration_version: int = Field(ge=1)
@@ -149,87 +124,6 @@ class PluginScheduleUpdateRequest(BaseModel):
     expected_project_configuration_version: int = Field(ge=0)
     # Digest of the schedule the operator edited; enables the times-only CAS.
     expected_schedule_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-
-
-class ArrivalStatsRecoveryReadbackRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    arrival_stat_runs: int = Field(ge=0)
-    arrival_stat_items: int = Field(ge=0)
-    feishu_rows_created: int = Field(ge=0)
-
-
-class ArrivalStatsRecoveryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    generation: int = Field(ge=1)
-    lease_id: str = Field(min_length=1, max_length=64)
-    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    readback: ArrivalStatsRecoveryReadbackRequest
-    request_id: str = Field(min_length=1, max_length=64)
-
-
-class UnknownWriteRecoveryRequest(BaseModel):
-    """No actor-supplied readback/evidence can influence recovery."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    generation: int = Field(ge=1)
-    lease_id: str = Field(min_length=1, max_length=64)
-    request_id: str = Field(min_length=1, max_length=64)
-    resume_run: bool = True
-    expected_run_id: str | None = Field(default=None, min_length=1, max_length=191)
-    expected_work_item_id: str | None = Field(default=None, min_length=1, max_length=191)
-
-    @model_validator(mode="after")
-    def require_manual_identity(self):
-        if not self.resume_run and (not self.expected_run_id or not self.expected_work_item_id):
-            raise ValueError("manual verification requires exact work item and Run")
-        if self.resume_run and (self.expected_run_id is not None or self.expected_work_item_id is not None):
-            raise ValueError("manual identity requires verification-only mode")
-        return self
-
-
-class CurrentUnknownWriteRecoveryRequest(BaseModel):
-    """The server resolves generation and lease identity from current state."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    request_id: str = Field(min_length=1, max_length=64)
-
-
-class WorkerIdentityRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    device_key_id: str = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
-    )
-    ed25519_public_key_base64: str = Field(min_length=44, max_length=44)
-    tls_client_certificate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class WorkerCapabilitiesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    interactive: bool
-
-
-class WorkerPairRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    device_id: str = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
-    )
-    display_name: str = Field(min_length=1, max_length=120)
-    platform: Literal["windows"]
-    agent_version: str = Field(pattern=r"^\d+\.\d+\.\d+$", max_length=64)
-    identity_json: WorkerIdentityRequest
-    capabilities_json: WorkerCapabilitiesRequest
-    request_id: str = Field(min_length=1, max_length=64)
 
 
 def _plugin_error_response(exc: Exception) -> JSONResponse:
@@ -366,10 +260,8 @@ def _scheduler_contribution_enabled(
 
     # Unknown runtime models are never schedulable, even if a future response
     # happens to contain a scheduler-looking contribution map.
-    if runtime_model not in {"", "ACTION_V1", "SERVICE_V2"}:
+    if runtime_model not in {"", "SERVICE_V2"}:
         return False
-    if runtime_model == "ACTION_V1":
-        return "scheduler" in enabled_ids
     # The contribution map is authoritative for v2.  A v2 package without its
     # map is not schedulable.
     if kinds:
@@ -434,24 +326,6 @@ async def _refresh_after_committed_operation(
     if not refresh_completed:
         response["message"] = refresh_failure_message
     return response
-
-
-async def _refresh_after_committed_migration(
-    response: dict[str, Any] | JSONResponse,
-    *,
-    scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None,
-) -> dict[str, Any] | JSONResponse:
-    """Keep migration response wording while using the common refresh helper."""
-
-    return await _refresh_after_committed_operation(
-        response,
-        scheduler_refresh_provider=scheduler_refresh_provider,
-        committed_field="migration_operation_committed",
-        refresh_failure_message=(
-            "迁移操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
-            "不要重复提交迁移切换。"
-        ),
-    )
 
 
 def _multipart_boundary(content_type: str) -> str:
@@ -601,7 +475,6 @@ def create_automation_plugin_management_router(
     *,
     service_provider: Callable[[], AutomationPluginManagementService],
     actor_provider: Callable[[Request], Actor],
-    include_worker_routes: bool = True,
     scheduler_refresh_provider: Callable[[], Mapping[str, Any]] | None = None,
     policy_service_provider: Callable[[], Any] | None = None,
     scheduler_project_sync_provider: Callable[[str], Mapping[str, Any]] | None = None,
@@ -641,66 +514,6 @@ def create_automation_plugin_management_router(
         if summary == "1" and policy_service_provider is not None:
             options["policy_projection"] = lambda identities: policy_service_provider().list_policies(automation_ids=identities)
         return await _service_response(lambda: service_provider().catalog_projection(actor=actor, **options))
-
-    if include_worker_routes:
-
-        @router.get("/internal/v1/automation/workers", response_model=None)
-        async def plugin_workers(request: Request) -> dict[str, Any] | JSONResponse:
-            actor = actor_provider(request)
-            return await _service_response(
-                lambda: service_provider().worker_projection(actor=actor)
-            )
-
-        @router.post("/internal/v1/automation/workers/pair", response_model=None)
-        async def pair_plugin_worker(
-            payload: WorkerPairRequest,
-            request: Request,
-        ) -> dict[str, Any] | JSONResponse:
-            actor = actor_provider(request)
-            return await _service_response(
-                lambda: service_provider().pair_worker(
-                    device_id=payload.device_id,
-                    display_name=payload.display_name,
-                    platform=payload.platform,
-                    agent_version=payload.agent_version,
-                    identity=payload.identity_json.model_dump(),
-                    capabilities=payload.capabilities_json.model_dump(),
-                    request_id=payload.request_id,
-                    actor=actor,
-                )
-            )
-
-    @router.post("/internal/v1/automation/plugins/install", response_model=None)
-    async def install_plugin(request: Request) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        try:
-            package, fields = await _parse_plugin_upload(
-                request,
-                expected_text_fields=frozenset(
-                    {"instance_name", "request_id", "package_sha256"}
-                ),
-            )
-        except PluginPackageError as exc:
-            return _plugin_error_response(exc)
-        response = await _service_response(
-            lambda: service_provider().install(
-                package,
-                instance_name=fields["instance_name"],
-                request_id=fields["request_id"],
-                transport_package_sha256=fields["package_sha256"],
-                actor=actor,
-                **({"module": request.query_params["module"]} if "module" in request.query_params else {}),
-            )
-        )
-        return await _refresh_after_committed_operation(
-            response,
-            scheduler_refresh_provider=scheduler_refresh_provider,
-            committed_field="plugin_operation_committed",
-            refresh_failure_message=(
-                "插件安装操作已提交，但调度器刷新失败；请刷新状态或重试调度刷新，"
-                "不要重复提交安装操作。"
-            ),
-        )
 
     @router.post(
         "/internal/v1/automation/plugins/inspect-upload",
@@ -883,170 +696,6 @@ def create_automation_plugin_management_router(
             )
         )
 
-    @router.get(
-        "/internal/v1/automation/migrations/{migration_pair_id}",
-        response_model=None,
-    )
-    async def get_plugin_migration_pair(
-        migration_pair_id: str,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        return await _service_response(
-            lambda: service_provider().migration_pair(migration_pair_id, actor=actor)
-        )
-
-    @router.post("/internal/v1/automation/migrations", response_model=None)
-    async def create_plugin_migration_pair(
-        payload: PluginMigrationCreateRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        create = lambda: service_provider().create_migration_pair(
-            migration_pair_id=payload.migration_pair_id,
-            source_automation_id=payload.source_automation_id,
-            target_automation_id=payload.target_automation_id,
-            business_key_fields=tuple(payload.business_key_fields),
-            business_key_namespace=payload.business_key_namespace,
-            request_id=payload.request_id,
-            reason=payload.reason,
-            actor=actor,
-        )
-        try:
-            response = api_success(await run_in_threadpool(create))
-        except MigrationPreparationPersistedError as exc:
-            # The target task was already disabled in the PREPARING
-            # transaction.  Reload even though clone/finalize failed so an
-            # in-memory scheduler cannot retain an old target job.  This is a
-            # committed, replayable outcome, not an instruction to create a
-            # different pair/request.
-            response = api_success(
-                {
-                    "migration_pair_id": exc.migration_pair_id,
-                    "state": "PREPARING",
-                    "migration_preparation_committed": True,
-                    "retry_with_same_request_id": True,
-                    "preparation_phase": exc.phase,
-                    "blocking_reason": exc.blocking_reason,
-                }
-            )
-            refreshed = await _refresh_after_committed_migration(
-                response,
-                scheduler_refresh_provider=scheduler_refresh_provider,
-            )
-            assert isinstance(refreshed, dict)
-            refreshed["message"] = (
-                "迁移准备态已持久化，目标自动入口已禁用；请使用相同 request_id 重试，"
-                "不要创建新的迁移对。"
-            )
-            return JSONResponse(status_code=202, content=refreshed)
-        except (
-            AutomationPluginError,
-            OrchestrationPersistenceError,
-            ValueError,
-        ) as exc:
-            response = _plugin_error_response(exc)
-        return await _refresh_after_committed_migration(
-            response,
-            scheduler_refresh_provider=scheduler_refresh_provider,
-        )
-
-    @router.post(
-        "/internal/v1/automation/migrations/{migration_pair_id}/ready",
-        response_model=None,
-    )
-    async def mark_plugin_migration_ready(
-        migration_pair_id: str,
-        payload: PluginMigrationOperationRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        response = await _service_response(
-            lambda: service_provider().mark_migration_ready(
-                migration_pair_id,
-                expected_record_version=payload.expected_record_version,
-                request_id=payload.request_id,
-                reason=payload.reason,
-                actor=actor,
-            )
-        )
-        return await _refresh_after_committed_migration(
-            response,
-            scheduler_refresh_provider=scheduler_refresh_provider,
-        )
-
-    @router.post(
-        "/internal/v1/automation/migrations/{migration_pair_id}/cutover",
-        response_model=None,
-    )
-    async def cutover_plugin_migration_pair(
-        migration_pair_id: str,
-        payload: PluginMigrationOperationRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        response = await _service_response(
-            lambda: service_provider().cutover_migration_pair(
-                migration_pair_id,
-                expected_record_version=payload.expected_record_version,
-                request_id=payload.request_id,
-                reason=payload.reason,
-                actor=actor,
-            )
-        )
-        return await _refresh_after_committed_migration(
-            response,
-            scheduler_refresh_provider=scheduler_refresh_provider,
-        )
-
-    @router.post(
-        "/internal/v1/automation/migrations/{migration_pair_id}/rollback",
-        response_model=None,
-    )
-    async def rollback_plugin_migration_pair(
-        migration_pair_id: str,
-        payload: PluginMigrationOperationRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        response = await _service_response(
-            lambda: service_provider().rollback_migration_pair(
-                migration_pair_id,
-                expected_record_version=payload.expected_record_version,
-                request_id=payload.request_id,
-                reason=payload.reason,
-                actor=actor,
-            )
-        )
-        return await _refresh_after_committed_migration(
-            response,
-            scheduler_refresh_provider=scheduler_refresh_provider,
-        )
-
-    @router.post(
-        "/internal/v1/automation/migrations/{migration_pair_id}/complete",
-        response_model=None,
-    )
-    async def complete_plugin_migration_pair(
-        migration_pair_id: str,
-        payload: PluginMigrationOperationRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        response = await _service_response(
-            lambda: service_provider().complete_migration_pair(
-                migration_pair_id,
-                expected_record_version=payload.expected_record_version,
-                request_id=payload.request_id,
-                reason=payload.reason,
-                actor=actor,
-            )
-        )
-        return await _refresh_after_committed_migration(
-            response,
-            scheduler_refresh_provider=scheduler_refresh_provider,
-        )
-
     @router.put(
         "/internal/v1/automation/instances/{automation_id}/configuration",
         response_model=None,
@@ -1066,7 +715,6 @@ def create_automation_plugin_management_router(
                 resource_bindings=payload.resource_bindings,
                 enabled_entrypoints=tuple(payload.enabled_entrypoints),
                 schedule=payload.schedule.model_dump(),
-                device_id=payload.device_id,
                 request_id=payload.request_id,
                 expected_project_configuration_version=(
                     payload.expected_project_configuration_version
@@ -1296,86 +944,14 @@ def create_automation_plugin_management_router(
         )
         return response
 
-    @router.post(
-        "/internal/v1/automation/instances/{automation_id}/generation/recover-not-applied",
-        response_model=None,
-    )
-    async def recover_arrival_stats_not_applied(
-        automation_id: str,
-        payload: ArrivalStatsRecoveryRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        return await _service_response(
-            lambda: service_provider().recover_arrival_stats_not_applied(
-                automation_id,
-                generation=payload.generation,
-                lease_id=payload.lease_id,
-                evidence_sha256=payload.evidence_sha256,
-                readback=payload.readback.model_dump(),
-                request_id=payload.request_id,
-                actor=actor,
-            )
-        )
-
-    @router.post(
-        "/internal/v1/automation/instances/{automation_id}/generation/recover-unknown-write",
-        response_model=None,
-    )
-    async def recover_unknown_write(
-        automation_id: str,
-        payload: UnknownWriteRecoveryRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        manual = {} if payload.resume_run else {
-            "resume_run": False, "expected_run_id": payload.expected_run_id,
-            "expected_work_item_id": payload.expected_work_item_id,
-        }
-        return await _service_response(
-            lambda: service_provider().recover_unknown_write(
-                automation_id,
-                generation=payload.generation,
-                lease_id=payload.lease_id,
-                request_id=payload.request_id,
-                actor=actor,
-                **manual,
-            )
-        )
-
-    @router.post(
-        "/internal/v1/automation/instances/{automation_id}/generation/recover-current-unknown-write",
-        response_model=None,
-    )
-    async def recover_current_unknown_write(
-        automation_id: str,
-        payload: CurrentUnknownWriteRecoveryRequest,
-        request: Request,
-    ) -> dict[str, Any] | JSONResponse:
-        actor = actor_provider(request)
-        return await _service_response(
-            lambda: service_provider().recover_current_unknown_write(
-                automation_id,
-                request_id=payload.request_id,
-                actor=actor,
-            )
-        )
-
     return router
 
 
 __all__ = [
     "PluginConfigurationRequest",
     "PluginDataPurgeRequest",
-    "ArrivalStatsRecoveryReadbackRequest",
-    "ArrivalStatsRecoveryRequest",
-    "CurrentUnknownWriteRecoveryRequest",
-    "UnknownWriteRecoveryRequest",
     "PluginScheduleRequest",
     "PluginStateRequest",
     "PluginUninstallRequest",
-    "WorkerCapabilitiesRequest",
-    "WorkerIdentityRequest",
-    "WorkerPairRequest",
     "create_automation_plugin_management_router",
 ]

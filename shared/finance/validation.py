@@ -62,7 +62,7 @@ class CaptureEvidence:
     page_row_counts: Sequence[int]
     transactions: Sequence[TransactionRecord]
     summaries: Sequence[SummarySnapshot]
-    summary_semantics: SummarySemantics | str = SummarySemantics.GROSS_BY_FEE_DIRECTION
+    summary_semantics: SummarySemantics | str = SummarySemantics.PERIOD_STATEMENT
     intended_write_count: int | None = None
     response_valid: bool = True
     known_fee_items: Iterable[FeeItemKey] = field(default_factory=tuple)
@@ -73,46 +73,14 @@ class CaptureEvidence:
     period_statement_ref: str | None = None
 
 
-def _aggregate_transactions(
-    rows: Iterable[TransactionRecord],
-) -> dict[tuple[str, str, str], tuple[Decimal, Decimal]]:
-    totals: dict[tuple[str, str, str], list[Decimal]] = defaultdict(
-        lambda: [ZERO, ZERO]
-    )
-    for row in rows:
-        key = (row.primary_fee_name, row.secondary_fee_name, row.direction.value)
-        totals[key][0] += row.income
-        totals[key][1] += row.expense
-    return {key: (values[0], values[1]) for key, values in totals.items()}
-
-
-def _aggregate_summaries(
-    rows: Iterable[SummarySnapshot],
-) -> dict[tuple[str, str, str], tuple[Decimal, Decimal]]:
-    totals: dict[tuple[str, str, str], list[Decimal]] = defaultdict(
-        lambda: [ZERO, ZERO]
-    )
-    for row in rows:
-        totals[row.grouping_key][0] += row.income
-        totals[row.grouping_key][1] += row.expense
-    return {key: (values[0], values[1]) for key, values in totals.items()}
-
-
-def _aggregate_net_by_fee(
-    rows: Iterable[TransactionRecord | SummarySnapshot],
-) -> dict[tuple[str, str], Decimal]:
-    totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
-    for row in rows:
-        totals[(row.primary_fee_name, row.secondary_fee_name)] += row.net_change
-    return dict(totals)
-
-
 def validate_finance_capture(evidence: CaptureEvidence) -> ValidationReport:
     """Validate a platform/account/date capture before it may be committed.
 
     Adapters must provide normalized non-negative income and expense amounts.
-    A remote total of zero is treated as valid no-data evidence only when the
-    response itself was valid and all detail/summary pages are explicitly empty.
+    Each day is cut from a stored platform statement capture whose query
+    already closed the whole period item by item, so it carries no separate
+    daily summary. A remote total of zero is valid no-data evidence only when
+    the response itself was valid and every detail page is explicitly empty.
     """
 
     errors: list[ValidationIssue] = []
@@ -223,20 +191,6 @@ def validate_finance_capture(evidence: CaptureEvidence) -> ValidationReport:
             )
         )
 
-    detail_net_by_fee = (
-        _aggregate_net_by_fee(transactions)
-        if summary_semantics is SummarySemantics.SIGNED_NET_BY_FEE
-        else {}
-    )
-    signed_net_summary_required = any(value != ZERO for value in detail_net_by_fee.values())
-    summary_required = (
-        remote_total > 0
-        and summary_semantics is not SummarySemantics.PERIOD_STATEMENT
-        and (
-            summary_semantics is not SummarySemantics.SIGNED_NET_BY_FEE
-            or signed_net_summary_required
-        )
-    )
     if summary_semantics is SummarySemantics.PERIOD_STATEMENT:
         if not str(evidence.period_statement_ref or "").strip():
             errors.append(
@@ -252,67 +206,10 @@ def validate_finance_capture(evidence: CaptureEvidence) -> ValidationReport:
                     "a period-statement day carries no separate daily summary",
                 )
             )
-    if summary_required and not summaries:
-        errors.append(
-            ValidationIssue(
-                "SUMMARY_MISSING",
-                "non-empty detail capture has no platform summary evidence",
-            )
-        )
-    fee_mismatches = 0
-    if summary_semantics is SummarySemantics.GROSS_BY_FEE_DIRECTION:
-        detail_by_fee = _aggregate_transactions(transactions)
-        summary_by_fee = _aggregate_summaries(summaries)
-        for key in set(detail_by_fee) | set(summary_by_fee):
-            if detail_by_fee.get(key, (ZERO, ZERO)) != summary_by_fee.get(
-                key, (ZERO, ZERO)
-            ):
-                fee_mismatches += 1
-    elif summary_semantics is SummarySemantics.SIGNED_NET_BY_FEE:
-        summary_net_by_fee = _aggregate_net_by_fee(summaries)
-        for key in set(detail_net_by_fee) | set(summary_net_by_fee):
-            if detail_net_by_fee.get(key, ZERO) != summary_net_by_fee.get(key, ZERO):
-                fee_mismatches += 1
-    if fee_mismatches:
-        errors.append(
-            ValidationIssue(
-                "FEE_SUMMARY_MISMATCH",
-                (
-                    "detail and platform summary differ by fee item and direction"
-                    if summary_semantics is SummarySemantics.GROSS_BY_FEE_DIRECTION
-                    else "detail and platform summary differ by fee item signed net"
-                ),
-                fee_mismatches,
-            )
-        )
-
     detail_income = sum((row.income for row in transactions), ZERO)
     detail_expense = sum((row.expense for row in transactions), ZERO)
     summary_income = sum((row.income for row in summaries), ZERO)
     summary_expense = sum((row.expense for row in summaries), ZERO)
-    gross_totals_mismatch = (detail_income, detail_expense) != (
-        summary_income,
-        summary_expense,
-    )
-    net_total_mismatch = detail_income - detail_expense != summary_income - summary_expense
-    total_mismatch = (
-        gross_totals_mismatch
-        if summary_semantics is SummarySemantics.GROSS_BY_FEE_DIRECTION
-        else net_total_mismatch
-        if summary_semantics is SummarySemantics.SIGNED_NET_BY_FEE
-        else False
-    )
-    if total_mismatch:
-        errors.append(
-            ValidationIssue(
-                "TOTAL_AMOUNT_MISMATCH",
-                (
-                    "detail income/expense/net does not equal platform summary"
-                    if summary_semantics is SummarySemantics.GROSS_BY_FEE_DIRECTION
-                    else "detail net does not equal platform summary net"
-                ),
-            )
-        )
 
     missing_balance_pairs = 0
     balance_equation_errors = 0
@@ -460,7 +357,7 @@ def validate_finance_capture(evidence: CaptureEvidence) -> ValidationReport:
                 if summary_semantics is not None
                 else str(evidence.summary_semantics)
             ),
-            "fee_summary_mismatch_count": fee_mismatches,
+            "fee_summary_mismatch_count": 0,
             "period_statement_ref": (
                 str(evidence.period_statement_ref)
                 if summary_semantics is SummarySemantics.PERIOD_STATEMENT

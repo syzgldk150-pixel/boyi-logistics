@@ -684,17 +684,6 @@ class FinanceEvolutionMixin:
             finally:
                 cursor.close()
 
-    def mark_review_notified(self, review_case_id: int) -> None:
-        with self._connection() as connection:
-            cursor = connection.cursor()
-            try:
-                cursor.execute(
-                    "UPDATE finance_review_cases SET notified_at = %s, updated_at = %s WHERE id = %s",
-                    (_now(), _now(), int(review_case_id)),
-                )
-            finally:
-                cursor.close()
-
     def reject_review_case(self, review_case_id: int, *, reviewed_by: str, reason: str) -> None:
         actor = str(reviewed_by or "").strip()
         review_reason = str(reason or "").strip()

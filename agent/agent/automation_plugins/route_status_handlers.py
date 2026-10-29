@@ -12,12 +12,13 @@ import hmac
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from agent.connector_namespaces import ROUTE_STATUS_TOOL
 from agent.automation_plugins.core_adapter import CoreBrokerHandler, CoreBrokerInvocationContext
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.manifest import canonical_json_bytes
 
 
-TOOL = "sync_ronghui_route_status"
+TOOL = ROUTE_STATUS_TOOL
 ROLE = "host_internal"
 PENDING_ACTION = ("projection.invoke", "waybill.ronghui.route_status.pending")
 UPDATE_ACTION = ("projection.invoke", "waybill.ronghui.route_status.update")

@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "agent"))
 
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.tms_runtime.scripts import yunda_dispatch_forecast, yunda_send_waybills
-from plugin_core_adapters import first_party as adapters
+from plugin_core_adapters import host_primitives as adapters
 from tools import yunda_dispatch_forecast_sync_tool as dispatch_sink
 from tools import yunda_send_waybills_sync_tool as send_sink
 from tools import feishu_cli_tool
