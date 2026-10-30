@@ -267,6 +267,7 @@ docs/
 - 来源资源固定为 `phase7.split_pending_source_sheet`（每日到货表 A:S），目标资源固定为 `phase7.split_pending_target_sheet`（分批及有发未到表 A:S）。
 - `sync_arrival_stats` 每次成功统计后必须用本次内存中的 A:S 统计结果刷新目标 Sheet 与 MySQL 未齐快照，不依赖人工发送“分批”；全部到齐时清空目标旧行并保留表头。自动刷新不得触发融辉问题件上报。
 - `sync_arrival_stats` 的当天范围固定为“目标日 arrive-list ∪ 目标日实际扫描主单”；历史已到齐且当天未重扫的重复主单过滤，历史未齐主单以到货 0 保留，当天实际重扫始终保留。累计件数按开单件数封顶，`scan_window_days` 只允许 1，历史回填必须使用独立扫描同步工具。
+- 到货、统计、分批与归档表都按原值写入；写后核对时“备注”“收件地址”两列按飞书存储的兼容字符规整比较（如不换行空格存为普通空格），其余列逐字比较，内容真实不同仍为结果未知。回归见 `../tests/test_arrival_production_adapter.py`。
 - MySQL 表 `split_pending_problem_items` 以问题件 `upload_status` 作为当前执行状态；遗留 `complaint_status` 只为数据库兼容保留，当前快照统一写为 `not_applicable`，不得重新成为执行门禁。同类型刷新保留问题件结果，完整成功单隐藏，失败或未完成问题件继续显示，类型变化才重置。
 - 正式模式的 `selected_bill_codes` 与 `preview_fingerprint` 必须由 Agent 从 `preview_invocation_id` 指向的已验签持久化候选 Invocation 恢复，宿主确认适配器按该持久化预览的 `selection_limit` 绑定至少一个规范、唯一、有序运单号及指纹（当前分批包上限为 90，不是宿主固定业务限额）；飞书和浏览器都不能上传账号或指纹，旧直接工具已删除，正式上传只经项目入口。
 - `0 < 已到 < 应到` 直接在“问题件录入”登记“少货/分批 / 交接异常”，问题件内容严格为 `应到XX件 实际到XX件`；`已到=0` 登记“有发未到 / 通知类（不顺延时效）”。分批链路不得进入投诉方登记。签名包在任何写入前重读来源和快照、复核指纹并预检全部目标；随后逐单从登记问题件列表独立读回，先写后验每日应签问题事件，最后才把 MySQL 问题件结果标记成功；不能用提交返回的 `saved/success` 代替 Evidence，也不能在事件失败后隐藏候选。

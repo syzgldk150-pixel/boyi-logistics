@@ -274,7 +274,7 @@ def test_arrive_sheet_uses_exact_resource_and_accepts_only_exact_dated_readback(
     monkeypatch.setattr(arrival, "_load_resource", lambda exact: resource if exact == resource_id else None)
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: False)
 
-    def fresh(_resource, value_range, *, width):
+    def fresh(_resource, value_range, *, width, compatibility_text_columns=frozenset()):
         assert _resource == resource
         assert width == 18
         if value_range == resource["clear_range"]:
@@ -324,7 +324,7 @@ def test_arrive_sheet_accepts_feishu_numeric_readback_formatting(
     )
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
 
-    def fresh(_resource, value_range, *, width):
+    def fresh(_resource, value_range, *, width, compatibility_text_columns=frozenset()):
         if value_range == resource["clear_range"]:
             return arrival._canonical_rows(next(clear_reads), width=width)
         if value_range == resource["title_range"]:
@@ -434,7 +434,7 @@ def test_arrive_sheet_readback_respects_template_offset_within_clear_range(
     )
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
 
-    def fresh(_resource, value_range, *, width):
+    def fresh(_resource, value_range, *, width, compatibility_text_columns=frozenset()):
         if value_range == resource["clear_range"]:
             return arrival._canonical_rows(next(clear_reads), width=width)
         if value_range == resource["title_range"]:
@@ -487,7 +487,7 @@ def test_empty_arrive_sheet_reconciles_clear_response_loss_and_updates_title(
         observed[value_range] = values
         return True
 
-    def fresh(_resource: dict[str, Any], value_range: str, *, width: int):
+    def fresh(_resource: dict[str, Any], value_range: str, *, width: int, compatibility_text_columns=frozenset()):
         assert _resource == resource
         return arrival._canonical_rows(observed[value_range], width=width)
 
@@ -522,7 +522,7 @@ def test_arrive_sheet_without_optional_title_range_verifies_only_managed_data(
     monkeypatch.setattr(arrival, "_load_resource", lambda exact: resource if exact == resource_id else None)
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: False)
 
-    def fresh(_resource, value_range, *, width):
+    def fresh(_resource, value_range, *, width, compatibility_text_columns=frozenset()):
         reads.append(value_range)
         return arrival._canonical_rows(rows, width=width)
 
@@ -636,7 +636,7 @@ def test_arrival_stats_sheet_accepts_lost_response_only_after_exact_fresh_readba
     monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: False)
 
-    def fresh(_resource, value_range, *, width):
+    def fresh(_resource, value_range, *, width, compatibility_text_columns=frozenset()):
         assert _resource == resource
         assert width == 19
         if value_range == "Stats!A2:S100":
@@ -656,6 +656,78 @@ def test_arrival_stats_sheet_accepts_lost_response_only_after_exact_fresh_readba
 
     assert result["verified"] is True
     assert result["record_count"] == 1
+
+
+def test_arrival_stats_sheet_accepts_feishu_compatibility_folding_of_remarks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Production 2026-10-30: a remark with a no-break space was stored by
+    # Feishu with a plain space, so the exact readback never matched.
+    resource_id = "resource-stats-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "snapshot_range": "Stats!A2:S100",
+        "clear_range": "Stats!A2:S100",
+        "title_range": "Stats!A1:S1",
+        "_meta": {"resource_key": resource_id},
+    }
+    record = {**_stats_record("A-NBSP"), "remarks": "202603220052\u00a0 电车"}
+    values = arrival._stats_values("stats", [record], "2026-08-15")
+    written: list[list[object]] = []
+
+    def feishu(action, params):
+        if action == "write_sheet":
+            if params["range"].startswith("Stats!A2") and any(any(cell for cell in row) for row in params["values"]):
+                written.extend(params["values"])
+            return {"data": {}}
+        assert action == "read_sheet"
+        if params["range"] == "Stats!A1:S1":
+            return {"data": {"valueRange": {"values": [values[0]]}}}
+        stored = [[str(cell).replace("\u00a0", " ") for cell in row] for row in values[1:]]
+        return {"data": {"valueRange": {"values": stored}}}
+
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
+    monkeypatch.setattr(arrival, "_invoke_feishu", feishu)
+    monkeypatch.setattr(arrival.time, "sleep", lambda _delay: None)
+
+    result = arrival._replace_arrival_stats_sheet(resource_id, "stats", [record], "2026-08-15")
+
+    assert result["verified"] is True
+    assert written[0][8] == "202603220052\u00a0 电车"  # written exactly as received
+
+
+def test_arrival_stats_sheet_still_rejects_a_changed_remark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_id = "resource-stats-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "snapshot_range": "Stats!A2:S100",
+        "clear_range": "Stats!A2:S100",
+        "title_range": "Stats!A1:S1",
+        "_meta": {"resource_key": resource_id},
+    }
+    record = {**_stats_record("A-CHANGED"), "remarks": "202603220052 电车"}
+    values = arrival._stats_values("stats", [record], "2026-08-15")
+
+    def feishu(action, params):
+        if action == "write_sheet":
+            return {"data": {}}
+        if params["range"] == "Stats!A1:S1":
+            return {"data": {"valueRange": {"values": [values[0]]}}}
+        stored = [list(row) for row in values[1:]]
+        stored[0][8] = "202603220053 电车"
+        return {"data": {"valueRange": {"values": stored}}}
+
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
+    monkeypatch.setattr(arrival, "_invoke_feishu", feishu)
+    monkeypatch.setattr(arrival.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(PluginExecutionError) as failure:
+        arrival._replace_arrival_stats_sheet(resource_id, "stats", [record], "2026-08-15")
+    assert failure.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
 def test_arrival_stats_sheet_unconfirmed_write_logs_only_the_mismatch_position(
@@ -681,7 +753,7 @@ def test_arrival_stats_sheet_unconfirmed_write_logs_only_the_mismatch_position(
     monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
     monkeypatch.setattr(arrival.time, "sleep", lambda _delay: None)
-    monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda _resource, value_range, *, width: (
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda _resource, value_range, *, width, compatibility_text_columns=frozenset(): (
         changed if value_range == "Stats!A2:S100" else expected_title))
 
     with caplog.at_level("WARNING"), pytest.raises(PluginExecutionError) as failure:
@@ -716,7 +788,7 @@ def test_arrival_stats_sheet_rechecks_acknowledged_write_until_exact_match(
     monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
     monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
 
-    def fresh(_resource, value_range, *, width):
+    def fresh(_resource, value_range, *, width, compatibility_text_columns=frozenset()):
         assert _resource == resource
         assert width == 19
         if value_range == "Stats!A2:S100":
@@ -956,7 +1028,7 @@ def test_arrival_archive_binds_target_date_sheet_and_exact_rows(
     monkeypatch.setattr(
         arrival,
         "_fresh_sheet_rows",
-        lambda _resource, value_range, *, width: (
+        lambda _resource, value_range, *, width, compatibility_text_columns=frozenset(): (
             arrival._canonical_rows(values, width=width)
             if value_range == "Archive!A1:S100"
             else pytest.fail(value_range)

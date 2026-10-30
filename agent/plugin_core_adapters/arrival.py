@@ -100,6 +100,10 @@ _NUMERIC_RECORD_FIELDS = frozenset(
 _ARRIVE_NUMERIC_SHEET_COLUMNS = frozenset(
     index for index, field in enumerate(_ARRIVE_FIELDS) if field in _NUMERIC_RECORD_FIELDS
 )
+# Feishu stores these free-text cells with compatibility characters folded
+# (for example a no-break space becomes a space). Values are written as they
+# are; readback compares both sides after the same folding. The statistics,
+# split-pending and archive sheets share the arrive sheet's column order.
 _ARRIVE_COMPATIBILITY_TEXT_COLUMNS = frozenset(
     index
     for index, field in enumerate(_ARRIVE_FIELDS)
@@ -398,6 +402,7 @@ def _fresh_sheet_rows(
     value_range: str,
     *,
     width: int,
+    compatibility_text_columns: frozenset[int] = frozenset(),
 ) -> list[list[str]]:
     try:
         raw = _invoke_feishu(
@@ -409,7 +414,11 @@ def _fresh_sheet_rows(
                 "dry_run": False,
             },
         )
-        return _canonical_rows(_sheet_values(raw), width=width)
+        return _canonical_rows(
+            _sheet_values(raw),
+            width=width,
+            compatibility_text_columns=compatibility_text_columns,
+        )
     except Exception as exc:
         _unknown("arrival sheet fresh readback failed", cause=exc)
 
@@ -965,7 +974,9 @@ def _replace_arrival_stats_sheet(
         if not values:
             raise _error("split-pending sheet header is required", "BROKER_ARGUMENT_INVALID")
         try:
-            expected = _canonical_rows(values, width=19)
+            expected = _canonical_rows(
+                values, width=19, compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
+            )
         except ValueError as exc:
             raise _error("split-pending sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
         sheet_id = str(resource["sheet_id"])
@@ -998,7 +1009,10 @@ def _replace_arrival_stats_sheet(
             )
         managed_range = f"{sheet_id}!A1:S{clear['end_row']}"
         observed = _require_exact_readback(
-            lambda: _fresh_sheet_rows(resource, managed_range, width=19),
+            lambda: _fresh_sheet_rows(
+                resource, managed_range, width=19,
+                compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
+            ),
             expected,
             label="split-pending sheet",
         )
@@ -1078,7 +1092,9 @@ def _replace_arrival_stats_sheet(
         )
     width = len(values[0]) if values else 1
     try:
-        expected_data = _canonical_rows(write_values, width=width)
+        expected_data = _canonical_rows(
+            write_values, width=width, compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
+        )
         expected_title = _canonical_rows([values[0]], width=width) if title is not None else []
     except ValueError as exc:
         raise _error("arrival statistics sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
@@ -1086,7 +1102,10 @@ def _replace_arrival_stats_sheet(
 
     def observe() -> tuple[list[list[str]], list[list[str]]]:
         observation = (
-            _fresh_sheet_rows(resource, clear_target, width=width),
+            _fresh_sheet_rows(
+                resource, clear_target, width=width,
+                compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
+            ),
             (
                 _fresh_sheet_rows(resource, title["range"], width=width)
                 if title is not None
@@ -1232,11 +1251,16 @@ def _archive_arrival_stats_sheet(
             },
         )
     try:
-        expected = _canonical_rows(values, width=len(values[0]))
+        expected = _canonical_rows(
+            values, width=len(values[0]), compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
+        )
     except ValueError as exc:
         raise _error("arrival archive arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
     observed = _require_exact_readback(
-        lambda: _fresh_sheet_rows(resource, clear_range, width=len(values[0])),
+        lambda: _fresh_sheet_rows(
+            resource, clear_range, width=len(values[0]),
+            compatibility_text_columns=_ARRIVE_COMPATIBILITY_TEXT_COLUMNS,
+        ),
         expected,
         label="arrival archive",
     )
