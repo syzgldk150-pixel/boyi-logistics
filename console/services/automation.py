@@ -14,6 +14,7 @@ from console.services.automation_preview_support import (
     SCAN_PREVIEW_PUBLIC_FIELDS,
     SELECTION_PREVIEW_ERROR_MESSAGES,
     SELECTION_PREVIEW_PUBLIC_FIELDS,
+    current_plugin_schedule_rows,
     group_scheduled_rows_by_automation_id,
     normalize_scan_preview_projection,
     normalize_selection_preview_projection,
@@ -325,7 +326,8 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
         # Without its module/retirement ownership, old SQL schedules must not
         # reappear as missing-plugin cards. The catalog warning remains visible.
         scheduled_row_groups = group_scheduled_rows_by_automation_id(
-            [] if automation_plugin_warning and not automation_plugin_instances else scheduled_rows
+            [] if automation_plugin_warning and not automation_plugin_instances
+            else current_plugin_schedule_rows(scheduled_rows)
         )
         tasks_by_id: dict[str, dict[str, Any]] = {}
         for scheduled_group in scheduled_row_groups:

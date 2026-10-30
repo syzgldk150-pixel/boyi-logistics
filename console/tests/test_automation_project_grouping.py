@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from console.services.automation import (
     AutomationServiceMixin,
+    current_plugin_schedule_rows,
     group_scheduled_rows_by_automation_id,
 )
 
@@ -105,6 +106,15 @@ class AutomationProjectGroupingTests(unittest.TestCase):
 
         self.assertEqual({}, captured)
 
+    def test_retired_v1_tool_rows_never_become_cards(self):
+        rows = [
+            {"id": "r7_arrival_checkin_0900", "automation_id": "r7_arrival_checkin", "tool_name": "r7_arrival_checkin"},
+            {"id": "r7_departure_checkin_1800", "automation_id": "r7_departure_checkin", "tool_name": "r7_departure_checkin"},
+            {"id": "ap_one", "automation_id": "instance-one", "tool_name": "automation.instance-one.run"},
+        ]
+
+        self.assertEqual([rows[2]], current_plugin_schedule_rows(rows))
+
     def test_same_project_groups_arbitrary_scheduled_row_ids(self):
         rows = [
             {"id": "opaque-slot-alpha", "automation_id": "instance-one"},
@@ -199,7 +209,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
 
     def test_hidden_id_collision_never_hides_an_unlinked_schedule_row(self):
         tasks = self._rendered_tasks(
-            scheduled_rows=[{"id": "hidden-project", "automation_id": None}],
+            scheduled_rows=[{"id": "hidden-project", "automation_id": None, "tool_name": "automation.hidden-project.run"}],
             hidden_automation_ids=frozenset({"hidden-project"}),
         )
 
@@ -226,7 +236,7 @@ class AutomationProjectGroupingTests(unittest.TestCase):
 
     def test_unlinked_schedule_row_remains_visible_but_fail_closed(self):
         tasks = self._rendered_tasks(
-            scheduled_rows=[{"id": "legacy-slot-0100", "automation_id": None}],
+            scheduled_rows=[{"id": "legacy-slot-0100", "automation_id": None, "tool_name": "automation.legacy-slot-0100.run"}],
         )
 
         self.assertEqual(1, len(tasks))

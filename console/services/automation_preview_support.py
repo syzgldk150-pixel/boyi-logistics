@@ -208,6 +208,17 @@ def selection_preview_error_message(error_code: Any, fallback: Any = "") -> str:
     return normalize_feedback_text(fallback or "候选清单当前不可用，请重新读取。")
 
 
+def current_plugin_schedule_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only plugin schedules; the Agent scheduler never runs other rows.
+
+    Retired V1 tool rows (for example the old R7 check-ins) stay in the table
+    until migration 064 removes them. They are not plugin projects, so the
+    catalog cannot list or hide them and they must not render as cards.
+    """
+
+    return [row for row in rows if str(row.get("tool_name") or "").strip().startswith("automation.")]
+
+
 def group_scheduled_rows_by_automation_id(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -246,6 +257,7 @@ def group_scheduled_rows_by_automation_id(
 
 
 __all__ = [
+    "current_plugin_schedule_rows",
     "preview_project_id_valid",
     "SELECTION_PREVIEW_PUBLIC_FIELDS",
     "SELECTION_PREVIEW_CANDIDATE_SHAPES",
