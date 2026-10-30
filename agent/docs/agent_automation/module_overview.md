@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 ## 当前执行边界
@@ -63,7 +63,7 @@ TMS 工具必须把登录态错误作为结构化结果返回：顶层包含 `er
 | `分批`（仅精确文本） | `split_pending_problem_upload` | reply（dry-run 完整编号列表 → 未超过本次上限时“确认”执行全部；超量保留候选，输入序号后回显并二次确认部分执行） |
 | `自提到货问题件` / `自提部到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` / `开单为自提件问题件` 等 | `self_pickup_problem_upload` | reply（先 dry_run 预览，再确认执行；默认不上传截图） |
 
-R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行把两个项目列入隐藏集合，Scheduler 不注册 Job，飞书不提供直达命令，后台也不补回卡片；不得从静态元数据或历史定时行恢复其执行入口。
+R7 旧到达/发车打卡工具已于 2026-10 删除，日志表仅为追溯保留。数据库里这两个旧项目在迁移 064 删除前由目录按运行模型隐藏，Scheduler 不注册旧定时，飞书不提供命令，后台不显示卡片；R7 车线每日打卡由 `r7_vehicle_checkin_v2` 承担。
 
 `self_pickup_problem_upload` 的当前执行链路是：飞书文本 `自提到货问题件` / `自提部到货问题件上传` / `大祥S站自提问题件上传` → committed project route 的签名 dry-run → 已验签并持久化的 `selection_preview` → 飞书保存 `preview_invocation_id` 并默认选择全部候选 → 确认时服务端从同一候选 Invocation 恢复指纹和正式参数 → `automation.self_pickup_problem_upload.run`。旧 `agent/direct_tool_router.py`、`tools/self_pickup_problem_upload_tool.py` 与 `/tms/self_pickup_problem_upload` 不再参与飞书预览或正式写入。自提任务读取大祥到货数据表中已审阅的 `UeBd3I` 工作表，与分批/未到任务的来源定位相互独立；启动同步会把自提资源的精确文档、工作表和范围定位恢复到该工作表，避免历史发布继续引用分批来源。签名动作读取项目绑定的来源表，按两条来源规则筛单：`目的站点=邵阳自提部` 进入自提部来源；`目的站点=邵阳大祥S站` 且 `派送方式=自提` 进入大祥S站来源；两类来源都必须满足 `累计到货件数 = 件数/货物件数`，未到齐或缺少件数列时不进入上传候选。候选运单号统一只裁剪前后空白；裁剪后仍含空白时显式报告来源行，预览与正式执行都不会删除内部空白或猜测单号。候选指纹按规范内容排序计算，来源行顺序变化不会造成假过期；内容变化则返回 `SELECTION_PREVIEW_EXPIRED` 且在任何 TMS 写入前终止。真实执行时每个来源分别通过签名 Broker 定位 TMS `问题件录入`，问题件类型固定为 `开单为自提件`，问题件科目为 `特殊时效`；保存前读取登记问题件列表，已有同类型或同文案记录则跳过，新增后必须独立读回验证。自提部与大祥S站来源分别使用项目设置显式绑定的 `self_pickup_primary` 与 `self_pickup_daxiang_s` 角色账号；后台改绑后下一次运行使用新账号，脚本不内置默认站点、账号或 session profile。
 
@@ -72,7 +72,7 @@ R7 两个历史工具和日志表仅为既有记录追溯保留。当前发行�
 1. 插件化确定性指令在签名 manifest 声明唯一 `feishu_route.route_key`，由 `AutomationProjectEntrypoints` 精确解析 committed 项目实例；账号只取该实例当前绑定。
 2. 只有仍属 legacy、无插件项目路由的兼容只读指令才在 `agent/direct_tool_router.py` 加精确 regex，并在 `direct_tool_request_from_text` 返回 `{tool_name, params, mode}`。
 3. 自定义回复放在 `feishu/message_handler.py` 的项目结果 formatter；不得把账号、站点或签名预览指纹放入消息参数。
-4. 新工具仍须在 `tools/registry.yaml` 完成治理注册；插件动作还需同步 manifest、Broker 合同、迁移矩阵、摘要锁和签名发行。
+4. 新工具仍须在 `tools/registry.yaml` 完成治理注册；插件能力按 `service_v2_plugins/README.md` 新建 V2 包，需要新 Connector 原语时还须登记在 `automation_plugins/reviewed_primitives.py`。
 
 ### 2. 先预览-后确认
 
@@ -206,7 +206,7 @@ Feishu WebSocket 启动前会尝试获取 MySQL 租约 `logistics_agent_feishu_w
 `sync_yunda_send_waybills` 的执行链路是：飞书文本 `韵达寄件运单/韵达寄件运单管理` 或后台定时任务 → Direct Invocation → `service_v2_plugins/sync_yunda_send_waybills_v2/payload/action.py` → Broker → `/yunda_send_waybills` → 韵达 `business/waybill/sendwaybill/list.html` + `business/specialLine/specialLineManage/getList.html` → `system/mail/list.html`、`system/mail/getOriginalData.html`、必要时 `business/waybill/sendwaybill/renderer.html` → 飞书多维表格。默认 `寄件日期=当天`，可传 `target_date` 拉单日，也可传 `start_date` + `end_date` 拉闭区间日期范围；范围模式按天循环调用韵达接口，避免跨天分页和去重边界不清。目标资源为 `phase7.yunda_send_waybills_bitable`，实际表标识从绑定资源读取；历史记录按天累积，同一运单号重复同步时更新原记录。字段来源中，收寄件人、电话、地址优先使用小眼睛解密接口；`体积重` 来自快件跟踪详情 `Extend_Field1`，`到付款` 来自详情 `COD`；寄件填仓管理使用 `SendType=1` 查询并与普通寄件运单按运单号去重合并，填仓单的运费桶优先取 `Special_Freight`，再回退 `Freight`。飞书字段 `中转运费` 按业务要求写每单开单总成本：普通寄件单优先取编辑详情页“成本信息-总计” `renderer.html -> price.Total`，寄件填仓单取列表返回的 `Total_Cost_Money`。列表导出 Excel 中的“总金额”与该值一致；列表接口里的 `Total_Money` 是“实收总金额”，不用于 `中转运费`。飞书写入成功后，同步将本次有效记录按 `waybill_no` upsert 到控制台 SQL 表 `waybills`，来源标记为 `yunda`，明确返回的当前扫描状态写入 `scan_status`；完整覆盖必须具备真实来源范围与分页证明，普通页面补查只局部 upsert，不能按局部结果删除旧单或宣称整日完整；`sql_only=true` 时只执行原站拉取和控制台 SQL 回填，不创建字段、不读写飞书多维表或普通电子表格。
 同步写入会额外维护 `日期` 字段，单日模式取本次 `target_date`，范围模式取每天循环日期；飞书表中该列为日期字段时写入毫秒时间戳，确保按日期筛选/分组可用。
 
-`init_waybills_sql_from_feishu` 用于初始化或修复控制台 `/waybills` 的 SQL 数据：从 `phase7.send_order_bitable` 对应的融辉寄件数据表，以及 `phase7.yunda_send_waybills_bitable` 对应的韵达寄件运单表分页读取全部飞书记录，复用两套同步工具的字段映射后按 `waybill_no` upsert 到 `waybills`。该工具只写 SQL，不修改飞书；`replace_date=false`，因此不会按日期删除旧记录，适合首次上线或 SQL 表丢失后的历史回填。融辉初始化同样剔除 `H...` / `HR...` 回单类单号，并会清理 SQL 中该来源已有的回单类历史行。
+从飞书寄件表全量回填 `/waybills` 的旧工具 `init_waybills_sql_from_feishu` 已于 2026-10 删除；运单表由寄件同步插件和寄件补查持续维护。
 
 ## pending 状态类型
 

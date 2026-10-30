@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-10-23
+updated: 2026-10-30
 ---
 
 # 数据库迁移
@@ -51,7 +51,7 @@ updated: 2026-10-23
 - 不可变领域事件、事务 Outbox、死信状态和消费者幂等回执。
 - 定时任务的配置版本、当前审批策略及不可变策略审计事件；策略快照不保存凭据、Cookie、Token、
   原始请求体或可执行 HTML。
-- 自动化插件的包、项目、代际、租约、写尝试回执，以及 `ACTION_V1` / `SERVICE_V2` 双轨、
+- 自动化插件的包、项目、代际、租约、写尝试回执，以及 `ACTION_V1` / `SERVICE_V2` 双轨（现行代码只运行 SERVICE_V2，旧 ACTION_V1 行在迁移 064 前被目录隐藏）、
   服务/贡献、托管文档和迁移互斥状态；
 - 迁移 `027` 中历史 14 个业务模块的生命周期和 Lite 审计（之后新增的 Harness 与监控查询模块不回写历史 seed）；
 - 财务演进与全局 LLM 设置（迁移 `009_finance_evolution_llm.sql`）；

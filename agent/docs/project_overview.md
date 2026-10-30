@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # 物流 Agent 项目总览
@@ -115,7 +115,6 @@ updated: 2026-10-29
 - `sync_daily_send_orders`、`sync_delivery_status`、`sync_daily_should_sign`、`sync_site_send_list`、`sync_arrive_list`、`sync_scan_codes`、`sync_arrival_stats` 已全部并入当前发布仓，由各自 `service_v2_plugins/<id>_v2/payload/` 经 Broker 和 `plugin_core_adapters/` 执行；`agent/tms_runtime/` 负责平台协议，旧 whole-tool 不进入新链；`sync_daily_send_orders` 写入飞书后会同步维护控制台 `waybills` SQL 表，并将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按融辉运单号检索。
 - `sync_yunda_dispatch_forecast` 按插件实例绑定的韵达账号读取次日“网点派件量预测主单表”并写入绑定的飞书资源。17:00 是历史默认定时说明，不代表当前生产设置；运行时使用已安装实例的实际定时及精确账号绑定，融辉插件同样不回落 `ronghui/default`。
 - `sync_yunda_send_waybills` 复用该实例绑定韵达账号的登录态，拉取当天“寄件运单管理”列表，补查快件跟踪详情与小眼睛解密接口后写入绑定的寄件资源；历史按天累积，同一运单号重复同步时更新原记录，并同步维护控制台 `waybills` SQL 表，将明确返回的当前扫描状态写入 `scan_status`，后台 `/waybills` 可按韵达运单号检索。
-- `init_waybills_sql_from_feishu` 可从飞书中的融辉寄件数据表和韵达寄件运单表全量回填控制台 `waybills` SQL 表，用作后台运单查询模块的初始化数据来源；该工具只写 SQL，不修改飞书。
 - 旧 R7 到达/发车打卡已删除；R7 车线每日打卡由独立 V2 包 `r7_vehicle_checkin_v2` 承担，见 `r7_vehicle_checkin.md`。
 - `sync_arrive_list` 当前拉取 TMS「派件预报」作为到货基础清单；`sync_arrival_stats` 以“目标日 arrive-list ∪ 目标日实际扫描主单”为当天范围，过滤历史已到齐且当天未重扫的重复主单，历史未齐主单以到货 0 保留，当天重扫主单始终保留。
 - `sync_arrival_stats` 会将融辉纯数字子单归并到对应主单，并在统计导出时过滤历史缓存中的子单行，避免旧误入库子单继续写入飞书。
