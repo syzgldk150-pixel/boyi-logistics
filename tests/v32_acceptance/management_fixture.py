@@ -175,7 +175,6 @@ class ManagementFixture:
             broker_handler_keys=handler_keys, service_registry=self.service_registry,
             contribution_registry=self.contribution_registry,
             project_enabled=lambda automation_id: self.catalog.require(automation_id).enabled,
-            excluded_automation_ids=self.catalog.excluded_persisted_automation_ids,
         )
         self.reconciler = AutomationRuntimeReconciler(
             repository=self.runtime_repository,

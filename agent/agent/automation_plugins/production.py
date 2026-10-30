@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from threading import RLock
-from typing import Any, Callable, Collection, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from shared.async_work import drain_thread
 from shared.automation_schedule_material import schedule_generation_shape
@@ -233,7 +233,6 @@ class ProductionRuntimeEffectDriver:
         contribution_registry: ManagedContributionRegistry | None = None,
         projection_lock: Any | None = None,
         project_enabled: Callable[[str], bool] | None = None,
-        excluded_automation_ids: Callable[[], Collection[str]] | None = None,
     ) -> None:
         shared_projection_lock = projection_lock or RLock()
         self._integrity = FilesystemPluginIntegrityVerifier()
@@ -246,7 +245,6 @@ class ProductionRuntimeEffectDriver:
         self._service_registry_restored = False
         self._projection_lock = shared_projection_lock
         self._project_enabled = project_enabled
-        self._excluded_automation_ids = excluded_automation_ids
         self._scheduler_projection_refresher: (
             Callable[[], Mapping[str, Any]] | None
         ) = None
@@ -775,11 +773,6 @@ class ProductionRuntimeEffectDriver:
                 "runtime service restoration identities are missing or duplicated",
                 code="PLUGIN_IDENTITY_CONFLICT",
             )
-        if self._excluded_automation_ids is not None:
-            # Persisted pre-V2 projects are hidden by the catalog; they have no
-            # V2 registrations or contributions to restore.
-            excluded = frozenset(self._excluded_automation_ids())
-            automation_ids = tuple(value for value in automation_ids if value not in excluded)
         restored_services: list[tuple[RuntimeGenerationSnapshot, RuntimeEffectRecord]] = []
         restored_contributions: list[tuple[RuntimeGenerationState, RuntimeGenerationSnapshot, RuntimeEffectRecord]] = []
         committed_by_project: dict[str, int] = {}
@@ -1938,8 +1931,6 @@ class MySQLRuntimeTargetService:
                     "automation project identities are missing or duplicated",
                     code="PLUGIN_IDENTITY_CONFLICT",
                 )
-            hidden_ids = frozenset(self._catalog.excluded_persisted_automation_ids())
-            raw_ids = [automation_id for automation_id in raw_ids if automation_id not in hidden_ids]
         if any(not automation_id for automation_id in raw_ids) or len(set(raw_ids)) != len(raw_ids):
             raise PluginConflictError(
                 "automation project identities are missing or duplicated",
@@ -2215,11 +2206,9 @@ class ProductionAutomationPluginRuntime:
         read_scope = getattr(self.runtime_repository, "read_scope", None)
         with read_scope() if callable(read_scope) else nullcontext():
             catalog = self.catalog.production_health(tuple(required_ids))
-            ignored_automation_ids = self.catalog.excluded_persisted_automation_ids()
             generations: RuntimeGenerationHealth = runtime_generation_health(
                 self.runtime_repository,
                 expected_automation_ids=required_ids,
-                ignored_automation_ids=ignored_automation_ids,
             )
         sandbox = self._sandbox_canary
         sandbox_ready = bool(sandbox is not None and sandbox.healthy)
@@ -2427,7 +2416,6 @@ def build_production_automation_plugin_runtime(
         contribution_registry=contribution_registry,
         projection_lock=runtime_projection_lock,
         project_enabled=lambda automation_id: catalog.require(automation_id).enabled,
-        excluded_automation_ids=catalog.excluded_persisted_automation_ids,
     )
     reconciler = AutomationRuntimeReconciler(
         repository=runtime_repository,

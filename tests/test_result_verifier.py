@@ -149,7 +149,7 @@ def _scan_capability():
     capability["_plugin_runtime"] = {
         "automation_id": "scan_codes",
         "plugin_id": "sync_scan_codes",
-        "trust_source": "ed25519_first_party",
+        "trust_source": "super_admin_upload",
     }
     return capability
 

@@ -82,8 +82,11 @@ def test_migration_adds_runtime_contracts_pair_lock_and_managed_documents():
     assert "unique_value_sha256 = value_sha256" in sql
 
 
-def test_runtime_contract_preserves_v1_and_requires_canonical_v2_api():
-    assert _runtime_contract({}) == ("ACTION_V1", "1.0.0")
+def test_runtime_contract_requires_explicit_canonical_v2_api():
+    with pytest.raises(ValueError, match="declared together"):
+        _runtime_contract({})
+    with pytest.raises(ValueError, match="runtime_model is invalid"):
+        _runtime_contract({"runtime_model": "ACTION_V1", "plugin_api": "1.0.0"})
     assert _runtime_contract(
         {"runtime_model": "SERVICE_V2", "plugin_api": "2.0.0"}
     ) == ("SERVICE_V2", "2.0.0")

@@ -153,8 +153,7 @@ class PluginCatalogEntry:
 
 # Both persistence and runtime projection use the same closed envelope.
 from shared.plugin_generation_contract import (  # noqa: E402
-    EXECUTION_METADATA_FIELDS_V1 as _EXECUTION_METADATA_FIELDS,
-    EXECUTION_METADATA_FIELDS_V2 as _EXECUTION_METADATA_FIELDS_V2,
+    EXECUTION_METADATA_FIELDS as _EXECUTION_METADATA_FIELDS,
 )
 _RUNTIME_DESCRIPTOR_FIELDS = frozenset(
     {
@@ -175,12 +174,7 @@ def _snapshot_execution_metadata(
     snapshot: RuntimeGenerationSnapshot,
 ) -> dict[str, Any]:
     metadata = copy.deepcopy(dict(snapshot.execution_metadata))
-    expected_fields = (
-        _EXECUTION_METADATA_FIELDS_V2
-        if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2
-        else _EXECUTION_METADATA_FIELDS
-    )
-    if set(metadata) != expected_fields:
+    if set(metadata) != _EXECUTION_METADATA_FIELDS:
         raise PluginConflictError("committed generation execution metadata is not closed")
     if snapshot.runtime_model is PluginRuntimeModel.SERVICE_V2:
         if (
@@ -630,18 +624,6 @@ class PluginCatalog:
         self._connectors = connector_registry or ConnectorRegistry()
 
     @staticmethod
-    def _project_is_excluded(project: PluginInstanceRecord) -> bool:
-        """Only Service V2 projects are current; other persisted rows stay hidden."""
-
-        return project.active_version.runtime_model is not PluginRuntimeModel.SERVICE_V2
-
-    def excluded_persisted_automation_ids(self) -> frozenset[str]:
-        """Return the exact persisted identities that are not Service V2 projects."""
-
-        _, hidden_automation_ids, _ = self._partition_projects()
-        return hidden_automation_ids
-
-    @staticmethod
     def _project_data_failure(
         exc: AutomationPluginError | ValueError | None = None,
     ) -> dict[str, str]:
@@ -674,7 +656,6 @@ class PluginCatalog:
         module: str | None = None,
     ) -> tuple[
         list[PluginInstanceRecord],
-        frozenset[str],
         dict[str, dict[str, str]],
     ]:
         raw_id_reader = getattr(self._repository, "list_instance_ids", None)
@@ -694,7 +675,6 @@ class PluginCatalog:
             )
             loaded_projects = dict(zip(automation_ids, projects, strict=True))
         visible: list[PluginInstanceRecord] = []
-        hidden: set[str] = set()
         failures: dict[str, dict[str, str]] = {}
         prefetch = getattr(self._repository, "prefetch_catalog_instances", None)
         if loaded_projects is None and callable(prefetch):
@@ -714,16 +694,13 @@ class PluginCatalog:
             if str(getattr(project, "automation_id", "") or "").strip() != automation_id:
                 failures[automation_id] = self._project_data_failure()
                 continue
-            if self._project_is_excluded(project):
-                hidden.add(automation_id)
-            else:
-                visible.append(project)
-        return visible, frozenset(hidden), dict(sorted(failures.items()))
+            visible.append(project)
+        return visible, dict(sorted(failures.items()))
 
     def persisted_automation_ids(self) -> tuple[str, ...]:
         """Return visible project identities without compiling project manifests."""
 
-        projects, _, unavailable_projects = self._partition_projects()
+        projects, unavailable_projects = self._partition_projects()
         return tuple(
             sorted(
                 {
@@ -742,8 +719,8 @@ class PluginCatalog:
         frozenset[str],
         dict[str, dict[str, str]],
     ]:
-        projects, hidden_automation_ids, failures = self._partition_projects(module=module)
-        hidden = set(hidden_automation_ids)
+        projects, failures = self._partition_projects(module=module)
+        hidden: set[str] = set()
         if module is not None:
             for other_module in MODULE_PATHS:
                 reader = getattr(self._repository, "list_instance_ids_for_module", None)
@@ -1376,8 +1353,6 @@ class PluginCatalog:
         if cache is not None and safe_automation_id in cache:
             return cache[safe_automation_id]
         project = self._repository.get_instance(safe_automation_id)
-        if project is not None and self._project_is_excluded(project):
-            return None
         entry = (
             _entry_from_project(project, self._project_configuration)
             if project is not None
@@ -1540,7 +1515,7 @@ class PluginCatalog:
             return None
         automation_id = tool_name[len(prefix) : -len(suffix)]
         project = self._repository.get_instance(automation_id)
-        if project is None or self._project_is_excluded(project):
+        if project is None:
             return None
         enabled = (
             project.enabled
@@ -1565,7 +1540,7 @@ class PluginCatalog:
     def get_project_capability(self, automation_id: str) -> dict[str, Any]:
         safe_automation_id = str(automation_id or "").strip()
         project = self._repository.get_instance(safe_automation_id)
-        if project is None or self._project_is_excluded(project):
+        if project is None:
             raise PluginNotFoundError(
                 f"automation plugin is not installed: {automation_id}"
             )

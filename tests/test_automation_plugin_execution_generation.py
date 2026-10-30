@@ -193,7 +193,7 @@ def _capability(tmp_path: Path, *, automation_id: str = "project-a") -> dict[str
             "generation": 1,
             "package_sha256": _digest("package"),
             "manifest_sha256": _digest("manifest"),
-            "trust_source": PluginTrustSource.ED25519_FIRST_PARTY.value,
+            "trust_source": PluginTrustSource.SUPER_ADMIN_UPLOAD.value,
             "install_root": str(root),
             "runtime": {"kind": "python_subprocess", "entrypoint": "payload/main.py"},
             "install_metadata": {"python_relative": "venv/bin/python"},
@@ -519,9 +519,9 @@ def _snapshot(capability: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
         enabled_entrypoints=("console",),
         execution_metadata=copy.deepcopy(dict(capability)),
         runtime_model=PluginRuntimeModel(
-            str(metadata.get("runtime_model") or PluginRuntimeModel.ACTION_V1.value)
+            str(metadata.get("runtime_model") or PluginRuntimeModel.SERVICE_V2.value)
         ),
-        plugin_api=str(metadata.get("plugin_api") or "1.0.0"),
+        plugin_api=str(metadata.get("plugin_api") or "2.0.0"),
     )
 
 

@@ -67,9 +67,6 @@ _PROJECT_STATES = frozenset(
 )
 _PLUGIN_TRUST_SOURCES = frozenset(
     {
-        "ed25519_upload",
-        "ed25519_first_party",
-        "builtin_release",
         "super_admin_upload",
         "builtin_bundle",
     }
@@ -152,13 +149,9 @@ def _optional_positive_int(value: Any, field: str) -> int | None:
 
 
 def _runtime_contract(value: Mapping[str, Any]) -> tuple[str, str]:
-    """Return an explicit persisted runtime contract, preserving legacy rows."""
+    """Return the explicit persisted Service V2 runtime contract."""
 
-    has_model = "runtime_model" in value
-    has_api = "plugin_api" in value
-    if not has_model and not has_api:
-        return "ACTION_V1", "1.0.0"
-    if not has_model or not has_api:
+    if "runtime_model" not in value or "plugin_api" not in value:
         raise ValueError("runtime_model and plugin_api must be declared together")
     runtime_model = _required_text(value.get("runtime_model"), "runtime_model")
     if runtime_model not in _PLUGIN_RUNTIME_MODELS:
@@ -540,7 +533,7 @@ def _generation_snapshot(
     if not isinstance(value, Mapping):
         raise ValueError("generation snapshot must be a mapping")
     snapshot = dict(value)
-    legacy_fields = {
+    snapshot_fields = {
         "automation_id",
         "generation",
         "plugin_id",
@@ -551,10 +544,7 @@ def _generation_snapshot(
         "created_at",
         *_GENERATION_HASH_FIELDS,
     }
-    if set(snapshot) not in (
-        legacy_fields,
-        legacy_fields | {"runtime_model", "plugin_api"},
-    ):
+    if set(snapshot) != snapshot_fields | {"runtime_model", "plugin_api"}:
         raise ValueError("generation snapshot fields are not closed")
     if _required_text(snapshot.get("automation_id"), "automation_id") != automation_id:
         raise ValueError("generation snapshot automation_id does not match target")
@@ -565,9 +555,7 @@ def _generation_snapshot(
     if trust_source not in _PLUGIN_TRUST_SOURCES:
         raise ValueError("generation snapshot trust_source is invalid")
     runtime_model, plugin_api = _runtime_contract(snapshot)
-    if "runtime_model" in snapshot:
-        snapshot["runtime_model"] = runtime_model
-        snapshot["plugin_api"] = plugin_api
+    snapshot["runtime_model"], snapshot["plugin_api"] = runtime_model, plugin_api
     for field in _GENERATION_HASH_FIELDS:
         snapshot[field] = _sha256(snapshot.get(field), field)
     entrypoints = snapshot.get("enabled_entrypoints")
@@ -595,7 +583,7 @@ def _generation_snapshot(
 
 def _generation_execution_metadata(
     value: Any, *, enabled_entrypoints: Sequence[str],
-    runtime_model: str = "ACTION_V1", plugin_api: str = "1.0.0",
+    runtime_model: str, plugin_api: str,
 ) -> dict[str, Any]:
     validate_execution_envelope(value, runtime_model=runtime_model, plugin_api=plugin_api)
     normalized = dict(value)
@@ -653,8 +641,8 @@ def _validated_generation_row(value: Any) -> dict[str, Any]:
         or str(snapshot["plugin_version"])
         != str(row.get("plugin_version") or "")
         or str(snapshot["trust_source"]) != str(row.get("trust_source") or "")
-        or runtime_model != str(row.get("runtime_model") or "ACTION_V1")
-        or plugin_api != str(row.get("plugin_api") or "1.0.0")
+        or runtime_model != str(row.get("runtime_model") or "")
+        or plugin_api != str(row.get("plugin_api") or "")
         or _json_hash(snapshot["enabled_entrypoints"])
         != str(row.get("enabled_entrypoints_sha256") or "")
         or any(
@@ -1054,16 +1042,7 @@ class AutomationPluginRepository(
             "plugin_api",
         )
         if any(
-            str(
-                persisted.get(field_name)
-                or (
-                    "ACTION_V1"
-                    if field_name == "runtime_model"
-                    else "1.0.0"
-                    if field_name == "plugin_api"
-                    else ""
-                )
-            )
+            str(persisted.get(field_name) or "")
             != (
                 trust_source
                 if field_name == "trust_source"
@@ -1896,7 +1875,6 @@ class AutomationPluginRepository(
         witness = _configuration_contract_witness(contract_witness)
         _reject_sensitive_generation_metadata(config, "config")
         _reject_sensitive_generation_metadata(compiled_invocations, "compiled_invocations")
-        runtime_model = witness["runtime_model"]
         entrypoints = tuple(
             sorted({_required_text(item, "entrypoint") for item in enabled_entrypoints})
         )
@@ -1907,12 +1885,9 @@ class AutomationPluginRepository(
         normalized_compiled: dict[str, dict[str, Any]] = {}
         for entrypoint in entrypoints:
             compiled = compiled_invocations.get(entrypoint)
-            required_compiled_fields = (
-                {"arguments", "dynamic_resolvers", "target", "governance"}
-                if runtime_model == "SERVICE_V2"
-                else {"arguments", "dynamic_resolvers"}
-            )
-            if not isinstance(compiled, Mapping) or set(compiled) != required_compiled_fields:
+            if not isinstance(compiled, Mapping) or set(compiled) != {
+                "arguments", "dynamic_resolvers", "target", "governance",
+            }:
                 raise ValueError("compiled invocation payload is invalid")
             arguments = compiled.get("arguments")
             resolvers = compiled.get("dynamic_resolvers")
@@ -1930,52 +1905,51 @@ class AutomationPluginRepository(
                 "arguments": dict(arguments),
                 "dynamic_resolvers": dict(resolvers),
             }
-            if runtime_model == "SERVICE_V2":
-                target = compiled.get("target")
-                governance = compiled.get("governance")
-                expected_target = witness["invocation_contracts"].get(entrypoint)
-                if not isinstance(target, Mapping) or set(target) != {
+            target = compiled.get("target")
+            governance = compiled.get("governance")
+            expected_target = witness["invocation_contracts"].get(entrypoint)
+            if not isinstance(target, Mapping) or set(target) != {
+                "service",
+                "operation",
+                "contribution_id",
+                "contribution_kind",
+            }:
+                raise ValueError("service v2 invocation target is invalid")
+            if not isinstance(expected_target, Mapping):
+                raise ValueError("service v2 invocation contract is unavailable")
+            expected_governance = expected_target.get("governance")
+            if (
+                not isinstance(governance, Mapping)
+                or not isinstance(expected_governance, Mapping)
+                or dict(governance) != dict(expected_governance)
+            ):
+                raise ValueError(
+                    "service v2 invocation governance does not match contract"
+                )
+            normalized_target = {
+                field: _required_text(target.get(field), f"target.{field}")
+                for field in (
                     "service",
                     "operation",
                     "contribution_id",
                     "contribution_kind",
-                }:
-                    raise ValueError("service v2 invocation target is invalid")
-                if not isinstance(expected_target, Mapping):
-                    raise ValueError("service v2 invocation contract is unavailable")
-                expected_governance = expected_target.get("governance")
-                if (
-                    not isinstance(governance, Mapping)
-                    or not isinstance(expected_governance, Mapping)
-                    or dict(governance) != dict(expected_governance)
-                ):
-                    raise ValueError(
-                        "service v2 invocation governance does not match contract"
-                    )
-                normalized_target = {
-                    field: _required_text(target.get(field), f"target.{field}")
-                    for field in (
-                        "service",
-                        "operation",
-                        "contribution_id",
-                        "contribution_kind",
-                    )
-                }
-                if (
-                    normalized_target["contribution_id"] != entrypoint
-                    or normalized_target["service"]
-                    != _required_text(expected_target.get("service"), "contract.service")
-                    or normalized_target["operation"]
-                    != _required_text(expected_target.get("operation"), "contract.operation")
-                    or normalized_target["contribution_kind"]
-                    != _required_text(
-                        expected_target.get("contribution_kind"),
-                        "contract.contribution_kind",
-                    )
-                ):
-                    raise ValueError("service v2 invocation target does not match contract")
-                normalized_compiled[entrypoint]["governance"] = dict(governance)
-                normalized_compiled[entrypoint]["target"] = normalized_target
+                )
+            }
+            if (
+                normalized_target["contribution_id"] != entrypoint
+                or normalized_target["service"]
+                != _required_text(expected_target.get("service"), "contract.service")
+                or normalized_target["operation"]
+                != _required_text(expected_target.get("operation"), "contract.operation")
+                or normalized_target["contribution_kind"]
+                != _required_text(
+                    expected_target.get("contribution_kind"),
+                    "contract.contribution_kind",
+                )
+            ):
+                raise ValueError("service v2 invocation target does not match contract")
+            normalized_compiled[entrypoint]["governance"] = dict(governance)
+            normalized_compiled[entrypoint]["target"] = normalized_target
         normalized_schedule = _normalized_project_schedule(schedule)
         # Schedule times remain persisted while the scheduler entrypoint is off.
         # Generation commit materializes those rows disabled, so re-enabling the
@@ -2025,17 +1999,6 @@ class AutomationPluginRepository(
             scheduling = witness["scheduling"]
             if not set(entrypoints) <= set(allowed_entrypoints):
                 raise OrchestrationPersistenceError("persisted plugin contract is invalid")
-            if runtime_model == "ACTION_V1":
-                manifest = _json_value(project.get("manifest_json"), {})
-                if not isinstance(manifest, Mapping):
-                    raise OrchestrationPersistenceError("persisted plugin manifest is invalid")
-                tool_contract = manifest.get("tool_contract")
-                runtime = manifest.get("runtime")
-                if not isinstance(tool_contract, Mapping) or not isinstance(runtime, Mapping):
-                    raise OrchestrationPersistenceError("persisted plugin contract is invalid")
-            else:
-                tool_contract = None
-                runtime = None
             if (
                 normalized_schedule["kind"] != "none"
                 and scheduling.get("supported") is not True
@@ -2060,17 +2023,6 @@ class AutomationPluginRepository(
                     raise OrchestrationPersistenceError(
                         "project schedule exceeds the signed plugin daily limit"
                     )
-            if runtime_model == "ACTION_V1":
-                if not isinstance(tool_contract, Mapping) or not isinstance(runtime, Mapping):
-                    raise OrchestrationPersistenceError("persisted plugin contract is invalid")
-                tool_name = _required_text(
-                    tool_contract.get("name"), "tool_contract.name"
-                )
-                if (
-                    runtime.get("kind") == "core_tool_ref"
-                    and runtime.get("tool_name") != tool_name
-                ):
-                    raise OrchestrationPersistenceError("plugin runtime/tool identity mismatch")
 
             cursor.execute(
                 """
@@ -2222,8 +2174,7 @@ class AutomationPluginRepository(
                 by_cron[cron] = task
 
             expressions = _schedule_expressions(normalized_schedule)
-            if (runtime_model == "SERVICE_V2" and normalized_schedule["kind"] != "none"
-                    and normalized_schedule["enabled"]):
+            if normalized_schedule["kind"] != "none" and normalized_schedule["enabled"]:
                 scheduler_entrypoints = [
                     entrypoint
                     for entrypoint in entrypoints

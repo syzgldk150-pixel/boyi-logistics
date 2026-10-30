@@ -13,19 +13,12 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# The ED25519_*/BUILTIN_RELEASE trust sources and ACTION_V1 only decode retired
-# rows that still exist until migration 064 deletes them; nothing installs,
-# lists or runs them.
 class PluginTrustSource(str, Enum):
-    ED25519_UPLOAD = "ed25519_upload"
-    ED25519_FIRST_PARTY = "ed25519_first_party"
-    BUILTIN_RELEASE = "builtin_release"
     SUPER_ADMIN_UPLOAD = "super_admin_upload"
     BUILTIN_BUNDLE = "builtin_bundle"
 
 
 class PluginRuntimeModel(str, Enum):
-    ACTION_V1 = "ACTION_V1"
     SERVICE_V2 = "SERVICE_V2"
 
 
@@ -141,7 +134,7 @@ class PluginVersionRecord:
     release_sha: str | None = None
     install_metadata: Mapping[str, Any] = field(default_factory=dict)
     runtime_model: PluginRuntimeModel = PluginRuntimeModel.SERVICE_V2
-    plugin_api: str = "1.0.0"
+    plugin_api: str = field(kw_only=True)
 
     def detached_manifest(self) -> dict[str, Any]:
         return copy.deepcopy(dict(self.manifest))
@@ -229,7 +222,7 @@ class RuntimeGenerationSnapshot:
     execution_metadata: Mapping[str, Any]
     created_at: datetime = field(default_factory=utc_now)
     runtime_model: PluginRuntimeModel = PluginRuntimeModel.SERVICE_V2
-    plugin_api: str = "1.0.0"
+    plugin_api: str = field(kw_only=True)
 
 
 @dataclass(frozen=True)

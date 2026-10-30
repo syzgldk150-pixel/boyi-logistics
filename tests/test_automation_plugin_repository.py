@@ -138,10 +138,7 @@ class _BlockedUpgradeConnection:
 def _configuration_save_rows():
     schedule = {"kind": "none", "times": [], "enabled": False}
     compiled = {
-        "console": {
-            "arguments": {"marker": "A"},
-            "dynamic_resolvers": {},
-        }
+        "console": _compiled_invocation("A")
     }
     project = {
         "automation_id": "instance-one",
@@ -165,9 +162,9 @@ def _configuration_save_rows():
         },
     }
     witness = {
-        "runtime_model": "ACTION_V1",
+        "runtime_model": "SERVICE_V2",
         "allowed_entrypoints": ["console"],
-        "invocation_contracts": {"console": {"action": "console"}},
+        "invocation_contracts": {"console": _invocation_contract("console")},
         "scheduling": {
             "supported": False,
             "allowed_kinds": [],
@@ -216,16 +213,31 @@ def _configuration_save_rows():
     return project, config, policy
 
 
+def _compiled_invocation(marker: str) -> dict[str, Any]:
+    return {
+        "arguments": {"marker": marker},
+        "dynamic_resolvers": {},
+        "target": {"service": "plugin.instance_one.runner@1", "operation": "run",
+                   "contribution_id": "console", "contribution_kind": "console"},
+        "governance": {"effect": "read"},
+    }
+
+
+def _invocation_contract(entrypoint: str) -> dict[str, Any]:
+    return {"service": "plugin.instance_one.runner@1", "operation": "run",
+            "contribution_kind": entrypoint, "governance": {"effect": "read"}}
+
+
 def _configuration_witness(
     *,
     entrypoints: tuple[str, ...] = ("console",),
     scheduling: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
-        "runtime_model": "ACTION_V1",
+        "runtime_model": "SERVICE_V2",
         "allowed_entrypoints": list(entrypoints),
         "invocation_contracts": {
-            entrypoint: {"action": entrypoint} for entrypoint in entrypoints
+            entrypoint: _invocation_contract(entrypoint) for entrypoint in entrypoints
         },
         "scheduling": scheduling
         or {"supported": False, "allowed_kinds": [], "max_daily_times": 0},
@@ -246,10 +258,7 @@ def _save_configuration(
         enabled_entrypoints=("console",),
         schedule={"kind": "none", "times": [], "enabled": False},
         compiled_invocations={
-            "console": {
-                "arguments": {"marker": marker},
-                "dynamic_resolvers": {},
-            }
+            "console": _compiled_invocation(marker)
         },
         contract_witness=_configuration_witness(),
         actor_id="admin-one",
@@ -1241,10 +1250,7 @@ class AutomationPluginRepositoryTests(TestCase):
             "config_json": {"marker": "B"},
             "config_sha256": _json_hash({"marker": "B"}),
             "compiled_invocations_json": {
-                "console": {
-                    "arguments": {"marker": "B"},
-                    "dynamic_resolvers": {},
-                }
+                "console": _compiled_invocation("B")
             },
             "config_version": 3,
         }
@@ -1310,10 +1316,7 @@ class AutomationPluginRepositoryTests(TestCase):
             "enabled_entrypoints": ["console"],
             "schedule": {"kind": "none", "times": [], "enabled": False},
             "compiled_invocations": {
-                "console": {
-                    "arguments": {"marker": "B"},
-                    "dynamic_resolvers": {},
-                }
+                "console": _compiled_invocation("B")
             },
             "contract_witness": _configuration_witness(),
             "expected_project_configuration_version": 2,
@@ -1368,10 +1371,7 @@ class AutomationPluginRepositoryTests(TestCase):
             "enabled_entrypoints": ["console"],
             "schedule": {"kind": "none", "times": [], "enabled": False},
             "compiled_invocations": {
-                "console": {
-                    "arguments": {"marker": "B"},
-                    "dynamic_resolvers": {},
-                }
+                "console": _compiled_invocation("B")
             },
             "contract_witness": _configuration_witness(),
             "expected_project_configuration_version": 2,

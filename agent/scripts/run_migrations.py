@@ -178,7 +178,11 @@ def run(*, check_only: bool) -> int:
                 if version >= "055":  # 055 split the entity databases; later SQL targets them.
                     env_path = Path(os.getenv("MIGRATION_ENV_FILE", PROJECT_ROOT / ".env"))
                     backup_directory = Path(os.getenv("MIGRATION_BACKUP_DIRECTORY", str(env_path.parent / "runtime" / "migration-backups")))
-                    _load_domain_database_migration().apply_version(cursor, version, path, split_sql_statements, backup_directory)
+                    if version == "064":  # Exports every removed row before removing it.
+                        _load_script_helper("migration_064_retire_pre_v2.py").apply(
+                            cursor, path, split_sql_statements, backup_directory)
+                    else:
+                        _load_domain_database_migration().apply_version(cursor, version, path, split_sql_statements, backup_directory)
                 elif version == "027":
                     assert business_module_contract is not None
                     business_module_contract.apply_business_module_lifecycle_migration(

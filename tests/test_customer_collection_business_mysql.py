@@ -22,17 +22,19 @@ def _seed_generation(connection, producer):
         "device_binding", "schedule", "core_registry", "tool_contract", "invocation_contracts",
         "compiled_invocations", "runtime_descriptor", "governance_anchor", "policy_contract",
         "enabled_entrypoints", "snapshot"]
-    columns = ["automation_id", "generation", "request_id", "plugin_id", "plugin_version", "trust_source", "snapshot_json"]
-    values = [producer, 1, str(uuid4()), plugin_id, "1.0.0", "builtin_release", "{}"]
+    columns = ["automation_id", "generation", "request_id", "plugin_id", "plugin_version", "trust_source",
+        "runtime_model", "plugin_api", "snapshot_json"]
+    values = [producer, 1, str(uuid4()), plugin_id, "1.0.0", "builtin_bundle", "SERVICE_V2", "2.0.0", "{}"]
     columns += [name + "_sha256" for name in fields]
     values += ["a" * 64] * len(fields)
     with connection.cursor() as cursor:
         cursor.execute("INSERT INTO automation_plugin_packages(plugin_id,display_name,description,latest_version) VALUES(%s,'合成来源校验','isolated fixture','1.0.0')", (plugin_id,))
         hashes = ["package", "manifest", "tool_contract", "config_schema", "allowed_entrypoints",
             "invocation_contracts", "worker_requirement", "runtime", "scheduling", "install_root_metadata"]
-        version_columns = ["plugin_id", "version", "manifest_json", "trust_source", "install_root_metadata_json", "installed_by_actor_id"] + [field + "_sha256" for field in hashes]
+        version_columns = ["plugin_id", "version", "runtime_model", "plugin_api", "manifest_json", "trust_source",
+            "install_root_metadata_json", "installed_by_actor_id"] + [field + "_sha256" for field in hashes]
         cursor.execute("INSERT INTO automation_plugin_versions(" + ",".join(version_columns) + ") VALUES(" + ",".join(["%s"] * len(version_columns)) + ")",
-            (plugin_id, "1.0.0", "{}", "builtin_release", "{}", "synthetic-admin", *(["a" * 64] * len(hashes))))
+            (plugin_id, "1.0.0", "SERVICE_V2", "2.0.0", "{}", "builtin_bundle", "{}", "synthetic-admin", *(["a" * 64] * len(hashes))))
         cursor.execute("INSERT INTO automation_projects(automation_id,plugin_id,plugin_version,display_name,install_request_id,install_payload_sha256,installed_by_actor_id) VALUES(%s,%s,'1.0.0','合成业务实例',%s,%s,'synthetic-admin')",
             (producer, plugin_id, str(uuid4()), "a" * 64))
         cursor.execute("INSERT INTO automation_project_generations (" + ",".join(columns) + ") VALUES (" + ",".join(["%s"] * len(values)) + ")", values)

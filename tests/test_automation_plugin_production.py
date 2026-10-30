@@ -320,7 +320,6 @@ def test_reconcile_all_keeps_catalog_identity_conflicts_global() -> None:
         )
     )
     service._catalog = SimpleNamespace(
-        excluded_persisted_automation_ids=lambda: set(),
     )
     service._last_reconcile_failures = {}
 
@@ -339,7 +338,6 @@ def test_reconcile_all_keeps_missing_catalog_identity_global() -> None:
         )
     )
     service._catalog = SimpleNamespace(
-        excluded_persisted_automation_ids=lambda: set(),
     )
     service._last_reconcile_failures = {}
 
@@ -408,10 +406,6 @@ def test_runtime_health_fails_closed_when_real_sandbox_canary_failed(monkeypatch
         def production_health(_expected):
             return {"ok": True, "runnable": True, "runtime_status": "READY"}
 
-        @staticmethod
-        def excluded_persisted_automation_ids():
-            return set()
-
     monkeypatch.setattr(
         production_module,
         "runtime_generation_health",
@@ -450,10 +444,6 @@ def test_runtime_health_snapshot_never_requeries_persistence(monkeypatch) -> Non
         @staticmethod
         def production_health(_expected):
             return {"ok": True, "runnable": True, "runtime_status": "READY"}
-
-        @staticmethod
-        def excluded_persisted_automation_ids():
-            return set()
 
     monkeypatch.setattr(
         production_module,
@@ -505,10 +495,6 @@ def test_runtime_health_projects_candidate_failure_without_global_hold(
         @staticmethod
         def production_health(_expected):
             return {"ok": True, "runnable": True, "runtime_status": "READY"}
-
-        @staticmethod
-        def excluded_persisted_automation_ids():
-            return set()
 
     monkeypatch.setattr(
         production_module,

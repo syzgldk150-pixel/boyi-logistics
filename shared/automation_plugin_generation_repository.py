@@ -2193,24 +2193,6 @@ class AutomationPluginGenerationRepositoryMixin(
                 )
             cursor.execute(
                 """
-                SELECT status FROM automation_worker_jobs
-                WHERE automation_id=%s AND automation_generation=%s
-                  AND status IN ('CLAIMED', 'RUNNING', 'OUTCOME_UNKNOWN')
-                FOR UPDATE
-                """,
-                (safe_automation_id, safe_generation),
-            )
-            jobs = _rows(cursor)
-            if jobs:
-                if any(str(item.get("status") or "") == "OUTCOME_UNKNOWN" for item in jobs):
-                    raise AutomationPluginPurgeBlocked(
-                        "unknown worker write blocks generation disposal"
-                    )
-                raise AutomationPluginPurgeBlocked(
-                    "active worker job blocks generation disposal"
-                )
-            cursor.execute(
-                """
                 UPDATE automation_project_generations
                 SET state='DISPOSING', error_code=NULL, error_summary=NULL,
                     record_version=record_version+1, updated_at=NOW(6)

@@ -64,7 +64,8 @@ class _Database:
             repository.register_package_version(
                 package={"plugin_id": self.plugin_id, "display_name": "isolated", "description": "migration fixture"},
                 version={**hashes, "version": "1.0.0", "manifest_json": {"runtime": {"kind": "python_subprocess"}},
-                    "trust_source": "ed25519_first_party", "install_root_metadata_json": {},
+                    "trust_source": "super_admin_upload", "install_root_metadata_json": {},
+                    "runtime_model": "SERVICE_V2", "plugin_api": "2.0.0",
                     "installed_by_actor_id": "isolated-admin", "project_full_auto_allowed": False},
             )
             repository.install_project_instance({
@@ -80,8 +81,8 @@ class _Database:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "INSERT INTO automation_project_generations(automation_id,generation,request_id,state,plugin_id,"
-                    "plugin_version,trust_source,snapshot_json," + ",".join(columns) + ") "
-                    "VALUES(%s,1,%s,'COMMITTED',%s,'1.0.0','ed25519_first_party','{}'," + ",".join(["%s"] * len(columns)) + ")",
+                    "plugin_version,trust_source,runtime_model,plugin_api,snapshot_json," + ",".join(columns) + ") "
+                    "VALUES(%s,1,%s,'COMMITTED',%s,'1.0.0','super_admin_upload','SERVICE_V2','2.0.0','{}'," + ",".join(["%s"] * len(columns)) + ")",
                     (self.project_id, str(uuid4()), self.plugin_id, *([digest] * len(columns))),
                 )
                 cursor.execute("CREATE TABLE isolated_scope_results(job VARCHAR(80) PRIMARY KEY, value INT NOT NULL) ENGINE=InnoDB")

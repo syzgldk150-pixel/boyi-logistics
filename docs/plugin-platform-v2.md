@@ -17,7 +17,7 @@ Service V2 插件是包含实际业务代码的独立 ZIP。宿主负责账号�
 
 现有正式业务均已提供 V2 包和生产接口适配，安装、打包、隔离进程执行及写后核验均有实际测试；隔离测试仍不代替线上业务验收，线上版本以发布报告和后台实例记录为准。
 
-系统只运行 Service V2。2026-10 删除了 V1 运行时、V1→V2 迁移配对、签名发行、Windows Worker 与旧逐日财务采集：Agent 只投影和执行 `runtime_model=SERVICE_V2` 的实例；Connector 可调用的 Host 原语只来自 `agent/agent/automation_plugins/reviewed_primitives.py` 的静态清单；固定飞书命令与既有 Webhook 的插件归属写死在 `agent/agent/automation_plugins/fixed_entrypoints.py`。数据库中残留的旧插件行由后续迁移 064 删除（财务账本保留），在此之前新代码忽略它们。核心发布只复制 `agent/scripts/release_scope.py` 列出的当前包。
+系统只运行 Service V2。2026-10 删除了 V1 运行时、V1→V2 迁移配对、签名发行、Windows Worker 与旧逐日财务采集：Agent 只投影和执行 `runtime_model=SERVICE_V2` 的实例；Connector 可调用的 Host 原语只来自 `agent/agent/automation_plugins/reviewed_primitives.py` 的静态清单；固定飞书命令与既有 Webhook 的插件归属写死在 `agent/agent/automation_plugins/fixed_entrypoints.py`。迁移 064 删除了数据库中的旧插件行（含旧控制平面历史与未知写记录）和迁移配对、018 引导、Windows Worker 等旧表，财务账本保留；被删行在迁移时先导出为 JSON 存入迁移备份目录。核心发布只复制 `agent/scripts/release_scope.py` 列出的当前包。
 
 插件清单、业务文件归属、局部测试和打包命令见[当前插件维护入口](../agent/service_v2_plugins/README.md)。本手册替代旧文档中“生产 Connector 为空”“AI 只读”“V2 只有离线候选实现”的状态说明。
 

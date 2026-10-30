@@ -14,7 +14,7 @@
 
 签收插件只更新已有后台运单，缺失单号明确报告未入库，完整资料由寄件同步补齐；不得生成残缺运单或把数据库错误当作缺失。规则与测试见 `docs/identity_and_unified_chat.md`。
 
-系统只运行 Service V2 插件：V1 运行时、迁移配对、签名发行、Windows Worker 和旧逐日财务采集已于 2026-10 删除；目录、执行与调度只投影 `runtime_model=SERVICE_V2` 的实例，数据库中残留的旧插件行由后续迁移 064 删除（财务账本保留）。详见 `docs/plugin-platform-v2.md`。
+系统只运行 Service V2 插件：V1 运行时、迁移配对、签名发行、Windows Worker 和旧逐日财务采集已于 2026-10 删除；迁移 064 删除了数据库中的旧插件行和只被旧代码使用的表（财务账本保留），并把插件版本与代次约束为 `SERVICE_V2` 与 `super_admin_upload/builtin_bundle`。详见 `docs/plugin-platform-v2.md`。
 
 发布服务身份由 `shared/release_identity.py` 定义，仅在内部 Token 和 Console 签名校验后开放精确健康检查及发布激活；不得作为后台账号或取得业务权限。
 

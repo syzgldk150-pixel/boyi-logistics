@@ -11,7 +11,7 @@ from shared.orchestration_repository_support import (
 
 from shared.plugin_json import plugin_json_digest
 
-PLUGIN_RUNTIME_MODELS = frozenset({"ACTION_V1", "SERVICE_V2"})
+PLUGIN_RUNTIME_MODELS = frozenset({"SERVICE_V2"})
 
 
 def configuration_contract_witness(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -72,7 +72,7 @@ def lock_upgrade_configuration_contract(cursor, project: Mapping[str, Any], targ
 
 def require_configuration_contract(project: Mapping[str, Any], witness: Mapping[str, Any]) -> None:
     """Bind the already-compiled witness to the immutable installed version."""
-    if str(project.get("runtime_model") or "ACTION_V1") != witness["runtime_model"]:
+    if str(project.get("runtime_model") or "") != witness["runtime_model"]:
         raise OrchestrationPersistenceError("persisted plugin runtime model does not match contract witness")
     if any(project.get(f"{field}_sha256") != plugin_json_digest(witness[field])
            for field in ("allowed_entrypoints", "invocation_contracts", "scheduling")):

@@ -1007,7 +1007,7 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
     def _set_service_v2_selection_contract(self) -> None:
         self.entry.runtime_model = "SERVICE_V2"
         self.entry.plugin_id = "selection_v2"
-        self.entry.trust_source = "ed25519_first_party"
+        self.entry.trust_source = "super_admin_upload"
         self.entry.display_name = "Selection v2"
         self.entry.contributions = {
             "console": [
@@ -1226,7 +1226,7 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
     def _set_scan_project(self) -> None:
         self.entry.automation_id = "scan_codes"
         self.entry.plugin_id = "sync_scan_codes"
-        self.entry.trust_source = "ed25519_first_party"
+        self.entry.trust_source = "super_admin_upload"
         self.entry.project_full_auto_allowed = True
         self.entry.governance_anchor = {
             "operation_type": "internal_projection_write",
@@ -1242,7 +1242,7 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
     ) -> None:
         self.entry.automation_id = automation_id
         self.entry.plugin_id = automation_id
-        self.entry.trust_source = "ed25519_first_party"
+        self.entry.trust_source = "super_admin_upload"
         self.service._dynamic_resolver = (  # type: ignore[method-assign]
             lambda _resolver_id, field, context: context["dynamic_inputs"][field]
         )

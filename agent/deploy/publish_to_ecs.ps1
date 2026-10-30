@@ -332,6 +332,7 @@ function Get-ReleaseFingerprints() {
         "agent/scripts/run_migrations.py",
         "agent/scripts/business_module_migration_contract.py",
         "agent/scripts/migration_055_domain_databases.py",
+        "agent/scripts/migration_064_retire_pre_v2.py",
         "agent/scripts/migration_connection.py",
         "agent/scripts/scheduled_write_window.py",
         "agent/scripts/repair_yunda_send_waybills_sheet.py",

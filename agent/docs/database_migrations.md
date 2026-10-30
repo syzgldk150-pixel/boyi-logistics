@@ -9,6 +9,8 @@ updated: 2026-10-30
 
 # 数据库迁移
 
+`064_retire_pre_v2_plugin_rows.sql` 删除 V1 退役后残留的插件数据：当前安装版本不是 Service V2（或来源不是 `super_admin_upload/builtin_bundle`）的项目、旧逐日财务采集 `sync_finance_bills_v2` 的实例（含已卸载实例的调用、卸载日志等遗留事实），连同它们的代次、配置、策略、调用、租约、写入回执（含未知写）、旧 Command/Run/Step/审批/事件历史、定时行与包版本；非 `automation.*` 的旧工具定时行一并删除。迁移配对三表、018 引导/备份/映射七表和 Windows Worker 五表整表删除。财务账本、运单、回单、客服发布、每日应签与模块数据源不动。之后插件版本与代次只允许 `SERVICE_V2` 和上述两种来源，`runtime_model`/`plugin_api` 不再有默认值。迁移器经 `scripts/migration_064_retire_pre_v2.py` 执行：每条 `DROP TABLE` 和 `DELETE` 执行前先把它要删的行写入迁移备份目录（ECS 为 `/home/boyce/agent/runtime/migration-backups/`）的 `*-migration-064-removed-rows.jsonl`（权限 0600），业务验收后随回滚材料清理。仍有旧项目在运行时迁移拒绝执行；存活项目若仍引用待删版本，外键失败使整个删除事务回滚。各步可重复执行。回归见 `tests/test_migration_064_mysql.py`。
+
 `063_finance_platform_captures.sql` 在 `finance_db` 新建统计查询抓取的 4 张表：抓取（每次一行，含两种日期口径的统计合计、明细行数与净额、字段对照、请求口径和内容哈希）、统计行、明细行（原始 JSON 原样保存，另投影单号、流水号、客户、物品等）、按日发布记录；全部经外键挂在抓取行上。`migration_055_domain_databases.py` 的 `LATER_FINANCE_TABLES` 把它们投影为 `agent_db` 同名视图。新代码的财务结构校验要求这些表存在，必须先迁移再重启；回退旧代码时新表闲置无害。规则见 [财务模块说明](finance_module.md#统计查询月度抓取)。
 
 `062_finance_period_close.sql` 在 `finance_db` 新建月度清点与封账的 5 张表（期间状态、逐项核对、封账版本、快照明细、操作事件），并给 `finance_anomalies` 增加确认知悉的人、时间、原因和确认时的笔数与金额。迁移通过 `{{finance_db}}` 绑定实体库，执行后由 `migration_055_domain_databases.py` 投影同名视图并重建 `finance_anomalies` 视图。新代码的财务结构校验要求这些表存在，必须先迁移再重启 Agent 与 Console；回退到旧代码时新表和新列闲置无害。业务规则见 [财务模块说明](finance_module.md#月度清点与封账)。
@@ -51,8 +53,8 @@ updated: 2026-10-30
 - 不可变领域事件、事务 Outbox、死信状态和消费者幂等回执。
 - 定时任务的配置版本、当前审批策略及不可变策略审计事件；策略快照不保存凭据、Cookie、Token、
   原始请求体或可执行 HTML。
-- 自动化插件的包、项目、代际、租约、写尝试回执，以及 `ACTION_V1` / `SERVICE_V2` 双轨（现行代码只运行 SERVICE_V2，旧 ACTION_V1 行在迁移 064 前被目录隐藏）、
-  服务/贡献、托管文档和迁移互斥状态；
+- 自动化插件的包、项目、代际、租约、写尝试回执，（迁移 064 起只允许 `SERVICE_V2` 版本与 `super_admin_upload/builtin_bundle` 来源）、
+  服务/贡献和托管文档；
 - 迁移 `027` 中历史 14 个业务模块的生命周期和 Lite 审计（之后新增的 Harness 与监控查询模块不回写历史 seed）；
 - 财务演进与全局 LLM 设置（迁移 `009_finance_evolution_llm.sql`）；
 - 跨网点历史主单精确签收核验与 1/3/7 天退避状态（迁移 `013_daily_sign_verification_state.sql`）。
@@ -117,7 +119,8 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
   恢复只撤销迁移创建行并原样恢复既有行，身份、形状、来源或哈希漂移均 fail closed。迁移同时创建
   `automation_project_bootstrap_items_018/marker_018`；item 的 `source_snapshot_json` 绑定初始 committed
   generation、配置事件元数据哈希、57 条 typed schedule 与对应旧 grant/退休事件。旧失败尝试留下的空表
-  可幂等补列；已有 item/marker 却缺证据列时不可重构授权来源，必须在任何后续写前阻断。
+  可幂等补列；已有 item/marker 却缺证据列时不可重构授权来源，必须在任何后续写前阻断。这些 018 引导、
+  备份与映射表已由迁移 064 删除。
 - `019_automation_generation_lease_run_binding.sql`：保留 generation lease 与 Run 的精确绑定，
   防止热切换后旧 Run 落到错误代际。
 - `020_automation_full_auto_feishu_approvals.sql`：将迁移时尚未由管理员明确选择的现有项目统一为

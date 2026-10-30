@@ -12,6 +12,15 @@ from unittest.mock import patch
 from uuid import uuid4
 
 
+def _synthetic_v2_projection(manifest):
+    """The signed-contract port the Agent supplies, over a synthetic package."""
+
+    return {key: manifest[key] for key in (
+        "tool_contract", "governance_anchor", "runtime", "runtime_permissions",
+        "account_roles", "resource_roles",
+    )}
+
+
 def run_test_generation_write_lock_order_races(case):
     """Exercise the exact-lease finalization/recovery and record/release races.
 
@@ -46,7 +55,8 @@ def run_test_generation_write_lock_order_races(case):
                 "allowed_entrypoints_sha256": "5" * 64, "invocation_contracts_sha256": "6" * 64,
                 "worker_requirement_sha256": "7" * 64, "runtime_sha256": "8" * 64,
                 "scheduling_sha256": "9" * 64, "project_full_auto_allowed": False,
-                "trust_source": "ed25519_first_party", "install_root_metadata_json": {},
+                "trust_source": "super_admin_upload", "install_root_metadata_json": {},
+                "runtime_model": "SERVICE_V2", "plugin_api": "2.0.0",
                 "install_root_metadata_sha256": "a" * 64, "installed_by_actor_id": "integration-admin",
             },
         )
@@ -61,14 +71,15 @@ def run_test_generation_write_lock_order_races(case):
                 """
                 INSERT INTO automation_project_generations(
                     automation_id, generation, request_id, state, plugin_id, plugin_version,
-                    package_sha256, manifest_sha256, trust_source, project_config_sha256,
+                    package_sha256, manifest_sha256, trust_source, runtime_model, plugin_api,
+                    project_config_sha256,
                     account_bindings_sha256, resource_bindings_sha256, device_binding_sha256,
                     schedule_sha256, core_registry_sha256, tool_contract_sha256,
                     invocation_contracts_sha256, compiled_invocations_sha256,
                     runtime_descriptor_sha256, governance_anchor_sha256, policy_contract_sha256,
                     enabled_entrypoints_sha256, snapshot_json, snapshot_sha256, committed_at
                 ) VALUES (%s, 1, %s, 'COMMITTED', %s, '1.0.0', %s, %s,
-                          'ed25519_first_party', %s, %s, %s, %s, %s, %s, %s,
+                          'super_admin_upload', 'SERVICE_V2', '2.0.0', %s, %s, %s, %s, %s, %s, %s,
                           %s, %s, %s, %s, %s, %s, '{}', %s, NOW(6))
                 """,
                 (automation_id, str(uuid4()), plugin_id, "1" * 64, "2" * 64, *hashes, "0" * 64),
@@ -430,7 +441,9 @@ def run_test_generation_write_lock_order_races(case):
             "runtime_descriptor_sha256": _json_hash(runtime_descriptor),
             "governance_anchor_sha256": _json_hash(governance_anchor),
             "policy_contract_sha256": _json_hash({"mode": "PROJECT_FULL_AUTO"}),
-            "trust_source": "ed25519_first_party",
+            "trust_source": "super_admin_upload",
+            "runtime_model": "SERVICE_V2",
+            "plugin_api": "2.0.0",
             "enabled_entrypoints": [],
             "execution_metadata": {
                 "project_config_version": int(config["config_version"]),
@@ -443,6 +456,11 @@ def run_test_generation_write_lock_order_races(case):
                 "runtime_descriptor": runtime_descriptor,
                 "action_contract": tool_contract,
                 "governance_anchor": governance_anchor,
+                "runtime_model": "SERVICE_V2",
+                "plugin_api": "2.0.0",
+                "service_contracts": {"provides": [], "requires": []},
+                "contributions": {"scheduler": []},
+                "storage_contract": {},
             },
             "created_at": datetime.now(),
         }
@@ -454,6 +472,7 @@ def run_test_generation_write_lock_order_races(case):
             snapshot,
             expected_committed_generation=expected_committed,
             request_id=str(uuid4()),
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         repository.mark_generation_preparing_row(
             instance_id,
@@ -502,7 +521,9 @@ def run_test_generation_write_lock_order_races(case):
                 "runtime_sha256": _json_hash(runtime),
                 "scheduling_sha256": _json_hash(scheduling),
                 "project_full_auto_allowed": True,
-                "trust_source": "ed25519_first_party",
+                "trust_source": "super_admin_upload",
+                "runtime_model": "SERVICE_V2",
+                "plugin_api": "2.0.0",
                 "install_root_metadata_json": install_metadata,
                 "install_root_metadata_sha256": _json_hash(install_metadata),
                 "installed_by_actor_id": "integration-admin",
@@ -535,7 +556,7 @@ def run_test_generation_write_lock_order_races(case):
             schedule={"kind": "none", "times": [], "enabled": False},
             compiled_invocations={},
             contract_witness={
-                "runtime_model": "ACTION_V1",
+                "runtime_model": "SERVICE_V2",
                 "allowed_entrypoints": [],
                 "invocation_contracts": invocation_contracts,
                 "scheduling": scheduling,
@@ -553,6 +574,7 @@ def run_test_generation_write_lock_order_races(case):
             archival_automation_id,
             1,
             expected_committed_generation=None,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         first_generation = archival_repository.get_generation_row(
             archival_automation_id,
@@ -569,6 +591,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_transition_token=first_generation[
                 "activation_transition_token"
             ],
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         first_snapshot_sha256 = first_generation["snapshot_sha256"]
         with connection.cursor() as cursor:
@@ -626,6 +649,7 @@ def run_test_generation_write_lock_order_races(case):
             archival_automation_id,
             2,
             expected_committed_generation=1,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         successor_generation = archival_repository.get_generation_row(
             archival_automation_id,
@@ -638,6 +662,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_transition_token=successor_generation[
                 "activation_transition_token"
             ],
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         archival_repository.finalize_generation_write_row(
             automation_id=archival_automation_id,
@@ -650,6 +675,7 @@ def run_test_generation_write_lock_order_races(case):
             archival_automation_id,
             2,
             expected_committed_generation=1,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         archival_repository.acquire_committed_generation_lease_row(
             archival_automation_id,
@@ -834,7 +860,9 @@ def run_test_generation_write_lock_order_races(case):
                 "runtime_sha256": _json_hash(runtime),
                 "scheduling_sha256": _json_hash(scheduling),
                 "project_full_auto_allowed": True,
-                "trust_source": "ed25519_first_party",
+                "trust_source": "super_admin_upload",
+                "runtime_model": "SERVICE_V2",
+                "plugin_api": "2.0.0",
                 "install_root_metadata_json": material["install_metadata"],
                 "install_root_metadata_sha256": _json_hash(
                     material["install_metadata"]
@@ -901,7 +929,7 @@ def run_test_generation_write_lock_order_races(case):
             schedule={"kind": "none", "times": [], "enabled": False},
             compiled_invocations={},
             contract_witness={
-                "runtime_model": "ACTION_V1",
+                "runtime_model": "SERVICE_V2",
                 "allowed_entrypoints": [],
                 "invocation_contracts": invocation_contracts,
                 "scheduling": scheduling,
@@ -923,6 +951,7 @@ def run_test_generation_write_lock_order_races(case):
             rollback_automation_id,
             1,
             expected_committed_generation=None,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         connection.commit()
 
@@ -964,6 +993,7 @@ def run_test_generation_write_lock_order_races(case):
             rollback_automation_id,
             1,
             expected_committed_generation=None,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         retried_first = rollback_repository.get_generation_row(
             rollback_automation_id,
@@ -979,6 +1009,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_transition_token=retried_first[
                 "activation_transition_token"
             ],
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         connection.commit()
 
@@ -1036,6 +1067,7 @@ def run_test_generation_write_lock_order_races(case):
             rollback_automation_id,
             2,
             expected_committed_generation=1,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         connection.commit()
         committed_second = rollback_repository.get_generation_row(
@@ -1153,6 +1185,7 @@ def run_test_generation_write_lock_order_races(case):
             rollback_automation_id,
             2,
             expected_committed_generation=1,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         retried_second = rollback_repository.get_generation_row(
             rollback_automation_id,
@@ -1164,6 +1197,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_transition_token=retried_second[
                 "activation_transition_token"
             ],
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         connection.commit()
 
@@ -1188,6 +1222,7 @@ def run_test_generation_write_lock_order_races(case):
             rollback_automation_id,
             3,
             expected_committed_generation=2,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         connection.commit()
         committed_third = rollback_repository.get_generation_row(
@@ -1222,6 +1257,7 @@ def run_test_generation_write_lock_order_races(case):
             rollback_automation_id,
             3,
             expected_committed_generation=2,
+            service_v2_contract_projector=_synthetic_v2_projection,
         )
         retried_third = rollback_repository.get_generation_row(
             rollback_automation_id,
@@ -1253,5 +1289,6 @@ def run_test_generation_write_lock_order_races(case):
                 rollback_automation_id,
                 3,
                 expected_committed_generation=2,
+                service_v2_contract_projector=_synthetic_v2_projection,
             )
         connection.rollback()

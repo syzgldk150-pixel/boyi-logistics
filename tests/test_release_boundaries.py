@@ -832,6 +832,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
         expected_helpers = {
             "business_module_migration_contract.py",
             "migration_055_domain_databases.py",
+            "migration_064_retire_pre_v2.py",
             "migration_connection.py",
             "scheduled_write_window.py",
         }

@@ -740,10 +740,6 @@ def _validate_installed_target_version(
             else snapshot[snapshot_field]
         )
         actual = version.get(persisted_field)
-        if actual in (None, "") and persisted_field == "runtime_model":
-            actual = "ACTION_V1"
-        if actual in (None, "") and persisted_field == "plugin_api":
-            actual = "1.0.0"
         if str(actual or "") != str(expected):
             raise ConcurrentUpdateError(
                 f"runtime target {persisted_field} differs from installed package"

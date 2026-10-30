@@ -26,7 +26,7 @@ Service V2 扫描按目录验证的 `super_admin_upload/builtin_bundle` 来源�
 
 发货吨位通过 `plugin_core_adapters/shipment_source.py` 从现有宿主用途唯一账号读取真实完整寄件快照，复用 `waybill_query.collect_ronghui_day`，在 `harness_composition.py` 内登记账号读取生命周期；不新增账本或借用显示重量。计费公斤、开单日期、作废消失、网点复核与验收边界见 `../docs/shipment_knowledge_queries.md`。
 
-Agent 只运行 Service V2：启动按持久 committed generation 恢复 V2 注册，插件目录、执行和调度只投影 `runtime_model=SERVICE_V2` 的实例。V1 运行时、迁移配对、签名发行和 Windows Worker 已于 2026-10 删除；数据库里残留的旧插件行由后续迁移 064 删除，在此之前新代码忽略它们。详见 `../docs/plugin-platform-v2.md`。
+Agent 只运行 Service V2：启动按持久 committed generation 恢复 V2 注册，插件目录、执行和调度只投影 `runtime_model=SERVICE_V2` 的实例。V1 运行时、迁移配对、签名发行和 Windows Worker 已于 2026-10 删除；迁移 064 删除了数据库里的旧插件行与旧表，数据库约束只允许 Service V2 版本。详见 `../docs/plugin-platform-v2.md`。
 
 插件清单保存与审计脱敏分离；迁移 048 精确修复统计 V2 已知清单字段损坏，细节和真实数据库回归见[维护说明](../docs/identity_and_unified_chat.md)。
 

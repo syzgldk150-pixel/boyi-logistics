@@ -23,7 +23,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 ## 修改入口
 
-- 启动只按持久 committed generation 恢复 Service V2 注册；目录、执行和调度只投影 `runtime_model=SERVICE_V2` 的实例，数据库中残留的旧插件行在迁移 064 删除前被忽略。见 `../../docs/plugin-platform-v2.md`。
+- 启动只按持久 committed generation 恢复 Service V2 注册；数据库只存 `runtime_model=SERVICE_V2` 的插件版本与代次（迁移 064 删除旧行并加约束），解码任何其他运行模型都会失败。见 `../../docs/plugin-platform-v2.md`。
 
 - `automation_plugins/production.py` 重建 Service V2 入口前读取当前实例启停状态；停用实例只恢复不可调度的持久化证据，不保留命令或路由占用。不能先激活所有已提交代次再停用。生产组合只保留 `reviewed_primitives.py` 列出的 Host 原语，插件存储根来自 `release_config.py`。
 

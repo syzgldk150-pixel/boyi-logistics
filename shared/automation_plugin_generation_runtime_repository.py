@@ -33,11 +33,9 @@ def scheduler_contribution_binding(
     enabled_entrypoints: Sequence[str],
     schedule_expressions: Sequence[str],
 ) -> tuple[str | None, bool]:
-    """Resolve one v1/v2 scheduler contribution without guessing."""
+    """Resolve one Service V2 scheduler contribution without guessing."""
 
-    runtime_model, _ = _runtime_contract(snapshot)
-    if runtime_model == "ACTION_V1":
-        return "scheduler", "scheduler" in enabled_entrypoints
+    _runtime_contract(snapshot)
     contributions = execution_metadata.get("contributions")
     scheduler_items = (
         contributions.get("scheduler")

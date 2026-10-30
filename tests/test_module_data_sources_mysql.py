@@ -410,9 +410,11 @@ def test_management_adapter_continues_verified_source_atomically(database, switc
         hash_columns = ["package_sha256", "manifest_sha256", "tool_contract_sha256", "config_schema_sha256",
             "allowed_entrypoints_sha256", "invocation_contracts_sha256", "worker_requirement_sha256",
             "runtime_sha256", "scheduling_sha256", "install_root_metadata_sha256"]
-        columns = ["plugin_id", "version", "manifest_json", "trust_source", "install_root_metadata_json", "installed_by_actor_id", *hash_columns]
+        columns = ["plugin_id", "version", "runtime_model", "plugin_api", "manifest_json", "trust_source",
+            "install_root_metadata_json", "installed_by_actor_id", *hash_columns]
         cursor.execute("INSERT INTO automation_plugin_versions(" + ",".join(columns) + ") VALUES(" + ",".join(["%s"] * len(columns)) + ")",
-            (plugin_id, "1.0.0", manifest, "ed25519_first_party", "{}", "synthetic-admin", *([digest] * len(hash_columns))))
+            (plugin_id, "1.0.0", "SERVICE_V2", "2.0.0", manifest, "super_admin_upload", "{}", "synthetic-admin",
+             *([digest] * len(hash_columns))))
         cursor.execute("""INSERT INTO automation_projects(automation_id,plugin_id,plugin_version,display_name,
             enabled,state,install_request_id,install_payload_sha256,installed_by_actor_id,
             target_generation,committed_generation,reconcile_state)

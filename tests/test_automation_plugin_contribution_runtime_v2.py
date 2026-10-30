@@ -929,39 +929,6 @@ def test_restart_does_not_reserve_disabled_committed_feishu_command(enabled) -> 
         assert all(record.phase == "DRAINING" for record in registry.snapshot())
 
 
-def test_restart_skips_hidden_pre_v2_projects_without_reading_them() -> None:
-    snapshot = _snapshot(
-        schedule={"kind": "none", "times": [], "enabled": False},
-        enabled_entrypoints=("run_command",),
-    )
-    plans = _managed_plans(snapshot)
-    generation = RuntimeGenerationRecord(
-        snapshot=snapshot, state=RuntimeGenerationState.COMMITTED,
-        effects=tuple(_effect(snapshot, plan, sequence, state=RuntimeEffectState.APPLIED)
-                      for sequence, plan in enumerate(plans, start=1)),
-    )
-
-    class _WithPreV2Rows(_GenerationRepository):
-        def list_project_runtime_ids(self) -> tuple[str, ...]:
-            return (*super().list_project_runtime_ids(), "pre-v2-project")
-
-        def list_project_generations(self, automation_id: str):
-            assert automation_id != "pre-v2-project", "hidden pre-V2 rows must not be restored"
-            return super().list_project_generations(automation_id)
-
-    checked: list[str] = []
-    registry = ManagedContributionRegistry(reserved_feishu_command=lambda _command: False)
-    driver = ProductionRuntimeEffectDriver(
-        broker_handler_keys=(), contribution_registry=registry,
-        project_enabled=lambda automation_id: checked.append(automation_id) or True,
-        excluded_automation_ids=lambda: frozenset({"pre-v2-project"}),
-    )
-    driver.restore_from_repository(_WithPreV2Rows(generation))
-
-    assert checked == [snapshot.automation_id]
-    assert {record.automation_id for record in registry.snapshot()} == {snapshot.automation_id}
-
-
 def test_authoritative_empty_webhook_generation_revokes_and_releases_route() -> None:
     schedule = {"kind": "none", "times": [], "enabled": False}
     first = _snapshot(schedule=schedule, enabled_entrypoints=("receive_hook",))

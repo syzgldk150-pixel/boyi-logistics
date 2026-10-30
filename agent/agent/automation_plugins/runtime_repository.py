@@ -141,10 +141,8 @@ def snapshot_from_row(row: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
         package_sha256=str(raw.get("package_sha256") or ""),
         manifest_sha256=str(raw.get("manifest_sha256") or ""),
         trust_source=PluginTrustSource(str(raw.get("trust_source") or "")),
-        runtime_model=PluginRuntimeModel(
-            str(raw.get("runtime_model") or "ACTION_V1")
-        ),
-        plugin_api=str(raw.get("plugin_api") or "1.0.0"),
+        runtime_model=PluginRuntimeModel(str(raw.get("runtime_model") or "")),
+        plugin_api=str(raw.get("plugin_api") or ""),
         project_config_sha256=str(raw.get("project_config_sha256") or ""),
         account_bindings_sha256=str(raw.get("account_bindings_sha256") or ""),
         resource_bindings_sha256=str(raw.get("resource_bindings_sha256") or ""),
@@ -187,9 +185,9 @@ def snapshot_from_row(row: Mapping[str, Any]) -> RuntimeGenerationSnapshot:
                 raise ValueError(f"persisted runtime snapshot column drifted: {field}")
         if "trust_source" in row and str(row.get("trust_source") or "") != snapshot.trust_source.value:
             raise ValueError("persisted runtime snapshot column drifted: trust_source")
-        if str(row.get("runtime_model") or "ACTION_V1") != snapshot.runtime_model.value:
+        if str(row.get("runtime_model") or "") != snapshot.runtime_model.value:
             raise ValueError("persisted runtime snapshot column drifted: runtime_model")
-        if str(row.get("plugin_api") or "1.0.0") != snapshot.plugin_api:
+        if str(row.get("plugin_api") or "") != snapshot.plugin_api:
             raise ValueError("persisted runtime snapshot column drifted: plugin_api")
         expected_entrypoints_sha256 = _persisted_json_sha256(
             list(snapshot.enabled_entrypoints)
@@ -309,10 +307,8 @@ def _version_from_row(row: Mapping[str, Any]) -> PluginVersionRecord:
         state=PluginVersionState(str(row.get("state") or "INSTALLED")),
         installed_at=_utc_datetime(row.get("installed_at"), "installed_at"),
         install_metadata=dict(install_metadata),
-        runtime_model=PluginRuntimeModel(
-            str(row.get("runtime_model") or "ACTION_V1")
-        ),
-        plugin_api=str(row.get("plugin_api") or "1.0.0"),
+        runtime_model=PluginRuntimeModel(str(row.get("runtime_model") or "")),
+        plugin_api=str(row.get("plugin_api") or ""),
     )
 
 
@@ -411,25 +407,6 @@ class MySQLAutomationPluginCatalogRepositoryAdapter:
             ):
                 raise ValueError(
                     "project committed generation differs from its immutable package"
-                )
-            if committed_version.runtime_model is not PluginRuntimeModel.SERVICE_V2:
-                # Pre-V2 projects stay in the database until migration 064.
-                # Return them unvalidated so the catalog hides them by runtime
-                # model; they are never compiled, listed or executed.
-                return PluginInstanceRecord(
-                    automation_id=automation_id,
-                    display_name=str(row.get("display_name") or ""),
-                    plugin_id=str(row.get("plugin_id") or ""),
-                    state=PluginProjectState(str(row.get("state") or "")),
-                    active_version=committed_version,
-                    enabled=row.get("enabled") is True or row.get("enabled") == 1,
-                    record_version=int(row.get("record_version") or 0),
-                    target_generation=int(row.get("target_generation") or 0),
-                    committed_generation=int(committed_generation),
-                    reconcile_state=RuntimeReconcileState(
-                        str(row.get("reconcile_state") or "")
-                    ),
-                    committed_snapshot=committed_snapshot,
                 )
             committed_manifest = cached_package[1] if cached_package is not None else AutomationPluginManifestV2.from_mapping(
                 committed_version.manifest
