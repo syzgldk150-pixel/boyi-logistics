@@ -1082,18 +1082,34 @@ def _replace_arrival_stats_sheet(
         expected_title = _canonical_rows([values[0]], width=width) if title is not None else []
     except ValueError as exc:
         raise _error("arrival statistics sheet arguments are invalid", "BROKER_ARGUMENT_INVALID") from exc
-    observed_data, observed_title = _require_exact_readback(
-        lambda: (
+    last_observation: list[tuple[list[list[str]], list[list[str]]]] = []
+
+    def observe() -> tuple[list[list[str]], list[list[str]]]:
+        observation = (
             _fresh_sheet_rows(resource, clear_target, width=width),
             (
                 _fresh_sheet_rows(resource, title["range"], width=width)
                 if title is not None
                 else []
             ),
-        ),
-        (expected_data, expected_title),
-        label="arrival statistics sheet",
-    )
+        )
+        last_observation[:] = [observation]
+        return observation
+
+    try:
+        observed_data, observed_title = _require_exact_readback(
+            observe,
+            (expected_data, expected_title),
+            label="arrival statistics sheet",
+        )
+    except PluginExecutionError:
+        # Record only where the last fresh read differed, never cell content,
+        # so an unconfirmed write can be located without exposing the sheet.
+        if last_observation:
+            _log_sheet_mismatch("arrival-statistics-data", expected_data, last_observation[0][0])
+            if title is not None:
+                _log_sheet_mismatch("arrival-statistics-title", expected_title, last_observation[0][1])
+        raise
     return {
         "ok": True,
         "verified": True,

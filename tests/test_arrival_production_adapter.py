@@ -658,6 +658,42 @@ def test_arrival_stats_sheet_accepts_lost_response_only_after_exact_fresh_readba
     assert result["record_count"] == 1
 
 
+def test_arrival_stats_sheet_unconfirmed_write_logs_only_the_mismatch_position(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    resource_id = "resource-stats-primary"
+    resource = {
+        "resource_kind": "feishu_sheet",
+        "spreadsheet_token": "managed-token",
+        "snapshot_range": "Stats!A2:S100",
+        "clear_range": "Stats!A2:S100",
+        "title_range": "Stats!A1:S1",
+        "_meta": {"resource_key": resource_id},
+    }
+    records = [_stats_record("SECRET-WAYBILL-1")]
+    values = arrival._stats_values("stats", records, "2026-08-15")
+    expected_data = arrival._canonical_rows(values[1:], width=19)
+    expected_title = arrival._canonical_rows([values[0]], width=19)
+    changed = [list(expected_data[0])]
+    changed[0][3] = "reformatted"
+
+    monkeypatch.setattr(arrival, "_load_resource", lambda _exact: resource)
+    monkeypatch.setattr(arrival, "_write_sheet_call", lambda _action, _params: True)
+    monkeypatch.setattr(arrival.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(arrival, "_fresh_sheet_rows", lambda _resource, value_range, *, width: (
+        changed if value_range == "Stats!A2:S100" else expected_title))
+
+    with caplog.at_level("WARNING"), pytest.raises(PluginExecutionError) as failure:
+        arrival._replace_arrival_stats_sheet(resource_id, "stats", records, "2026-08-15")
+
+    assert failure.value.code == "WRITE_OUTCOME_UNKNOWN"
+    messages = [record.getMessage() for record in caplog.records if "readback mismatch" in record.getMessage()]
+    assert any("stage=arrival-statistics-data" in message and "first_row=0 first_column=3" in message
+               for message in messages)
+    assert all("SECRET-WAYBILL-1" not in message and "reformatted" not in message for message in messages)
+
+
 def test_arrival_stats_sheet_rechecks_acknowledged_write_until_exact_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
