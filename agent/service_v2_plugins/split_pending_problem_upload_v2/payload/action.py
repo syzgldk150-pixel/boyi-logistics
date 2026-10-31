@@ -435,7 +435,7 @@ def run_action(
                 "evidence": {
                     "execution_result": "preview_only",
                     "observed_at": observed_at,
-                    "source": "signed_first_party_plugin",
+                    "source": "service_v2_plugin",
                 },
                 "results": [],
                 "selected_bill_codes": [],
@@ -532,7 +532,7 @@ def run_action(
             "evidence": {
                 "execution_result": "all_selected_confirmed",
                 "observed_at": observed_at,
-                "source": "signed_first_party_plugin",
+                "source": "service_v2_plugin",
             },
             "results": results,
             "selected_bill_codes": selected_codes,

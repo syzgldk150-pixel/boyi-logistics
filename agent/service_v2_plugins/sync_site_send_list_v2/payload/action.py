@@ -176,7 +176,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
         observed_at = utc_observed_at()
         data = {"dry_run": True, "target_date": business_date, "fetched": len(rows),
                 "normalized": len(normalized), "filtered": len(rows) - len(normalized),
-                "records": normalized, "evidence": {"source": "signed_first_party_plugin",
+                "records": normalized, "evidence": {"source": "service_v2_plugin",
                     "observed_at": observed_at, "pagination_complete": True,
                     "page_count": page_count, "execution_result": "preview_only"}}
         result_ref, result_proof = executor_success_evidence(action_id=ACTION_ID, data=data, observed_at=observed_at)
@@ -236,7 +236,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
         "normalized": len(normalized),
         "filtered": len(rows) - len(normalized),
         "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": page_count,

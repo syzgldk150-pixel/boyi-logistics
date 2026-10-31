@@ -674,7 +674,7 @@ def run_action(
         "skipped_signed_count": len(skipped_signed_codes),
         "skipped_signed_codes": skipped_signed_codes,
         "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": source_pages,

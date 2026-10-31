@@ -204,7 +204,7 @@ def run_action(
         "written": written,
         "dry_run": dry_run,
         "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": page_count,

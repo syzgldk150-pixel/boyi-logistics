@@ -7,6 +7,7 @@ evidence construction remain in the replaceable package generation.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping
 
 from customer_problem_fields import normalize_problem_rows
@@ -24,7 +25,7 @@ ACTION_ID = "sync_customer_service_problems"
 _ROLE = "customer_service_source"
 _DIRECTIONS = {"received", "published", "both"}
 _MAX_PAGES = 500
-_MAX_RECHECKS = 1000
+_MAX_RECHECKS = 5000
 _MAX_BROKER_CALLS = 1000
 _LIST_TERMINAL_PROBLEM_STATUSES = {"已处理", "已关闭", "已完成"}
 _DETAIL_TERMINAL_PROBLEM_STATUSES = {"已回复", "已处理", "已关闭", "已完成"}
@@ -251,9 +252,15 @@ def _recheck_details(
     *,
     current_keys: set[str],
     page_count: int,
-) -> tuple[list[dict[str, object]], list[str]]:
+) -> tuple[list[dict[str, object]], list[str], int]:
+    """Recheck open problems that left the list, within this run's call budget.
+
+    Problems still listed need no detail call. When the rest exceed the
+    broker budget left after paging, one rotating slice is checked and the
+    others stay open for the following runs; nothing is closed unchecked.
+    """
     if raw_items in (None, ""):
-        return [], []
+        return [], [], 0
     if not isinstance(raw_items, list):
         raise ValueError("recheck_items are invalid")
     if len(raw_items) > _MAX_RECHECKS:
@@ -279,11 +286,21 @@ def _recheck_details(
             )
         detail_arguments = None if context_error else _detail_arguments(item, dedupe_key=key)
         pending.append((item, key, context_error, detail_arguments))
-    # Reserve every exact detail call before starting any of them. The Host
-    # also enforces this global cap across both declared service operations.
-    detail_calls = sum(arguments is not None for _, _, _, arguments in pending)
-    if page_count + detail_calls > _MAX_BROKER_CALLS:
-        raise ValueError("CUSTOMER_RECHECK_BUDGET_EXCEEDED")
+    # The Host enforces this global cap across both declared service
+    # operations; select the detail calls before starting any of them.
+    budget = _MAX_BROKER_CALLS - page_count
+    callable_items = [entry for entry in pending if entry[3] is not None]
+    deferred = 0
+    if len(callable_items) > budget:
+        if budget <= 0:
+            raise ValueError("CUSTOMER_RECHECK_BUDGET_EXCEEDED")
+        # Each 15-minute run advances the window by one budget, so every
+        # pending problem is reached within ceil(pending / budget) runs.
+        start = (int(time.time()) // 900 * budget) % len(callable_items)
+        rotated = callable_items[start:] + callable_items[:start]
+        chosen = {entry[1] for entry in rotated[:budget]}
+        deferred = len(callable_items) - budget
+        pending = [entry for entry in pending if entry[3] is None or entry[1] in chosen]
     for item, key, context_error, detail_arguments in pending:
         if context_error:
             details.append(
@@ -339,7 +356,7 @@ def _recheck_details(
                 resolution_reason=resolution_reason,
             )
         )
-    return details, evidence_refs
+    return details, evidence_refs, deferred
 
 
 def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> dict[str, object]:
@@ -347,7 +364,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
     if direction not in _DIRECTIONS:
         raise ValueError("direction is invalid")
     records, page_count, page_refs = _collect_pages(direction, broker)
-    rechecks, detail_refs = _recheck_details(
+    rechecks, detail_refs, deferred = _recheck_details(
         arguments.get("recheck_items"),
         broker,
         current_keys={_dedupe_key(item) for item in records},
@@ -361,12 +378,13 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
             "records": records,
             "rechecks": rechecks,
             "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": page_count,
             "record_count": len(records),
             "recheck_count": len(rechecks),
+            "recheck_deferred_count": deferred,
             "configured_accounts_queried": True,
             },
         },

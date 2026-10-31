@@ -719,7 +719,7 @@ def run_action(
         "detail_fetched": len(fetched),
         "count_result": count_result,
         "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "execution_result": commit_state,

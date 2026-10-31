@@ -212,7 +212,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
             "bill_codes": len(records),
             "skipped_receipt_like": skipped_receipts,
             "evidence": {
-                "source": "signed_first_party_plugin",
+                "source": "service_v2_plugin",
                 "observed_at": observed_at,
                 "pagination_complete": True,
                 "page_count": page_count,
@@ -291,7 +291,7 @@ def run_action(arguments: dict[str, object], broker: Callable[..., object]) -> d
         "detail_records": len(records),
         "statistics_sheets_preserved": preserved_sheets,
         "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "page_count": page_count,

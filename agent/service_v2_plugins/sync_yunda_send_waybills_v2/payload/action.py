@@ -475,7 +475,7 @@ def run_action(
         "sql_only": flags["sql_only"],
         "per_date": per_date,
         "evidence": {
-            "source": "signed_first_party_plugin",
+            "source": "service_v2_plugin",
             "observed_at": observed_at,
             "pagination_complete": True,
             "execution_result": execution_result,

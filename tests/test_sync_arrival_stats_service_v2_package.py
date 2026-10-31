@@ -368,7 +368,7 @@ def test_arrival_stats_service_result_converts_v1_proof_to_host_closed_write_con
         "data": {
             "records": 1,
             "evidence": {
-                "source": "signed_first_party_plugin",
+                "source": "service_v2_plugin",
                 "observed_at": observed_at,
                 "pagination_complete": True,
                 "execution_result": "all_required_outputs_committed",
@@ -386,7 +386,7 @@ def test_arrival_stats_service_result_converts_v1_proof_to_host_closed_write_con
     }
     result = runtime._service_success_result(legacy_result, tracker)
     assert result["data"]["evidence"] == {
-        "source": "signed_first_party_plugin",
+        "source": "service_v2_plugin",
         "observed_at": observed_at,
         "pagination_complete": True,
         "execution_result": "all_required_outputs_committed",
