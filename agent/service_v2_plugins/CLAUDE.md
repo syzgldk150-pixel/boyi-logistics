@@ -37,7 +37,7 @@
 
 ## 网点出港清单
 
-- 数据源为空时：目标表有旧数据就清空并核验（`execution_result=no_data_cleared`）；目标表已经为空则是已核验的无需写入。宿主 `list_connectors_v2.py` 的出港清单 `replace` 输出声明了无需写入的核验字段（2026-11-01 前未声明，导致每天 05:00 清空后、05:30 再跑空数据时以 `CONNECTOR_INVOCATION_FAILED` 失败并记为写入结果未知）。回归见 `tests/test_list_v2_packaged_protocol.py`。
+- 数据源为空时：目标表有旧数据就清空并核验（`execution_result=no_data_cleared`）；目标表已经为空则是已核验的无需写入。无需写入标记 `VERIFIED_WRITE_NOOP_FIELD` 由 `connector_registry.py` 统一放入每个对外写入操作的输出合同，Connector 不再逐个声明；出港清单 `replace` 仍在 `list_connectors_v2.py` 声明空回读的核验字段（2026-11-01 前缺这些字段，导致每天 05:00 清空后、05:30 再跑空数据时以 `CONNECTOR_INVOCATION_FAILED` 失败并记为写入结果未知）。回归见 `tests/test_list_v2_packaged_protocol.py`。
 
 ## R7车线每日打卡
 

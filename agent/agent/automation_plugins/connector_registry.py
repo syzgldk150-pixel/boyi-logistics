@@ -38,6 +38,10 @@ _SERVICE_RE = re.compile(
     r"^connector\.[a-z][a-z0-9_]{1,63}\.[a-z][a-z0-9_.-]{0,127}@(0|[1-9][0-9]*)$"
 )
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,190}$")
+# Connector handlers flag a verified empty-input write with this field. The
+# Connector path records the write start before invoking the handler, so the
+# flag is only result metadata; every external write admits it.
+VERIFIED_WRITE_NOOP_FIELD = "_broker_verified_write_noop_v1"
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SYSTEM_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _MAX_JSON_BYTES = 1024 * 1024
@@ -640,6 +644,17 @@ class ConnectorOperation:
             raise ConnectorContractInvalid("Connector operation handler is invalid")
         _validate_closed_schema(self.input_schema, path="input_schema", root=True)
         _validate_closed_schema(self.output_schema, path="output_schema", root=True)
+        output_schema = self.output_schema
+        properties = output_schema.get("properties")
+        if (
+            self.effect is CapabilityEffect.EXTERNAL_WRITE
+            and isinstance(properties, Mapping)
+            and VERIFIED_WRITE_NOOP_FIELD not in properties
+        ):
+            output_schema = {
+                **output_schema,
+                "properties": {**properties, VERIFIED_WRITE_NOOP_FIELD: {"type": "boolean"}},
+            }
         for field, value, maximum in (
             ("max_input_bytes", self.max_input_bytes, _MAX_CONNECTOR_INPUT_BYTES),
             ("max_output_bytes", self.max_output_bytes, _MAX_CONNECTOR_OUTPUT_BYTES),
@@ -651,7 +666,7 @@ class ConnectorOperation:
             ):
                 raise ConnectorContractInvalid(f"Connector {field} is invalid")
         object.__setattr__(self, "input_schema", _freeze(self.input_schema))
-        object.__setattr__(self, "output_schema", _freeze(self.output_schema))
+        object.__setattr__(self, "output_schema", _freeze(output_schema))
 
 
 @dataclass(frozen=True)

@@ -95,10 +95,6 @@ _IDEMPOTENCY_FIELDS = ("idempotency_key", "contract_sha256")
 _RECORD_COLLECTION_FIELDS = (
     "records", "values", "bill_codes", "outcomes", "transactions", "items",
 )
-# Connector handlers flag a verified empty-input write with this field. The
-# Connector path records the write start before invoking the handler, so the
-# flag is only result metadata that the Connector schema admits.
-VERIFIED_WRITE_NOOP_FIELD = "_broker_verified_write_noop_v1"
 
 
 def _sha256_text(value: str) -> str:

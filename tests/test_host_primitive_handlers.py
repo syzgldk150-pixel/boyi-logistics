@@ -7,7 +7,8 @@ from typing import Any, Mapping
 import pytest
 
 from agent.automation_plugins import host_primitive_handlers as handler_module
-from agent.automation_plugins.broker import BrokerGrant, VERIFIED_WRITE_NOOP_FIELD
+from agent.automation_plugins.broker import BrokerGrant
+from agent.automation_plugins.connector_registry import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.core_adapter import (
     AccountManagerSessionResolver,
     CoreBrokerInvocationContext,

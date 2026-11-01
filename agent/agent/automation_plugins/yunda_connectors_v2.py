@@ -1,6 +1,5 @@
 """Yunda source and verified output primitives for independently shipped plugins."""
 from agent.connector_namespaces import YUNDA_DISPATCH_TOOL, YUNDA_SEND_TOOL
-from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
 from agent.automation_plugins.connector_schemas import TEXT, DATE, BOOL, COUNT, CURSOR, object_schema as obj, array_schema as arr, record_schema as record, source_record_schema
@@ -51,7 +50,6 @@ def build_yunda_connectors(reviewed):
             resource = ConnectorRequirementContract(service=service,binding_kind=Kind.RESOURCE,resource_role=resource_role,
                 allowed_resource_kinds=(kind,),required=True)
             optional = {key:COUNT for key in ("written","deleted","created_fields","skipped","retained_unmatched")}
-            optional[VERIFIED_WRITE_NOOP_FIELD] = BOOL
             operation = op("commit","network.request",action,Effect.EXTERNAL_WRITE,sink_input,
                 obj({**common_result,**optional},list(common_result)),source_role=resource_role,resource=resource)
             result.append(ConnectorDescriptor(service=service,title=resource_role,binding_kind=Kind.RESOURCE,

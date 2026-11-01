@@ -19,7 +19,7 @@ from agent.automation_plugins.core_adapter import (
     CoreBrokerHandler,
     CoreBrokerInvocationContext,
 )
-from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
+from agent.automation_plugins.connector_registry import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.errors import PluginExecutionError
 from agent.automation_plugins.host_primitive_common import (
     _CUSTOMER_IDENTITY_DOMAIN,

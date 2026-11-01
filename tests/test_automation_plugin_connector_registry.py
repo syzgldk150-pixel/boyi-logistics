@@ -23,6 +23,7 @@ from agent.automation_plugins.connector_registry import (
     ConnectorResourceBindingRef,
     ConnectorSensitiveDataDenied,
     ConnectorUnavailable,
+    VERIFIED_WRITE_NOOP_FIELD,
 )
 from agent.automation_plugins.fixture_connectors import (
     FIXTURE_TRACKING_ACCOUNT_ROLE,
@@ -250,6 +251,40 @@ def test_code_owned_write_operations_have_explicit_binding_and_byte_contracts() 
             ),
         )
     ).contract_sha256("connector.test.resource_sheet@1")
+
+
+def test_every_external_write_admits_the_verified_noop_flag_without_declaring_it() -> None:
+    def noop_handler(_binding, arguments):
+        return {"value": arguments["value"], VERIFIED_WRITE_NOOP_FIELD: True}
+
+    def descriptor(effect):
+        return ConnectorDescriptor(
+            service="connector.test.internal_store@1",
+            title="Internal store connector",
+            account_role=None,
+            allowed_systems=(),
+            binding_kind=ConnectorBindingKind.HOST_INTERNAL,
+            operations=(_operation(name="replace", effect=effect, handler=noop_handler),),
+        )
+
+    binding = ConnectorHostInternalBindingRef(service="connector.test.internal_store@1")
+    write = ConnectorRegistry((descriptor(CapabilityEffect.EXTERNAL_WRITE),))
+    assert asyncio.run(
+        write.invoke(
+            resolved=write.require_operation("connector.test.internal_store@1", "replace"),
+            binding=binding,
+            arguments={"value": "ok"},
+        )
+    ) == {"value": "ok", VERIFIED_WRITE_NOOP_FIELD: True}
+    internal = ConnectorRegistry((descriptor(CapabilityEffect.INTERNAL_WRITE),))
+    with pytest.raises(ConnectorInvocationError, match="closed schema"):
+        asyncio.run(
+            internal.invoke(
+                resolved=internal.require_operation("connector.test.internal_store@1", "replace"),
+                binding=binding,
+                arguments={"value": "ok"},
+            )
+        )
 
 
 def test_connector_operation_keeps_a_default_mebibyte_but_allows_bounded_broker_limits() -> None:
