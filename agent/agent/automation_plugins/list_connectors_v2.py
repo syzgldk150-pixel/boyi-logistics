@@ -1,5 +1,6 @@
 """Arrival-list and site-send infrastructure operations; filtering stays in ZIPs."""
 from agent.connector_namespaces import ARRIVE_LIST_TOOL, SITE_SEND_TOOL
+from agent.automation_plugins.broker import VERIFIED_WRITE_NOOP_FIELD
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorInvocationError, ConnectorOperation
 from agent.automation_plugins.connector_schemas import TEXT, DATE, BOOL, COUNT, CELL, CURSOR, object_schema as obj, array_schema as arr, record_schema as record
@@ -77,8 +78,14 @@ def build_list_connectors(reviewed):
                 action = "feishu.sheet.replace"
                 if prefix == "arrive_list":
                     values["resource_slot"] = TEXT
+            required = list(result)
+            if prefix == "site_send":
+                # An already empty target is a verified no-op; the site handler
+                # then reports its empty readback instead of a write.
+                result.update({"verified": BOOL, "readback_count": COUNT, "written": COUNT,
+                               "readback_sha256": TEXT, VERIFIED_WRITE_NOOP_FIELD: BOOL})
             operations.append(operation("replace", "network.request", action, Effect.EXTERNAL_WRITE,
-                                        obj(values), obj(result), role, resource))
+                                        obj(values), obj(result, required), role, resource))
             descriptors.append(ConnectorDescriptor(service=service, title=role, binding_kind=Kind.RESOURCE,
                 account_role=None, allowed_systems=(), resource_role=role, allowed_resource_kinds=(kind,),
                 operations=tuple(operations)))

@@ -35,6 +35,10 @@
 
 - 显式声明最多 500 次列表、1000 次详情调用，仍受 Host 单次总计 1000 次限制。2.0.3 起：复核输入最多 5000 项；包在完整分页后只为本轮列表未返回的问题件做详情复核，超出剩余预算时本轮按 15 分钟轮换的窗口复核一段，其余保持未解决、留到后续轮次，`evidence.recheck_deferred_count` 记录本轮延后数量；不默认关闭任何问题件。2.0.2 在未结问题超过 1000 项后每次都以 `CUSTOMER_RECHECK_INPUT_LIMIT` 失败（2026-10-25 起），2.0.3 修复。详见仓库根 `docs/identity_and_unified_chat.md`。
 
+## 网点出港清单
+
+- 数据源为空时：目标表有旧数据就清空并核验（`execution_result=no_data_cleared`）；目标表已经为空则是已核验的无需写入。宿主 `list_connectors_v2.py` 的出港清单 `replace` 输出声明了无需写入的核验字段（2026-11-01 前未声明，导致每天 05:00 清空后、05:30 再跑空数据时以 `CONNECTOR_INVOCATION_FAILED` 失败并记为写入结果未知）。回归见 `tests/test_list_v2_packaged_protocol.py`。
+
 ## R7车线每日打卡
 
 - `r7_vehicle_checkin_v2` 只处理北京时间今天及前两天、运输状态为车辆到达（55）的任务；业务筛选和分页编排留在包内。
