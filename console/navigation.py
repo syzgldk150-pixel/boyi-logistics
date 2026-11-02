@@ -96,21 +96,12 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
         ConsoleMenuRegistration("harness", "/harness", "AI 助手", "助手", "message-square", "primary"),
         ConsoleMenuRegistration("automation_accounts", "/automation-accounts", "业务账号", "账号", "users", "primary"),
         ConsoleMenuRegistration("llm_settings", "/settings/llm", "智能模型", "模型", "cpu", "system"),
-        ConsoleMenuRegistration(
-            "work_items",
-            "/work-items",
-            "事项中心",
-            "事项",
-            "inbox",
-            "system",
-            show_in_navigation=False,
-        ),
         ConsoleMenuRegistration("system_settings", "/settings/accounts", "系统管理", "设置", "settings", "system"),
     )
 )
 
-# The static registration remains the fifteen fixed module identities. The
-# visible projection omits internal-only control surfaces such as work items.
+# The static registration is the fifteen fixed module identities. The visible
+# projection omits registrations marked as internal-only.
 CONSOLE_NAVIGATION: tuple[dict[str, str], ...] = tuple(
     registration.to_navigation_item()
     for registration in CONSOLE_MENU_REGISTRATIONS

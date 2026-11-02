@@ -269,18 +269,6 @@ def _service_v2_invocation_governance(
     return {str(key): value for key, value in raw.items()}
 
 
-def _governance_objects(value: Any) -> tuple[Mapping[str, Any], ...]:
-    if value in (None, "", (), []):
-        return ()
-    if isinstance(value, Mapping):
-        return (dict(value),)
-    if not isinstance(value, (list, tuple)) or any(
-        not isinstance(item, Mapping) for item in value
-    ):
-        return ()
-    return tuple(dict(item) for item in value)
-
-
 @dataclass(frozen=True)
 class CompiledAutomationProjectContract:
     automation_id: str
@@ -301,84 +289,6 @@ class CompiledAutomationProjectContract:
     can_full_auto: bool
     code_owned_plan_fields: frozenset[str] = frozenset()
     restriction_code: str | None = None
-
-    def matches_plan(
-        self,
-        plan: Any,
-        invocation: AutomationProjectInvocation,
-        *,
-        source: str,
-        execution_context: Mapping[str, Any] | None = None,
-        dynamic_resolver: Callable[[str, str, Mapping[str, Any]], Any] | None = None,
-    ) -> bool:
-        if invocation.automation_id != self.automation_id:
-            return False
-        if invocation.automation_generation != self.automation_generation:
-            return False
-        if invocation.contract_hash != self.contract_hash:
-            return False
-        if invocation.project_configuration_version != self.project_configuration_version:
-            return False
-        if (
-            getattr(plan, "automation_id", None) != self.automation_id
-            or getattr(plan, "automation_generation", None)
-            != self.automation_generation
-            or getattr(plan, "automation_contract_hash", None) != self.contract_hash
-        ):
-            return False
-        if invocation.entrypoint.value != str(source or "").strip():
-            return False
-        if invocation.entrypoint.value not in self.allowed_entrypoints:
-            return False
-        invocation_contract = self.invocation_contracts.get(invocation.contract_id)
-        if (
-            invocation_contract is None
-            or invocation_contract.entrypoint != invocation.entrypoint.value
-        ):
-            return False
-        steps = tuple(getattr(plan, "steps", ()) or ())
-        if len(steps) != 1:
-            return False
-        step = steps[0]
-        effective_governance = invocation_contract.governance or {
-            "operation_type": self.operation_type,
-            "risk_level": self.risk_level,
-            "evidence": (),
-            "postconditions": (),
-        }
-        if (
-            str(getattr(step, "tool_name", "")) != self.tool_name
-            or str(getattr(step, "tool_version", "")) != self.tool_version
-            or str(getattr(getattr(step, "operation_type", ""), "value", getattr(step, "operation_type", "")))
-            != str(effective_governance.get("operation_type") or "")
-        ):
-            return False
-        if invocation_contract.governance is not None:
-            if (
-                str(
-                    getattr(
-                        getattr(step, "risk_level", ""),
-                        "value",
-                        getattr(step, "risk_level", ""),
-                    )
-                )
-                != str(effective_governance.get("risk_level") or "")
-                or tuple(getattr(step, "expected_evidence", ()) or ())
-                != _governance_objects(effective_governance.get("evidence"))
-                or tuple(getattr(step, "postconditions", ()) or ())
-                != _governance_objects(effective_governance.get("postconditions"))
-            ):
-                return False
-        return _arguments_match(
-            invocation_contract.expected_arguments,
-            getattr(step, "arguments", {}),
-            invocation_contract.dynamic_argument_resolvers,
-            execution_context or {},
-            code_owned_plan_fields=self.code_owned_plan_fields,
-            input_schema=invocation_contract.input_schema,
-            dynamic_resolver=dynamic_resolver,
-        )
-
 
 PluginContractProvider = Callable[[str], Mapping[str, Any] | None]
 

@@ -6,11 +6,11 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`。系统只运行 V2；Connector 复用的已审核 Host 原语（`automation_plugins/host_primitive_*.py`、`reviewed_primitives.py`）是当前能力，不是遗留代码。细节见[维护说明](../../docs/identity_and_unified_chat.md)。
 
-当前调用架构见 [直接业务与插件说明](../../docs/architecture_direct_invocation.md)。`direct_readers.py` 管理固定查询的参数、角色与临时能力；`automation_plugins/direct_invocation.py` 管理插件独立调用，`orchestration/workflow_runner.py` 在主系统不启用领取。
+当前调用架构见 [直接业务与插件说明](../../docs/architecture_direct_invocation.md)。`direct_readers.py` 管理固定查询的参数、角色与临时能力；`automation_plugins/direct_invocation.py` 管理插件独立调用。
 
-- `customer_collection_business.py` 从当前客服业务来源准备精确复核并在已验证 Invocation 完成前事务发布；`customer_source_projection.py` 共享来源身份/数据发布，`customer_collection_validation.py` 与历史只读投影复用同一身份和关闭校验。无 Command、Run、Step、Work Item 写入。
+- `customer_collection_business.py` 从当前客服业务来源准备精确复核并在已验证 Invocation 完成前事务发布；`customer_source_projection.py` 共享来源身份/数据发布，`customer_collection_validation.py` 复用同一身份和关闭校验。
 
-- `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。旧 Command/Run 不混入当前执行统计；直接 reader 继续校验角色与参数，财务金额仍由原账本聚合。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
+- `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。直接 reader 继续校验角色与参数，财务金额仍由原账本聚合。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
 
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
 - 扫描批次计划由已安装插件独立生成；Host 校验预览结构、候选集合及批次数量约束，原样绑定插件提交的批次数与计划摘要，不按宿主默认值重新分批。插件在首个写入前重读来源并校验完整计划，Host 仍核验实际写回执与独立读后证据。
@@ -19,7 +19,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 ## 目录职责
 
-`agent/` 负责直接业务接口、独立插件调用、工具注册、既有定时、账号会话及 Agent 对话；旧编排代码只保留历史与未启用的长任务架构。
+`agent/` 负责直接业务接口、独立插件调用、工具注册、既有定时、账号会话及 Agent 对话；旧 Command/Run/Step 编排代码已于 2026-11 删除。
 
 ## 修改入口
 
@@ -32,15 +32,15 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 - 插件版本升级：`automation_plugins/mysql_repository.py` 在同一 Unit of Work 内准备目标合同配置并暂存版本，失败整体回滚，已提交代次保持不变；`../../shared/automation_plugin_configuration_contract.py` 统一配置 witness 与精确升级目标校验。真实 MySQL 回归见 `../../tests/test_service_v2_optional_console_upgrade_mysql.py`。
 - Service V2 升级仅在旧合同与保存模板一致时接纳新增的可选 Console 运行时输入；原调用参数、治理、目标、绑定和定时不变，目标模板与升级在同一事务提交。兼容边界见 `../../docs/plugin-platform-v2.md`。
 - 改直接调用、权限、执行记录和历史查询：
-  - 当前入口为 `automation_plugins/direct_invocation.py`、`orchestration/direct_project_invocation.py` 与 `tms_runtime/direct_business.py`；`../docs/control_plane_v1.md` 仅供旧控制平面历史/离线核验。
-  - 当前 Invocation 开始/结束使用明确 UTC；旧领取、唤醒和审批时间只用于历史解释，数据库历史时区不猜测；见 `../../docs/control_plane_timebase.md`。
-  - 普通查询经组合根注入的 DirectBusinessService/reader，插件经 DirectPluginInvocationService 调用 PluginExecutionRouter；HTTP、飞书、Scheduler 与 Agent 不提交旧 Command，不启动 WorkflowRunner 领取。
+  - 当前入口为 `automation_plugins/direct_invocation.py`、`orchestration/direct_project_invocation.py` 与 `tms_runtime/direct_business.py`。
+  - 当前 Invocation 开始/结束使用明确 UTC，数据库历史时区不猜测。
+  - 普通查询经组合根注入的 DirectBusinessService/reader，插件经 DirectPluginInvocationService 调用 PluginExecutionRouter；代次租约、写回执与 Broker 收据只绑定 Invocation。
   - `main.py` 是唯一组合根；`orchestration/` 不得导入 `tools`、`feishu` 或 Console。持久化统一走 `../../shared/orchestration_repository.py` 的显式 Unit of Work。
   - 已开始外部写且结果未证实时，本次 Invocation 终结为 WRITE_OUTCOME_UNKNOWN；保存真实回执，不重放旧调用。新请求建立独立 Invocation，必要历史核验不得隐式继续原业务。
-  - 旧澄清事件和 Plan Hash 仅供历史验证，不重新调度。新请求的业务参数必须通过当前 schema、权威账号、项目权限与代次校验，不能借用原 Command 的授权。
-  - 当前直接执行受有界并发与实际资源控制；已受理请求遇临时资源忙时，仅在当前进程内有界等待，默认最多 30 秒且可取消；超时、过载、登录、数据或业务错误明确终结，无持久等待队列和自动补跑。调用生命周期持有实际账号使用登记，取消/超时后等线程或子进程真正结束及必要业务落库完成才释放。旧 Runner 心跳/领取参数不影响当前路径。
+  - 新请求的业务参数必须通过当前 schema、权威账号、项目权限与代次校验。
+  - 当前直接执行受有界并发与实际资源控制；已受理请求遇临时资源忙时，仅在当前进程内有界等待，默认最多 30 秒且可取消；超时、过载、登录、数据或业务错误明确终结，无持久等待队列和自动补跑。调用生命周期持有实际账号使用登记，取消/超时后等线程或子进程真正结束及必要业务落库完成才释放。
   - `orchestration/execution_resources.py` 只从 `workflow_resource_store.get_saved_workflow_resource` 的宿主完整性校验记录归一已审核 Sheet/Bitable 写范围。已知同表别名跨插件／角色／凭据互斥，缺少子表 ID 或创建归档表时持有整个父资源；未知动作、URL-only、未知 locator 保留同账号保守锁，并与该账号已知资源双向冲突。无权威物理身份的跨凭据范围及多个独立服务进程之间的资源协调仍是明确限制，不可描述为已覆盖。
-  - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。签名唯一声明可选、绑定键完全缺失且无账号歧义的资源角色可排除，Broker 仍在写前拒绝该角色。Direct 调用冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。历史收据只读投影和明确限制见 `../../docs/historical_write_recovery.md`。
+  - 混合步骤按已审核 Broker 动作持有写范围并集：扫描提交只保护实际写账号，本地投影按真实共享表跨账号互斥，飞书保留物理范围；只读账号角色不扩大成全账号写锁。签名唯一声明可选、绑定键完全缺失且无账号歧义的资源角色可排除，Broker 仍在写前拒绝该角色。Direct 调用冻结的逐动作范围沿执行上下文进入 Broker 收据，无法证明的动作保留原保守范围。
   - 内部配置拒写与预览只读裁剪由 `automation_plugins/code_owned_fields.py` 统一执行；客服采集的内部字段不可编辑，也不因此获得额外计划字段权限。
   - Session 登录使用按 profile 隔离、默认 120 秒的 staged 子进程；token/epoch 防止迟到提交，同 profile 登录中直接 `BLOCKED_LOGIN`。业务适配器不得先跑全系统鉴权，只打开保存态并以实际目标响应判断登录；完整 capability 矩阵仅供后台监控。
 - 改 HTTP API、健康检查、Webhook 入口：
@@ -60,13 +60,13 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
   - `automation_plugins/host_capability_registry.py` 是精确 `(api_version, capability, action)` 的唯一 Host capability/effect 权威；`manifest_v2.py`、`service_v2_contract.py`、`service_registry.py`、`capability_proxy_v2.py` 和 `core_adapter.py` 只能消费其关闭失败的描述，不能按操作名或 lifecycle `effect_kind` 推断。
   - Provider 的 `provides[*].operations` 必须是闭合 `{name,effect}` 对象；Host `capabilities[*].operations` 仍只声明 action 字符串，插件无权自报 Host effect、风险或 Harness 资格。
   - `read/compute/internal_write/external_write/destructive` 逐 contribution 进入 invocation contract、compiled invocation 与本次 Invocation；风险、锁、Evidence、Harness 与 Broker `read/write` 投影从 effect 机械派生。`service.invoke` 的静态 grant 只开放受保护的动态 effect 分发，真正的 effect ceiling 来自调用 contribution 的精确治理，实际调用还要核对 Provider effect。
-  - 当前 Direct 调用与 `result_verifier.py` 使用同一精确治理；旧 Planner/Runner 仅供历史离线验证。读/计算不得产生写尝试；写成功必须有 committed generation、宿主写开始回执、Python-only Host 调用观测、独立 Evidence 和严格 postcondition proof，任一漂移都进入失败或未知写而非重放。Registry output Schema 只约束业务 `data`；Host 调用引用属于独立 Broker 信封和 observation，禁止校验后注入 `data`。
+  - 当前 Direct 调用与 `result_verifier.py` 使用同一精确治理。读/计算不得产生写尝试；写成功必须有 committed generation、宿主写开始回执、Python-only Host 调用观测、独立 Evidence 和严格 postcondition proof，任一漂移都进入失败或未知写而非重放。Registry output Schema 只约束业务 `data`；Host 调用引用属于独立 Broker 信封和 observation，禁止校验后注入 `data`。
   - `automation_plugins/connector_registry.py` 是与 ZIP ServiceRegistry 分离的 Host Connector 权威。生产注册由 `production_connectors.py` 组合实际业务接口，包含经审核的读取、内部写入与外部写入；账号和资源由 Host 按已提交绑定解析，插件只取得受控结果。effect、Schema、独立写后核验与 Host 观测仍为必需。tracking fixture 仅由离线 `connector-test` 显式加载，不进入生产 Registry，不代表生产授权或连通性。
 - 新网页业务默认使用通用账号 `http.request`：包内声明接口及读写类型并维护全部业务规则，Host 只处理账号认证、传输、回执和基于真实响应的字段比较。不得把每个新页面操作新增为主程序业务 Connector；新认证协议才扩展账号适配。详见 `../docs/plugin_account_http.md`。
 - 改 Service v2 动态飞书命令：
   - `automation_plugins/service_v2_projection.py` 只维护全局 exact command digest、整代冲突和 active generation；不得导入飞书或业务工具。DRAINING 旧代不接流量、不占命令，权威空 generation 必须原子清 active map。
   - `orchestration/automation_project_entrypoints.py` 的 `ServiceV2FeishuDispatcher` 从 Registry 取得项目/代际/contribution，接收 verified event/sender/chat，以及当前 contribution `input_schema` 明确声明的本次业务输入；`automation_project_policy_service.py` 在 Invocation 接受事务内再次核对 exact `COMMITTED/READY` identity。service、operation、账号和资源不得来自消息。Console 同样只接收声明的 `runtime_inputs`，本次输入不得覆盖项目保存配置；未声明输入的旧 contribution 仍只使用保存配置。
-  - `orchestration/automation_run_supersession.py` 只供历史/离线状态验证；046 结清旧队列，主进程不领取或复活历史 Run。当前是否运行只认 Direct 调用的实际生命周期，停止历史 UNKNOWN 不阻新请求。
+  - 当前是否运行只认 Direct 调用的实际生命周期，停止的历史 UNKNOWN 不阻新请求。
   - 扫描投影写入仍由 `shared/scan_snapshot_recovery.py` 维护日期所有者 head 与写入身份（迁移 041 的表）；历史扫描未知写只读保留，不再提供核验或恢复入口，停止历史的 UNKNOWN 不阻止新请求。保留边界见 `../../docs/scan_recovery_v32.md`。
   - `feishu_command_contract.py` 是宿主无条件取消、扫描确认和审批绑定文本的纯解析单点；`direct_tool_router.py` 复用它和登录/固定命令 parser，并通过组合根注入的纯判定器阻止动态 contribution 安装同文案。动态未知才可继续既有 Agent/LLM；匹配后身份缺失必须停止，不得回退。
 - 改 AI 会话、插件选择、只读 Tool Catalog 或受限 sidecar：
@@ -133,7 +133,6 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - `../docs/code_navigation_index.md`
 - `../docs/project_overview.md`
-- `../docs/control_plane_v1.md`（历史/离线规范）
 
 - `split_pending_problem_upload` 仅由精确文本“分批”触发；融辉账号必须由自动化项目的 `split_pending_ronghui` 角色显式绑定，运行时不得注入 `ronghui_default` 或任何默认 profile。dry-run 编号列表后回复“确认”直接执行全部，输入序号、多选或区间时只选择对应运单并在回显后再次确认，运行时目标显式导入 `agent.tms_runtime.scripts.split_pending_problem_upload`。
 - 少货/分批直接复用 `agent.tms_runtime.scripts.ronghui_problem_upload` 的真实“问题件录入”能力，固定登记“少货/分批 / 交接异常”，内容为 `应到XX件 实际到XX件`，并从登记问题件列表权威回读；不得调用 `ronghui_split_complaint` 或恢复投诉 target。

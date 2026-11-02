@@ -46,15 +46,11 @@ def _healthy_service_identity_payload() -> dict[str, object]:
         "ok": True,
         "probe_marker": "SMOKE_BODY_MUST_NOT_APPEAR",
         "data": {
+            "direct_invocations": {"active_count": 0},
             "components": {
                 "scheduler": {
                     "state": "paused",
                     "release_hold": True,
-                },
-                "workflow_runner": {
-                    "state": "held",
-                    "release_hold": True,
-                    "active_runs": 0,
                 },
                 "automation_plugins": {
                     "ok": True,
@@ -895,9 +891,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
             ("response_contract", ("ok",), False),
             ("scheduler_state", ("scheduler", "state"), "running"),
             ("scheduler_hold", ("scheduler", "release_hold"), False),
-            ("runner_state", ("workflow_runner", "state"), "running"),
-            ("runner_hold", ("workflow_runner", "release_hold"), False),
-            ("runner_active", ("workflow_runner", "active_runs"), 1),
+            ("direct_active", ("direct_invocations", "active_count"), 1),
             ("plugin_broker", ("automation_plugins", "broker", "state"), "stopped"),
             ("plugin_sandbox", ("automation_plugins", "sandbox", "state"), "unavailable"),
             (
@@ -916,7 +910,9 @@ class ReleaseBoundaryTests(unittest.TestCase):
             with self.subTest(gate=expected):
                 payload = _healthy_service_identity_payload()
                 target = payload
-                if path[0] != "ok":
+                if path[0] == "direct_invocations":
+                    target = payload["data"]
+                elif path[0] != "ok":
                     target = payload["data"]["components"]
                 for field in path[:-1]:
                     target = target[field]

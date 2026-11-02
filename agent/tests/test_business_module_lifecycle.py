@@ -13,12 +13,9 @@ from fastapi.testclient import TestClient
 
 import shared.business_module_repository as business_module_repository
 from agent.business_modules_api import create_business_module_router
-from agent.core import AgentCore
-from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.models import Actor, ActorType, Command
+from agent.orchestration.models import Actor, ActorType
 from shared.business_module_repository import (
     BusinessModuleLifecycleError,
-    BusinessModuleLifecycleService,
     BusinessModuleRepository,
 )
 from shared.business_modules import (
@@ -150,115 +147,6 @@ class _LifecycleMigrationCursor:
         return self._many
 
 
-class _GateCursor:
-    description = (("module_code",), ("code_version",), ("installed_version",), ("lifecycle_state",))
-
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
-        self.selected_rows = rows
-        self.statements: list[str] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args: Any) -> None:
-        return None
-
-    def execute(self, statement: str, params: tuple[Any, ...] | None = None) -> None:
-        self.statements.append(statement)
-        if "WHERE module_code=%s" in statement:
-            module_code = str((params or ("",))[0])
-            self.selected_rows = [row for row in self.rows if row["module_code"] == module_code]
-
-    def fetchall(self) -> list[dict[str, Any]]:
-        return [dict(row) for row in self.selected_rows]
-
-
-class _GateCommands:
-    def __init__(self, rows: list[dict[str, Any]], existing: dict[tuple[str, str], dict[str, Any]] | None = None) -> None:
-        self.rows = rows
-        self.existing = existing if existing is not None else {}
-        self.cursor_calls = 0
-        self.cursor_instance: _GateCursor | None = None
-
-    def cursor(self) -> _GateCursor:
-        self.cursor_calls += 1
-        self.cursor_instance = _GateCursor(self.rows)
-        return self.cursor_instance
-
-    def get_by_idempotency(self, source: str, key: str, *, for_update: bool) -> dict[str, Any] | None:
-        assert for_update is True
-        return self.existing.get((source, key))
-
-
-class _GatewayUow:
-    def __init__(self, rows: list[dict[str, Any]], existing: dict[tuple[str, str], dict[str, Any]]) -> None:
-        self.commands = _GateCommands(rows, existing)
-        self.work_items = type("_WorkItems", (), {"add_entity": lambda *_args: None})()
-        self.existing = existing
-        self.created_count = 0
-        self.committed = False
-
-    def command_gateway_create(self, command_row: dict[str, Any], work_item_row: dict[str, Any], run_row: dict[str, Any], *_args: Any) -> dict[str, Any]:
-        key = (str(command_row["source"]), str(command_row["idempotency_key"]))
-        prior = self.existing.get(key)
-        if prior is not None:
-            return {**prior, "created": {"command": False}}
-        self.created_count += 1
-        receipt = {
-            "command_id": command_row["command_id"],
-            "work_item_id": work_item_row["work_item_id"],
-            "run_id": run_row["run_id"],
-            "created": {"command": True},
-        }
-        self.existing[key] = receipt
-        return receipt
-
-    def commit(self) -> None:
-        self.committed = True
-
-
-class _GatewayRepository:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
-        self.existing: dict[tuple[str, str], dict[str, Any]] = {}
-        self.uows: list[_GatewayUow] = []
-
-    def unit_of_work(self):
-        repository = self
-
-        class _Context:
-            def __enter__(self) -> _GatewayUow:
-                self.uow = _GatewayUow(repository.rows, repository.existing)
-                repository.uows.append(self.uow)
-                return self.uow
-
-            def __exit__(self, *_args: Any) -> None:
-                return None
-
-        return _Context()
-
-    def get_run(self, run_id: str) -> dict[str, Any]:
-        return {"run_id": run_id, "status": "RECEIVED"}
-
-
-def _gate_rows() -> list[dict[str, Any]]:
-    return [
-        {"module_code": item.module_code, "code_version": item.version, "installed_version": item.version, "lifecycle_state": "ENABLED"}
-        for item in BUSINESS_MODULE_CATALOG
-    ]
-
-
-def _gate_command(*, command_type: str = "tool.execute", tool_name: str = "query_waybill", key: str = "module-gate-key", source: str = "console", actor: Actor | None = None) -> Command:
-    return Command(
-        command_type=command_type,
-        source=source,
-        actor=actor or Actor(ActorType.CONSOLE_ADMIN, "admin-1", roles=("admin",)),
-        parameters={"tool_name": tool_name, "arguments": {}},
-        idempotency_key=key,
-    )
-
-
 class _Cursor:
     def __init__(self, connection: "_Connection") -> None:
         self.connection = connection
@@ -374,11 +262,11 @@ def _repository(connection: _Connection) -> BusinessModuleRepository:
     return BusinessModuleRepository(lambda: connection)
 
 
-def test_catalog_is_exact_immutable_16_menu_identity_set() -> None:
+def test_catalog_is_exact_immutable_15_menu_identity_set() -> None:
     codes = [item.module_code for item in BUSINESS_MODULE_CATALOG]
 
-    assert len(codes) == 16
-    assert len(set(codes)) == 16
+    assert len(codes) == 15
+    assert len(set(codes)) == 15
     assert {item.module_code for item in BUSINESS_MODULE_CATALOG if not item.disable_allowed} == CORE_MODULE_CODES
     assert all(item.code_registered and item.version == "1.0.0" for item in BUSINESS_MODULE_CATALOG)
 
@@ -665,36 +553,6 @@ def test_lifecycle_event_and_change_commit_together_with_exact_idempotency_and_c
             expected_record_version=1,
         )
     assert stale.value.code == "CAS_CONFLICT"
-
-
-def test_command_gateway_accepts_new_fixed_module_commands_despite_legacy_state_drift() -> None:
-    rows = _gate_rows()
-    next(row for row in rows if row["module_code"] == "waybill_query")["lifecycle_state"] = "DISABLED"
-    next(row for row in rows if row["module_code"] == "finance")["installed_version"] = "9.9.9"
-    repository = _GatewayRepository(rows)
-    gateway = CommandGateway(repository)
-
-    first = gateway.submit(_gate_command(key="fixed-module-state-drift"))
-    second = gateway.submit(_gate_command(tool_name="query_business_finance", key="fixed-module-version-drift"))
-
-    assert first.reused is False and second.reused is False
-    assert all(uow.commands.cursor_calls == 0 for uow in repository.uows)
-
-
-def test_feishu_operating_summary_subqueries_create_distinct_gateway_commands() -> None:
-    repository = _GatewayRepository(_gate_rows())
-    gateway = CommandGateway(repository)
-    actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",))
-    finance_key = AgentCore._entry_idempotency_key(actor, "feishu", "business-summary-finance", "event-1")
-    operations_key = AgentCore._entry_idempotency_key(actor, "feishu", "business-summary-operations", "event-1")
-
-    first = gateway.submit(_gate_command(tool_name="query_business_finance", key=finance_key, source="feishu", actor=actor))
-    second = gateway.submit(_gate_command(tool_name="query_automation_operations", key=operations_key, source="feishu", actor=actor))
-
-    assert finance_key != operations_key
-    assert first.reused is False and second.reused is False
-    assert first.command_id != second.command_id
-    assert sum(uow.created_count for uow in repository.uows) == 2
 
 
 class _ApiService:

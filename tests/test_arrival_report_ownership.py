@@ -34,7 +34,8 @@ def _publication(*, resource_id=RESOURCE, account_id=ACCOUNT, count=1, day=DAY,
                 "resource_bindings": {role: resource_id}}
     return {
         "automation_id": "statistics-instance", "lease_id": "fixture-lease",
-        "orchestration_run_id": run_id, "target_ref_json": target,
+        "invocation_id": run_id, "invocation_status": "COMPLETED", "publication_verified": 1,
+        "result_json": {"status": "SUCCESS", "data": {}, "error": None}, "target_ref_json": target,
         "target_ref_sha256": digest, "runtime_metadata_json": metadata,
         "runtime_metadata_sha256": hashlib.sha256(canonical_json_bytes(metadata)).hexdigest(),
         "execution_resource_keys_json": [["physical-write", "feishu_sheet",
@@ -73,10 +74,9 @@ def test_current_day_statistics_ownership_includes_zero_row_publication(publicat
     assert arrival_report.read_arrival_report_publication(ACCOUNT, RESOURCE, "2026-09-09")["statistics_published"] is False
 
 
-def test_direct_invocation_owns_statistics_without_any_legacy_run(publication_source):
+def test_direct_invocation_owns_statistics(publication_source):
     publications, _values, _resource = publication_source
     publication = _publication()
-    publication.pop("orchestration_run_id")
     publication.update(invocation_id="direct-statistics", invocation_status="COMPLETED",
                        publication_verified=True, result_json={"status": "SUCCESS", "data": {}, "error": None})
     publications.append(publication)
@@ -88,7 +88,6 @@ def test_latest_unverified_direct_statistics_cannot_be_overwritten_by_list(publi
     publications, _values, _resource = publication_source
     publications.append(_publication(finished_at=datetime(2026, 9, 8, 11, tzinfo=timezone.utc)))
     publication = _publication()
-    publication.pop("orchestration_run_id")
     publication.update(invocation_id="direct-incomplete", invocation_status=status,
                        publication_verified=False, result_json=None)
     publications.append(publication)

@@ -154,7 +154,6 @@ def test_recent_failed_collection_keeps_published_history(database):
     import json
     fixture, name = database
     producer = "synthetic-status-" + uuid4().hex
-    command_id, item_id, run_id = (str(uuid4()) for _ in range(3))
     with fixture._connection(name) as connection, connection.cursor() as cursor:
         source = DataSourceRepository(connection).register_source(identity(producer), display_name="合成采集失败仍可查",
             producer_instance_id=producer, producer_generation=1, request_id=uuid4().hex)
@@ -162,23 +161,11 @@ def test_recent_failed_collection_keeps_published_history(database):
             producer_generation=1, source_revision=1, run_id="synthetic-published-before-failure",
             records=[{"platform": "ronghui", "source_direction": "received", "external_id": "synthetic-history",
                 "problem_text": "上次已发布历史", "resolved": False}], pagination_complete=True)
-        cursor.execute("""INSERT INTO agent_commands(command_id,command_type,source,actor_type,actor_roles_json,
-            entity_refs_json,parameters_json,idempotency_key,correlation_id,requested_at,automation_id)
-            VALUES(%s,'automation.run','console','console_admin','[]','[]','{}',%s,%s,UTC_TIMESTAMP(6),%s)""",
-            (command_id, command_id, command_id, producer))
-        cursor.execute("""INSERT INTO work_items(work_item_id,command_id,type,title,source,dedupe_key)
-            VALUES(%s,%s,'AUTOMATION','synthetic failed collection','console',%s)""", (item_id, command_id, item_id))
-        cursor.execute("""INSERT INTO agent_runs(run_id,work_item_id,command_id,run_no,status,mode,planner_kind,
-            correlation_id,error_code,error_summary) VALUES(%s,%s,%s,1,'FAILED_TERMINAL','AUTO','deterministic',%s,
-            'AUTH_REQUIRED','synthetic account needs authentication')""", (run_id, item_id, command_id, command_id))
         result = CustomerServiceRepository(connection).query(source_ids=[source["source_id"]])
-        assert result["ok"] is True and len(result["rows"]) == 1
-        assert result["rows"][0]["problem_text"] == "上次已发布历史"
-        assert result["errors"][0]["error_code"] == "AUTH_REQUIRED"
-        assert result["source_statuses"][0]["collection_status"] == "FAILED_TERMINAL"
-        assert result["source_statuses"][0]["collection_origin"] == "historical_run"
-        # Current calls take precedence over old queue history, including a
-        # newer successful call after a failed one, without changing the data.
+        assert result["ok"] is True and result["rows"][0]["problem_text"] == "上次已发布历史"
+        assert result["source_statuses"][0]["collection_origin"] is None
+        # The latest current call drives status, including a newer
+        # successful call after a failed one, without changing the data.
         for status, error in (("FAILED", "SOURCE_UNAVAILABLE"), ("COMPLETED", None)):
             invocation_id = str(uuid4())
             cursor.execute("""INSERT INTO automation_plugin_invocations
@@ -360,7 +347,7 @@ def test_host_observed_customer_identity_parser_publication_and_local_query(data
             assert {row["source_direction"] for row in rows} == {"received", "registered"}
         if expected_count and direction == "received":
             from dataclasses import replace
-            from agent.orchestration.pilot_projection import _opaque_problem_identity
+            from agent.customer_collection_validation import _opaque_problem_identity
 
             with connection.cursor() as cursor:
                 cursor.execute("""INSERT INTO customer_problem_manual_fields(source_id,external_id,source_direction,note,revision,updated_at)

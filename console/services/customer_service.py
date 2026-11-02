@@ -630,15 +630,15 @@ class CustomerServiceMixin:
             handler.headers.get("X-Browser-Request-UUID")
         )
         if not browser_request_uuid:
-            self._send_console_command_receipt(
+            self._send_json(
                 handler,
+                HTTPStatus.BAD_REQUEST,
                 {
                     "ok": False,
-                    "status": HTTPStatus.BAD_REQUEST,
+                    "pending": False,
                     "error_code": "BROWSER_REQUEST_UUID_REQUIRED",
-                    "error": "缺少有效且稳定的浏览器请求标识，命令未提交。",
+                    "message": "缺少有效且稳定的浏览器请求标识，命令未提交。",
                 },
-                message="",
             )
             return
         form = self._parse_multipart_form(handler)

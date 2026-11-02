@@ -117,7 +117,7 @@ _FEISHU_ROUTE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$")
 
 
 _AUTOMATION_PROJECT_ENTRYPOINTS: AutomationProjectEntrypoints | None = None
-_FEISHU_APPROVAL_RUNTIME: Any | None = None
+_FEISHU_BINDING_RUNTIME: Any | None = None
 _SERVICE_V2_FEISHU_DISPATCHER: ServiceV2FeishuDispatcher | None = None
 _ACTIVE_PLUGIN_INVOCATIONS: dict[tuple[str, str, str], str] = {}
 _INVOCATION_RESULTS = InvocationResultFollower()
@@ -136,11 +136,11 @@ def bind_automation_project_entrypoints(
         _ACTIVE_PLUGIN_INVOCATIONS.clear()
 
 
-def bind_feishu_approval_runtime(service: Any | None) -> None:
-    """Bind the database-backed Feishu administrator and approval runtime."""
+def bind_feishu_binding_runtime(service: Any | None) -> None:
+    """Bind the database-backed Feishu identity binding runtime."""
 
-    global _FEISHU_APPROVAL_RUNTIME
-    _FEISHU_APPROVAL_RUNTIME = service
+    global _FEISHU_BINDING_RUNTIME
+    _FEISHU_BINDING_RUNTIME = service
 
 
 def bind_service_v2_feishu_dispatcher(service: ServiceV2FeishuDispatcher | None) -> None:
@@ -1411,9 +1411,9 @@ async def _submit_tool_command(
         },
     }
 
-    if context is not None and _FEISHU_APPROVAL_RUNTIME is not None:
+    if context is not None and _FEISHU_BINDING_RUNTIME is not None:
         keyword_arguments["actor"] = await asyncio.to_thread(
-            _FEISHU_APPROVAL_RUNTIME.resolve_actor, actor_id,
+            _FEISHU_BINDING_RUNTIME.resolve_actor, actor_id,
         )
     return await agent.execute_tool(tool_name, params, **keyword_arguments)
 
@@ -1448,36 +1448,6 @@ def _cancel_tool_name_from_text(text: str) -> str | None:
 
 
 
-
-
-async def _cancel_active_run_and_reply(
-    agent: Any,
-    chat_id: str,
-    sender_id: str,
-    pending: dict[str, Any],
-) -> None:
-    run_id = str(pending.get("run_id") or "").strip()
-    originator = str(pending.get("originator_actor_id") or "").strip()
-    context = _COMMAND_CONTEXT.get()
-    if (
-        context is None
-        or context.actor_id != str(sender_id or "").strip()
-        or not run_id
-        or not originator
-        or originator != context.actor_id
-    ):
-        await _reply_text(chat_id, "取消失败：无法验证原任务发起人。", reply_type="run_cancel_forbidden")
-        return
-    result = await agent.cancel_feishu_run(run_id, actor_id=context.actor_id)
-    if result.get("ok"):
-        clear_pending(chat_id)
-        await _reply_text(chat_id, "已发送取消请求，正在停止原事项运行。", reply_type="run_cancel")
-        return
-    await _reply_text(
-        chat_id,
-        f"取消失败：{str(result.get('error') or '未知错误')[:200]}",
-        reply_type="run_cancel",
-    )
 
 
 def _is_auth_required(result: dict[str, Any]) -> bool:
@@ -1983,19 +1953,19 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     from feishu.bot import get_agent_core
     from feishu.reply_formatter import format_reply
 
-    if _FEISHU_APPROVAL_RUNTIME is not None:
+    if _FEISHU_BINDING_RUNTIME is not None:
         try:
-            approval_reply = await asyncio.to_thread(
-                _FEISHU_APPROVAL_RUNTIME.handle_binding_text,
+            binding_reply = await asyncio.to_thread(
+                _FEISHU_BINDING_RUNTIME.handle_binding_text,
                 str(sender_id or ""),
                 str(chat_id or ""),
                 str(text or ""),
             )
         except OrchestrationError as exc:
-            await _reply_text(chat_id, f"审批处理失败（{exc.code}）。")
+            await _reply_text(chat_id, f"飞书身份绑定失败（{exc.code}）。")
             return
-        if approval_reply is not None:
-            await _reply_text(chat_id, approval_reply, reply_type="feishu_approval")
+        if binding_reply is not None:
+            await _reply_text(chat_id, binding_reply, reply_type="feishu_binding")
             return
 
     agent = get_agent_core()
@@ -2003,7 +1973,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         await _reply_text(chat_id, "Agent 尚未初始化，请稍后再试")
         return
 
-    identity_access = getattr(_FEISHU_APPROVAL_RUNTIME, "identity_access", None)
+    identity_access = getattr(_FEISHU_BINDING_RUNTIME, "identity_access", None)
     if identity_access is not None:
         identity = await asyncio.to_thread(identity_access.feishu, str(sender_id or ""))
         if not identity.active:
@@ -2017,8 +1987,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             isinstance(sender_pending, dict)
             and sender_pending.get("type") == "scan_preview_confirmation"
             and (_is_scan_confirm_text(text) or _is_scan_cancel_text(text)
-                 or ((pending is None or pending.get("type") == "active_run")
-                     and (is_confirm_text(text) or is_cancel_text(text))))
+                 or (pending is None and (is_confirm_text(text) or is_cancel_text(text))))
         ):
             pending_key = sender_id
             pending = sender_pending
@@ -2026,9 +1995,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
         pending = None  # Keep the preview, but do not capture an unrelated conversation.
     if (isinstance(pending, dict) and pending.get("type") in {"self_pickup_selection_confirmation", "split_pending_confirmation", "split_pending_selection"}
             and not (is_confirm_text(text) or is_cancel_text(text) or re.fullmatch(r"[\d\s,，、\-]+", text.strip()))):
-        pending = None
-    if isinstance(pending, dict) and pending.get("type") == "active_run":
-        clear_pending(pending_key)
         pending = None
     direct = direct_tool_request_from_text(text)
     if (isinstance(direct, dict)
@@ -2120,11 +2086,7 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     cancel_tool_name = _cancel_tool_name_from_text(text)
     if cancel_tool_name:
         logger.info("feishu route | chat=%s | route=cancel_running_tool | tool=%s", chat_id, cancel_tool_name)
-        if isinstance(pending, dict) and pending.get("type") == "active_run":
-            if str(pending.get("tool_name") or "") == cancel_tool_name:
-                await _cancel_active_run_and_reply(agent, chat_id, sender_id, pending)
-                return
-        await _reply_text(chat_id, "取消失败：当前消息没有绑定可取消的事项运行。")
+        await _reply_text(chat_id, "取消失败：当前消息没有绑定可取消的插件执行。")
         return
 
     if _is_scan_confirm_text(text):
@@ -2144,16 +2106,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     if pending is not None:
         ptype = str(pending.get("type") or "confirm_action")
         logger.info("feishu route | chat=%s | route=pending | pending=%s", chat_id, ptype)
-
-        if ptype == "active_run":
-            if is_cancel_text(text):
-                await _cancel_active_run_and_reply(agent, chat_id, sender_id, pending)
-                return
-            await _reply_text(
-                chat_id,
-                f"原事项仍在处理中（Run {str(pending.get('run_id') or '')}）。如需停止，请回复“取消”。",
-            )
-            return
 
         if ptype == "split_pending_selection":
             if not await _selection_pending_actor_allowed(
@@ -2359,16 +2311,6 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
                 clear_pending(chat_id)
                 description = str(pending.get("description") or "操作")
                 await _reply_text(chat_id, f"已取消：{description}")
-                return
-
-        elif ptype == "cancel_running_tool":
-            if is_cancel_text(text):
-                clear_pending(chat_id)
-                await _reply_text(chat_id, "旧取消状态已失效，请从事项中心按 Run 取消。")
-                return
-            if is_confirm_text(text):
-                clear_pending(chat_id)
-                await _reply_text(chat_id, f"继续等待：{pending.get('description') or '当前任务'}")
                 return
 
         elif ptype == "login_account_choice":
@@ -2589,10 +2531,10 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     try:
         feishu_actor = (
             await asyncio.to_thread(
-                _FEISHU_APPROVAL_RUNTIME.resolve_actor,
+                _FEISHU_BINDING_RUNTIME.resolve_actor,
                 str(sender_id or ""),
             )
-            if _FEISHU_APPROVAL_RUNTIME is not None
+            if _FEISHU_BINDING_RUNTIME is not None
             else Actor(
                 ActorType.FEISHU_USER,
                 (

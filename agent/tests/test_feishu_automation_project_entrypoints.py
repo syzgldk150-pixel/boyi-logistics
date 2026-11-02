@@ -213,7 +213,7 @@ def test_service_v2_feishu_dispatches_verified_exact_context_and_hides_internal_
     replies = []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -259,7 +259,7 @@ def test_quote_text_uses_verified_plugin_invocation_and_returns_three_platforms(
     agent, replies = _FakeAgent(), []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "get_pending", return_value=None),
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
@@ -285,7 +285,7 @@ def test_quote_long_site_coverage_is_sent_completely_in_bounded_messages():
     agent, replies = _FakeAgent(), []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "get_pending", return_value=None),
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
@@ -311,7 +311,7 @@ def test_quote_missing_volume_reaches_plugin_and_displays_its_default():
     agent, replies = _FakeAgent(), []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "get_pending", return_value=None),
         patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
@@ -335,7 +335,7 @@ def test_service_v2_feishu_unknown_command_continues_to_existing_agent_path():
     replies = []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -356,7 +356,7 @@ def test_service_v2_feishu_deduplicates_acceptance_and_sends_one_final_reply():
     replies = []
     with (
         patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -378,7 +378,7 @@ def test_service_v2_post_acceptance_wait_failure_never_claims_not_submitted():
     replies = []
     with (
         patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -406,7 +406,7 @@ def test_service_v2_feishu_match_without_verified_context_stops_before_agent():
     replies = []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -443,7 +443,7 @@ def test_service_v2_feishu_verified_event_without_sender_keeps_identity_empty():
     replies = []
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),
@@ -1447,60 +1447,6 @@ def test_scan_menu_pending_is_confirmed_from_the_users_next_chat_message():
     assert pending_store == {}
 
 
-def test_sender_scan_pending_takes_priority_over_existing_chat_pending():
-    preview_invocation_id = "11111111-1111-4111-8111-111111111111"
-    service = _FakeProjectEntrypoints(
-        results=[
-            {
-                "success": True,
-                "status": "COMPLETED",
-                "invocation_id": preview_invocation_id,
-                "scan_preview": _scan_preview(preview_invocation_id),
-            },
-            {
-                "success": True,
-                "status": "COMPLETED",
-                "invocation_id": "22222222-2222-4222-8222-222222222222",
-                "error_code": None,
-            },
-        ]
-    )
-    existing_chat_pending = {"type": "active_run", "tool_name": "legacy-task"}
-    pending_store = {"chat-one": dict(existing_chat_pending)}
-    replies = []
-
-    def set_pending(key, value, ttl_sec=600, *, persist=True):
-        del ttl_sec, persist
-        pending_store[key] = dict(value)
-
-    def clear_pending(key, **_kwargs):
-        return pending_store.pop(key, None)
-
-    with (
-        patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-        patch.object(message_handler, "_AUTOMATION_PROJECT_ENTRYPOINTS", service),
-        patch.object(message_handler, "get_pending", side_effect=lambda key: pending_store.get(key)),
-        patch.object(message_handler, "set_pending", side_effect=set_pending),
-        patch.object(message_handler, "clear_pending", side_effect=clear_pending),
-        patch.object(message_handler, "_reply_text", side_effect=_reply_recorder(replies)),
-    ):
-        asyncio.run(
-            message_handler._handle_menu_action(
-                event_key="scan",
-                receive_id="user-one",
-                receive_id_type="open_id",
-                event_id="event-menu-with-chat-pending",
-            )
-        )
-        assert pending_store["chat-one"] == existing_chat_pending
-        assert pending_store["user-one"]["preview_invocation_id"] == preview_invocation_id
-        _run_verified_text("确认", event_id="event-confirm-with-chat-pending")
-
-    assert service.calls[1]["preview_invocation_id"] == preview_invocation_id
-    assert pending_store == {"chat-one": existing_chat_pending}
-    assert "正式扫描已完成" in replies[-1][0]
-
-
 def test_feishu_webhook_and_websocket_keep_the_same_event_identity():
     service = _FakeProjectEntrypoints()
     agent = _FakeAgent()
@@ -1582,7 +1528,7 @@ def test_dynamic_feishu_webhook_and_websocket_keep_the_same_verified_identity():
     )
     with (
         patch("feishu.bot.get_agent_core", return_value=agent),
-        patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", None),
+        patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", None),
         patch.object(message_handler, "_SERVICE_V2_FEISHU_DISPATCHER", dispatcher),
         patch.object(message_handler, "direct_tool_request_from_text", return_value=None),
         patch.object(message_handler, "get_pending", return_value=None),

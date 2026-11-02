@@ -323,38 +323,6 @@ class ToolExecutor:
         asyncio.create_task(self._ensure_process_stopped(proc))
         return {"ok": True, "message": "已发送取消请求，正在停止脚本。", "started_at": entry_started_at}
 
-    async def cancel_bound_run(
-        self,
-        *,
-        tool_name: str,
-        run_id: str,
-        step_id: str,
-    ) -> dict:
-        """Cancel exactly one subprocess owned by a durable Run step."""
-
-        try:
-            execution_key = self._execution_key(
-                {"run_id": run_id, "step_id": step_id}
-            )
-        except ValueError:
-            return {
-                "ok": False,
-                "message": "Run 和 Step 身份不完整。",
-                "code": "INVALID_EXECUTION_IDENTITY",
-            }
-        entry = self._running_outputs.get(execution_key)
-        if (
-            entry is None
-            or entry.get("tool_name") != tool_name
-            or not entry.get("running")
-        ):
-            return {
-                "ok": False,
-                "message": "指定的 Run Step 当前没有运行。",
-                "code": "NOT_RUNNING",
-            }
-        return await self._cancel_entry(entry)
-
     def heavy_lock_held(self) -> bool:
         """Compatibility status: report active heavy work without serializing it."""
 

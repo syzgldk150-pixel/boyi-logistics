@@ -2245,55 +2245,6 @@ class AutomationPluginRepository(
 
             cursor.execute(
                 """
-                SELECT task.id, policy.*
-                FROM scheduled_tasks AS task
-                LEFT JOIN scheduled_task_approval_policies AS policy
-                  ON policy.task_id=task.id
-                WHERE task.automation_id=%s
-                ORDER BY task.id FOR UPDATE
-                """,
-                (project_id,),
-            )
-            legacy_policies = _rows(cursor)
-            for legacy in legacy_policies:
-                if legacy.get("mode") != "EXACT_SCHEDULE_EXEMPT":
-                    continue
-                cursor.execute(
-                    """
-                    INSERT INTO scheduled_task_approval_policy_events (
-                        task_id, from_mode, to_mode, contract_hash,
-                        contract_snapshot_json, tool_contract_hash,
-                        actor_id, actor_role, reason, comment,
-                        correlation_id, request_id
-                    ) VALUES (
-                        %s, 'EXACT_SCHEDULE_EXEMPT', 'REQUIRE_EACH_RUN',
-                        NULL, NULL, NULL, %s, %s,
-                        'PROJECT_CONFIGURATION_CHANGED', NULL, %s, %s
-                    )
-                    """,
-                    (
-                        legacy["id"],
-                        normalized_actor,
-                        normalized_role,
-                        normalized_request,
-                        normalized_request,
-                    ),
-                )
-                cursor.execute(
-                    """
-                    UPDATE scheduled_task_approval_policies
-                    SET mode='REQUIRE_EACH_RUN', contract_hash=NULL,
-                        contract_snapshot_json=NULL, tool_contract_hash=NULL,
-                        approved_by_actor_id=NULL, approved_by_actor_role=NULL,
-                        approved_by_actor_display_name=NULL, approved_at=NULL,
-                        comment=NULL, version=version+1, updated_at=NOW(6)
-                    WHERE task_id=%s
-                    """,
-                    (legacy["id"],),
-                )
-
-            cursor.execute(
-                """
                 UPDATE automation_project_configs
                 SET config_json=%s, config_sha256=%s,
                     account_bindings_json=%s, account_bindings_sha256=%s,

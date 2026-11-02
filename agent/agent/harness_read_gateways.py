@@ -118,9 +118,7 @@ class ReadOnlyHarnessGateway:
         knowledge_search: Callable[[str, int], object],
         waybill_lookup: Callable[[str], object],
         tracking_lookup: Callable[[str], object],
-        list_work_items: Callable[[int], object],
         get_run: Callable[[str], object],
-        get_evidence: Callable[[str], object],
         finance_summary: Callable[[Mapping[str, Any]], object] | None = None,
         shipment_query: Callable[[Mapping[str, Any]], object] | None = None,
         read_boundary: Callable | None = None,
@@ -128,9 +126,7 @@ class ReadOnlyHarnessGateway:
         self._knowledge_search = knowledge_search
         self._waybill_lookup = waybill_lookup
         self._tracking_lookup = tracking_lookup
-        self._list_work_items = list_work_items
         self._get_run = get_run
-        self._get_evidence = get_evidence
         self._finance_summary = finance_summary
         self._shipment_query = shipment_query
         self._read_boundary = read_boundary
@@ -142,9 +138,7 @@ class ReadOnlyHarnessGateway:
             "waybill.lookup": self.waybill,
             "tracking.lookup": self.tracking,
             "finance.summary": self.finance,
-            "work_items.list_open": self.work_items,
             "runs.get_summary": self.run,
-            "artifact.inspect": self.evidence,
         }
         if self._read_boundary is None:
             return handlers
@@ -262,86 +256,26 @@ class ReadOnlyHarnessGateway:
             "轨迹": routes[:100],
         }
 
-    def work_items(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        try:
-            rows = self._list_work_items(int(arguments["limit"]))
-        except Exception:
-            return _unavailable("待处理事项暂时无法读取，请稍后重试")
-        items = []
-        for row in rows if isinstance(rows, (list, tuple)) else ():
-            if not isinstance(row, Mapping):
-                continue
-            items.append(
-                {
-                    "事项编号": _text(row.get("work_item_id"), limit=191),
-                    "标题": _text(row.get("title"), limit=300),
-                    "状态": _status(row.get("status")),
-                    "优先级": _status(row.get("priority")),
-                    "类型": _text(row.get("type"), limit=120),
-                    "更新时间": _time(row.get("updated_at")),
-                    "截止时间": _time(row.get("sla_due_at")),
-                }
-            )
-        return {"可用": True, "数量": len(items), "事项": items}
-
     def run(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         run_id = _text(arguments["run_id"], limit=191)
         try:
             row = self._get_run(run_id)
         except Exception:
-            return _unavailable("任务运行结果暂时无法读取，请稍后重试")
-        if not isinstance(row, Mapping) or _text(row.get("run_id"), limit=191) != run_id:
+            return _unavailable("插件执行结果暂时无法读取，请稍后重试")
+        if not isinstance(row, Mapping) or _text(row.get("invocation_id"), limit=191) != run_id:
             return {"可用": True, "找到": False, "运行编号": run_id}
-        steps = []
-        for step in row.get("steps", ()) if isinstance(row.get("steps"), list) else ():
-            if not isinstance(step, Mapping):
-                continue
-            steps.append(
-                {
-                    "步骤": _text(step.get("name") or step.get("step_name"), limit=160),
-                    "状态": _status(step.get("status")),
-                    "说明": _text(step.get("error_summary") or step.get("message"), limit=300),
-                }
-            )
-        summary = {
-            "可用": True,
-            "找到": True,
-            "运行编号": run_id,
-            "状态": _status(row.get("status")),
-            "开始时间": _time(row.get("started_at") or row.get("created_at")),
-            "完成时间": _time(row.get("finished_at") or row.get("completed_at")),
-            "步骤": steps,
-        }
-        if row.get("invocation_id") == run_id:
-            summary.update({
-                "记录类型": "插件执行",
-                "插件": _text(row.get("plugin_id"), limit=191),
-                "插件版本": _text(row.get("plugin_version"), limit=64),
-                "结果摘要": invocation_count_summary(row),
-                "错误说明": _text(row.get("error_summary"), limit=300),
-            })
-        return summary
-
-    def evidence(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        evidence_id = _text(arguments["artifact_id"], limit=191)
-        try:
-            row = self._get_evidence(evidence_id)
-        except Exception:
-            return _unavailable("运行证据暂时无法读取，请稍后重试")
-        if not isinstance(row, Mapping) or _text(row.get("evidence_id"), limit=191) != evidence_id:
-            return {"可用": True, "找到": False, "证据编号": evidence_id}
         return {
             "可用": True,
             "找到": True,
-            "证据编号": evidence_id,
-            "来源系统": _text(row.get("source_system"), limit=100),
-            "记录类型": _text(row.get("source_record_type"), limit=100),
-            "业务类型": _text(row.get("entity_type"), limit=100),
-            "发生时间": _time(row.get("occurred_at")),
-            "记录时间": _time(row.get("observed_at")),
-            "完整性": _status(row.get("completeness_status")),
-            "记录数量": row.get("record_count"),
-            "摘要": _safe_summary(row.get("summary_json") or row.get("summary") or {}),
+            "运行编号": run_id,
+            "记录类型": "插件执行",
+            "状态": _status(row.get("status")),
+            "开始时间": _time(row.get("started_at") or row.get("created_at")),
+            "完成时间": _time(row.get("finished_at") or row.get("completed_at")),
+            "插件": _text(row.get("plugin_id"), limit=191),
+            "插件版本": _text(row.get("plugin_version"), limit=64),
+            "结果摘要": invocation_count_summary(row),
+            "错误说明": _text(row.get("error_summary"), limit=300),
         }
 
 

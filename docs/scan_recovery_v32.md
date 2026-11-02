@@ -2,7 +2,7 @@
 module: 扫描
 type: 未知写与数据保留
 status: active
-updated: 2026-10-29
+updated: 2026-11-02
 ---
 
 # 扫描未知写与数据保留
@@ -16,7 +16,7 @@ updated: 2026-10-29
 迁移 `041_scan_write_recovery_snapshot.sql` 增加的结构继续服务当前扫描投影：
 
 - 日期级 `automation_scan_snapshot_heads`（`snapshot_date` 主键）记录投影内容摘要、写入身份和单调 revision。每次替换先锁同一日期行再写入，由 `shared/scan_snapshot_recovery.py` 的 `lock_snapshot_head` / `record_snapshot_head` 维护；写入身份由宿主经 `scan_snapshot_write_identity` 传入，插件不能自行填写。
-- 写回执保存原准入取得的规范资源锁键（`shared/execution_resource_journal.py`）。新的写动作只与仍具有效活动执行租约的原写范围比较；相冲突的自动化直接失败为 `EXECUTION_RESOURCE_BUSY`，不留积压。已取消或停止任务的 UNKNOWN 原样保留，不形成新任务锁。完整规则见 [历史记录与新任务](historical_write_recovery.md)。
+- 写回执保存原准入取得的规范资源锁键（`shared/execution_resource_journal.py`）。新的写动作只与仍具有效活动执行租约的原写范围比较；相冲突的自动化直接失败为 `EXECUTION_RESOURCE_BUSY`，不留积压。已取消或停止任务的 UNKNOWN 原样保留，不形成新任务锁。
 
 升级保留 041 的列、表和索引原字节；回退旧核心保留兼容新增列和日期表，不删除业务历史。
 

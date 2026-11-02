@@ -21,6 +21,22 @@ def _synthetic_v2_projection(manifest):
     )}
 
 
+def _insert_invocation(connection, automation_id, generation, invocation_id=None):
+    """Seed one running Direct Invocation that owns the given generation."""
+
+    invocation_id = invocation_id or str(uuid4())
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO automation_plugin_invocations (invocation_id, request_key_sha256, request_sha256,
+                   request_id, automation_id, generation, operation, source, actor_id, owner_id, status,
+                   invocation_json, arguments_json, started_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, 'run', 'console', 'integration-admin', %s, 'RUNNING',
+                       '{}', '{}', NOW(6), NOW(6))""",
+            (invocation_id, uuid4().hex * 2, "a" * 64, invocation_id, automation_id, generation, str(uuid4())),
+        )
+    return invocation_id
+
+
 def run_test_generation_write_lock_order_races(case):
     """Exercise the exact-lease finalization/recovery and record/release races.
 
@@ -39,8 +55,6 @@ def run_test_generation_write_lock_order_races(case):
     automation_id = f"write_lock_order_{uuid4().hex[:20]}"
     plugin_id = f"write_lock_plugin_{uuid4().hex[:18]}"
     run_id = str(uuid4())
-    command_id = str(uuid4())
-    work_item_id = str(uuid4())
     hashes = [character * 64 for character in "cdef012345678"]
     with case._connection(database) as connection:
         repository = AutomationPluginRepository(
@@ -88,20 +102,7 @@ def run_test_generation_write_lock_order_races(case):
                 "UPDATE automation_projects SET enabled=TRUE, state='ENABLED', target_generation=1, committed_generation=1, reconcile_state='STABLE' WHERE automation_id=%s",
                 (automation_id,),
             )
-            cursor.execute(
-                """INSERT INTO agent_commands (command_id, command_type, automation_id, automation_generation, source, actor_type, actor_id, actor_roles_json, entity_refs_json, parameters_json, automation_invocation_json, idempotency_key, correlation_id, status, requested_at)
-                   VALUES (%s, 'automation.project.invoke', %s, 1, 'console', 'console_admin', 'integration-admin', '[]', '[]', '{}', '{}', %s, %s, 'ACCEPTED', NOW(6))""",
-                (command_id, automation_id, f"write-lock:{command_id}", str(uuid4())),
-            )
-            cursor.execute(
-                "INSERT INTO work_items (work_item_id, command_id, type, title, status, priority, source, dedupe_key) VALUES (%s, %s, 'automation_project', 'write lock', 'IN_PROGRESS', 'NORMAL', 'console', %s)",
-                (work_item_id, command_id, f"write-lock:{work_item_id}"),
-            )
-            cursor.execute(
-                """INSERT INTO agent_runs (run_id, work_item_id, command_id, run_no, status, mode, planner_kind, plan_schema_version, plan_json, plan_hash, correlation_id, next_attempt_at)
-                   VALUES (%s, %s, %s, 1, 'BLOCKED_DATA', 'deterministic', 'deterministic', 1, '{\"schema_version\":1,\"steps\":[]}', %s, %s, NOW(6))""",
-                (run_id, work_item_id, command_id, "f" * 64, str(uuid4())),
-            )
+        _insert_invocation(connection, automation_id, 1, run_id)
         connection.commit()
 
     target_ref = {
@@ -117,15 +118,15 @@ def run_test_generation_write_lock_order_races(case):
         with case._connection(database) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO automation_project_generation_leases (lease_id, automation_id, generation, orchestration_run_id, lease_owner, runtime_metadata_json, runtime_metadata_sha256, outcome, expires_at)
+                    """INSERT INTO automation_project_generation_leases (lease_id, automation_id, generation, invocation_id, lease_owner, runtime_metadata_json, runtime_metadata_sha256, outcome, expires_at)
                        VALUES (%s, %s, 1, %s, 'integration', '{}', %s, %s, DATE_ADD(NOW(6), INTERVAL 5 MINUTE))""",
                     (lease_id, automation_id, run_id, "5" * 64, outcome),
                 )
                 if receipt:
                     cursor.execute(
-                        """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id, generation, lease_id, orchestration_run_id, step_id, request_id, operation, action, argument_sha256, target_ref_sha256, target_ref_json, outcome, evidence_sha256, created_at, updated_at)
-                           VALUES (%s, %s, 1, %s, %s, %s, %s, 'write', 'sync', %s, %s, %s, 'WRITE_VERIFIED', %s, NOW(6), NOW(6))""",
-                        (str(uuid4()), automation_id, lease_id, run_id, str(uuid4()), str(uuid4()), "4" * 64, target_ref_sha256, json.dumps(target_ref), "9" * 64),
+                        """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id, generation, lease_id, invocation_id, request_id, operation, action, argument_sha256, target_ref_sha256, target_ref_json, outcome, evidence_sha256, created_at, updated_at)
+                           VALUES (%s, %s, 1, %s, %s, %s, 'write', 'sync', %s, %s, %s, 'WRITE_VERIFIED', %s, NOW(6), NOW(6))""",
+                        (str(uuid4()), automation_id, lease_id, run_id, str(uuid4()), "4" * 64, target_ref_sha256, json.dumps(target_ref), "9" * 64),
                     )
             connection.commit()
         return lease_id
@@ -172,7 +173,7 @@ def run_test_generation_write_lock_order_races(case):
         with case._connection(database) as connection:
             AutomationPluginRepository(connection, cursor_factory=case.pymysql.cursors.DictCursor).record_generation_write_attempt_row({
                 "automation_id": automation_id, "generation": 1, "lease_id": record_lease,
-                "orchestration_run_id": run_id, "step_id": str(uuid4()), "request_id": str(uuid4()),
+                "invocation_id": run_id, "request_id": str(uuid4()),
                 "operation": "write", "action": "sync", "argument_sha256": "4" * 64,
                 "target_ref_sha256": target_ref_sha256, "target_ref_json": target_ref,
             })
@@ -247,90 +248,6 @@ def run_test_generation_write_lock_order_races(case):
             connection.commit()
 
     race(left=block_unknown_generation, right=finalize_unknown_for_block_race)
-
-    # Recovery contends with the idempotent Command gateway on this exact Run.
-    # The gateway holds Command -> Work Item -> Run; recovery must never take
-    # Run then Command/Work Item while retaining its generation locks.
-    recovery_command, recovery_item, recovery_run, recovery_event, recovery_outbox = (
-        case._aggregate_rows("unknown-write-recovery-lock-order")
-    )
-    recovery_command["automation_id"] = automation_id
-    recovery_command["automation_generation"] = 1
-    recovery_command["automation_invocation_json"] = {
-        "schema_version": 1,
-        "automation_id": automation_id,
-        "automation_generation": 1,
-        "entrypoint": "console",
-        "contract_id": "integration.write_lock_order",
-        "contract_hash": "d" * 64,
-        "policy_version": 1,
-        "project_configuration_version": 1,
-        "request_id": str(uuid4()),
-    }
-    recovery_item["status"] = "IN_PROGRESS"
-    recovery_run["status"] = "BLOCKED_DATA"
-    recovery_repository = case._repository(database)
-    with recovery_repository.unit_of_work() as uow:
-        recovery_gateway = uow.command_gateway_create(
-            recovery_command, recovery_item, recovery_run, recovery_event,
-            recovery_outbox,
-        )
-        uow.commit()
-    recovery_lease = str(uuid4())
-    recovery_step = str(uuid4())
-    with case._connection(database, autocommit=True) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO agent_run_steps (step_id, run_id, step_key, step_order,
-                       tool_name, tool_version, operation_type, risk_level, status,
-                       requires_approval, retry_safe, idempotency_key)
-                   VALUES (%s, %s, 'write', 1, 'integration_write', '1.0.0',
-                           'EXTERNAL_WRITE', 'HIGH', 'BLOCKED_DATA', TRUE, TRUE, %s)""",
-                (recovery_step, recovery_gateway["run_id"], f"recovery:{recovery_step}"),
-            )
-            cursor.execute(
-                """INSERT INTO automation_project_generation_leases (lease_id, automation_id,
-                       generation, orchestration_run_id, lease_owner, runtime_metadata_json,
-                       runtime_metadata_sha256, outcome, expires_at)
-                   VALUES (%s, %s, 1, %s, 'integration', '{}', %s,
-                           'WRITE_OUTCOME_UNKNOWN', DATE_ADD(NOW(6), INTERVAL 5 MINUTE))""",
-                (recovery_lease, automation_id, recovery_gateway["run_id"], "b" * 64),
-            )
-            cursor.execute(
-                """INSERT INTO automation_write_attempt_receipts (receipt_id, automation_id,
-                       generation, lease_id, orchestration_run_id, step_id, request_id,
-                       operation, action, argument_sha256, target_ref_sha256, target_ref_json,
-                       outcome, evidence_sha256, created_at, updated_at)
-                   VALUES (%s, %s, 1, %s, %s, %s, %s, 'write', 'sync', %s, %s, %s,
-                           'WRITE_VERIFIED', %s, NOW(6), NOW(6))""",
-                (
-                    str(uuid4()), automation_id, recovery_lease,
-                    recovery_gateway["run_id"], recovery_step, str(uuid4()),
-                    "4" * 64, target_ref_sha256, json.dumps(target_ref), "c" * 64,
-                ),
-            )
-
-    def recover_for_gateway_race():
-        repository = case._repository(database)
-        with repository.unit_of_work() as uow:
-            uow.recover_unknown_automation_write(
-                automation_id=automation_id, generation=1, lease_id=recovery_lease,
-                request_id=str(uuid4()), actor_id="integration-admin",
-                actor_role="super_admin",
-            )
-            uow.commit()
-
-    def replay_command_for_recovery_race():
-        repository = case._repository(database)
-        with repository.unit_of_work() as uow:
-            replayed = uow.command_gateway_create(
-                recovery_command, recovery_item, recovery_run, recovery_event,
-                recovery_outbox,
-            )
-            case.assertFalse(replayed["created"]["command"])
-            uow.commit()
-
-    race(left=recover_for_gateway_race, right=replay_command_for_recovery_race)
 
     # Two sibling reconciliations must serialize through P -> G -> lease-set.
     # Neither may reopen the project while another unknown lease remains.
@@ -621,7 +538,7 @@ def run_test_generation_write_lock_order_races(case):
                 expected_generation=1,
                 expected_manifest_sha256=manifest_sha256,
                 lease_id=lease_id,
-                orchestration_run_id=run_id,
+                invocation_id=_insert_invocation(connection, archival_automation_id, 1),
                 expires_at=datetime.now() + timedelta(minutes=5),
                 lease_owner=owner,
             )
@@ -682,7 +599,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_generation=2,
             expected_manifest_sha256=manifest_sha256,
             lease_id=successor_lease,
-            orchestration_run_id=run_id,
+            invocation_id=_insert_invocation(connection, archival_automation_id, 2),
             expires_at=datetime.now() + timedelta(minutes=5),
             lease_owner="integration-successor",
         )
@@ -760,7 +677,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_generation=2,
             expected_manifest_sha256=manifest_sha256,
             lease_id=current_unknown_lease,
-            orchestration_run_id=run_id,
+            invocation_id=_insert_invocation(connection, archival_automation_id, 2),
             expires_at=datetime.now() + timedelta(minutes=5),
             lease_owner="integration-current-unknown",
         )
@@ -792,7 +709,7 @@ def run_test_generation_write_lock_order_races(case):
             expected_generation=2,
             expected_manifest_sha256=manifest_sha256,
             lease_id=repeat_after_unknown_lease,
-            orchestration_run_id=run_id,
+            invocation_id=_insert_invocation(connection, archival_automation_id, 2),
             expires_at=datetime.now() + timedelta(minutes=5),
             lease_owner="integration-repeat-after-unknown",
         )
@@ -1035,26 +952,6 @@ def run_test_generation_write_lock_order_races(case):
                     int(rollback_config["config_version"]),
                 ),
             )
-            cursor.execute(
-                """
-                INSERT INTO scheduled_task_approval_policies (
-                    task_id, mode, contract_hash, contract_snapshot_json,
-                    tool_contract_hash, approved_by_actor_id,
-                    approved_by_actor_role, approved_by_actor_display_name,
-                    approved_at, comment, version
-                ) VALUES (
-                    %s, 'EXACT_SCHEDULE_EXEMPT', %s, %s, %s,
-                    'integration-admin', 'super_admin', 'Integration Admin',
-                    NOW(6), 'retain exact approval', 7
-                )
-                """,
-                (
-                    old_task_id,
-                    "a" * 64,
-                    json.dumps({"scope": "exact"}),
-                    "b" * 64,
-                ),
-            )
         connection.commit()
 
         second_snapshot = generation_snapshot(
@@ -1082,7 +979,7 @@ def run_test_generation_write_lock_order_races(case):
                 expected_generation=2,
                 expected_manifest_sha256=manifest_sha256,
                 lease_id=blocking_lease,
-                orchestration_run_id=run_id,
+                invocation_id=_insert_invocation(connection, rollback_automation_id, 2),
                 expires_at=datetime.now() + timedelta(minutes=5),
                 lease_owner="reverse-cas-blocker",
             )
@@ -1095,7 +992,7 @@ def run_test_generation_write_lock_order_races(case):
                 """
                 INSERT INTO automation_project_generation_leases (
                     lease_id, automation_id, generation,
-                    orchestration_run_id, lease_owner,
+                    invocation_id, lease_owner,
                     runtime_metadata_json, runtime_metadata_sha256,
                     outcome, acquired_at, expires_at, released_at
                 ) VALUES (
@@ -1106,7 +1003,7 @@ def run_test_generation_write_lock_order_races(case):
                 (
                     blocking_lease,
                     rollback_automation_id,
-                    run_id,
+                    _insert_invocation(connection, rollback_automation_id, 2),
                     "reverse-cas-blocker",
                     json.dumps({}),
                     _json_hash({}),
@@ -1144,14 +1041,8 @@ def run_test_generation_write_lock_order_races(case):
                 """
                 SELECT task.name, task.automation_generation,
                        task.tool_params, task.last_status,
-                       task.last_duration_ms, task.last_message,
-                       policy.mode, policy.contract_hash,
-                       policy.contract_snapshot_json,
-                       policy.tool_contract_hash, policy.comment,
-                       policy.version
+                       task.last_duration_ms, task.last_message
                 FROM scheduled_tasks AS task
-                JOIN scheduled_task_approval_policies AS policy
-                  ON policy.task_id=task.id
                 WHERE task.id=%s
                 """,
                 (old_task_id,),
@@ -1166,15 +1057,6 @@ def run_test_generation_write_lock_order_races(case):
             case.assertEqual("success", restored_task["last_status"])
             case.assertEqual(17, restored_task["last_duration_ms"])
             case.assertEqual("old result", restored_task["last_message"])
-            case.assertEqual("EXACT_SCHEDULE_EXEMPT", restored_task["mode"])
-            case.assertEqual("a" * 64, restored_task["contract_hash"])
-            case.assertEqual(
-                {"scope": "exact"},
-                json.loads(restored_task["contract_snapshot_json"]),
-            )
-            case.assertEqual("b" * 64, restored_task["tool_contract_hash"])
-            case.assertEqual("retain exact approval", restored_task["comment"])
-            case.assertEqual(7, restored_task["version"])
         rollback_repository.rollback_generation_cas_row(
             rollback_automation_id,
             2,

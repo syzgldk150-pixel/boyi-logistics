@@ -527,7 +527,6 @@ def test_internal_service_write_is_finalized_only_after_provider_evidence(
         account_bindings_sha256="c" * 64,
         requires_write_verification=True,
         started_mutating_call_count=1,
-        orchestration_run_id=None,
         invocation_id="22222222-2222-4222-8222-222222222222",
         host_call_observations=_provider_host_observations(result),
     )
@@ -575,7 +574,6 @@ def test_internal_service_write_with_incomplete_evidence_becomes_unknown(
         account_bindings_sha256="c" * 64,
         requires_write_verification=True,
         started_mutating_call_count=1,
-        orchestration_run_id=None,
         invocation_id="22222222-2222-4222-8222-222222222222",
         host_call_observations=_provider_host_observations(result),
     )

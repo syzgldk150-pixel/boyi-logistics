@@ -91,65 +91,6 @@ class _ControlPlaneApp(ControlPlaneServiceMixin, AuthServiceMixin):
 
 
 class ControlPlaneServiceTests(unittest.TestCase):
-    def test_command_rebuilds_trusted_context_and_returns_202_with_run_location(self):
-        app = _ControlPlaneApp(
-            {
-                "ok": True,
-                "status": 202,
-                "data": {
-                    "command_id": "cmd-1",
-                    "work_item_id": "wi-1",
-                    "run_id": "run-1",
-                    "status": "RECEIVED",
-                    "reused": False,
-                    "next_poll_after_ms": 1000,
-                },
-            }
-        )
-        handler = _Handler(
-            {
-                "command_type": "compare_waybills",
-                "parameters": {"date": "2026-08-13"},
-                "entity_refs": [],
-                "idempotency_key": "console-test-1",
-                "actor": {"actor_id": "attacker"},
-                "actor_roles": ["system"],
-                "source": "untrusted",
-            }
-        )
-
-        app._handle_control_plane_command_post(handler)
-
-        self.assertEqual(HTTPStatus.ACCEPTED, app.sent_status)
-        self.assertEqual("run-1", app.sent_payload["data"]["run_id"])
-        self.assertEqual("/control-plane/runs/run-1", app.sent_headers["Location"])
-        method, endpoint, payload, timeout = app.agent_calls[0]
-        self.assertEqual(("POST", "/internal/v1/commands", 12), (method, endpoint, timeout))
-        self.assertEqual("console", payload["source"])
-        self.assertEqual(["admin"], payload["actor_roles"])
-        self.assertEqual("17", payload["actor"]["actor_id"])
-        self.assertEqual("mysql_admin_session", payload["actor"]["authenticated_by"])
-        self.assertEqual(
-            "console:17:compare_waybills:f117c816-061c-4ec2-a803-9b3a14ce2a25",
-            payload["idempotency_key"],
-        )
-        self.assertNotEqual("attacker", payload["actor"]["actor_id"])
-
-    def test_command_requires_agent_run_id(self):
-        app = _ControlPlaneApp({"ok": True, "status": 202, "data": {"command_id": "cmd-1"}})
-        handler = _Handler(
-            {
-                "command_type": "compare_waybills",
-                "parameters": {},
-                "entity_refs": [],
-                "idempotency_key": "console-test-2",
-            }
-        )
-
-        app._handle_control_plane_command_post(handler)
-
-        self.assertEqual(HTTPStatus.BAD_GATEWAY, app.sent_status)
-        self.assertEqual("INVALID_AGENT_RUN_CONTRACT", app.sent_payload["error"]["code"])
 
     def test_basic_auth_is_rejected_before_any_agent_write(self):
         app = _ControlPlaneApp({"ok": True, "status": 202, "data": {"run_id": "run-1"}})
@@ -163,7 +104,7 @@ class ControlPlaneServiceTests(unittest.TestCase):
             },
         )
 
-        app._handle_control_plane_command_post(handler)
+        self.assertIsNone(app._control_plane_write_context(handler))
 
         self.assertEqual(HTTPStatus.FORBIDDEN, app.sent_status)
         self.assertEqual("MYSQL_ADMIN_SESSION_REQUIRED", app.sent_payload["error"]["code"])
@@ -176,135 +117,11 @@ class ControlPlaneServiceTests(unittest.TestCase):
             origin="https://attacker.test",
         )
 
-        app._handle_control_plane_command_post(handler)
+        self.assertIsNone(app._control_plane_write_context(handler))
 
         self.assertEqual(HTTPStatus.FORBIDDEN, app.sent_status)
         self.assertEqual("CSRF_ORIGIN_REJECTED", app.sent_payload["error"]["code"])
         self.assertEqual([], app.agent_calls)
-
-    def test_approval_forwards_only_bound_plan_fields_and_trusted_context(self):
-        app = _ControlPlaneApp(
-            {"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}}
-        )
-        handler = _Handler(
-            {
-                "approval_id": "forged-approval",
-                "plan_hash": "sha256-plan",
-                "comment": "已核验",
-                "plan": {"steps": [{"tool": "untrusted"}]},
-                "actor": {"actor_id": "attacker"},
-                "source": "untrusted",
-            }
-        )
-
-        app._handle_control_plane_approval_post(handler, "approval-1", "approve")
-
-        self.assertEqual(HTTPStatus.OK, app.sent_status)
-        payload = app.agent_calls[0][2]
-        self.assertEqual(
-            {
-                "approval_id",
-                "plan_hash",
-                "comment",
-                "actor",
-                "actor_roles",
-                "source",
-            },
-            set(payload),
-        )
-        self.assertEqual("approval-1", payload["approval_id"])
-        self.assertEqual("sha256-plan", payload["plan_hash"])
-        self.assertNotIn("plan", payload)
-
-    def test_run_actions_allowlist_their_distinct_business_field(self):
-        cases = (
-            ("cancel", {"comment": "停止", "reason": "ignored"}, "comment", "停止"),
-            ("retry", {"reason": "数据已恢复", "comment": "ignored"}, "reason", "数据已恢复"),
-            (
-                "clarify",
-                {"clarification": "使用账号 A", "reason": "ignored"},
-                "clarification",
-                "使用账号 A",
-            ),
-        )
-        for action, body, field, value in cases:
-            with self.subTest(action=action):
-                app = _ControlPlaneApp(
-                    {"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}}
-                )
-                app._handle_control_plane_run_action_post(_Handler(body), "run-1", action)
-                payload = app.agent_calls[0][2]
-                self.assertEqual(value, payload[field])
-                self.assertEqual(
-                    {field, "actor", "actor_roles", "source"},
-                    set(payload),
-                )
-
-    def test_structured_clarification_forwards_only_closed_business_fields(self):
-        app = _ControlPlaneApp(
-            {"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}}
-        )
-        handler = _Handler(
-            {
-                "clarification": {
-                    "note": "账号已核对",
-                    "account_id": "ronghui-ops-1",
-                    "argument_updates": {"direction": "my_published"},
-                },
-                "actor": {"actor_id": "attacker"},
-            }
-        )
-
-        app._handle_control_plane_run_action_post(handler, "run-1", "clarify")
-
-        self.assertEqual(HTTPStatus.OK, app.sent_status)
-        self.assertEqual(
-            {
-                "note": "账号已核对",
-                "account_id": "ronghui-ops-1",
-                "argument_updates": {"direction": "my_published"},
-            },
-            app.agent_calls[0][2]["clarification"],
-        )
-
-    def test_structured_clarification_rejects_unknown_fields_before_agent_call(self):
-        app = _ControlPlaneApp(
-            {"ok": True, "status": 200, "data": {"run": {"run_id": "run-1"}}}
-        )
-
-        app._handle_control_plane_run_action_post(
-            _Handler({"clarification": {"account_id": "account-1", "guess": True}}),
-            "run-1",
-            "clarify",
-        )
-
-        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
-        self.assertEqual("CLARIFICATION_REQUIRED", app.sent_payload["error"]["code"])
-        self.assertEqual([], app.agent_calls)
-
-    def test_list_query_forwards_only_bounded_allowlisted_fields(self):
-        app = _ControlPlaneApp(
-            {"ok": True, "status": 200, "data": {"items": [], "page": 2}}
-        )
-        handler = _Handler()
-
-        app._handle_control_plane_work_items_get(
-            handler,
-            {
-                "q": ["运单 123"],
-                "page": ["2"],
-                "actor": ["attacker"],
-                "internal_token": ["must-not-forward"],
-            },
-        )
-
-        self.assertEqual(HTTPStatus.OK, app.sent_status)
-        endpoint = app.agent_calls[0][1]
-        self.assertIn("q=%E8%BF%90%E5%8D%95+123", endpoint)
-        self.assertIn("page=2", endpoint)
-        self.assertNotIn("actor", endpoint)
-        self.assertNotIn("internal_token", endpoint)
-
 
 if __name__ == "__main__":
     unittest.main()

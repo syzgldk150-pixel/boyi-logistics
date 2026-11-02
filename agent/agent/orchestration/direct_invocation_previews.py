@@ -1,12 +1,12 @@
 """Exact preview selection bound to real Invocation rows, without Run aliases."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Mapping
 import uuid
 
 from agent.orchestration.models import OrchestrationError
-from agent.orchestration.scan_preview_binding import _validate_preview_evidence, _bind_formal_arguments, validate_scan_preview_context
+from agent.orchestration.scan_preview_binding import SCAN_PREVIEW_CONTEXT_VERSION, SCAN_PREVIEW_TTL, _validate_preview_evidence, _bind_formal_arguments, validate_scan_preview_context
 from agent.orchestration.selection_preview_binding import _validate_generic_candidates, _selected_bill_codes, _service_v2_summary
 from shared.automation_project_authorization import canonical_sha256
 from shared.automation_preview_contract import PREVIEW_CONTRACT_VERSION, preview_observation_too_far_ahead, selection_limit
@@ -37,7 +37,7 @@ def _load(repository, invocation_id, *, entry, contract, actor_id=None):
     now = datetime.now(timezone.utc)
     if observed.tzinfo is None or preview_observation_too_far_ahead(observed, now):
         raise OrchestrationError("PREVIEW_INVALID", "预览时间无效")
-    return row, result, data, observed, observed + timedelta(minutes=15)
+    return row, result, data, observed, observed + SCAN_PREVIEW_TTL
 
 
 def _candidates(entry, data):
@@ -81,7 +81,7 @@ def confirm_preview(repository, invocation_id, *, entry, contract, actor_id, arg
             raise OrchestrationError("PREVIEW_INPUT_INVALID", "扫描确认不接受替换单号")
         evidence = _validate_preview_evidence(data.get("preview_evidence", {}))
         formal = _bind_formal_arguments(row["arguments_json"], arguments, target_date=evidence["target_date"])
-        context = {"contract_version": 2, "plugin_id": entry.plugin_id,
+        context = {"contract_version": SCAN_PREVIEW_CONTEXT_VERSION, "plugin_id": entry.plugin_id,
             "preview_invocation_id": invocation_id, "preview_result_sha256": canonical_sha256(result),
             "project_instance_id": entry.automation_id, "generation": contract.automation_generation,
             "contract_digest": contract.contract_hash, "configuration_version": contract.project_configuration_version,

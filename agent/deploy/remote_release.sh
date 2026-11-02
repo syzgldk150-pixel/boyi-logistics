@@ -1063,9 +1063,7 @@ class SmokeGate(str, Enum):
     RESPONSE_CONTRACT = "response_contract"
     SCHEDULER_STATE = "scheduler_state"
     SCHEDULER_HOLD = "scheduler_hold"
-    RUNNER_STATE = "runner_state"
-    RUNNER_HOLD = "runner_hold"
-    RUNNER_ACTIVE = "runner_active"
+    DIRECT_ACTIVE = "direct_active"
     PLUGIN_BROKER = "plugin_broker"
     PLUGIN_SANDBOX = "plugin_sandbox"
     PLUGIN_CATALOG_UNSUPPORTED = "plugin_catalog_unsupported"
@@ -1138,9 +1136,7 @@ try:
     data = payload.get("data")
     components = data.get("components") if isinstance(data, dict) else None
     scheduler = components.get("scheduler") if isinstance(components, dict) else None
-    workflow_runner = (
-        components.get("workflow_runner") if isinstance(components, dict) else None
-    )
+    direct_invocations = data.get("direct_invocations") if isinstance(data, dict) else None
     automation_plugins = (
         components.get("automation_plugins") if isinstance(components, dict) else None
     )
@@ -1150,15 +1146,9 @@ try:
     failure_gate = SmokeGate.SCHEDULER_HOLD
     if scheduler.get("release_hold") is not True:
         raise RuntimeError("scheduler release marker was not active")
-    failure_gate = SmokeGate.RUNNER_STATE
-    if not isinstance(workflow_runner, dict) or workflow_runner.get("state") != "held":
-        raise RuntimeError("workflow runner was not held for release validation")
-    failure_gate = SmokeGate.RUNNER_HOLD
-    if workflow_runner.get("release_hold") is not True:
-        raise RuntimeError("workflow runner release hold was not active")
-    failure_gate = SmokeGate.RUNNER_ACTIVE
-    if workflow_runner.get("active_runs") != 0:
-        raise RuntimeError("workflow runner still had active Runs")
+    failure_gate = SmokeGate.DIRECT_ACTIVE
+    if not isinstance(direct_invocations, dict) or direct_invocations.get("active_count") != 0:
+        raise RuntimeError("direct plugin invocations were active during release validation")
     failure_gate = SmokeGate.PLUGIN_BROKER
     if (
         not isinstance(automation_plugins, dict)
@@ -1321,9 +1311,6 @@ try:
         or not isinstance(data, dict)
         or data.get("state") != "running"
         or data.get("release_hold") is not False
-        or not isinstance(data.get("workflow_runner"), dict)
-        or data["workflow_runner"].get("state") != "reserved"
-        or data["workflow_runner"].get("release_hold") is not False
         or not isinstance(data.get("automation_plugins"), dict)
         or data["automation_plugins"].get("ok") is not True
     ):

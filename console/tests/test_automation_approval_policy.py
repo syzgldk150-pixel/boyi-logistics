@@ -13,7 +13,6 @@ from console.services.automation import (
     build_automation_project_policy_view,
     normalize_automation_approval_batch_result,
     normalize_hidden_automation_ids,
-    normalize_automation_pending_approvals,
     normalize_automation_project_policy_items,
 )
 
@@ -306,38 +305,6 @@ class AutomationProjectExecutionGateTests(unittest.TestCase):
                 self.assertEqual("项目权限不可用", task["run_disabled_reason"])
                 self.assertFalse(task["approval_policy"]["available"])
 
-    def test_pending_projection_is_aggregate_only(self):
-        pending = normalize_automation_pending_approvals(
-            {
-                "automation_id": "clockin_daxiang",
-                "pending_count": 3,
-                "highest_risk": "HIGH",
-                "source_summary": "Scheduler 2、飞书 1",
-                "pending_set_hash": "a" * 64,
-                "can_approve": True,
-                "can_reject": True,
-                "approval_ids": ["approval-secret"],
-                "plan_hashes": ["plan-secret"],
-            },
-            expected_automation_id="clockin_daxiang",
-        )
-
-        self.assertEqual(
-            {
-                "automation_id",
-                "pending_count",
-                "highest_risk",
-                "highest_risk_label",
-                "source_summary",
-                "expected_pending_set_hash",
-                "can_approve",
-                "can_reject",
-            },
-            set(pending or {}),
-        )
-        self.assertNotIn("approval_ids", pending or {})
-        self.assertNotIn("plan_hashes", pending or {})
-
     def test_batch_receipt_projection_is_closed_and_project_bound(self):
         result = normalize_automation_approval_batch_result(
             {
@@ -432,169 +399,6 @@ class AutomationProjectPolicyHandlerTests(unittest.TestCase):
             payload=payload,
         )
         return app, captured
-
-    def test_pending_get_returns_only_safe_project_summary(self):
-        app, captured = self._app()
-        handler = self._handler()
-        app._agent_request = lambda *args, **kwargs: {
-            "ok": True,
-            "data": {
-                "pending": {
-                    "automation_id": "clockin_daxiang",
-                    "pending_count": 2,
-                    "highest_risk": "HIGH",
-                    "source_summary": "Scheduler 2",
-                    "pending_set_hash": "b" * 64,
-                    "can_approve": True,
-                    "can_reject": True,
-                    "approval_ids": ["hidden"],
-                    "plan_hash": "hidden",
-                }
-            },
-        }
-
-        app._handle_automation_project_pending_approvals_get(handler, "clockin_daxiang")
-
-        pending = captured["payload"]["data"]["pending"]
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual("b" * 64, pending["expected_pending_set_hash"])
-        self.assertNotIn("approval_ids", pending)
-        self.assertNotIn("plan_hash", pending)
-
-    def test_batch_action_forwards_only_expected_set_request_and_comment(self):
-        body = {
-            "expected_pending_set_hash": "c" * 64,
-            "request_id": "87654321-4321-4321-8321-cba987654321",
-            "comment": "同一项目批量通过",
-        }
-        app, captured = self._app()
-        forwarded = {}
-
-        def agent_request(method, endpoint, **kwargs):
-            forwarded.update(method=method, endpoint=endpoint, **kwargs)
-            return {
-                "ok": True,
-                "data": {
-                    "decision": "APPROVED",
-                    "decided_count": 1,
-                    "run_receipts": [
-                        {
-                            "automation_id": "clockin_daxiang",
-                            "work_item_id": "work-1",
-                            "run_id": "run-1",
-                            "status": "WAITING_APPROVAL",
-                        }
-                    ],
-                    "pending": {
-                        "automation_id": "clockin_daxiang",
-                        "pending_count": 0,
-                        "highest_risk": "",
-                        "source_summary": "",
-                        "pending_set_hash": "",
-                    }
-                },
-            }
-
-        app._agent_request = agent_request
-        app._handle_automation_project_pending_approvals_action(
-            self._handler(body),
-            "clockin_daxiang",
-            "approve",
-        )
-
-        self.assertEqual(HTTPStatus.OK, captured["status"])
-        self.assertEqual(body, forwarded["payload"])
-        self.assertEqual(
-            "/internal/v1/automation-projects/clockin_daxiang/pending-approvals/approve",
-            forwarded["endpoint"],
-        )
-        self.assertNotIn("approval_ids", forwarded["payload"])
-        self.assertNotIn("plan_hash", forwarded["payload"])
-        response_data = captured["payload"]["data"]
-        self.assertEqual(1, response_data["decided_count"])
-        self.assertEqual("run-1", response_data["run_receipts"][0]["run_id"])
-        self.assertNotIn("approval_id", response_data["run_receipts"][0])
-        self.assertNotIn("plan_hash", response_data["run_receipts"][0])
-
-    def test_pending_set_conflict_is_safely_projected_for_inline_refresh(self):
-        body = {
-            "expected_pending_set_hash": "d" * 64,
-            "request_id": "87654321-4321-4321-8321-cba987654321",
-            "comment": "",
-        }
-        app, captured = self._app()
-        app._agent_request = lambda *args, **kwargs: {
-            "ok": False,
-            "status": 409,
-            "error_code": "PENDING_SET_CHANGED",
-            "error": "集合已变化",
-            "data": {
-                "pending": {
-                    "automation_id": "clockin_daxiang",
-                    "pending_count": 1,
-                    "highest_risk": "MEDIUM",
-                    "source_summary": "Console 1",
-                    "pending_set_hash": "e" * 64,
-                    "approval_ids": ["hidden"],
-                }
-            },
-        }
-
-        app._handle_automation_project_pending_approvals_action(
-            self._handler(body),
-            "clockin_daxiang",
-            "reject",
-        )
-
-        self.assertEqual(HTTPStatus.CONFLICT, captured["status"])
-        projected = captured["payload"]["data"]["pending"]
-        self.assertEqual(1, projected["pending_count"])
-        self.assertNotIn("approval_ids", projected)
-
-    def test_batch_action_rejects_incomplete_or_overbroad_agent_receipts(self):
-        body = {
-            "expected_pending_set_hash": "f" * 64,
-            "request_id": "87654321-4321-4321-8321-cba987654321",
-            "comment": "",
-        }
-        app, captured = self._app()
-        app._agent_request = lambda *args, **kwargs: {
-            "ok": True,
-            "data": {
-                "decision": "APPROVED",
-                "decided_count": 1,
-                "run_receipts": [
-                    {
-                        "automation_id": "clockin_daxiang",
-                        "work_item_id": "work-1",
-                        "run_id": "run-1",
-                        "status": "WAITING_APPROVAL",
-                        "plan_hash": "must-not-cross-console-boundary",
-                    }
-                ],
-                "pending": {
-                    "automation_id": "clockin_daxiang",
-                    "pending_count": 0,
-                    "highest_risk": "",
-                    "source_summary": "",
-                    "pending_set_hash": "",
-                },
-            },
-        }
-
-        app._handle_automation_project_pending_approvals_action(
-            self._handler(body),
-            "clockin_daxiang",
-            "approve",
-        )
-
-        self.assertEqual(HTTPStatus.BAD_GATEWAY, captured["status"])
-        self.assertEqual(
-            "INVALID_PENDING_APPROVAL_ACTION_RESPONSE",
-            captured["payload"]["error"]["code"],
-        )
-        self.assertIsNone(captured["payload"].get("data"))
-
 
 class AutomationProjectPolicyTemplateTests(unittest.TestCase):
     @classmethod
@@ -702,7 +506,7 @@ class AutomationProjectPolicyTemplateTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(".auto-project-governance", style)
-        self.assertIn(".auto-pending-approvals[hidden]", style)
+        self.assertNotIn(".auto-pending-approvals", style)
         self.assertIn('.selection-preview-item input[type="checkbox"]', style)
         self.assertIn("appearance: auto", style)
         self.assertIn("style.css?v=20261023-plugin-categories", base)

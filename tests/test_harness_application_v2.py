@@ -213,9 +213,7 @@ def test_fixed_host_tool_definitions_match_closed_read_only_catalog() -> None:
         "waybill.lookup",
         "tracking.lookup",
         "finance.summary",
-        "work_items.list_open",
         "runs.get_summary",
-        "artifact.inspect",
         "shipment.query",
     }
     for tool in tools:

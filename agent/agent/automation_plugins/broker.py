@@ -776,11 +776,8 @@ class LocalBrokerCapabilityIssuer:
                     raise PluginExecutionError("invocation is stopping", code="BROKER_CAPABILITY_INVALID")
                 context = current.grant.write_attempt_context
                 required = {
-                    "automation_id", "plugin_id", "generation", "lease_id",
-                    "orchestration_run_id", "step_id",
+                    "automation_id", "plugin_id", "generation", "lease_id", "invocation_id",
                 }
-                if "invocation_id" in context:
-                    required = (required - {"orchestration_run_id", "step_id"}) | {"invocation_id"}
                 if set(context) != required or self._write_attempt_recorder is None:
                     raise PluginExecutionError("durable write attempt evidence is unavailable", code="WRITE_ATTEMPT_RECEIPT_UNAVAILABLE")
                 operation, action, role, binding, arguments = current.pending_write_calls[normalized_request_id]

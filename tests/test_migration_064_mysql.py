@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.test_legacy_unknown_scope_migration_mysql import _Database
+from tests.mysql_isolated_fixtures import IsolatedProjectDatabase as _Database
 from tests.test_service_v2_optional_console_upgrade_mysql import _compiled, _versions, _witness, _version
 
 pytestmark = pytest.mark.skipif(
@@ -125,7 +125,7 @@ def _retire_to_v1(database):
 
 def _seed(database):
     _retire_to_v1(database)
-    run = database.seed()  # ACTION_V1 project with its Command/Run/Step, lease and unknown write.
+    run = database.seed_legacy_run()  # ACTION_V1 project with its Command/Run/Step, lease and unknown write.
     _install_v2(database, "old-finance-instance", "sync_finance_bills_v2")
     _install_v2(database, "live-statement-instance", "sync_ronghui_finance_statement_v2")
     with database.helper._connection() as connection, connection.cursor() as cursor:
@@ -155,7 +155,10 @@ def _snapshot(database):
 
 
 def _apply_064(database):
-    with patch.dict(os.environ, database.helper._environment(database.helper.database), clear=False):
+    discover = database.helper.runner.discover_migrations
+    with patch.dict(os.environ, database.helper._environment(database.helper.database), clear=False), \
+            patch.object(database.helper.runner, "discover_migrations",
+                         lambda: [item for item in discover() if item[0] <= "064"]):
         database.helper.runner.run(check_only=False)
 
 
@@ -234,7 +237,7 @@ def test_064_removes_only_retired_facts_exports_them_and_repeats(database, tmp_p
 
 def test_064_refuses_while_a_retired_project_still_runs(database):
     _retire_to_v1(database)
-    database.seed(live_sibling_lease=True)
+    database.seed_legacy_run(live_sibling_lease=True)
     before = _snapshot(database)
     with pytest.raises(Exception, match="(?i)cp064_pre_v2_project_still_running"):
         _apply_064(database)

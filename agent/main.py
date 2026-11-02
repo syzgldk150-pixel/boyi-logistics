@@ -10,16 +10,12 @@ import socket
 import sys
 import time
 import uuid
-from collections.abc import Mapping
-from datetime import datetime, time as datetime_time, timedelta, timezone
 from contextlib import asynccontextmanager, suppress
-from functools import partial
 from logging.handlers import TimedRotatingFileHandler
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import psutil
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -55,19 +51,6 @@ LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)-16s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 WEBHOOK_TOKEN_HEADER = "X-Agent-Webhook-Token"
-
-
-def _positive_runtime_int(name: str, default: int) -> int:
-    raw = str(os.getenv(name, "") or "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise RuntimeError(f"{name} must be a positive integer")
-    return value
 
 
 class RedactingFilter(logging.Filter):
@@ -152,7 +135,6 @@ from agent.automation_plugins.production import (
 from agent.automation_plugins.management_api import create_automation_plugin_management_router
 from agent.harness import HarnessError
 from agent.harness_api import create_harness_router, harness_error_response
-from agent.orchestration.approval_service import ApprovalService
 from agent.orchestration.automation_project_api import create_automation_project_router
 from agent.orchestration.automation_project_entrypoints import (
     AutomationProjectEntrypoints,
@@ -160,28 +142,14 @@ from agent.orchestration.automation_project_entrypoints import (
     TrustedDynamicArgumentResolver,
 )
 from agent.orchestration.automation_project_policy_service import AutomationProjectPolicyService
-from agent.orchestration.command_gateway import CommandGateway
-from agent.orchestration.context_builder import ContextBuilder
-from agent.orchestration.control_plane_service import ControlPlaneService
-from agent.orchestration.feishu_approval_service import DEFAULT_NOTIFICATION_LEASE_SECONDS, FeishuApprovalService
+from agent.orchestration.feishu_binding_service import FeishuBindingService
 from agent.orchestration.service_v2_waybill_entry_extension_host import ServiceV2WaybillEntryExtensionHost
-from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import (
     Actor,
     ActorType,
-    Command,
-    EntityRef,
     OrchestrationError,
-    RunStatus,
-    new_id,
 )
-from agent.orchestration.outbox_dispatcher import OutboxDispatcher, OutboxDispatcherGroup
-from agent.orchestration.control_plane_retention import ControlPlaneRetentionWorker
-from agent.orchestration.plan_validator import PlanValidator
-from agent.orchestration.planner import DeterministicPlanner
-from agent.orchestration.policy_engine import PolicyEngine
 from agent.orchestration.result_verifier import ResultVerifier
-from agent.orchestration.workflow_runner import WorkflowRunner
 from agent.llm_settings import (
     LLMCompatibilityService,
     LLMSettingsError,
@@ -237,15 +205,13 @@ from feishu.bot import (
 )
 from feishu.message_handler import (
     bind_automation_project_entrypoints,
-    bind_feishu_approval_runtime,
+    bind_feishu_binding_runtime,
     bind_service_v2_feishu_dispatcher,
     queue_bot_menu_payload,
     queue_im_message_payload,
 )
 from feishu.notify import (
-    FEISHU_SEND_TIMEOUT_SECONDS,
     send_finance_anomaly_alert,
-    send_text_sync,
     send_tms_session_disconnected_alert,
 )
 from tools.feishu_cli_tool import feishu_operation
@@ -264,15 +230,10 @@ configure_feishu_operation(feishu_operation)
 
 
 agent_core: AgentCore | None = None
-orchestration_repository: OrchestrationRepository | None = None
-workflow_runner: WorkflowRunner | None = None
-outbox_dispatcher: OutboxDispatcherGroup | None = None
-control_plane_retention_worker: ControlPlaneRetentionWorker | None = None
-control_plane_service: ControlPlaneService | None = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
-feishu_approval_service: FeishuApprovalService | None = None
+feishu_binding_service: FeishuBindingService | None = None
 _start_time = time.time()
 INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 AGENT_INTERNAL_API_TOKEN = ""
@@ -303,18 +264,6 @@ def _runtime() -> AgentCore:
     return agent_core
 
 
-def _control_plane() -> ControlPlaneService:
-    if control_plane_service is None:
-        raise RuntimeError("Agent control plane is not initialized")
-    return control_plane_service
-
-
-def _orchestration_repo() -> OrchestrationRepository:
-    if orchestration_repository is None:
-        raise RuntimeError("Agent orchestration repository is not initialized")
-    return orchestration_repository
-
-
 def _automation_project_policies() -> AutomationProjectPolicyService:
     if automation_project_policy_service is None:
         raise RuntimeError("Automation project policy service is not initialized")
@@ -327,10 +276,10 @@ def _automation_project_entrypoint_service() -> AutomationProjectEntrypoints:
     return automation_project_entrypoints
 
 
-def _feishu_approvals() -> FeishuApprovalService:
-    if feishu_approval_service is None:
-        raise RuntimeError("Feishu approval service is not initialized")
-    return feishu_approval_service
+def _feishu_bindings() -> FeishuBindingService:
+    if feishu_binding_service is None:
+        raise RuntimeError("Feishu binding service is not initialized")
+    return feishu_binding_service
 
 
 def _automation_plugins() -> ProductionAutomationPluginRuntime:
@@ -384,134 +333,6 @@ def _orchestration_connection():
         cursorclass=pymysql.cursors.DictCursor,
         **mysql_tls_options(os.getenv("AGENT_DB_SSL_CA")),
     )
-
-
-def _resolve_command_accounts(command: Command) -> list[dict]:
-    """Resolve public account identities without exposing credential material."""
-
-    rows = get_account_manager().list_accounts(include_status=False, validate=False)
-    active = [row for row in rows if bool(row.get("is_active", True))]
-    arguments = command.parameters.get("arguments")
-    arguments = arguments if isinstance(arguments, dict) else {}
-    requested: list[str] = []
-    explicit = command.parameters.get("account_id") or arguments.get("account_id")
-    if explicit:
-        requested.append(str(explicit))
-    account_ids = arguments.get("account_ids")
-    if isinstance(account_ids, list):
-        requested.extend(str(value) for value in account_ids if str(value or "").strip())
-    tool_name = str(command.parameters.get("tool_name") or "")
-    if tool_name == "sync_customer_service_problems" and not requested:
-        active = [row for row in active if str(row.get("system") or "") in {"ronghui", "yunda"}]
-    elif requested:
-        requested_set = set(requested)
-        active = [row for row in active if str(row.get("account_id") or "") in requested_set]
-    return [
-        {
-            "account_id": str(row.get("account_id") or ""),
-            "system": str(row.get("system") or ""),
-            "account_purpose": str(row.get("account_purpose") or ""),
-            "session_profile": str(row.get("session_profile") or ""),
-            "is_active": bool(row.get("is_active", True)),
-        }
-        for row in active
-    ]
-
-
-def _resolve_command_entities(command: Command) -> list[dict]:
-    return [reference.to_dict() for reference in command.entity_refs]
-
-
-def _resolve_source_integrity(command: Command) -> dict:
-    # Source integrity must come from an authoritative server-side resolver.
-    # Caller-provided execution context is deliberately excluded from plan
-    # fingerprints and approval decisions.
-    del command
-    return {}
-
-
-def _resolve_command_resources(command: Command) -> dict:
-    service = control_plane_service
-    return service.resolve_command_context(command) if service is not None else {}
-
-
-def _noop_outbox_handler(delivery, _uow):
-    return {"event_id": delivery.get("event_id"), "acknowledged": True}
-
-
-def _run_plan_steps(run: dict[str, Any]) -> list[dict[str, Any]]:
-    plan = run.get("plan_json")
-    raw_steps = plan.get("steps") if isinstance(plan, dict) else None
-    if not isinstance(raw_steps, list):
-        return []
-    return [dict(step) for step in raw_steps if isinstance(step, dict)]
-
-
-def _project_run_completed_event(delivery, uow):
-    """Project governed Run completion lifecycle events."""
-
-    payload = delivery.get("payload_json")
-    if (
-        str(delivery.get("event_type") or "") != "agent.run.status_changed"
-        or not isinstance(payload, dict)
-    ):
-        return {"event_id": delivery.get("event_id"), "projected": False}
-
-    target_status = str(payload.get("to") or "").strip()
-    if target_status != RunStatus.COMPLETED.value:
-        return {"event_id": delivery.get("event_id"), "projected": False}
-
-    run_id = str(delivery.get("run_id") or "").strip()
-    run = uow.runs.get(run_id, for_update=False) if run_id else None
-    if not isinstance(run, dict):
-        raise RuntimeError("run lifecycle event does not match a durable Run")
-    steps = _run_plan_steps(run)
-    if str(run.get("status") or "") != RunStatus.COMPLETED.value:
-        raise RuntimeError("completed run event does not match durable Run state")
-    tool_names = [
-        str(step.get("tool_name") or "").strip()
-        for step in steps
-        if str(step.get("tool_name") or "").strip()
-    ]
-    causation_id = str(delivery.get("event_id") or "").strip()
-    completed_event_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"boyi:agent.run.completed:{causation_id}")
-    )
-    receipt = uow.events.append_with_outbox(
-        {
-            "event_id": completed_event_id,
-            "event_type": "agent.run.completed",
-            "schema_version": 1,
-            "source_system": "agent",
-            "source_event_id": causation_id,
-            "entity_type": "agent_run",
-            "entity_id": run_id,
-            "work_item_id": run.get("work_item_id"),
-            "run_id": run_id,
-            "step_id": None,
-            "occurred_at": delivery.get("occurred_at") or datetime.now(timezone.utc).replace(tzinfo=None),
-            "observed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-            "correlation_id": str(delivery.get("correlation_id") or run.get("correlation_id") or ""),
-            "causation_id": causation_id,
-            "payload": {
-                "run_id": run_id,
-                "status": RunStatus.COMPLETED.value,
-                "tool_names": tool_names,
-            },
-        },
-        (),
-    )
-    return {
-        "event_id": delivery.get("event_id"),
-        "projected": True,
-        "completed_event_id": receipt["event"]["event_id"],
-    }
-
-
-def _finance_brain_completed_handler(_command_submitter, delivery, _uow):
-    """Acknowledge an old notification without starting another business call."""
-    return {"event_id": delivery.get("event_id"), "processed": False,
-            "reason": "analysis_requires_explicit_invocation"}
 
 
 def _actor_from_payload(
@@ -812,11 +633,9 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
-    global orchestration_repository, workflow_runner, outbox_dispatcher, control_plane_service
-    global control_plane_retention_worker
     global automation_plugin_runtime, automation_project_policy_service
     global automation_project_entrypoints
-    global feishu_approval_service
+    global feishu_binding_service
     load_agent_environment()
     setup_logging()
     AGENT_INTERNAL_API_TOKEN = str(os.getenv("AGENT_INTERNAL_API_TOKEN", "") or "").strip()
@@ -890,30 +709,6 @@ async def lifespan(app: FastAPI):
         "query_business_finance": business_finance_query.run,
         "query_automation_operations": automation_operations_query.run,
     })
-    execution_port = RegisteredToolExecutionAdapter(
-        catalog=catalog,
-        executor=plugin_runtime.execution_router,
-        direct_runners={
-            "track_waybill": run_track_waybill,
-            "query_business_finance": business_finance_query.run,
-            "query_automation_operations": automation_operations_query.run,
-        },
-    )
-    context_builder = ContextBuilder(
-        account_resolver=_resolve_command_accounts,
-        resource_resolver=_resolve_command_resources,
-        entity_resolver=_resolve_command_entities,
-        integrity_resolver=_resolve_source_integrity,
-    )
-    planner = DeterministicPlanner(catalog)
-    validator = PlanValidator(catalog)
-    runner_holder: dict[str, WorkflowRunner] = {}
-
-    gateway = CommandGateway(
-        repository,
-        wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
-    )
-
     plugin_business_results = PluginBusinessResults(repository)
     direct_invocations = DirectPluginInvocationService(
         PluginInvocationRepository(repository),
@@ -934,8 +729,6 @@ async def lifespan(app: FastAPI):
     project_policy_service = AutomationProjectPolicyService(
         repository,
         plugin_runtime.catalog,
-        command_gateway=gateway,
-        wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
         dynamic_resolver=TrustedDynamicArgumentResolver(),
         release_hold_provider=scheduler_release_hold_requested,
         contribution_registry=plugin_runtime.contribution_registry,
@@ -983,24 +776,8 @@ async def lifespan(app: FastAPI):
     automation_project_policy_service = project_policy_service
     project_policy_service.identity_access = IdentityRepository(_orchestration_connection)
     agent_core.identity_access = project_policy_service.identity_access
-    policy = PolicyEngine(
-        catalog,
-        project_policy_provider=project_policy_service.evaluate_invocation,
-    )
-    approval_service = ApprovalService(
+    feishu_binding_service = FeishuBindingService(
         repository,
-        policy,
-        wake_runner=lambda run_id: runner_holder["runner"].wake(run_id),
-    )
-    if FEISHU_SEND_TIMEOUT_SECONDS >= DEFAULT_NOTIFICATION_LEASE_SECONDS:
-        raise RuntimeError(
-            "Feishu send timeout must be shorter than its notification lease"
-        )
-    feishu_approval_service = FeishuApprovalService(
-        repository,
-        approval_service,
-        send_text=send_text_sync,
-        notification_lease_seconds=DEFAULT_NOTIFICATION_LEASE_SECONDS,
         identity_access=project_policy_service.identity_access,
     )
     from agent.plugin_conversations import PluginConversationService
@@ -1012,7 +789,7 @@ async def lifespan(app: FastAPI):
     )
     automation_project_entrypoints = AutomationProjectEntrypoints(
         project_policy_service,
-        feishu_actor_resolver=feishu_approval_service.resolve_actor,
+        feishu_actor_resolver=feishu_binding_service.resolve_actor,
         fixed_entrypoints=plugin_runtime.fixed_entrypoints,
         service_v2_webhook_dispatcher=ServiceV2WebhookDispatcher(
             policy_service=project_policy_service,
@@ -1020,14 +797,14 @@ async def lifespan(app: FastAPI):
         ),
     )
     bind_automation_project_entrypoints(automation_project_entrypoints)
-    bind_feishu_approval_runtime(feishu_approval_service)
+    bind_feishu_binding_runtime(feishu_binding_service)
     service_v2_feishu_dispatcher = ServiceV2FeishuDispatcher(
         policy_service=project_policy_service,
         contribution_registry=plugin_runtime.contribution_registry,
-        resolve_actor=feishu_approval_service.resolve_actor,
+        resolve_actor=feishu_binding_service.resolve_actor,
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
-    harness_gateway = build_read_only_harness_gateway(runtime, repository, finance_summary=business_finance_query.run, invocations=direct_invocations)
+    harness_gateway = build_read_only_harness_gateway(runtime, finance_summary=business_finance_query.run, invocations=direct_invocations)
     process_service_v2_runtime = ServiceV2ProcessRuntime(
         plugin_conversations=plugin_conversations,
         text_queries=build_chat_text_queries(runtime),
@@ -1041,84 +818,7 @@ async def lifespan(app: FastAPI):
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
     runtime.configure_conversations(process_service_v2_runtime.conversations)
     logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)
-    runner = WorkflowRunner(saved_resource_provider=get_saved_workflow_resource,
-        execution_enabled=False,
-        repository=repository,
-        catalog=catalog,
-        execution_port=execution_port,
-        context_builder=context_builder,
-        planner=planner,
-        validator=validator,
-        policy=policy,
-        approval_service=approval_service,
-        verifier=ResultVerifier(plugin_runtime.runtime_repository),
-        worker_id=f"{INSTANCE_ID}:runs",
-        worker_concurrency=_positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 4),
-        browser_concurrency=_positive_runtime_int("WORKFLOW_BROWSER_CONCURRENCY", 3),
-    )
-    runner_holder["runner"] = runner
-    plugin_runtime.target_service.set_wake_runner(runner.wake)
-    outbox_handlers = {
-        "orchestration.run_worker": _noop_outbox_handler,
-        "orchestration.audit": _project_run_completed_event,
-        "finance.brain": lambda delivery, uow: _finance_brain_completed_handler(
-            gateway.submit,
-            delivery,
-            uow,
-        ),
-    }
-    dispatchers = []
-    for consumer_name, handler in outbox_handlers.items():
-        # Only notification/audit delivery remains here. Financial analysis
-        # runs exclusively from its explicit business interface.
-        handler_uses_uow = consumer_name not in {
-            "feishu.approval",
-            "feishu.approval.expiry",
-            "finance.brain",
-        }
-        dispatchers.append(
-            OutboxDispatcher(
-                repository,
-                worker_id=f"{INSTANCE_ID}:outbox:{consumer_name}",
-                consumer_name=consumer_name,
-                lease_seconds=60,
-                batch_size=(
-                    1
-                    if consumer_name
-                    in {"feishu.approval", "feishu.approval.expiry"}
-                    else 50
-                ),
-                handlers={consumer_name: handler},
-                handler_uses_uow=handler_uses_uow,
-            )
-        )
-    dispatcher = OutboxDispatcherGroup(dispatchers)
-    retention_worker = ControlPlaneRetentionWorker(repository)
-    service = ControlPlaneService(
-        repository,
-        approval_service,
-        wake_runner=runner.wake,
-        cancel_active=runner.cancel_active,
-        wake_outbox=dispatcher.wake,
-    )
-    orchestration_repository = repository
-    workflow_runner = runner
-    outbox_dispatcher = dispatcher
-    control_plane_retention_worker = retention_worker
-    control_plane_service = service
-    runtime.configure_orchestration(
-        command_gateway=gateway,
-        repository=repository,
-        workflow_runner=runner,
-        execution_runtime=plugin_runtime.execution_router,
-        control_plane_service=service,
-    )
-    # A release marker is the only process-wide execution hold. Plugin health is
-    # projected per project: one unavailable generation must not freeze core
-    # tools or unrelated committed plugins.
-    await runner.start(held_for_release=release_hold)
-    await dispatcher.start()
-    await retention_worker.start()
+    runtime.configure_execution_runtime(plugin_runtime.execution_router)
     bind_agent_runtime(runtime, loop)
 
     async def handle_session_restored(account_id: str) -> None:
@@ -1195,25 +895,17 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
     register_account_session_restored(None)
     bind_automation_project_entrypoints(None)
-    bind_feishu_approval_runtime(None)
+    bind_feishu_binding_runtime(None)
     bind_service_v2_feishu_dispatcher(None)
     await stop_feishu_ws()
-    await retention_worker.stop()
-    await runner.stop()
-    await dispatcher.stop()
     await direct_invocations.stop()
     bind_direct_business_service(None)
     await plugin_runtime.stop()
     await runtime.close()
-    control_plane_service = None
     automation_plugin_runtime = None
     automation_project_entrypoints = None
-    feishu_approval_service = None
+    feishu_binding_service = None
     automation_project_policy_service = None
-    outbox_dispatcher = None
-    control_plane_retention_worker = None
-    workflow_runner = None
-    orchestration_repository = None
     agent_core = None
     CONSOLE_IDENTITY_VERIFIER = None
     account_manager.set_credentials_change_guard(None)
@@ -1744,17 +1436,7 @@ def _internal_health_payload() -> dict[str, Any]:
                 "deepseek": runtime.llm_status("deepseek"),
                 "glm": runtime.llm_status("glm"),
                 "mysql": runtime.db_status(),
-                "outbox": _orchestration_repo().outbox_health(),
                 "scheduler": scheduler_runtime_status(),
-                "workflow_runner": (
-                    workflow_runner.runtime_status()
-                    if workflow_runner is not None
-                    else {
-                        "state": "stopped",
-                        "release_hold": False,
-                        "active_runs": 0,
-                    }
-                ),
                 "automation_plugins": _automation_plugin_health(),
                 "tms_session": get_session_broker().health_snapshot(),
             },
@@ -1770,70 +1452,6 @@ async def internal_health():
     # every such probe off the Uvicorn event loop; public /health stays a
     # constant-time liveness response with no business locks.
     return api_success(await asyncio.to_thread(_internal_health_payload))
-
-
-class ActorPayload(BaseModel):
-    actor_type: str
-    actor_id: str
-    roles: list[str] = Field(default_factory=list)
-    display_name: str = ""
-    authenticated_by: str = ""
-
-
-class EntityRefPayload(BaseModel):
-    entity_type: str
-    entity_id: str
-    source_system: str = ""
-    relation_type: str = "subject"
-    metadata: dict = Field(default_factory=dict)
-
-
-class CommandRequest(BaseModel):
-    command_type: str
-    parameters: dict = Field(default_factory=dict)
-    idempotency_key: str
-    entity_refs: list[EntityRefPayload] = Field(default_factory=list)
-    correlation_id: str | None = None
-    actor: ActorPayload | None = None
-    actor_roles: list[str] = Field(default_factory=list)
-    source: str
-
-
-class TrustedActionRequest(BaseModel):
-    actor: ActorPayload | None = None
-    actor_roles: list[str] = Field(default_factory=list)
-    source: str
-
-
-class CancelRunRequest(TrustedActionRequest):
-    comment: str = ""
-
-
-class RetryRunRequest(TrustedActionRequest):
-    reason: str = ""
-
-
-class ClarificationPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    note: str = ""
-    account_id: str | None = None
-    argument_updates: dict[str, Any] | None = None
-
-
-class ClarifyRunRequest(TrustedActionRequest):
-    clarification: str | ClarificationPayload
-
-
-class AssignWorkItemRequest(TrustedActionRequest):
-    owner_id: str
-    expected_version: int | None = None
-
-
-class ApprovalDecisionRequest(TrustedActionRequest):
-    approval_id: str | None = None
-    plan_hash: str
-    comment: str = ""
 
 
 def _http_request_actor(
@@ -1880,43 +1498,6 @@ def _http_request_actor(
     )
 
 
-def _command_from_request(req: CommandRequest, request: Request) -> Command:
-    actor, source = _http_request_actor(request, requested_source=req.source)
-    parameters = dict(req.parameters)
-    if req.command_type == "tool.execute" and "arguments" not in parameters:
-        raise OrchestrationError("INVALID_TOOL_ARGUMENTS", "tool.execute parameters require arguments")
-    return Command(
-        command_type=req.command_type,
-        source=source,
-        actor=actor,
-        parameters=parameters,
-        idempotency_key=req.idempotency_key,
-        entity_refs=tuple(
-            EntityRef(**reference.model_dump()) for reference in req.entity_refs
-        ),
-        correlation_id=req.correlation_id or new_id(),
-    )
-
-
-def _action_actor(req: TrustedActionRequest, request: Request) -> Actor:
-    actor, _source = _http_request_actor(request, requested_source=req.source)
-    return actor
-
-
-def _require_console_admin_action(req: TrustedActionRequest, request: Request) -> Actor:
-    actor = _action_actor(req, request)
-    if (
-        req.source != "console"
-        or actor.actor_type is not ActorType.CONSOLE_ADMIN
-        or not {"admin", "super_admin"}.intersection(actor.roles)
-    ):
-        raise OrchestrationError(
-            "ACTION_FORBIDDEN",
-            "This control-plane action requires an authenticated Console administrator",
-        )
-    return actor
-
-
 def _require_console_admin_request(request: Request) -> Actor:
     """Require a verified Console principal for control-plane reads."""
 
@@ -1943,20 +1524,20 @@ def _require_console_super_admin_request(request: Request) -> Actor:
 
 
 @app.get("/internal/v1/admin/feishu-approval-binding")
-async def get_feishu_approval_binding(request: Request):
+async def get_feishu_binding(request: Request):
     actor = _require_console_super_admin_request(request)
-    return api_success(await asyncio.to_thread(_feishu_approvals().binding_status, int(actor.actor_id)))
+    return api_success(await asyncio.to_thread(_feishu_bindings().binding_status, int(actor.actor_id)))
 
 
 @app.post("/internal/v1/admin/feishu-approval-binding/challenge")
-async def create_feishu_approval_binding_challenge(request: Request):
+async def create_feishu_binding_challenge(request: Request):
     actor = _require_console_super_admin_request(request)
     payload = await request.json()
     if not isinstance(payload, dict) or set(payload) - {"role_id", "account_id", "label"}:
         raise OrchestrationError("INVALID_INPUT", "绑定对象格式无效")
     return api_success(
         await asyncio.to_thread(
-            _feishu_approvals().create_binding_challenge,
+            _feishu_bindings().create_binding_challenge,
             int(actor.actor_id),
             **payload,
         )
@@ -1964,173 +1545,10 @@ async def create_feishu_approval_binding_challenge(request: Request):
 
 
 @app.delete("/internal/v1/admin/feishu-approval-binding")
-async def revoke_feishu_approval_binding(request: Request):
+async def revoke_feishu_binding(request: Request):
     actor = _require_console_super_admin_request(request)
-    await asyncio.to_thread(_feishu_approvals().revoke_binding, int(actor.actor_id))
+    await asyncio.to_thread(_feishu_bindings().revoke_binding, int(actor.actor_id))
     return api_success({"revoked": True})
-
-
-@app.post("/internal/v1/commands")
-async def submit_command(req: CommandRequest, request: Request):
-    _command_from_request(req, request)
-    return JSONResponse(
-        status_code=410,
-        content=api_failure("DIRECT_INTERFACE_REQUIRED", "请从对应页面或插件发起新的直接调用；历史任务仅供查阅。"),
-    )
-
-
-@app.get("/internal/v1/runs/{run_id}")
-async def get_control_plane_run(run_id: str, request: Request):
-    _require_console_admin_request(request)
-    return api_success({**_control_plane().get_run(run_id), "allowed_actions": [], "read_only": True})
-
-
-@app.post("/internal/v1/runs/{run_id}/cancel")
-async def cancel_control_plane_run(run_id: str, req: CancelRunRequest, request: Request):
-    _require_console_admin_action(req, request)
-    return _historical_read_only()
-
-
-@app.post("/internal/v1/runs/{run_id}/retry")
-async def retry_control_plane_run(run_id: str, req: RetryRunRequest, request: Request):
-    _require_console_admin_action(req, request)
-    return JSONResponse(
-        status_code=410,
-        content=api_failure("HISTORICAL_RUN_READ_ONLY", "历史任务不会重跑，请从对应插件重新触发。"),
-    )
-
-
-@app.post("/internal/v1/runs/{run_id}/clarify")
-async def clarify_control_plane_run(run_id: str, req: ClarifyRunRequest, request: Request):
-    _require_console_admin_action(req, request)
-    return _historical_read_only()
-
-
-@app.get("/internal/v1/work-items")
-async def list_control_plane_work_items(
-    request: Request,
-    q: str | None = None,
-    status: str | None = None,
-    priority: str | None = None,
-    item_type: str | None = Query(default=None, alias="type"),
-    source: str | None = None,
-    owner: str | None = None,
-    sla: str | None = None,
-    page: int = 1,
-    page_size: int = 50,
-):
-    _require_console_admin_request(request)
-    normalized_page = max(1, int(page))
-    normalized_page_size = max(1, min(int(page_size), 500))
-    offset = (normalized_page - 1) * normalized_page_size
-    sla_from, sla_before, sla_missing = _work_item_sla_filter(sla)
-    data = _control_plane().list_work_items(
-        status=status,
-        item_type=item_type,
-        priority=priority,
-        source=source,
-        query=q,
-        owner_id=owner,
-        sla_from=sla_from,
-        sla_before=sla_before,
-        sla_missing=sla_missing,
-        limit=normalized_page_size,
-        offset=offset,
-    )
-    data.update(
-        {
-            "page": normalized_page,
-            "page_size": normalized_page_size,
-            "has_previous": normalized_page > 1,
-        }
-    )
-    return api_success(data)
-
-
-def _work_item_sla_filter(
-    value: str | None,
-) -> tuple[datetime | None, datetime | None, bool | None]:
-    normalized = str(value or "").strip().lower()
-    if not normalized:
-        return None, None, None
-    now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
-    today_start = datetime.combine(now.date(), datetime_time.min)
-    tomorrow_start = today_start + timedelta(days=1)
-    if normalized == "overdue":
-        return None, now, False
-    if normalized == "today":
-        return today_start, tomorrow_start, False
-    if normalized == "upcoming":
-        return tomorrow_start, None, False
-    if normalized == "missing":
-        return None, None, True
-    raise OrchestrationError("INVALID_SLA_FILTER", "Unsupported SLA filter")
-
-
-@app.get("/internal/v1/work-items/{work_item_id}")
-async def get_control_plane_work_item(work_item_id: str, request: Request):
-    _require_console_admin_request(request)
-    return api_success({**_control_plane().get_work_item(work_item_id), "allowed_actions": [], "read_only": True})
-
-
-@app.get("/internal/v1/work-items/{work_item_id}/timeline")
-async def get_control_plane_timeline(
-    work_item_id: str,
-    request: Request,
-    limit: int = 500,
-):
-    _require_console_admin_request(request)
-    return api_success(_control_plane().get_timeline(work_item_id, limit=limit))
-
-
-@app.get("/internal/v1/work-items/{work_item_id}/evidence")
-async def get_control_plane_evidence(
-    work_item_id: str,
-    request: Request,
-    run_id: str | None = None,
-    limit: int = 200,
-):
-    _require_console_admin_request(request)
-    return api_success(_control_plane().list_evidence(work_item_id, run_id=run_id, limit=limit))
-
-
-@app.post("/internal/v1/work-items/{work_item_id}/assign")
-async def assign_control_plane_work_item(
-    work_item_id: str,
-    req: AssignWorkItemRequest,
-    request: Request,
-):
-    _require_console_admin_action(req, request)
-    return _historical_read_only()
-
-
-@app.post("/internal/v1/approvals/{approval_id}/approve")
-async def approve_control_plane_plan(
-    approval_id: str,
-    req: ApprovalDecisionRequest,
-    request: Request,
-):
-    if req.approval_id and req.approval_id != approval_id:
-        raise OrchestrationError("APPROVAL_ID_MISMATCH", "Path and body approval IDs do not match")
-    _require_console_admin_action(req, request)
-    return _historical_read_only()
-
-
-@app.post("/internal/v1/approvals/{approval_id}/reject")
-async def reject_control_plane_plan(
-    approval_id: str,
-    req: ApprovalDecisionRequest,
-    request: Request,
-):
-    if req.approval_id and req.approval_id != approval_id:
-        raise OrchestrationError("APPROVAL_ID_MISMATCH", "Path and body approval IDs do not match")
-    _require_console_admin_action(req, request)
-    return _historical_read_only()
-
-
-def _historical_read_only():
-    return JSONResponse(status_code=410, content=api_failure(
-        "HISTORICAL_RUN_READ_ONLY", "历史事项仅供查阅，请从对应页面或插件发起新的调用。"))
 
 
 class ChatRequest(BaseModel):
@@ -2197,7 +1615,7 @@ async def cancel_tool(req: CancelToolRequest):
         content={
             "ok": False,
             "error_code": "RUN_ID_REQUIRED",
-            "error": "tool-name cancellation is disabled; cancel the durable Run by run_id",
+            "error": "tool-name cancellation is disabled; cancel the plugin invocation by its invocation ID",
         },
     )
 
@@ -2266,7 +1684,7 @@ async def internal_cancel_tool(req: CancelToolRequest):
         status_code=410,
         content=api_failure(
             "RUN_ID_REQUIRED",
-            "tool-name cancellation is disabled; use POST /internal/v1/runs/{run_id}/cancel",
+            "tool-name cancellation is disabled; cancel the plugin invocation by its invocation ID",
         ),
     )
 
@@ -2288,9 +1706,6 @@ async def internal_reload_runtime():
 @app.post("/internal/v1/admin/scheduler/activate-after-release")
 async def internal_activate_scheduler_after_release(request: Request):
     _require_console_admin_request(request)
-    runner = workflow_runner
-    if runner is None:
-        raise HTTPException(status_code=409, detail="Workflow runner is unavailable")
     async with RELEASE_ACTIVATION_LOCK:
         try:
             release_marker_present = scheduler_release_hold_requested()
@@ -2300,13 +1715,10 @@ async def internal_activate_scheduler_after_release(request: Request):
             if plugin_status.get("ok") is not True:
                 raise RuntimeError("Automation plugin service integrity check failed")
             scheduler_status = begin_scheduler_release_activation(_release_sha())
-            runner_status = runner.resume_after_release()
             if (
                 scheduler_status.get("state") != "running"
                 or bool(scheduler_status.get("release_hold"))
                 != release_marker_present
-                or runner_status.get("state") != "reserved"
-                or runner_status.get("release_hold") is not False
                 or plugin_status.get("ok") is not True
             ):
                 raise RuntimeError("Release runtimes did not enter the running state")
@@ -2316,10 +1728,6 @@ async def internal_activate_scheduler_after_release(request: Request):
             scheduler_status = consume_scheduler_release_hold(_release_sha())
         except RuntimeError as exc:
             if scheduler_release_hold_requested():
-                try:
-                    runner.hold_for_release()
-                except RuntimeError:
-                    logger.exception("Workflow runner could not be re-held after activation failure")
                 try:
                     pause_scheduler_for_release()
                 except RuntimeError:
@@ -2339,7 +1747,6 @@ async def internal_activate_scheduler_after_release(request: Request):
             logger.exception("Release catch-up of missed scheduled tasks failed")
     status = {
         **scheduler_status,
-        "workflow_runner": runner.runtime_status(),
         "automation_plugins": plugin_status,
     }
     logger.info(

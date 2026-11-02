@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from agent.execution_boundary import TOOL_ALLOWED_TMS_TARGETS
-from agent.orchestration.workflow_runner import CORE_BROWSER_TOOL_NAMES, CORE_BROWSER_TMS_ENDPOINTS
 from agent.tms_runtime.direct_business import DIRECT_READ_TARGETS
 from agent.tms_runtime.dispatch import TARGETS, TARGET_ACCOUNT_PURPOSES, TARGET_ACCOUNT_SYSTEMS
 from agent.tms_runtime.routes import COMPAT_READ_TARGETS, router
@@ -18,7 +17,6 @@ def test_old_quote_tool_and_tms_targets_are_not_callable():
     registry = ToolRegistry()
     assert registry.get_capability("get_price") is None
     assert "get_price" not in TOOL_ALLOWED_TMS_TARGETS
-    assert "get_price" not in CORE_BROWSER_TOOL_NAMES
     endpoint_choices = registry.get_capability("tms_query")["input_schema"]["properties"]["endpoint"]["enum"]
     routes = {route.path for route in router.routes}
     for target in ("get_price", "yunda_price"):
@@ -27,7 +25,6 @@ def test_old_quote_tool_and_tms_targets_are_not_callable():
         assert target not in TARGET_ACCOUNT_PURPOSES
         assert target not in DIRECT_READ_TARGETS
         assert target not in COMPAT_READ_TARGETS
-        assert target not in CORE_BROWSER_TMS_ENDPOINTS
         assert "/" + target not in endpoint_choices
         assert "/tms/" + target not in routes
         assert all(target not in allowed for allowed in TOOL_ALLOWED_TMS_TARGETS.values())

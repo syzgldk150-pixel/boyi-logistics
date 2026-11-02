@@ -925,14 +925,6 @@ class ResultVerifier:
                 "GENERATION_LEASE_INVALID",
                 "Plugin generation verification metadata is incomplete",
             )
-        if verification.orchestration_run_id is not None and (
-            not verification.orchestration_run_id
-            or len(verification.orchestration_run_id) > 191
-        ):
-            return self._failure(
-                "GENERATION_LEASE_INVALID",
-                "Plugin generation verification metadata is incomplete",
-            )
         try:
             uuid.UUID(verification.lease_id)
         except (ValueError, TypeError, AttributeError):

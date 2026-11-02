@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import OperationType, PlanStep, RiskLevel, RunStatus
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.tool_executor import CANCEL_MESSAGE, MAX_COMPLETED_EXECUTION_HISTORY, PROJECT_ROOT, ToolExecutor
@@ -286,59 +285,6 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(MAX_COMPLETED_EXECUTION_HISTORY, len(completed))
         self.assertIn("live", self.executor._running_outputs)
 
-    async def test_same_tool_runs_in_parallel_and_bound_cancel_is_exact(self):
-        for repetition in range(20):
-            with self.subTest(repetition=repetition):
-                tool_name = "parallel_cancel_tool"
-                capability = {
-                    "name": tool_name,
-                    "executor": self.executor_relpath,
-                    "timeout": 30,
-                    "heavy": True,
-                }
-                first = asyncio.create_task(
-                    self.executor.execute(
-                        capability,
-                        {},
-                        execution_identity={"run_id": "run-a", "step_id": "step-a"},
-                    )
-                )
-                second = asyncio.create_task(
-                    self.executor.execute(
-                        capability,
-                        {},
-                        execution_identity={"run_id": "run-b", "step_id": "step-b"},
-                    )
-                )
-                for _ in range(50):
-                    info = self.executor.running_tool_info(tool_name)
-                    if info.get("instances") == 2:
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    self.fail("same-name executions did not run concurrently")
-
-                ambiguous = await self.executor.cancel_tool(tool_name)
-                self.assertEqual("AMBIGUOUS_TOOL_EXECUTION", ambiguous["code"])
-
-                cancelled = await self.executor.cancel_bound_run(
-                    tool_name=tool_name,
-                    run_id="run-a",
-                    step_id="step-a",
-                )
-                self.assertTrue(cancelled["ok"])
-                first_result = await asyncio.wait_for(first, timeout=5)
-                self.assertEqual("CANCELLED", first_result["error_code"])
-                self.assertFalse(second.done())
-
-                await self.executor.cancel_bound_run(
-                    tool_name=tool_name,
-                    run_id="run-b",
-                    step_id="step-b",
-                )
-                second_result = await asyncio.wait_for(second, timeout=5)
-                self.assertEqual("CANCELLED", second_result["error_code"])
-
     async def test_unified_tool_failure_preserves_auth_required_classification(self):
         failure_script = self._write_temp_script(
             "tool-unified-failure-",
@@ -372,67 +318,6 @@ class ToolExecutorCancelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("AUTH_REQUIRED", result["error_code"])
         self.assertTrue(result["retryable"])
         self.assertEqual("FAILED", result["data"]["status"])
-
-    async def test_unified_retryable_failure_survives_executor_adapter_and_verifier(self):
-        failure_script = self._write_temp_script(
-            "tool-retryable-failure-",
-            """
-            import json
-
-            print(json.dumps({
-                "status": "FAILED",
-                "data": {"attempted": True},
-                "meta": {},
-                "warnings": [],
-                "error": {
-                    "code": "TRANSIENT_SOURCE_FAILURE",
-                    "message": "source is temporarily unavailable",
-                    "retryable": True,
-                },
-            }))
-            """,
-        )
-        capability = {
-            "name": "retryable_failure_tool",
-            "version": "1.0.0",
-            "executor": os.path.relpath(failure_script, PROJECT_ROOT),
-            "timeout": 5,
-            "operation_type": "read",
-            "evidence": [],
-            "postconditions": [],
-        }
-        step = PlanStep(
-            step_key="retryable",
-            tool_name=capability["name"],
-            tool_version=capability["version"],
-            operation_type=OperationType.READ,
-            arguments={},
-            account_id=None,
-            depends_on=(),
-            idempotency_key="retryable-step",
-            expected_evidence=(),
-            postconditions=(),
-            risk_level=RiskLevel.LOW,
-        )
-        adapter = RegisteredToolExecutionAdapter(
-            catalog=_Catalog(capability),
-            executor=self.executor,
-        )
-
-        normalized = await adapter.execute_step(
-            step,
-            run_id="run-retryable",
-            step_id="step-retryable",
-            execution_context={"source": "scheduler"},
-        )
-        outcome = ResultVerifier().verify(step, normalized, capability)
-
-        self.assertEqual("FAILED", normalized["status"])
-        self.assertEqual("TRANSIENT_SOURCE_FAILURE", normalized["error"]["code"])
-        self.assertTrue(normalized["error"]["retryable"])
-        self.assertFalse(outcome.accepted)
-        self.assertIs(outcome.run_status, RunStatus.FAILED_RETRYABLE)
-        self.assertEqual("TRANSIENT_SOURCE_FAILURE", outcome.code)
 
     async def test_explicit_business_no_data_status_is_success(self):
         no_data_script = self._write_temp_script(

@@ -7,7 +7,6 @@ from unittest.mock import Mock, patch
 from fastapi import HTTPException
 
 from agent.direct_tool_router import format_price_reply, format_price_reply_messages, parse_price_request
-from agent.orchestration.feishu_approval_service import DEFAULT_NOTIFICATION_LEASE_SECONDS
 from agent.tms_runtime.errors import TMSAuthStateError
 from feishu import message_handler, notify
 from feishu.reply_formatter import format_reply
@@ -338,42 +337,6 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("STABLE_EVENT_ID_REQUIRED", replies[0])
         self.assertEqual([], pending_calls)
 
-    async def test_cancel_running_tool_pending_calls_cancel_tool(self):
-        replies: list[str] = []
-        cancel_calls: list[tuple[str, str]] = []
-        pending = {
-            "type": "cancel_running_tool",
-            "tool_name": "sync_scan_codes",
-            "description": "扫描任务",
-            "started_at": "2026-06-08 15:44:00",
-        }
-
-        class FakeAgent:
-            async def cancel_tool(self, tool_name, started_at=""):
-                cancel_calls.append((tool_name, started_at))
-                return {"ok": True, "message": "已发送取消请求，正在停止脚本。"}
-
-            async def execute_tool(self, *args, **kwargs):
-                raise AssertionError("cancel pending should not execute a tool")
-
-            async def handle_message(self, *args, **kwargs):
-                raise AssertionError("cancel pending should not use LLM")
-
-        async def fake_reply(chat_id, text, receive_id_type="chat_id", reply_type="text"):
-            replies.append(text)
-
-        with (
-            patch("feishu.bot.get_agent_core", return_value=FakeAgent()),
-            patch.object(message_handler, "get_pending", return_value=pending),
-            patch.object(message_handler, "clear_pending") as clear_pending_mock,
-            patch.object(message_handler, "_reply_text", side_effect=fake_reply),
-        ):
-            await message_handler._process_and_reply("取消", "user-1", "chat-1")
-
-        clear_pending_mock.assert_called_once_with("chat-1")
-        self.assertEqual([], cancel_calls)
-        self.assertEqual(["旧取消状态已失效，请从事项中心按 Run 取消。"], replies)
-
     async def test_explicit_cancel_scan_command_calls_cancel_tool(self):
         replies: list[str] = []
         cancel_calls: list[tuple[str, str]] = []
@@ -400,7 +363,7 @@ class FeishuSendCodeFlowTests(unittest.IsolatedAsyncioTestCase):
             await message_handler._process_and_reply("取消扫描", "user-1", "chat-1")
 
         self.assertEqual([], cancel_calls)
-        self.assertEqual(["取消失败：当前消息没有绑定可取消的事项运行。"], replies)
+        self.assertEqual(["取消失败：当前消息没有绑定可取消的插件执行。"], replies)
 
     async def test_price_reply_sends_ronghui_and_yunda_messages(self):
         replies: list[tuple[str, str]] = []
@@ -804,32 +767,6 @@ class FeishuWebhookHelperTests(unittest.TestCase):
 
 
 class FeishuNotifyTests(unittest.TestCase):
-    def test_send_text_configures_timeout_shorter_than_notification_lease(self):
-        builder = Mock()
-        builder.app_id.return_value = builder
-        builder.app_secret.return_value = builder
-        builder.timeout.return_value = builder
-        client = Mock()
-        builder.build.return_value = client
-        response = Mock()
-        response.success.return_value = True
-        client.im.v1.message.create.return_value = response
-
-        with (
-            patch.dict(
-                os.environ,
-                {"FEISHU_APP_ID": "test-app", "FEISHU_APP_SECRET": "test-secret"},
-                clear=False,
-            ),
-            patch("lark_oapi.Client.builder", return_value=builder),
-        ):
-            self.assertTrue(notify.send_text_sync("ou-test", "test", "open_id"))
-
-        builder.timeout.assert_called_once_with(notify.FEISHU_SEND_TIMEOUT_SECONDS)
-        self.assertLess(
-            notify.FEISHU_SEND_TIMEOUT_SECONDS,
-            DEFAULT_NOTIFICATION_LEASE_SECONDS,
-        )
 
     def test_notify_target_uses_recent_chat_when_env_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

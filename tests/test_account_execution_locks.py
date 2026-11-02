@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from shared.orchestration_repository import (
+from shared.account_execution_locks import (
     AccountExecutionLockUnavailable,
+    account_execution_lock_name as _account_execution_lock_name,
+)
+from shared.orchestration_repository import (
     OrchestrationPersistenceError,
     OrchestrationRepository,
-    _account_execution_lock_name,
 )
 
 

@@ -115,23 +115,8 @@ def _lock_scheduled_task_before_image(
                task.name, task.tool_name, task.tool_params,
                task.cron_expression, task.enabled, task.last_run,
                task.last_status, task.last_duration_ms, task.last_message,
-               task.configuration_version, task.created_at, task.updated_at,
-               policy.task_id AS policy_task_id,
-               policy.mode AS policy_mode,
-               policy.contract_hash AS policy_contract_hash,
-               policy.contract_snapshot_json AS policy_contract_snapshot_json,
-               policy.tool_contract_hash AS policy_tool_contract_hash,
-               policy.approved_by_actor_id AS policy_approved_by_actor_id,
-               policy.approved_by_actor_role AS policy_approved_by_actor_role,
-               policy.approved_by_actor_display_name
-                   AS policy_approved_by_actor_display_name,
-               policy.approved_at AS policy_approved_at,
-               policy.comment AS policy_comment,
-               policy.version AS policy_version,
-               policy.updated_at AS policy_updated_at
+               task.configuration_version, task.created_at, task.updated_at
         FROM scheduled_tasks AS task
-        LEFT JOIN scheduled_task_approval_policies AS policy
-          ON policy.task_id=task.id
         WHERE task.automation_id=%s
         ORDER BY task.id
         FOR UPDATE
@@ -139,17 +124,9 @@ def _lock_scheduled_task_before_image(
         (automation_id,),
     )
     rows = [
-        _decode_row(
-            row,
-            ("tool_params", "policy_contract_snapshot_json"),
-        )
-        or {}
+        _decode_row(row, ("tool_params",)) or {}
         for row in _rows(cursor)
     ]
-    if any(item.get("policy_task_id") is None for item in rows):
-        raise OrchestrationPersistenceError(
-            "scheduled task approval policy disappeared before generation switch"
-        )
     return rows
 
 
@@ -298,14 +275,6 @@ def _apply_scheduled_task_projection(
                 project_config_version,
             ),
         )
-        cursor.execute(
-            """
-            INSERT INTO scheduled_task_approval_policies (task_id, mode)
-            VALUES (%s, 'REQUIRE_EACH_RUN')
-            ON DUPLICATE KEY UPDATE task_id=task_id
-            """,
-            (item["id"],),
-        )
     stale_ids = {
         str(item["id"])
         for item in existing_tasks
@@ -377,27 +346,19 @@ def _persist_transition_task_before_image(
                 item["configuration_version"],
                 item["created_at"],
                 item["updated_at"],
-                item["policy_mode"],
-                item.get("policy_contract_hash"),
-                (
-                    json.dumps(
-                        item["policy_contract_snapshot_json"],
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        default=str,
-                    )
-                    if item.get("policy_contract_snapshot_json") is not None
-                    else None
-                ),
-                item.get("policy_tool_contract_hash"),
-                item.get("policy_approved_by_actor_id"),
-                item.get("policy_approved_by_actor_role"),
-                item.get("policy_approved_by_actor_display_name"),
-                item.get("policy_approved_at"),
-                item.get("policy_comment"),
-                item["policy_version"],
-                item["policy_updated_at"],
+                # The retired per-task approval policy columns are NOT NULL
+                # until migration 066 drops them; store a fixed placeholder.
+                "REQUIRE_EACH_RUN",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                1,
+                item["updated_at"],
             ),
         )
 
@@ -428,11 +389,7 @@ def _restore_transition_task_before_image(
         (transition_token,),
     )
     before_tasks = [
-        _decode_row(
-            row,
-            ("tool_params", "policy_contract_snapshot_json"),
-        )
-        or {}
+        _decode_row(row, ("tool_params",)) or {}
         for row in _rows(cursor)
     ]
     for item in before_tasks:
@@ -474,43 +431,6 @@ def _restore_transition_task_before_image(
                 item["configuration_version"],
                 item["task_created_at"],
                 item["task_updated_at"],
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO scheduled_task_approval_policies (
-                task_id, mode, contract_hash, contract_snapshot_json,
-                tool_contract_hash, approved_by_actor_id,
-                approved_by_actor_role, approved_by_actor_display_name,
-                approved_at, comment, version, updated_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s
-            )
-            """,
-            (
-                item["task_id"],
-                item["policy_mode"],
-                item.get("policy_contract_hash"),
-                (
-                    json.dumps(
-                        item["policy_contract_snapshot_json"],
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        default=str,
-                    )
-                    if item.get("policy_contract_snapshot_json") is not None
-                    else None
-                ),
-                item.get("policy_tool_contract_hash"),
-                item.get("policy_approved_by_actor_id"),
-                item.get("policy_approved_by_actor_role"),
-                item.get("policy_approved_by_actor_display_name"),
-                item.get("policy_approved_at"),
-                item.get("policy_comment"),
-                item["policy_version"],
-                item["policy_updated_at"],
             ),
         )
 

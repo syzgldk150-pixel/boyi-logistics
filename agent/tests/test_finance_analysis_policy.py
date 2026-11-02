@@ -3,21 +3,10 @@ from __future__ import annotations
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 
 class FinanceAnalysisPolicyTests(unittest.TestCase):
-    def test_completed_finance_collection_never_implicitly_starts_analysis(self):
-        from main import _finance_brain_completed_handler
-
-        submit = Mock(side_effect=AssertionError("automatic analysis is prohibited"))
-        delivery = {"event_id": "old-completion", "event_type": "agent.run.completed",
-                    "payload_json": {"status": "COMPLETED", "tool_names": ["finance_statement"]}}
-        first = _finance_brain_completed_handler(submit, delivery, object())
-        second = _finance_brain_completed_handler(submit, delivery, object())
-        self.assertFalse(first["processed"])
-        self.assertEqual(first, second)
-        submit.assert_not_called()
 
     def test_manual_finance_analysis_returns_this_invocation_result(self):
         from main import FinanceAnalyzeRequest, internal_analyze_finance_reviews
@@ -48,22 +37,6 @@ class FinanceAnalysisPolicyTests(unittest.TestCase):
         self.assertEqual("console", observed["source"])
         self.assertEqual({"limit": 7}, observed["arguments"])
         brain.analyze_pending.assert_awaited_once_with(limit=7)
-
-    def test_non_finance_completion_does_not_invoke_finance_brain(self):
-        from main import _finance_brain_completed_handler
-
-        result = _finance_brain_completed_handler(
-            Mock(side_effect=AssertionError("must not submit")),
-            {
-                "event_id": "00000000-0000-0000-0000-000000000005",
-                "event_type": "agent.run.completed",
-                "payload_json": {"tool_names": ["sync_daily_should_sign"]},
-            },
-            object(),
-        )
-
-        self.assertFalse(result["processed"])
-
 
 if __name__ == "__main__":
     unittest.main()

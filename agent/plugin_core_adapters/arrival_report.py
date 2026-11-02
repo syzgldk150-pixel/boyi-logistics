@@ -46,39 +46,6 @@ def _read_publications(target_date):
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                """SELECT a.automation_id, a.lease_id, a.orchestration_run_id,
-                          a.target_ref_json, a.target_ref_sha256,
-                          a.execution_resource_keys_json,
-                          l.runtime_metadata_json, l.runtime_metadata_sha256,
-                          r.finished_at
-                   FROM automation_write_attempt_receipts a
-                   JOIN automation_project_generation_leases l
-                     ON l.lease_id=a.lease_id AND l.automation_id=a.automation_id
-                    AND l.generation=a.generation
-                    AND l.orchestration_run_id=a.orchestration_run_id
-                   JOIN agent_runs r ON r.run_id=a.orchestration_run_id
-                   JOIN agent_run_steps s ON s.step_id=a.step_id AND s.run_id=r.run_id
-                   WHERE a.operation='network.request' AND a.action='feishu.sheet.replace'
-                     AND a.outcome='WRITE_VERIFIED' AND r.status='COMPLETED'
-                     AND s.status='COMPLETED' AND s.postcondition_status='VERIFIED'
-                     AND JSON_UNQUOTE(JSON_EXTRACT(a.target_ref_json,
-                         '$.business_date_sha256'))=%s
-                     AND JSON_UNQUOTE(JSON_EXTRACT(a.target_ref_json,
-                         '$.role_sha256')) IN (%s,%s)
-                     AND EXISTS (SELECT 1 FROM automation_write_attempt_receipts done
-                          WHERE done.lease_id=a.lease_id AND done.step_id=a.step_id
-                            AND done.orchestration_run_id=a.orchestration_run_id
-                            AND done.automation_id=a.automation_id AND done.generation=a.generation
-                            AND done.action='arrival.snapshot.replace'
-                            AND done.operation='projection.invoke'
-                            AND JSON_EXTRACT(done.target_ref_json, '$.business_date_sha256')
-                                =JSON_EXTRACT(a.target_ref_json, '$.business_date_sha256')
-                            AND done.outcome='WRITE_VERIFIED')
-                   ORDER BY r.finished_at DESC, a.receipt_id LIMIT 1001""",
-                (_sha(target_date), *(_sha(role) for role in _STATS_ROLES)),
-            )
-            rows = cursor.fetchall() or []
-            cursor.execute(
                 """SELECT a.automation_id,a.lease_id,a.invocation_id,
                           a.target_ref_json,a.target_ref_sha256,a.execution_resource_keys_json,
                           l.runtime_metadata_json,l.runtime_metadata_sha256,
@@ -107,7 +74,7 @@ def _read_publications(target_date):
                    ORDER BY finished_at DESC,a.receipt_id LIMIT 1001""",
                 (_sha(target_date), *(_sha(role) for role in _STATS_ROLES)),
             )
-            rows.extend(cursor.fetchall() or [])
+            rows = list(cursor.fetchall() or [])
     finally:
         connection.close()
     if len(rows) > 1000:
@@ -139,17 +106,16 @@ def _publication(row, *, resource_id, physical, account_id, target_date):
     if physical_keys != [physical]:
         raise _invalid("到货统计目标工作表已变更或原位置不明确，请重新统计")
     invocation_id = row.get("invocation_id")
-    if invocation_id:
-        try:
-            raw_result = row.get("result_json")
-            result = json.loads(raw_result) if isinstance(raw_result, (str, bytes)) else raw_result
-        except (ValueError, TypeError) as exc:
-            raise _invalid("当日统计调用结果损坏，请重新统计") from exc
-        if (row.get("publication_verified") not in (True, 1)
-                or row.get("invocation_status") != "COMPLETED"
-                or not isinstance(result, Mapping) or result.get("status") != "SUCCESS"
-                or result.get("error") is not None or not isinstance(result.get("data"), Mapping)):
-            raise _invalid("当日统计写入尚未完整核验，请重新统计后再更新清单")
+    try:
+        raw_result = row.get("result_json")
+        result = json.loads(raw_result) if isinstance(raw_result, (str, bytes)) else raw_result
+    except (ValueError, TypeError) as exc:
+        raise _invalid("当日统计调用结果损坏，请重新统计") from exc
+    if (not invocation_id or row.get("publication_verified") not in (True, 1)
+            or row.get("invocation_status") != "COMPLETED"
+            or not isinstance(result, Mapping) or result.get("status") != "SUCCESS"
+            or result.get("error") is not None or not isinstance(result.get("data"), Mapping)):
+        raise _invalid("当日统计写入尚未完整核验，请重新统计后再更新清单")
     accounts = metadata.get("account_bindings")
     source = accounts.get("account_id") if isinstance(accounts, Mapping) else None
     if source not in (account_id, [account_id], (account_id,)):
@@ -161,8 +127,7 @@ def _publication(row, *, resource_id, physical, account_id, target_date):
             or type(target.get("record_count")) is not int
             or target["record_count"] < 0 or row.get("finished_at") is None):
         raise _invalid("到货统计发布证据不完整，请重新统计")
-    identity = ("invocation", invocation_id) if invocation_id else ("run", row["orchestration_run_id"])
-    return {"execution_id": identity, "finished_at": row["finished_at"],
+    return {"execution_id": ("invocation", invocation_id), "finished_at": row["finished_at"],
             "record_count": target["record_count"]}
 
 

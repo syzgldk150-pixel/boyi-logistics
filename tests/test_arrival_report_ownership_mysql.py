@@ -22,7 +22,7 @@ from shared.orchestration_repository_support import _json_hash
 from tests.test_arrival_report_ownership import DAY, _publication
 from tests.direct_invocation_fixture import DirectFixture
 from tests.test_arrival_production_adapter import _record
-from tests.test_legacy_unknown_scope_migration_mysql import database as database
+from tests.mysql_isolated_fixtures import database as database
 from tests.test_v2_maintenance_mysql import ACTOR, database as v2_database  # noqa: F401
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.v32_acceptance.problem_fixture import ACCOUNTS, ProblemAccounts
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reaso
 
 
 def test_direct_invocation_mysql_publication_needs_no_run_and_incomplete_write_is_visible(database):
-    seeded = database.seed(run_status="CANCELLED", receipt_outcome="WRITE_VERIFIED", lease_outcome="WRITE_VERIFIED")
+    lease_id, receipt_id = str(uuid4()), str(uuid4())
     proof = _publication()
     target = proof["target_ref_json"]
     target["automation_id"] = database.project_id
@@ -46,13 +46,17 @@ def test_direct_invocation_mysql_publication_needs_no_run_and_incomplete_write_i
             'COMPLETED','{}','{}',%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
             (call_id, digest, digest, call_id, database.project_id, database.plugin_id, str(uuid4()),
              json.dumps({"status": "SUCCESS", "data": {}, "meta": {}, "error": None})))
-        cursor.execute("""UPDATE automation_project_generation_leases SET invocation_id=%s,
-            orchestration_run_id=NULL,runtime_metadata_json=%s,runtime_metadata_sha256=%s WHERE lease_id=%s""",
-            (call_id, json.dumps(proof["runtime_metadata_json"]), proof["runtime_metadata_sha256"], seeded["lease_id"]))
-        cursor.execute("""UPDATE automation_write_attempt_receipts SET invocation_id=%s,
-            orchestration_run_id=NULL,step_id=NULL,operation='network.request',action='feishu.sheet.replace',
-            target_ref_json=%s,target_ref_sha256=%s,execution_resource_keys_json=%s WHERE receipt_id=%s""",
-            (call_id, json.dumps(target), _json_hash(target), json.dumps(proof["execution_resource_keys_json"]), seeded["receipt_id"]))
+        cursor.execute("""INSERT INTO automation_project_generation_leases(lease_id,automation_id,generation,
+            invocation_id,lease_owner,runtime_metadata_json,runtime_metadata_sha256,outcome,acquired_at,expires_at)
+            VALUES(%s,%s,1,%s,'isolated-fixture',%s,%s,'WRITE_VERIFIED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
+            (lease_id, database.project_id, call_id, json.dumps(proof["runtime_metadata_json"]),
+             proof["runtime_metadata_sha256"]))
+        cursor.execute("""INSERT INTO automation_write_attempt_receipts(receipt_id,automation_id,generation,
+            lease_id,invocation_id,request_id,operation,action,argument_sha256,target_ref_sha256,target_ref_json,
+            outcome,evidence_sha256,created_at,updated_at,execution_resource_keys_json) VALUES(%s,%s,1,%s,%s,%s,
+            'network.request','feishu.sheet.replace',%s,%s,%s,'WRITE_VERIFIED',%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),%s)""",
+            (receipt_id, database.project_id, lease_id, call_id, str(uuid4()), target["content_sha256"],
+             _json_hash(target), json.dumps(target), "d" * 64, json.dumps(proof["execution_resource_keys_json"])))
         connection.commit()
     pending = arrival_report._read_publications(DAY)
     assert len(pending) == 1 and pending[0]["invocation_id"] == call_id
@@ -63,7 +67,7 @@ def test_direct_invocation_mysql_publication_needs_no_run_and_incomplete_write_i
             lease_id,invocation_id,request_id,operation,action,argument_sha256,target_ref_sha256,target_ref_json,
             outcome,evidence_sha256,created_at,updated_at) VALUES(%s,%s,1,%s,%s,%s,'projection.invoke',
             'arrival.snapshot.replace',%s,%s,%s,'WRITE_VERIFIED',%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
-            (str(uuid4()), database.project_id, seeded["lease_id"], call_id, str(uuid4()),
+            (str(uuid4()), database.project_id, lease_id, call_id, str(uuid4()),
              final_target["content_sha256"], _json_hash(final_target), json.dumps(final_target), "e" * 64))
         connection.commit()
     closed = arrival_report._read_publications(DAY)
@@ -74,53 +78,6 @@ def test_direct_invocation_mysql_publication_needs_no_run_and_incomplete_write_i
         connection.commit()
     unconfirmed = arrival_report._read_publications(DAY)
     assert len(unconfirmed) == 1 and unconfirmed[0]["publication_verified"] == 0
-
-
-def test_mysql_requires_completed_run_verified_step_and_final_same_day_snapshot(database):
-    seeded = database.seed(run_status="COMPLETED", step_status="COMPLETED",
-                           receipt_outcome="WRITE_VERIFIED", lease_outcome="WRITE_VERIFIED")
-    proof = _publication()
-    target = proof["target_ref_json"]
-    target["automation_id"] = database.project_id
-    with database.helper._connection() as connection, connection.cursor() as cursor:
-        cursor.execute("UPDATE agent_runs SET finished_at=UTC_TIMESTAMP(6) WHERE run_id=%s", (seeded["run_id"],))
-        cursor.execute("UPDATE agent_run_steps SET postcondition_status='VERIFIED' WHERE step_id=%s", (seeded["step_id"],))
-        cursor.execute("UPDATE automation_project_generation_leases SET runtime_metadata_json=%s,runtime_metadata_sha256=%s WHERE lease_id=%s",
-                       (json.dumps(proof["runtime_metadata_json"]), proof["runtime_metadata_sha256"], seeded["lease_id"]))
-        cursor.execute("""UPDATE automation_write_attempt_receipts SET operation='network.request',
-                       action='feishu.sheet.replace',target_ref_json=%s,target_ref_sha256=%s,
-                       execution_resource_keys_json=%s WHERE receipt_id=%s""",
-                       (json.dumps(target), _json_hash(target), json.dumps(proof["execution_resource_keys_json"]), seeded["receipt_id"]))
-        connection.commit()
-    assert arrival_report._read_publications(DAY) == []
-    final_target = {**target, "operation": "projection.invoke", "action": "arrival.snapshot.replace"}
-    final_id = str(uuid4())
-    with database.helper._connection() as connection, connection.cursor() as cursor:
-        cursor.execute("""INSERT INTO automation_write_attempt_receipts(receipt_id,automation_id,generation,
-                       lease_id,orchestration_run_id,step_id,request_id,operation,action,argument_sha256,
-                       target_ref_sha256,target_ref_json,outcome,evidence_sha256,created_at,updated_at)
-                       VALUES(%s,%s,1,%s,%s,%s,%s,'projection.invoke','arrival.snapshot.replace',%s,%s,%s,
-                              'WRITE_VERIFIED',%s,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))""",
-                       (final_id, database.project_id, seeded["lease_id"], seeded["run_id"], seeded["step_id"],
-                        str(uuid4()), final_target["content_sha256"], _json_hash(final_target), json.dumps(final_target), "e" * 64))
-        connection.commit()
-    before = database.snapshot()
-    rows = arrival_report._read_publications(DAY)
-    assert len(rows) == 1 and rows[0]["orchestration_run_id"] == seeded["run_id"]
-    assert arrival_report._read_publications("2026-09-09") == []
-    assert database.snapshot() == before
-    for table, key, key_value, field, bad, restore in (
-        ("agent_runs", "run_id", seeded["run_id"], "status", "FAILED_TERMINAL", "COMPLETED"),
-        ("agent_run_steps", "step_id", seeded["step_id"], "postcondition_status", "FAILED", "VERIFIED"),
-        ("automation_write_attempt_receipts", "receipt_id", final_id, "outcome", "WRITE_OUTCOME_UNKNOWN", "WRITE_VERIFIED"),
-    ):
-        with database.helper._connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"UPDATE {table} SET {field}=%s WHERE {key}=%s", (bad, key_value))
-            connection.commit()
-        assert arrival_report._read_publications(DAY) == []
-        with database.helper._connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"UPDATE {table} SET {field}=%s WHERE {key}=%s", (restore, key_value))
-            connection.commit()
 
 
 def test_real_v2_plugins_broker_and_mysql_latest_list_replaces_shared_sheet(v2_database, monkeypatch, tmp_path):

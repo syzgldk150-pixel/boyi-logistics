@@ -627,8 +627,7 @@ def test_write_receipt_persistence_does_not_hold_the_issuer_lock(tmp_path: Path)
             "plugin_id": "sync_arrive_list",
             "generation": 1,
             "lease_id": str(uuid.uuid4()),
-            "orchestration_run_id": str(uuid.uuid4()),
-            "step_id": str(uuid.uuid4()),
+            "invocation_id": str(uuid.uuid4()),
         },
     )
     request_id = str(uuid.uuid4())

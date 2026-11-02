@@ -156,30 +156,16 @@ def test_unsigned_http_actor_cannot_claim_console_admin_role() -> None:
     for privileged_source in ("scheduler", "system"):
         with pytest.raises(Exception, match="only originate in process"):
             _http_request_actor(request, requested_source=privileged_source)
-def test_signed_http_principal_overrides_forged_body_actor() -> None:
-    from main import CommandRequest, _command_from_request
+def test_signed_http_principal_is_the_only_console_actor() -> None:
+    from main import _http_request_actor
 
     request = SimpleNamespace(state=SimpleNamespace(console_principal=PRINCIPAL))
-    command = _command_from_request(
-        CommandRequest(
-            command_type="tool.execute",
-            parameters={"tool_name": "track_waybill", "arguments": {}},
-            idempotency_key="console:7:tool.execute:request-1",
-            source="console",
-            actor={
-                "actor_type": "console_admin",
-                "actor_id": "attacker",
-                "roles": ["super_admin"],
-                "authenticated_by": "forged",
-            },
-            actor_roles=["super_admin"],
-        ),
-        request,
-    )
+    actor, source = _http_request_actor(request, requested_source="console")
 
-    assert command.actor.actor_id == "7"
-    assert command.actor.roles == ("admin",)
-    assert command.actor.authenticated_by == "mysql_admin_session"
+    assert source == "console"
+    assert actor.actor_id == "7"
+    assert actor.roles == ("admin",)
+    assert actor.authenticated_by == "mysql_admin_session"
 
 
 def test_control_plane_reads_require_signed_console_admin() -> None:

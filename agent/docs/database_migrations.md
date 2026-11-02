@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-10-30
+updated: 2026-11-02
 ---
 
 # 数据库迁移
@@ -196,12 +196,12 @@ Agent 与 Console 通过 `shared/runtime_repositories.py` 访问共享工作流�
 原身份/参数/启停，Scheduler 不注册。marker 已存在的后续发布使用不带额外 flag 的同一命令：允许管理员
 合法调整项目 schedule/策略，但仍验证原 marker/source snapshot/历史事件不可篡改、当前 committed 项目
 闭合，以及任何有效 FULL_AUTO 或 LEGACY 绑定；stale 授权只按逐次审批解释。停止服务前还必须执行
-`--check-running-protected-writes`，在任何
-`RUNNING`/`VERIFYING` 的外部写、财务写或 destructive step 存在时阻断 quiesce。
+`--check-running-protected-writes`，在任何仍处于
+`STARTING/RUNNING/CANCELLING` 的插件 Invocation 存在时阻断 quiesce。
 
-控制平面要求 MySQL 8.0.16 或更高版本。部署预检必须验证服务端版本、必需表列和
-`SELECT ... FOR UPDATE SKIP LOCKED`；不满足时停止发布。运行连接必须
-`autocommit=False`，仓储显式提交或回滚，禁止把事件/Outbox 放在业务事务之外。
+运行时要求 MySQL 8.0.16 或更高版本。部署预检必须验证服务端版本与 `shared/orchestration_schema.py`
+列出的必需表列（2026-11 起不再要求旧 Command/Run/Step、审批、Outbox 与定时逐次审批表）；不满足时停止发布。运行连接必须
+`autocommit=False`，仓储显式提交或回滚。
 
 CI 使用隔离的 `test_*` 数据库验证空库顺序执行 `001 -> … -> 034`、重复执行、从既有历史继续升级、
 部分 DDL 状态下的 `027`/`030` 安全续跑、`017`/`018` 恢复后重应用、`--check`、JSON、外键、

@@ -10,7 +10,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_PACKAGE_ROOT = PROJECT_ROOT / "agent"
 SCRIPT_ROOT = PROJECT_ROOT / "agent" / "tms_runtime" / "scripts"
 RUNTIME_ROOTS = (PROJECT_ROOT / "agent", PROJECT_ROOT / "tools", PROJECT_ROOT.parent / "console", PROJECT_ROOT.parent / "shared")
-WORKFLOW_RUNNER = PROJECT_ROOT / "agent" / "orchestration" / "workflow_runner.py"
 
 
 def _python_files(root: Path):
@@ -45,16 +44,6 @@ def main() -> int:
             if path.is_relative_to(AGENT_PACKAGE_ROOT):
                 tree = ast.parse(source, filename=str(path))
                 for node in ast.walk(tree):
-                    if (
-                        isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Attribute)
-                        and node.func.attr == "execute_step"
-                        and path != WORKFLOW_RUNNER
-                    ):
-                        problems.append(
-                            "ToolExecutionPort call outside WorkflowRunner: "
-                            f"{path.relative_to(PROJECT_ROOT.parent)}:{node.lineno}"
-                        )
                     imported_roots: set[str] = set()
                     if isinstance(node, ast.Import):
                         imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)

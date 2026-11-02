@@ -23,7 +23,6 @@ from agent.orchestration.selection_preview_binding import (
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectPolicyMode,
-    canonical_sha256,
 )
 
 
@@ -99,28 +98,6 @@ _SERVER_CONTEXT_FIELDS = frozenset(
         SCAN_PREVIEW_CONTEXT_KEY,
     }
 )
-
-
-def _pending_set_hash(rows: Sequence[Mapping[str, Any]]) -> str:
-    identities = []
-    for row in sorted(rows, key=lambda item: str(item.get("approval_id") or "")):
-        identities.append(
-            {
-                "approval_id": str(row.get("approval_id") or ""),
-                "run_id": str(row.get("run_id") or ""),
-                "approval_round": int(row.get("approval_round") or 0),
-                "plan_hash": str(row.get("plan_hash") or ""),
-                "current_plan_hash": str(row.get("current_plan_hash") or ""),
-                "risk_level": str(row.get("risk_level") or ""),
-                "required_role": str(row.get("required_role") or ""),
-                "expires_at": _datetime_text(row.get("expires_at")),
-                "source": str(row.get("source") or ""),
-                "invocation_sha256": canonical_sha256(
-                    row.get("automation_invocation_json")
-                ),
-            }
-        )
-    return canonical_sha256(identities)
 
 
 def _project_denied(code: str, reason: str) -> ProjectPolicyEvaluation:

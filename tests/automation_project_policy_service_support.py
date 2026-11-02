@@ -32,7 +32,7 @@ from shared.automation_project_authorization import (
     canonical_sha256,
 )
 from shared.account_execution_locks import AccountExecutionLockUnavailable
-from shared.orchestration_repository import InvalidStateError
+from shared.orchestration_repository_support import InvalidStateError
 from shared.waybill_entry_extensions import (
     WAYBILL_ENTRY_DYNAMIC_RESOLVER_ID,
 )
@@ -948,8 +948,6 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
         self.service = AutomationProjectPolicyService(
             self.repository,
             plugin_catalog=_Catalog(self.entry),
-            command_gateway=self.gateway,
-            wake_runner=self.woken_run_ids.append,
             direct_invocations=self.direct,
             contribution_registry=self.contribution_registry,
         )
@@ -971,8 +969,6 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
         service = AutomationProjectPolicyService(
             self.repository,
             plugin_catalog=_Catalog(self.entry),
-            command_gateway=self.gateway,
-            wake_runner=self.woken_run_ids.append,
             direct_invocations=self.direct,
             contribution_registry=registry,
         )

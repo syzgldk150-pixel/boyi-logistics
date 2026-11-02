@@ -141,8 +141,7 @@ def test_harness_composition_binds_selected_account_and_respects_release_hold(na
         held = [True]
         lifecycle = DirectPluginInvocationService(object(), SimpleNamespace(), None, release_hold_provider=lambda: held[0])
         runtime = SimpleNamespace(memory=SimpleNamespace(connection_factory=lambda: None))
-        repository = SimpleNamespace(list_work_items=lambda **kw: [], get_run=lambda _: None, get_evidence=lambda _: None)
-        gateway = build_read_only_harness_gateway(runtime, repository, invocations=lifecycle)
+        gateway = build_read_only_harness_gateway(runtime, invocations=lifecycle)
         query = gateway.handlers()["shipment.query"]
         with pytest.raises(OrchestrationError):
             await asyncio.to_thread(query, arguments())

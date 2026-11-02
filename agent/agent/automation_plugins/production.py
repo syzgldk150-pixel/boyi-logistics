@@ -106,14 +106,6 @@ from agent.automation_plugins.runtime_repository import (
     MySQLAutomationPluginRuntimeAdapter,
     MySQLAutomationProjectConfigurationReadAdapter,
 )
-from agent.orchestration.scan_preview_binding import (
-    SCAN_PREVIEW_CONTEXT_KEY,
-    ScanPreviewExpectation,
-    normalize_preview_run_id,
-    scan_preview_recovery_plan_projection,
-    scan_preview_recovery_projection,
-)
-from agent.orchestration.automation_project_policy_plan import plan_from_mapping
 from agent.automation_plugins.runtime_backend_availability import (
     RuntimeContributionBackendAvailability,
 )
@@ -1450,21 +1442,14 @@ class MySQLRuntimeTargetService:
         catalog: PluginCatalog,
         runtime_repository: MySQLAutomationPluginRuntimeAdapter,
         reconciler: AutomationRuntimeReconciler,
-        wake_runner: Callable[[str], None] | None = None,
         catalog_repository: Any | None = None,
     ) -> None:
         self._orchestration = orchestration_repository
         self._catalog = catalog
         self._runtime = runtime_repository
         self._reconciler = reconciler
-        self._wake_runner = wake_runner
         self._catalog_repository = catalog_repository
         self._last_reconcile_failures: dict[str, dict[str, str]] = {}
-
-    def set_wake_runner(self, wake_runner: Callable[[str], None] | None) -> None:
-        """Bind the process-local wake hook after the Runner is constructed."""
-
-        self._wake_runner = wake_runner
 
     def _desired_rows(
         self,

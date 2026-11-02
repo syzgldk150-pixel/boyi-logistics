@@ -879,44 +879,6 @@ class MySQLAutomationPluginRepositoryAdapter(AutomationPluginRepositoryPort):
                     "correlation_id": request_id,
                 }
             )
-            uow.automation_projects.invalidate_pending_approvals_and_wake_runs(
-                automation_id,
-                event_repository=uow.events,
-            )
-            event_id = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"boyi:automation-plugin-upgrade:{request_id}",
-                )
-            )
-            uow.events.append_with_outbox(
-                {
-                    "event_id": event_id,
-                    "event_type": "automation_plugin.upgrade_staged",
-                    "schema_version": 1,
-                    "source_system": "agent",
-                    "source_event_id": f"plugin-upgrade:{request_id}",
-                    "entity_type": "automation_project",
-                    "entity_id": automation_id,
-                    "correlation_id": request_id,
-                    "payload": {
-                        "automation_id": automation_id,
-                        "plugin_id": version.plugin_id,
-                        "from_version": expected_current_version,
-                        "to_version": version.version,
-                        "target_generation": generation,
-                        "operation": "rollback" if restoring_history else "upgrade",
-                    },
-                },
-                (
-                    {
-                        "consumer_name": "orchestration.audit",
-                        "topic": "automation_plugin.upgrade_staged",
-                        "partition_key": automation_id,
-                        "max_attempts": 10,
-                    },
-                ),
-            )
 
     def _prepare_optional_console_upgrade(
         self, uow: Any, automation_id: str, version: PluginVersionRecord,

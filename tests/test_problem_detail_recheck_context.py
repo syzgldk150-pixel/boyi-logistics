@@ -2,7 +2,6 @@ from __future__ import annotations
 
 
 from agent.automation_plugins.host_primitive_handlers import customer_problem_identity
-from agent.orchestration.control_plane_service import _customer_problem_open_refs
 from tests.plugin_action_payload_support import load_plugin_action
 
 
@@ -254,67 +253,4 @@ class _MismatchedIdentityWorkItems:
 class _MismatchedIdentityUow:
     work_items = _MismatchedIdentityWorkItems()
     evidence = _Evidence()
-
-
-def test_open_problem_context_uses_exact_persisted_source_identity() -> None:
-    opaque_key = customer_problem_identity(
-        account_id="account-1",
-        platform="yunda",
-        external_id="external-1",
-        source_direction="received",
-    )
-    assert _customer_problem_open_refs(_Uow()) == [
-        {
-            "dedupe_key": opaque_key,
-            "platform": "yunda",
-            "external_id": "external-1",
-            "source_direction": "received",
-            "waybill_no": "430000000001",
-        }
-    ]
-
-
-def test_open_problem_context_omits_invalid_optional_identity_values() -> None:
-    opaque_key = "problem:v1:" + ("a" * 64)
-
-    assert _customer_problem_open_refs(_MissingSubjectUow()) == [
-        {
-            "dedupe_key": opaque_key,
-            "context_error": "SUBJECT_ENTITY_MISSING",
-        }
-    ]
-
-
-def test_open_problem_context_omits_every_optional_value_outside_signed_schema() -> None:
-    opaque_key = "problem:v1:" + ("b" * 64)
-
-    assert _customer_problem_open_refs(_SchemaInvalidUow()) == [
-        {
-            "dedupe_key": opaque_key,
-            "context_error": "SUBJECT_PLATFORM_UNSUPPORTED",
-        }
-    ]
-
-
-def test_open_problem_context_keeps_exact_persisted_key_on_subject_mismatch() -> None:
-    refs_by_key = {
-        str(ref["dedupe_key"]): ref
-        for ref in _customer_problem_open_refs(_MismatchedIdentityUow())
-    }
-
-    assert refs_by_key[_MismatchedIdentityWorkItems.legacy_key] == {
-        "dedupe_key": _MismatchedIdentityWorkItems.legacy_key,
-        "platform": "yunda",
-        "external_id": "other-open-item",
-        "context_error": "SUBJECT_ENTITY_IDENTITY_MISMATCH",
-        "source_direction": "received",
-    }
-    assert (
-        _MismatchedIdentityWorkItems.colliding_subject_key
-        in refs_by_key
-    )
-    assert (
-        refs_by_key[_MismatchedIdentityWorkItems.colliding_subject_key]["context_error"]
-        == "SUBJECT_ENTITY_IDENTITY_MISMATCH"
-    )
 

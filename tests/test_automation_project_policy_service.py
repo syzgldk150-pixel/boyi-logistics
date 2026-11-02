@@ -11,7 +11,6 @@ from unittest.mock import patch
 from agent.orchestration.automation_project_policy_service import (
     AutomationProjectPolicyService,
 )
-from agent.orchestration.automation_run_supersession import classify_automation_run_blocking_kind
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -24,7 +23,7 @@ from shared.automation_project_authorization import (
     AutomationProjectInvocation,
     InvocationArgumentContract,
 )
-from shared.orchestration_repository import InvalidStateError
+from shared.orchestration_repository_support import InvalidStateError
 
 
 AUTOMATION_ID = "instance-one"
@@ -162,19 +161,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     self.assertEqual(facts, self.repository.state.automation_run_facts[run_id])
                     if unknown:
                         self.assertEqual(status, self.repository.state.automation_runs[0]["status"])
-
-    def test_terminal_projection_does_not_override_live_execution_lease(self):
-        now = datetime.now(timezone.utc)
-        for status in ("COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"):
-            for unknown in (False, True):
-                for lease in ("worker", "generation", "expired"):
-                    with self.subTest(status=status, unknown=unknown, lease=lease):
-                        run = {"status": status, "worker_id": "worker",
-                               "lease_expires_at": now + timedelta(minutes=5 if lease == "worker" else -5)}
-                        facts = {"has_inflight_step": True, "has_unknown_write_receipt": unknown,
-                                 "has_live_generation_lease": lease == "generation"}
-                        expected = "ACTIVE" if lease != "expired" else ("UNKNOWN_WRITE" if unknown else "NEEDS_ATTENTION")
-                        self.assertEqual(expected, classify_automation_run_blocking_kind(run, {}, facts, now=now))
 
     def test_stale_work_item_is_preserved_without_blocking(self):
         self.repository.state.work_items = {"legacy-work": {"status": "OPEN", "version": 1}}
@@ -357,64 +343,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
             service.confirm_selection_preview(AUTOMATION_ID, preview_invocation_id=preview_id, selected_bill_codes=["R0001"], request_id="second-confirmation", actor=_admin())
         self.assertEqual("SELECTION_PREVIEW_ALREADY_CONSUMED", consumed.exception.code)
 
-    def test_service_v2_selection_project_allows_non_selection_sibling(self):
-        self._set_service_v2_selection_contract()
-        self.entry.contributions["console"].append(
-            {
-                "id": "inspect_console",
-                "title": "Inspect status",
-                "service": "plugin.selection@1",
-                "operation": "inspect",
-                "default_enabled": False,
-            }
-        )
-        self.contract = replace(
-            self.contract,
-            invocation_contracts={
-                **self.contract.invocation_contracts,
-                "inspect_console": InvocationArgumentContract(
-                    contract_id="inspect_console",
-                    entrypoint="console",
-                    expected_arguments={"mode": "saved"},
-                    dynamic_argument_resolvers={},
-                    contribution_id="inspect_console",
-                ),
-            },
-        )
-        service = self._service_with_contribution_registry(_ContributionRegistry())
-
-        receipt = service.invoke_console(
-            AUTOMATION_ID,
-            request_id="selection-sibling-invoke",
-            actor=_admin(),
-            contribution_id="inspect_console",
-        )
-
-        self.assertIn("invocation_id", receipt)
-        self.assertNotIn(
-            "selection_phase",
-            self.direct.call.arguments,
-        )
-        invocation = AutomationProjectInvocation(
-            automation_id=AUTOMATION_ID,
-            automation_generation=1,
-            entrypoint=AutomationEntrypoint.CONSOLE,
-            contract_id="inspect_console",
-            contract_hash=CONTRACT_HASH,
-            policy_version=1,
-            project_configuration_version=1,
-            request_id="selection-sibling-policy",
-        )
-        evaluation = self.service.evaluate_invocation(
-            _plan(invocation),
-            _admin(),
-            "console",
-            {},
-            invocation,
-        )
-        self.assertTrue(evaluation.allowed)
-        self.assertEqual("PROJECT_FULL_AUTO", evaluation.code)
-
     def test_service_v2_selection_formal_requires_persisted_preview_identity(self):
         self._set_service_v2_selection_contract()
         service = self._service_with_contribution_registry(_ContributionRegistry())
@@ -435,47 +363,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                 contribution_id="execute_console",
             )
         self.assertEqual("SELECTION_PREVIEW_REQUIRED", raised.exception.code)
-
-    def test_service_v2_selection_policy_matches_contract_without_host_fields(self):
-        self._set_service_v2_selection_contract()
-        invocation = AutomationProjectInvocation(
-            automation_id=AUTOMATION_ID,
-            automation_generation=1,
-            entrypoint=AutomationEntrypoint.CONSOLE,
-            contract_id="execute_console",
-            contract_hash=CONTRACT_HASH,
-            policy_version=1,
-            project_configuration_version=1,
-            request_id="selection-policy",
-        )
-        preview_plan = replace(
-            _plan(invocation),
-            steps=(
-                replace(
-                    _plan(invocation).steps[0],
-                    operation_type=OperationType.READ,
-                    risk_level=RiskLevel.LOW,
-                    arguments={
-                        "mode": "saved",
-                        "dry_run": True,
-                        "selected_bill_codes": [],
-                        "preview_fingerprint": "",
-                    },
-                ),
-            ),
-        )
-
-        preview = self.service.evaluate_invocation(
-            preview_plan,
-            _admin(),
-            "console",
-            {"selection_phase": "PREVIEW"},
-            invocation,
-        )
-
-        self.assertTrue(preview.allowed)
-        self.assertFalse(preview.requires_approval)
-        self.assertEqual("SELECTION_PREVIEW_ALLOWED", preview.code)
 
     def test_service_v2_missing_or_stale_console_projection_fails_closed(self):
         self._set_service_v2_console_contract()
@@ -589,7 +476,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         service = AutomationProjectPolicyService(
             self.repository,
             plugin_catalog=_Catalog(self.entry),
-            command_gateway=self.gateway,
             release_hold_provider=lambda: True,
         )
         with self.assertRaises(OrchestrationError) as raised:
@@ -763,23 +649,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
         self.assertEqual("REQUIRE_EACH_RUN", self.repository.state.policy["mode"])
         self.assertEqual(1, len(self.repository.state.policy_events))
 
-    def test_service_v2_ignores_historical_require_each_run_policy(self):
-        self.entry.runtime_model = "SERVICE_V2"
-        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
-        invocation = _invocation()
-
-        decision = self.service.evaluate_invocation(
-            _plan(invocation),
-            _admin(),
-            "console",
-            {},
-            invocation,
-        )
-
-        self.assertTrue(decision.allowed)
-        self.assertFalse(decision.requires_approval)
-        self.assertEqual("PROJECT_FULL_AUTO", decision.code)
-
     def test_service_v2_projection_hides_historical_policy_mode(self):
         self.service._compile_entry = (  # type: ignore[method-assign]
             lambda _entry, _rows: self.contract
@@ -807,73 +676,6 @@ class AutomationProjectPolicyServiceTests(AutomationProjectPolicyServiceTestBase
                     "PROJECT_FULL_AUTO", projection["configured_mode"]
                 )
                 self.assertEqual("PROJECT_FULL_AUTO", projection["effective_mode"])
-
-    def test_service_v2_full_auto_still_honors_contract_restriction(self):
-        self.entry.runtime_model = "SERVICE_V2"
-        self.repository.state.policy["mode"] = "REQUIRE_EACH_RUN"
-        self.contract = replace(
-            self.contract,
-            can_full_auto=False,
-            restriction_code="PROJECT_CONTRACT_NOT_RUNNABLE",
-        )
-        invocation = _invocation()
-
-        decision = self.service.evaluate_invocation(
-            _plan(invocation),
-            _admin(),
-            "console",
-            {},
-            invocation,
-        )
-
-        self.assertFalse(decision.allowed)
-        self.assertFalse(decision.requires_approval)
-        self.assertEqual("PROJECT_CONTRACT_NOT_RUNNABLE", decision.code)
-
-    def test_selection_formal_matches_saved_contract_and_honors_policy(self):
-        plan, invocation = self._selection_policy_subject(dry_run=False)
-        self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"
-
-        decision = self.service.evaluate_invocation(
-            plan,
-            _admin(),
-            "console",
-            {"dynamic_inputs": dict(plan.steps[0].arguments)},
-            invocation,
-        )
-
-        self.assertTrue(decision.allowed)
-        self.assertFalse(decision.requires_approval)
-
-    def test_scan_formal_honors_current_full_auto_mode_for_all_entrypoints(self):
-        plan, invocation = self._scan_policy_subject(dry_run=False)
-        execution_context = {
-            "scan_preview": plan.steps[0].arguments["_scan_preview_binding"]
-        }
-        self.repository.state.policy.update(
-            {
-                "mode": "PROJECT_FULL_AUTO",
-                "approved_by_actor_id": "system:migration",
-                "approved_by_actor_role": "system",
-            }
-        )
-
-        for source in ("console", "feishu", "webhook"):
-            with self.subTest(source=source):
-                current = self.service.evaluate_invocation(
-                    plan,
-                    _admin(),
-                    source,
-                    execution_context,
-                    replace(
-                        invocation,
-                        entrypoint=AutomationEntrypoint(source),
-                        contract_id=source,
-                    ),
-                )
-                self.assertTrue(current.allowed)
-                self.assertFalse(current.requires_approval)
-                self.assertEqual("PROJECT_FULL_AUTO", current.code)
 
     def test_scheduler_invocation_binds_exact_row_generation_and_context(self):
         self.repository.state.policy["mode"] = "PROJECT_FULL_AUTO"

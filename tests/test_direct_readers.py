@@ -105,8 +105,7 @@ def test_harness_fixed_reads_are_admitted_and_drained_without_stored_tasks(monke
         monkeypatch.setattr("harness_composition.FeishuKnowledgeSource", lambda: SimpleNamespace(search=knowledge))
         legacy_reader = Mock(side_effect=AssertionError("legacy knowledge must not be used"))
         runtime = SimpleNamespace(memory=SimpleNamespace(search_knowledge=legacy_reader, connection_factory=lambda: None))
-        repository = SimpleNamespace(list_work_items=Mock(), get_run=Mock(), get_evidence=Mock())
-        gateway = build_read_only_harness_gateway(runtime, repository, invocations=lifecycle)
+        gateway = build_read_only_harness_gateway(runtime, invocations=lifecycle)
         reader = gateway.handlers()["knowledge.search"]
         try:
             await asyncio.to_thread(reader, {"query": "fixture", "limit": 1})

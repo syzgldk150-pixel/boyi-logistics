@@ -215,20 +215,13 @@ class PluginExecutionRouter:
         automation_id: str,
         generation: int,
     ) -> dict[str, str]:
-        expected_fields = {
-            "run_id",
-            "step_id",
-            "_automation_project_invocation",
-        }
-        direct = value is not None and "invocation_id" in value
-        if direct:
-            expected_fields = {"invocation_id", "_automation_project_invocation"}
+        expected_fields = {"invocation_id", "_automation_project_invocation"}
         if value is None or set(value) != expected_fields:
             raise PluginExecutionError(
                 "trusted plugin invocation binding is invalid",
                 code="PLUGIN_RUN_BINDING_INVALID",
             )
-        result = {key: str(value.get(key) or "").strip() for key in (("invocation_id",) if direct else ("run_id", "step_id"))}
+        result = {"invocation_id": str(value.get("invocation_id") or "").strip()}
         if any(not item or len(item) > 191 for item in result.values()):
             raise PluginExecutionError(
                 "trusted plugin invocation binding is invalid",
@@ -548,8 +541,7 @@ class PluginExecutionRouter:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
-        orchestration_run_id: str | None = None,
-        invocation_id: str | None = None,
+        invocation_id: str,
         provider_call: bool = False,
         expires_at: datetime,
     ) -> RuntimeGenerationLease:
@@ -568,8 +560,7 @@ class PluginExecutionRouter:
                 expected_generation=expected_generation,
                 expected_manifest_sha256=expected_manifest_sha256,
                 lease_id=lease_id,
-                orchestration_run_id=orchestration_run_id,
-                **({"invocation_id": invocation_id} if invocation_id is not None else {}),
+                invocation_id=invocation_id,
                 **({"provider_call": True} if provider_call else {}),
                 expires_at=expires_at,
             )
@@ -1000,14 +991,12 @@ class PluginExecutionRouter:
                 initial_metadata.get("manifest_sha256") or ""
             ),
             lease_id=lease_id,
-            orchestration_run_id=run_binding.get("run_id"),
-            invocation_id=run_binding.get("invocation_id"),
+            invocation_id=run_binding["invocation_id"],
             provider_call=_service_target is not None,
             expires_at=expires_at,
         )
         try:
-            if (lease.orchestration_run_id != run_binding.get("run_id")
-                    or lease.invocation_id != run_binding.get("invocation_id")):
+            if lease.invocation_id != run_binding["invocation_id"]:
                 raise PluginExecutionError(
                     "committed generation lease Run binding changed",
                     code="PLUGIN_GENERATION_LEASE_RUN_BINDING_CONFLICT",
@@ -1089,8 +1078,7 @@ class PluginExecutionRouter:
                         started_mutating_call_count=execution_state[
                             "started_mutating_call_count"
                         ],
-                        orchestration_run_id=run_binding.get("run_id"),
-                        invocation_id=run_binding.get("invocation_id"),
+                        invocation_id=run_binding["invocation_id"],
                         host_call_observations=tuple(
                             execution_state["host_call_observations"]
                         ),
@@ -1393,9 +1381,7 @@ class PluginExecutionRouter:
                 "plugin_id": plugin_id,
                 "generation": int(metadata.get("generation") or 0),
                 "lease_id": invocation_id,
-                **({"invocation_id": run_binding["invocation_id"]} if "invocation_id" in run_binding else {
-                    "orchestration_run_id": run_binding["run_id"], "step_id": run_binding["step_id"],
-                }),
+                "invocation_id": run_binding["invocation_id"],
             },
         )
         action_name = str(capability.get("name") or "")
@@ -1696,8 +1682,6 @@ class PluginExecutionRouter:
                 "running": bool(proc is not None and proc.returncode is None),
                 "started_at": f"invocation:{invocation_id}",
                 "invocation_id": invocation_id,
-                "run_id": str(current.get("run_id") or ""),
-                "step_id": str(current.get("step_id") or ""),
                 "cancel_requested": False,
             }
         return self._core.running_tool_info(tool_name)
@@ -1761,8 +1745,6 @@ class PluginExecutionRouter:
             "total": 0,
             "started_at": f"invocation:{invocation_id}",
             "invocation_id": invocation_id,
-            "run_id": str(current.get("run_id") or ""),
-            "step_id": str(current.get("step_id") or ""),
             "cancel_requested": False,
         }
 
@@ -1804,7 +1786,7 @@ class PluginExecutionRouter:
             return {
                 "ok": False,
                 "code": "AMBIGUOUS_PLUGIN_INVOCATION",
-                "message": "multiple plugin invocations require an exact trusted run binding",
+                "message": "multiple plugin invocations require an exact invocation ID",
             }
         _, current = matches[0]
         core_tool_name = str(current.get("core_tool_name") or "")
@@ -1815,34 +1797,3 @@ class PluginExecutionRouter:
             return {"ok": False, "code": "NOT_RUNNING", "message": "plugin is not running"}
         await self._terminate(proc)
         return {"ok": True, "started_at": current.get("started_at"), "message": "plugin cancelled"}
-
-    async def cancel_bound_run(
-        self,
-        *,
-        tool_name: str,
-        run_id: str,
-        step_id: str,
-    ) -> Mapping[str, Any]:
-        """Cancel only the invocation bound by the trusted orchestration Run."""
-
-        matches = [
-            (invocation_id, current)
-            for invocation_id, current in self._running.items()
-            if current.get("action_name") == tool_name
-            and current.get("run_id") == run_id
-            and current.get("step_id") == step_id
-        ]
-        if not matches:
-            return await self._core.cancel_bound_run(
-                tool_name=tool_name,
-                run_id=run_id,
-                step_id=step_id,
-            )
-        if len(matches) != 1:
-            return {
-                "ok": False,
-                "code": "AMBIGUOUS_PLUGIN_INVOCATION",
-                "message": "trusted plugin Run binding did not resolve exactly one process",
-            }
-        invocation_id, _ = matches[0]
-        return await self.cancel_tool(tool_name, started_at=f"invocation:{invocation_id}")

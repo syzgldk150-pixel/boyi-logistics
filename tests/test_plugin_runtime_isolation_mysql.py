@@ -10,7 +10,7 @@ import pytest
 
 from agent.automation_plugins.developer_v2 import build_service_v2_package, init_service_v2_source
 from agent.orchestration.models import Actor, ActorType
-from tests.test_workflow_runner_durable_admission import repository, pytestmark  # noqa: F401
+from tests.mysql_isolated_fixtures import repository, pytestmark  # noqa: F401
 from tests.v32_acceptance.management_fixture import ManagementFixture
 from tests.direct_invocation_fixture import DirectFixture
 

@@ -65,7 +65,7 @@ def test_system_status_page_is_retired_from_navigation() -> None:
     assert app._business_module_navigation(super_admin) == CONSOLE_NAVIGATION
     assert "/settings/system-status" not in {item["route"] for item in CONSOLE_NAVIGATION}
     assert not hasattr(app, "_render_system_status")
-    assert len(BUSINESS_MODULE_CATALOG) == 16
+    assert len(BUSINESS_MODULE_CATALOG) == 15
     assert app.calls == []
 
 

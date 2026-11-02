@@ -618,7 +618,6 @@ def run_test_automation_project_024_original_plugin_full_auto(case):
             case.assertIsNone(replayed["lease_expires_at"])
 
 
-from tests.mysql_scheduler_supersession_scenarios import run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation as run_test_scheduler_supersession_selector_is_exact_and_terminal_retry_observes_cancellation
 
 
 def _load_generation_write_scenarios():

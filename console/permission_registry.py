@@ -79,7 +79,6 @@ CONSOLE_PERMISSION_REGISTRATIONS = register_console_permissions(
         ConsolePermissionRegistration("console.menu.harness.view", "harness", "查看 AI 助手", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.automation_accounts.view", "automation_accounts", "查看业务账号", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.llm_settings.view", "llm_settings", "查看智能模型", _ALL_ADMIN_ROLES),
-        ConsolePermissionRegistration("console.menu.work_items.view", "work_items", "查看事项中心", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.system_settings.view", "system_settings", "查看系统管理", _ALL_ADMIN_ROLES),
     ),
     known_menu_ids=tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS),

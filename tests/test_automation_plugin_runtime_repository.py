@@ -1022,38 +1022,13 @@ class _TransitionTaskCursor:
             )
             self.rowcount = 1
             return
-        if normalized.startswith(
-            "INSERT INTO scheduled_task_approval_policies"
-        ):
-            values = tuple(params)
-            task = next(item for item in self.current_tasks if item["id"] == values[0])
-            task.update(
-                {
-                    "policy_task_id": values[0],
-                    "policy_mode": values[1],
-                    "policy_contract_hash": values[2],
-                    "policy_contract_snapshot_json": (
-                        json.loads(str(values[3])) if values[3] else None
-                    ),
-                    "policy_tool_contract_hash": values[4],
-                    "policy_approved_by_actor_id": values[5],
-                    "policy_approved_by_actor_role": values[6],
-                    "policy_approved_by_actor_display_name": values[7],
-                    "policy_approved_at": values[8],
-                    "policy_comment": values[9],
-                    "policy_version": values[10],
-                    "policy_updated_at": values[11],
-                }
-            )
-            self.rowcount = 1
-            return
         raise AssertionError(f"unexpected SQL in transition task test: {normalized}")
 
     def fetchall(self) -> list[dict[str, Any]]:
         return self._result
 
 
-def test_transition_task_before_image_restores_non_default_policy_exactly() -> None:
+def test_transition_task_before_image_restores_the_task_exactly() -> None:
     observed_at = datetime(2026, 8, 31, 8, 30, tzinfo=timezone.utc)
     before_task = {
         "id": "old-task",
@@ -1071,18 +1046,6 @@ def test_transition_task_before_image_restores_non_default_policy_exactly() -> N
         "configuration_version": 3,
         "created_at": observed_at,
         "updated_at": observed_at,
-        "policy_task_id": "old-task",
-        "policy_mode": "EXACT_SCHEDULE_EXEMPT",
-        "policy_contract_hash": "a" * 64,
-        "policy_contract_snapshot_json": {"scope": "exact"},
-        "policy_tool_contract_hash": "b" * 64,
-        "policy_approved_by_actor_id": "admin-1",
-        "policy_approved_by_actor_role": "super_admin",
-        "policy_approved_by_actor_display_name": "Admin",
-        "policy_approved_at": observed_at,
-        "policy_comment": "approved",
-        "policy_version": 7,
-        "policy_updated_at": observed_at,
     }
     journal_task = {
         **before_task,
@@ -1097,17 +1060,6 @@ def test_transition_task_before_image_restores_non_default_policy_exactly() -> N
                 "id": "new-task",
                 "automation_generation": 2,
                 "name": "new projection",
-                "policy_task_id": "new-task",
-                "policy_mode": "REQUIRE_EACH_RUN",
-                "policy_contract_hash": None,
-                "policy_contract_snapshot_json": None,
-                "policy_tool_contract_hash": None,
-                "policy_approved_by_actor_id": None,
-                "policy_approved_by_actor_role": None,
-                "policy_approved_by_actor_display_name": None,
-                "policy_approved_at": None,
-                "policy_comment": None,
-                "policy_version": 1,
             }
         ],
         journal_tasks=[journal_task],

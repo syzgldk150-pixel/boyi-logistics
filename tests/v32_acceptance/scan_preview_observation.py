@@ -3,10 +3,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import traceback
 from unittest.mock import patch
 
-from shared.orchestration_repository_support import _decode_row
 
 
 def _write(path, value):
@@ -16,9 +14,8 @@ def _write(path, value):
 
 @contextmanager
 def observe_preview_timestamps(path: Path):
-    from agent.orchestration import direct_invocation_previews, scan_preview_binding
+    from agent.orchestration import direct_invocation_previews
 
-    original = scan_preview_binding._load_persisted_scan_preview
     direct_original = direct_invocation_previews._load
 
     def direct_observed(repository, invocation_id, **arguments):
@@ -41,31 +38,7 @@ def observe_preview_timestamps(path: Path):
                 print(json.dumps({'scan_preview_timing': evidence}, ensure_ascii=False, default=str), flush=True)
             raise
 
-    def observed(uow, **arguments):
-        before = datetime.now(timezone.utc)
-        try:
-            return original(uow, **arguments)
-        except BaseException as error:
-            if getattr(error, 'code', None) == 'SCAN_PREVIEW_INVALID' and 'observation time is in the future' in str(error):
-                evidence = {'status': 'FAIL', 'error_code': error.code,
-                    'preview_run_id': arguments['preview_run_id'], 'validation_now': arguments['now'],
-                    'host_before': before, 'host_after': datetime.now(timezone.utc),
-                    'callers': [{'file': frame.filename, 'line': frame.lineno, 'function': frame.name}
-                        for frame in traceback.extract_stack(limit=8)[:-1]]}
-                try:
-                    steps = uow.steps.list_for_run(arguments['preview_run_id'])
-                    evidence['persisted_times'] = [{'step_finished_at': step.get('finished_at'),
-                        'observed_at': scan_preview_binding._row_mapping(
-                            _decode_row(dict(step), ('result_summary_json', 'result_summary')),
-                            'result_summary_json', 'result_summary')['data']['preview_evidence']['observed_at']}
-                        for step in steps]
-                    _write(path, evidence)
-                except Exception as diagnostic_error:
-                    evidence['diagnostic_error'] = type(diagnostic_error).__name__
-                print(json.dumps({'scan_preview_timing': evidence}, ensure_ascii=False, default=str), flush=True)
-            raise
-
-    with patch.object(scan_preview_binding, '_load_persisted_scan_preview', observed), patch.object(direct_invocation_previews, '_load', direct_observed):
+    with patch.object(direct_invocation_previews, '_load', direct_observed):
         yield
 
 

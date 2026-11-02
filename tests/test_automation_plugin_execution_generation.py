@@ -76,13 +76,11 @@ def _project_invocation(
 def _trusted_binding(
     capability: Mapping[str, Any],
     *,
-    run_id: str | None = None,
-    step_id: str | None = None,
+    invocation_id: str | None = None,
     contract_id: str = "console",
 ) -> dict[str, Any]:
     return {
-        "run_id": run_id or str(uuid.uuid4()),
-        "step_id": step_id or str(uuid.uuid4()),
+        "invocation_id": invocation_id or str(uuid.uuid4()),
         "_automation_project_invocation": _project_invocation(
             capability,
             contract_id=contract_id,
@@ -539,7 +537,6 @@ class _LeaseRepository:
         expected_generation: int,
         expected_manifest_sha256: str,
         lease_id: str,
-        orchestration_run_id: str | None,
         invocation_id: str | None = None,
         provider_call: bool = False,
         expires_at: datetime,
@@ -559,7 +556,6 @@ class _LeaseRepository:
             runtime_metadata=capability,
             acquired_at=datetime.now(timezone.utc),
             expires_at=expires_at,
-            orchestration_run_id=orchestration_run_id,
             invocation_id=invocation_id,
         )
 
@@ -673,22 +669,6 @@ class _Core:
 
     async def cancel_tool(self, tool_name: str, started_at: str = "") -> Mapping[str, Any]:
         return {"ok": False, "code": "NOT_RUNNING", "tool": tool_name, "started_at": started_at}
-
-    async def cancel_bound_run(
-        self,
-        *,
-        tool_name: str,
-        run_id: str,
-        step_id: str,
-    ) -> Mapping[str, Any]:
-        return {
-            "ok": True,
-            "source": "core",
-            "tool_name": tool_name,
-            "run_id": run_id,
-            "step_id": step_id,
-        }
-
 
 class _OutputSandbox:
     def __init__(self, output: bytes) -> None:
@@ -1113,29 +1093,6 @@ def test_mixed_service_write_rejects_cross_contribution_target_evidence(
     assert leases.finalized[0][1] is RuntimeLeaseOutcome.WRITE_OUTCOME_UNKNOWN
 
 
-def test_router_cancel_bound_run_falls_through_to_core_when_no_plugin_matches() -> None:
-    router = PluginExecutionRouter(
-        core_executor=_Core(),
-        capability_issuer=_Issuer(),
-    )
-
-    result = asyncio.run(
-        router.cancel_bound_run(
-            tool_name="legacy-running",
-            run_id="run-1",
-            step_id="step-1",
-        )
-    )
-
-    assert result == {
-        "ok": True,
-        "source": "core",
-        "tool_name": "legacy-running",
-        "run_id": "run-1",
-        "step_id": "step-1",
-    }
-
-
 @pytest.mark.parametrize(
     ("binding_mutator", "expected_code"),
     [
@@ -1242,8 +1199,6 @@ def test_router_observability_bridges_core_and_active_plugin_invocations() -> No
         "action_name": "automation.project-a.run",
         "automation_id": "project-a",
         "generation": 1,
-        "run_id": "run-1",
-        "step_id": "step-1",
     }
 
     assert router.last_tool_info() == core.last_info
@@ -1258,8 +1213,6 @@ def test_router_observability_bridges_core_and_active_plugin_invocations() -> No
         "total": 0,
         "started_at": "invocation:plugin-invocation",
         "invocation_id": "plugin-invocation",
-        "run_id": "run-1",
-        "step_id": "step-1",
         "cancel_requested": False,
     }
     assert router.get_running_output("legacy-running")["lines"] == ["legacy-running"]

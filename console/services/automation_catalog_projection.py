@@ -572,53 +572,6 @@ def apply_automation_project_execution_gate(
         task["run_disabled_reason"] = "项目当前不可运行"
 
 
-def normalize_automation_pending_approvals(
-    value: Any,
-    *,
-    expected_automation_id: str,
-) -> dict[str, Any] | None:
-    """Validate one aggregate pending set without accepting approval IDs or plan hashes."""
-
-    if not isinstance(value, dict):
-        return None
-    automation_id = str(value.get("automation_id") or "").strip()
-    pending_count = value.get("pending_count")
-    highest_risk = str(value.get("highest_risk") or "").strip().upper()
-    source_summary = normalize_feedback_text(
-        redact_text(str(value.get("source_summary") or ""))
-    )[:240]
-    pending_set_hash = str(value.get("pending_set_hash") or "").strip()
-    if (
-        automation_id != expected_automation_id
-        or not AUTOMATION_PROJECT_ID_RE.fullmatch(automation_id)
-        or isinstance(pending_count, bool)
-        or not isinstance(pending_count, int)
-        or pending_count < 0
-    ):
-        return None
-    if pending_count:
-        if (
-            highest_risk not in AUTOMATION_PENDING_RISK_LABELS
-            or not source_summary
-            or not AUTOMATION_PENDING_SET_HASH_RE.fullmatch(pending_set_hash)
-        ):
-            return None
-    else:
-        highest_risk = ""
-        source_summary = ""
-        pending_set_hash = ""
-    return {
-        "automation_id": automation_id,
-        "pending_count": pending_count,
-        "highest_risk": highest_risk,
-        "highest_risk_label": AUTOMATION_PENDING_RISK_LABELS.get(highest_risk, ""),
-        "source_summary": source_summary,
-        "expected_pending_set_hash": pending_set_hash,
-        "can_approve": bool(value.get("can_approve")),
-        "can_reject": bool(value.get("can_reject")),
-    }
-
-
 def normalize_automation_approval_batch_result(
     value: Any,
     *,

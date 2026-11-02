@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 from typing import Any
 
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
-    IdempotencyConflict,
     OrchestrationPersistenceError,
     RepositoryBase,
     _decode_row,
@@ -48,21 +45,14 @@ def read_project_configuration_rows(cursor, automation_ids, *, for_update=False)
         SELECT task.id, task.automation_id, task.name, task.tool_name,
                task.tool_params, task.cron_expression, task.enabled,
                task.automation_generation, task.configuration_version,
-               task.updated_at,
-               policy.mode AS scheduled_policy_mode,
-               policy.version AS scheduled_policy_version,
-               policy.contract_hash AS scheduled_contract_hash,
-               policy.contract_snapshot_json AS scheduled_contract_snapshot_json,
-               policy.tool_contract_hash AS scheduled_tool_contract_hash
+               task.updated_at
         FROM scheduled_tasks AS task
-        LEFT JOIN scheduled_task_approval_policies AS policy ON policy.task_id=task.id
         WHERE {condition}
         ORDER BY task.id{suffix}
         """,
         identities,
     )
-    return [_decode_row(row, ("tool_params", "scheduled_contract_snapshot_json")) or {}
-            for row in _rows(cursor)]
+    return [_decode_row(row, ("tool_params",)) or {} for row in _rows(cursor)]
 
 
 class AutomationProjectPolicyRepository(RepositoryBase):
@@ -287,289 +277,6 @@ class AutomationProjectPolicyRepository(RepositoryBase):
     ) -> list[dict[str, Any]]:
         with self.cursor() as cursor:
             return read_project_configuration_rows(cursor, (automation_id,), for_update=for_update)
-
-    def expire_pending_approvals(self, automation_id: str) -> int:
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE approval_requests AS approval
-                INNER JOIN agent_runs AS run ON run.run_id=approval.run_id
-                INNER JOIN agent_commands AS command
-                    ON command.command_id=run.command_id
-                SET approval.status='EXPIRED', approval.decided_at=NOW(6)
-                WHERE command.automation_id=%s
-                  AND approval.status='PENDING'
-                  AND approval.expires_at <= NOW(6)
-                """,
-                (_required_text(automation_id, "automation_id"),),
-            )
-            return int(getattr(cursor, "rowcount", 0) or 0)
-
-    def lock_waiting_approval_runs(
-        self,
-        automation_id: str,
-    ) -> tuple[str, ...]:
-        """Lock all waiting Runs for one project in deterministic order."""
-
-        safe_id = _required_text(automation_id, "automation_id")
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT run.run_id
-                FROM agent_runs AS run
-                INNER JOIN agent_commands AS command
-                    ON command.command_id=run.command_id
-                WHERE command.automation_id=%s
-                  AND run.status='WAITING_APPROVAL'
-                ORDER BY run.run_id
-                FOR UPDATE
-                """,
-                (safe_id,),
-            )
-            return tuple(
-                str(row.get("run_id") or "").strip()
-                for row in _rows(cursor)
-                if str(row.get("run_id") or "").strip()
-            )
-
-    def invalidate_pending_approvals_and_wake_runs(
-        self,
-        automation_id: str,
-        *,
-        event_repository: Any | None = None,
-    ) -> tuple[str, ...]:
-        """Invalidate stale project approvals and schedule their Runs now.
-
-        Configuration, plugin generation, and durable policy changes all make
-        an earlier approval context stale. Runs are locked before approvals,
-        matching the decision/consumption lock order used elsewhere.
-        """
-
-        run_ids = self.lock_waiting_approval_runs(automation_id)
-        if not run_ids:
-            return ()
-        invalidated_rows: list[dict[str, Any]] = []
-        with self.cursor() as cursor:
-            placeholders = ", ".join("%s" for _ in run_ids)
-            if event_repository is not None:
-                cursor.execute(
-                    f"""
-                    SELECT approval.approval_id, approval.work_item_id,
-                           approval.run_id, approval.plan_hash,
-                           run.correlation_id, run.causation_id
-                    FROM approval_requests AS approval
-                    INNER JOIN agent_runs AS run
-                        ON run.run_id=approval.run_id
-                    WHERE approval.run_id IN ({placeholders})
-                      AND approval.status IN ('PENDING', 'APPROVED')
-                    ORDER BY approval.approval_id
-                    FOR UPDATE
-                    """,
-                    run_ids,
-                )
-                invalidated_rows = [dict(row) for row in _rows(cursor)]
-            cursor.execute(
-                f"""
-                UPDATE approval_requests
-                SET status='INVALIDATED', decided_at=NOW(6)
-                WHERE run_id IN ({placeholders})
-                  AND status IN ('PENDING', 'APPROVED')
-                """,
-                run_ids,
-            )
-            cursor.execute(
-                f"""
-                UPDATE agent_runs
-                SET next_attempt_at=NOW(6)
-                WHERE run_id IN ({placeholders})
-                  AND status='WAITING_APPROVAL'
-                """,
-                run_ids,
-            )
-        occurred_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        for row in invalidated_rows:
-            approval_id = str(row["approval_id"])
-            event_repository.append_with_outbox(
-                {
-                    "event_id": str(
-                        uuid.uuid5(
-                            uuid.NAMESPACE_URL,
-                            f"boyi:approval-invalidated:{approval_id}",
-                        )
-                    ),
-                    "event_type": "agent.approval.invalidated",
-                    "schema_version": 1,
-                    "source_system": "agent",
-                    "source_event_id": f"approval-invalidated:{approval_id}",
-                    "entity_type": "approval_request",
-                    "entity_id": approval_id,
-                    "work_item_id": row["work_item_id"],
-                    "run_id": row["run_id"],
-                    "occurred_at": occurred_at,
-                    "observed_at": occurred_at,
-                    "correlation_id": row["correlation_id"],
-                    "causation_id": row.get("causation_id"),
-                    "payload": {
-                        "plan_hash": row["plan_hash"],
-                        "reason": "PROJECT_CONTEXT_CHANGED",
-                    },
-                },
-                (
-                    {
-                        "consumer_name": "orchestration.audit",
-                        "topic": "agent.approval.invalidated",
-                        "partition_key": str(row["work_item_id"]),
-                        "max_attempts": 10,
-                    },
-                    {
-                        "consumer_name": "feishu.approval",
-                        "topic": "agent.approval.invalidated",
-                        "partition_key": approval_id,
-                        "max_attempts": 20,
-                    },
-                ),
-            )
-        return run_ids
-
-    def list_pending_approvals(
-        self,
-        automation_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[dict[str, Any]]:
-        suffix = " FOR UPDATE" if for_update else ""
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT approval.approval_id, approval.work_item_id,
-                       approval.run_id, approval.approval_round,
-                       approval.plan_hash, approval.risk_level,
-                       approval.required_role, approval.expires_at,
-                       approval.created_at, run.status AS run_status,
-                       run.plan_hash AS current_plan_hash,
-                       run.plan_json, run.correlation_id, run.causation_id,
-                       item.title AS work_item_title,
-                       command.source, command.requested_at,
-                       command.parameters_json,
-                       command.automation_invocation_json
-                FROM approval_requests AS approval
-                INNER JOIN agent_runs AS run ON run.run_id=approval.run_id
-                INNER JOIN work_items AS item
-                    ON item.work_item_id=approval.work_item_id
-                INNER JOIN agent_commands AS command
-                    ON command.command_id=run.command_id
-                WHERE command.automation_id=%s
-                  AND approval.status='PENDING'
-                  AND approval.expires_at > NOW(6)
-                  AND run.status='WAITING_APPROVAL'
-                ORDER BY approval.approval_id{suffix}
-                """,
-                (_required_text(automation_id, "automation_id"),),
-            )
-            return [
-                _decode_row(
-                    row,
-                    (
-                        "automation_invocation_json",
-                        "parameters_json",
-                        "plan_json",
-                    ),
-                )
-                or {}
-                for row in _rows(cursor)
-            ]
-
-    def get_batch_by_request(
-        self,
-        automation_id: str,
-        request_id: str,
-        *,
-        for_update: bool = False,
-    ) -> dict[str, Any] | None:
-        suffix = " FOR UPDATE" if for_update else ""
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT * FROM automation_project_approval_batches
-                WHERE automation_id=%s AND request_id=%s{suffix}
-                """,
-                (
-                    _required_text(automation_id, "automation_id"),
-                    _required_text(request_id, "request_id"),
-                ),
-            )
-            return _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                ("result_json",),
-            )
-
-    def create_batch(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        automation_id = _required_text(row.get("automation_id"), "automation_id")
-        request_id = _required_text(row.get("request_id"), "request_id")
-        decision = str(row.get("decision") or "").strip().upper()
-        if decision not in {"APPROVED", "REJECTED"}:
-            raise ValueError("invalid project approval batch decision")
-        expected_set_hash = _required_text(
-            row.get("expected_pending_set_hash"),
-            "expected_pending_set_hash",
-        )
-        decided_set_hash = _required_text(
-            row.get("decided_pending_set_hash"),
-            "decided_pending_set_hash",
-        )
-        decided_count = int(row.get("decided_count") or 0)
-        actor_id = _required_text(row.get("actor_id"), "actor_id")
-        actor_role = _required_text(row.get("actor_role"), "actor_role")
-        comment = _safe_comment(row.get("comment"))
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO automation_project_approval_batches (
-                    batch_id, automation_id, request_id, decision,
-                    expected_pending_set_hash, decided_pending_set_hash,
-                    decided_count, actor_id, actor_role, comment, result_json
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE batch_id=batch_id
-                """,
-                (
-                    _required_text(row.get("batch_id"), "batch_id"),
-                    automation_id,
-                    request_id,
-                    decision,
-                    expected_set_hash,
-                    decided_set_hash,
-                    decided_count,
-                    actor_id,
-                    actor_role,
-                    comment,
-                    _json_param(row.get("result_json"), {}),
-                ),
-            )
-            created = int(getattr(cursor, "rowcount", 0) or 0) == 1
-        persisted = self.get_batch_by_request(
-            automation_id,
-            request_id,
-            for_update=True,
-        )
-        if persisted is None:
-            raise OrchestrationPersistenceError("automation approval batch did not persist")
-        immutable = (
-            str(persisted.get("decision") or "") == decision
-            and str(persisted.get("expected_pending_set_hash") or "")
-            == expected_set_hash
-            and str(persisted.get("decided_pending_set_hash") or "")
-            == decided_set_hash
-            and int(persisted.get("decided_count") or 0) == decided_count
-            and str(persisted.get("actor_id") or "") == actor_id
-            and str(persisted.get("actor_role") or "") == actor_role
-            and _safe_comment(persisted.get("comment")) == comment
-        )
-        if not immutable:
-            raise IdempotencyConflict(
-                "automation approval batch request was reused with different input"
-            )
-        persisted["_created"] = created
-        return persisted
 
 
 def automation_project_bootstrap_release_sha(value: Any) -> str:

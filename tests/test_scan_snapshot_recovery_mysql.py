@@ -2,7 +2,7 @@
 from pathlib import Path
 
 
-from tests.test_workflow_runner_durable_admission import pytestmark, repository  # noqa: F401
+from tests.mysql_isolated_fixtures import pytestmark, repository  # noqa: F401
 
 
 def test_041_receipt_journals_and_scope_index_can_reapply(repository):

@@ -2,7 +2,7 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-10-29
+updated: 2026-11-02
 ---
 
 # 发布到 ECS
@@ -101,9 +101,9 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 8. 包含 Agent 的路径在停服务前检查正在运行的插件调用：存在 `PROTECTED_WRITE_RUNNING` 时每 15 秒复查、最多等待 10 分钟（如每 15 分钟一次、约 5 分钟的客服问题件采集），等待过则重新检查写入定时窗口；其他检查失败或超时仍立即失败，停服务后的复核不等待。Console-only 只停止 Console；Agent-only 只停止 Agent；shared/migration 才同时停止两个服务。每条路径都先确认自己负责的 unit 已退出，未选中的服务不停止、不重启。
 9. 按 `.deploy-source-manifest` 同步源码，只删除上一版清单中存在而本版已移除的文件；不递归删除未受管业务数据。
 10. shared/migration 路径先执行版本化迁移，再安装两个 unit 并按需原子切换共享虚拟环境；Agent-only/Console-only 只安装自己的 unit，且不执行迁移。包含 Agent 的路径写入 `runtime/release_sha` 与本次插件存储环境文件，并创建仅属于本次 SHA 的 release hold；Console-only 不创建或消费 Agent hold。
-11. 每条路径只健康检查本次重启的服务：Agent `/health` 必须返回本次 Git SHA，Console 首页必须可访问。shared/migration 额外执行 Agent/Console 签名身份联通和依赖哈希检查；包含 Agent 的路径通过签名激活端点恢复 Direct 新调用及 Scheduler；旧 WorkflowRunner 保持 reserved。激活成功后，`scheduler.RELEASE_CATCHUP_PLUGIN_IDS`（当前仅客服问题件采集）若有定时触发时间落在其最后一次调用之后且在 2 小时内（即发布期间被跳过），立即经原定时入口补跑一次；夜间发布不会补跑，补跑失败只记日志、不回滚已提交的激活。
+11. 每条路径只健康检查本次重启的服务：Agent `/health` 必须返回本次 Git SHA，Console 首页必须可访问。shared/migration 额外执行 Agent/Console 签名身份联通和依赖哈希检查；包含 Agent 的路径通过签名激活端点恢复 Direct 新调用及 Scheduler；激活前签名健康检查要求 Direct 调用为零。激活成功后，`scheduler.RELEASE_CATCHUP_PLUGIN_IDS`（当前仅客服问题件采集）若有定时触发时间落在其最后一次调用之后且在 2 小时内（即发布期间被跳过），立即经原定时入口补跑一次；夜间发布不会补跑，补跑失败只记日志、不回滚已提交的激活。
 12. 提交点之前失败时，只停止和恢复本次路径负责的服务、源码、unit 与发布清单；shared/migration 才恢复两套运行时和共享虚拟环境。包含 Agent 的路径仍保留受保护写检查、release hold 和两阶段稳定健康回滚；shared/migration 额外保留 migration checksum 与数据库恢复门禁。Console-only 不触碰 Agent、插件或数据库。所有路径的回滚材料仍位于本次 stage，删除安全边界和失败保留语义不变。
-13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到事项中心、定时自动化、财务、每日应签与客服影子投影完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
+13. 健康检查成功后仍保留本次远端暂存树、精确回滚包和上一版虚拟环境，直到定时自动化、财务、每日应签与客服采集完成业务验收。清理必须是验收后的独立、有界管理动作，不得由发布成功路径自动执行；数据库快照同样保留到验收结束。
 
 业务代码频繁提交时，发布只同步受管源码并重启受影响服务，不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化归入 shared 路径，才承担完整依赖安装成本并协调两个服务。
 

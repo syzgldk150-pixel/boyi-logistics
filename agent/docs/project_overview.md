@@ -1,10 +1,10 @@
 ---
 module: 项目总览
 type: 架构文档
-tags: [项目总览, Agent控制平面, 事项中心, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
-related: [control_plane_v1.md, code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
+tags: [项目总览, Agent控制平面, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
+related: [code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-10-30
+updated: 2026-11-02
 ---
 
 # 物流 Agent 项目总览
@@ -29,22 +29,19 @@ updated: 2026-10-30
 - 失败、取消和未知写均结束本次；取消等实际线程/子进程和必要核验停止后才完成。
   旧记录只用于追溯，不阻新触发；登录成功和服务重启均不重新执行业务。
 - 账号模块只提供按账号隔离的凭据与登录态。权限、签名、精确账号/资源绑定和写后核验保留；
-  人工操作不再进入事项审批。账号变更同时核验当前调用使用状态与既有数据库锁。
+  账号变更同时核验当前调用使用状态与既有数据库锁。
 - 寄件默认查数据库，明确单号或日期覆盖不足时按真实平台来源范围补查；局部补查不删除
   其他数据、不冒充整日完整。夜间插件仅在来源范围和分页闭合时发布完整覆盖。
 - 财务/客服采集由所属模块插件负责。财务采集完成不自动分析；AI 助手和飞书自然对话共用
   当前 Agent，能力仅包括已注册接口、已开放插件和显式数据分析，不新增通用流程编辑器。
-- 长任务 Runner 保留代码但 `execution_enabled=False`，运行状态为 `reserved`；迁移 046
-  结清旧等待记录，不删除历史错误、未知写和业务结果。旧任务的取消、重试、澄清、指派和审批
-  写入口为 410，事项页面只读深链，不是新执行入口。
 - 发布 hold 期间暂停 Scheduler 与 Direct 新调用；健康、身份、迁移和依赖检查通过后才激活。
-  财务没有启动自动补拉。回退不得重新启用旧 Runner 领取已退役记录。
+  财务没有启动自动补拉。
 
 职责图与维护归属见 [业务接口与独立插件调用](../../docs/architecture_direct_invocation.md)，
 接口定位见 [代码索引](code_navigation_index.md)，寄件规则见 [寄件查询](../../docs/direct_waybill_query.md)，
 验收入口见 [架构验收映射](../../docs/architecture_refactor_acceptance_mapping.md)。
-旧 Command、Plan、定时逐次审批及 014–018 迁移合同保留在 [历史控制平面](control_plane_v1.md)；
-退役和发布回退限制见 [旧执行链退役](../../docs/legacy_execution_retirement.md)，不得作为当前调用要求。
+旧 Command/Run/Step 控制平面（Runner、逐次审批、Outbox、事项中心）代码已于 2026-11 删除，旧表由迁移 066 删除；
+014–024 等已执行迁移只作建库记录。
 
 ## 架构基线
 
@@ -58,7 +55,7 @@ updated: 2026-10-30
 ## 项目定位
 
 `物流 Agent` 是统一承接物流业务数据、流程和服务的 Agent + Console 双服务项目，不是单一 OCR
-工具。`shared/business_modules.py` 是当前 16 个 Console 菜单身份的唯一不可变代码目录：
+工具。`shared/business_modules.py` 是当前 15 个 Console 菜单身份的唯一不可变代码目录：
 
 | 模块代码 | 菜单 | 主页面 | 运行身份 |
 |---|---|---|---|
@@ -75,7 +72,6 @@ updated: 2026-10-30
 | `harness` | AI 助手 | `/harness` | 固定模块（已注册只读接口、插件能力与显式分析） |
 | `automation_accounts` | 业务账号 | `/automation-accounts` | 固定模块 |
 | `llm_settings` | 智能模型 | `/settings/llm` | 固定模块 |
-| `work_items` | 历史事项 | `/work-items` | 只读深链，不列入日常导航 |
 | `system_settings` | 系统管理 | `/settings/accounts` | 固定模块 |
 
 固定模块只由代码路由、既有登录/用户权限和业务前置条件控制；旧数据库生命周期状态和版本不能隐藏或阻断它们。
@@ -100,8 +96,8 @@ updated: 2026-10-30
 ## 当前实现状态
 
 - 项目级控制台目录现已独立为与 agent 并列的 `console/` 工作区。
-- Console 导航固定登记上述 16 个模块身份；迁移 `027` 保存的 14 行历史生命周期状态和 Lite 审计仅供只读兼容，不参与固定模块菜单、页面、API 或新调用可用性判断。依赖 Agent、账号、资源或其他业务数据的具体操作仍由各自合同独立失败关闭。
-- OCR、运单、跟踪、回单、客服、融辉财务、调度、自动化、账号、智能模型、事项中心和系统管理均沿既有页面与服务边界运行；韵达财务适配器待真实来源验收后再启用。
+- Console 导航固定登记上述 15 个模块身份；迁移 `027` 保存的 14 行历史生命周期状态和 Lite 审计仅供只读兼容，不参与固定模块菜单、页面、API 或新调用可用性判断。依赖 Agent、账号、资源或其他业务数据的具体操作仍由各自合同独立失败关闭。
+- OCR、运单、跟踪、回单、客服、融辉财务、调度、自动化、账号、智能模型和系统管理均沿既有页面与服务边界运行；韵达财务适配器待真实来源验收后再启用。
 - 财务工作台通过共享 MySQL 账本与统计查询月度抓取插件 `sync_ronghui_finance_statement_v2` 接通：插件按月抓取融辉三个财务账号的统计查询与明细，Host 核对是本次真实返回后原样保存，并按结算日写入账本；旧逐日财务采集与 Excel ETL 均已删除。
 - `车辆调度` 当前为 `map_only`：高德地图、路线规划与本地试算；没有真实货拉拉派单、车辆或平台接口。
 - 面向客户的独立 AI 客服模块仍未建立；现有固定命令、受限只读查询和客服工作台分别由 `agent/`、`feishu/` 与 Console 既有链路承载。

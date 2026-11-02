@@ -26,7 +26,6 @@ from agent.direct_tool_router import (
     format_business_operations_summary_reply,
     format_business_finance_reply,
 )
-from agent.orchestration.execution_adapter import RegisteredToolExecutionAdapter
 from agent.orchestration.models import (
     Actor,
     ActorType,
@@ -37,8 +36,6 @@ from agent.orchestration.models import (
     PlanStep,
     RiskLevel,
 )
-from agent.orchestration.plan_validator import PlanValidator
-from agent.orchestration.planner import DeterministicPlanner
 from agent.orchestration.result_verifier import ResultVerifier
 from agent.tool_registry import ToolRegistry, validate_schema_instance
 
@@ -356,102 +353,6 @@ class BusinessFinanceQueryTests(unittest.TestCase):
             risk_level=RiskLevel.LOW,
             requires_approval=False,
         )
-
-    def test_control_plane_normalizes_and_verifies_direct_runner_result(self):
-        service, _ = self._service()
-        catalog = ToolRegistry()
-        adapter = RegisteredToolExecutionAdapter(
-            catalog=catalog,
-            executor=object(),
-            direct_runners={"query_business_finance": service.run},
-        )
-        step = self._plan_step()
-
-        result = asyncio.run(
-            adapter.execute_step(
-                step,
-                run_id="run-business-query",
-                step_id="step-business-query",
-                execution_context={"source": "console"},
-            )
-        )
-        outcome = ResultVerifier().verify(
-            step,
-            result,
-            catalog.get_capability("query_business_finance"),
-        )
-
-        self.assertEqual(result["status"], "SUCCESS")
-        self.assertTrue(outcome.accepted)
-        self.assertEqual(result["meta"]["record_count"], 2)
-        self.assertTrue(result["meta"]["evidence_refs"])
-
-    def test_control_plane_preserves_reviewed_business_error_code(self):
-        service, _ = self._service(_verified_summary(coverage_status="incomplete"))
-        catalog = ToolRegistry()
-        adapter = RegisteredToolExecutionAdapter(
-            catalog=catalog,
-            executor=object(),
-            direct_runners={"query_business_finance": service.run},
-        )
-
-        result = asyncio.run(
-            adapter.execute_step(
-                self._plan_step(),
-                run_id="run-business-query",
-                step_id="step-business-query",
-                execution_context={"source": "console"},
-            )
-        )
-
-        self.assertEqual(result["status"], "FAILED")
-        self.assertEqual(result["error"]["code"], "BUSINESS_QUERY_DATA_INCOMPLETE")
-
-    def test_control_plane_rejects_any_account_binding_for_business_query(self):
-        catalog = ToolRegistry()
-        context = ContextSnapshot(values={}, account_ids=("rogue-account",))
-        command = Command(
-            command_type="tool.execute",
-            source="console",
-            actor=Actor(ActorType.CONSOLE_ADMIN, "admin-1", roles=("admin",)),
-            parameters={
-                "tool_name": "query_business_finance",
-                "arguments": {
-                    "start_date": "2026-01-01",
-                    "end_date": "2026-01-31",
-                },
-                "account_id": "rogue-account",
-            },
-            idempotency_key="business-query-account-binding",
-        )
-        plan = DeterministicPlanner(catalog).plan(command, context)
-
-        with self.assertRaises(OrchestrationError) as caught:
-            PlanValidator(catalog).validate(plan, context)
-        self.assertEqual(caught.exception.code, "ACCOUNT_SCOPE_MISMATCH")
-
-        service, _ = self._service()
-        adapter = RegisteredToolExecutionAdapter(
-            catalog=catalog,
-            executor=object(),
-            direct_runners={"query_business_finance": service.run},
-        )
-        forged_step = self._plan_step(account_id="rogue-account")
-        result = asyncio.run(
-            adapter.execute_step(
-                forged_step,
-                run_id="run-business-query",
-                step_id="step-business-query",
-                execution_context={"source": "console"},
-            )
-        )
-        outcome = ResultVerifier().verify(
-            forged_step,
-            result,
-            catalog.get_capability("query_business_finance"),
-        )
-        self.assertFalse(outcome.accepted)
-        self.assertEqual(outcome.code, "ACCOUNT_SCOPE_MISMATCH")
 
     def test_standalone_executor_is_fixed_fail_closed_placeholder(self):
         script = Path(__file__).resolve().parents[1] / "tools" / "business_finance_query_tool.py"

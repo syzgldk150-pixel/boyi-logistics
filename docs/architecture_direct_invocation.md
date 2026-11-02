@@ -4,14 +4,14 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-30
+updated: 2026-11-02
 ---
 
 # 业务接口与独立插件调用
 
 当前实现依据用户确认的《架构改造方案 V1》（2026-09-09），基线为
 `1d7866d092d88c07d7a6e765f288fb7549370c30`。本文定义当前代码职责，验收结果另以新鲜测试报告为准。
-该架构替代旧文档中“普通查询和插件均提交 Command 并由 Runner 领取”的规定。
+该架构替代原“普通查询和插件均提交 Command 并由 Runner 领取”的规定；旧 Command/Run/Step 控制平面（Runner、审批、Outbox、事项中心）代码已于 2026-11 删除，旧表由迁移 066 删除。
 
 ## AI 对话调用插件
 
@@ -72,9 +72,8 @@ OCR 仍是录单内的能力；货拉拉接口尚未完成接入，地图功能�
 - 扫描、自提、分批保留业务需要的预览与明确确认。确认绑定本次预览和原发起人；新的预览不受旧预览状态拦截。
 
 `automation_plugin_invocations` 状态为 `STARTING/RUNNING/CANCELLING` 和
-`COMPLETED/FAILED/CANCELLED/WRITE_OUTCOME_UNKNOWN`。旧控制平面表保留历史查询能力。
-主组合根以 `execution_enabled=False` 构造旧 Runner；发布激活后其状态为 `reserved`，不领取历史任务。
-通用旧命令提交和重试接口返回明确不可用结果，不能隐式退回旧链。
+`COMPLETED/FAILED/CANCELLED/WRITE_OUTCOME_UNKNOWN`。代次租约与写回执只绑定 `invocation_id`；
+发布激活前健康检查要求 Direct 调用为零。
 
 ## 共用状态与定时接口的响应
 
@@ -131,8 +130,7 @@ Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次�
 ## 验证与发布边界
 
 局部入口沿用 [插件维护工具](../agent/docs/plugin_maintenance.md)，原验收要求保留在
-[V3.2 逐组矩阵](low_maintenance_v32_acceptance.json)。旧 Runner 用例只能证明旧业务回归，
-新架构验收必须通过真实 Invocation、MySQL、隔离子进程和业务边界完成。
+[V3.2 逐组矩阵](low_maintenance_v32_acceptance.json)。验收必须通过真实 Invocation、MySQL、隔离子进程和业务边界完成。
 宿主冻结后的字段及决策演练必须分别记录升级、真实结果、回退和无关调用持续执行。
 
 该架构涉及公共接口、数据库及执行层，属于核心更新，已随后续标准发布上线。
@@ -140,6 +138,4 @@ Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次�
 更新共享核心；账号、真实定时保持原有配置。回退使用同次发布备份及已验证兼容插件，
 保留新增执行和业务数据，不删除新表或伪造已撤销的外部写。
 
-旧等待记录由 [迁移 046](legacy_execution_retirement.md) 在真实执行结束后统一退役，原错误和未知写事实保留。
-旧任务的取消、分配、澄清、重试及审批写入口返回 `410`，历史读取保留且不显示这些操作。
 项目的“仅允许手动操作”仍允许具备插件权限的后台管理员明确触发；固定关键词、定时和 Agent 的写调用要求项目已授权自动执行，拒绝后不进入待审批队列。

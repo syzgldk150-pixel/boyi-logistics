@@ -139,8 +139,8 @@ def _message_result() -> dict:
 
 def test_harness_is_a_fixed_core_module_after_the_warehouse_monitor_entry() -> None:
     menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
-    assert len(BUSINESS_MODULE_CATALOG) == 16
-    assert len(CONSOLE_MENU_REGISTRATIONS) == 16
+    assert len(BUSINESS_MODULE_CATALOG) == 15
+    assert len(CONSOLE_MENU_REGISTRATIONS) == 15
     assert menu_ids.index("warehouse_monitor") == menu_ids.index("automations") + 1
     assert menu_ids.index("harness") == menu_ids.index("warehouse_monitor") + 1
     harness_item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/harness")
@@ -149,7 +149,7 @@ def test_harness_is_a_fixed_core_module_after_the_warehouse_monitor_entry() -> N
     assert "harness" in CORE_MODULE_CODES
     harness_module = next(item for item in BUSINESS_MODULE_CATALOG if item.module_code == "harness")
     assert harness_module.disable_allowed is False
-    assert len([item for item in BUSINESS_MODULE_CATALOG if not item.disable_allowed]) == 7
+    assert len([item for item in BUSINESS_MODULE_CATALOG if not item.disable_allowed]) == 6
 
 
 def test_harness_permission_is_registered_for_existing_admin_roles() -> None:
@@ -331,7 +331,7 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "可以开始提问" in script
     assert "查询业务，或让我执行插件" in template
     assert "AI 助手" in template
-    assert "plugin-chat-20260910" in template
+    assert "plugin-chat-20261102" in template
     assert "Harness 助手" not in template
     assert "查看本次查询依据" not in template
     assert "data-harness-process" not in template

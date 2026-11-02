@@ -26,7 +26,7 @@ def build_chat_text_queries(runtime):
     return ChatTextQueries(reader)
 
 
-def build_read_only_harness_gateway(runtime: object, repository: object, *, finance_summary=None, invocations=None) -> ReadOnlyHarnessGateway:
+def build_read_only_harness_gateway(runtime: object, *, finance_summary=None, invocations=None) -> ReadOnlyHarnessGateway:
     memory = getattr(runtime, "memory")
     knowledge = FeishuKnowledgeSource()
     loop = asyncio.get_running_loop() if invocations is not None else None
@@ -47,28 +47,24 @@ def build_read_only_harness_gateway(runtime: object, repository: object, *, fina
                 handler=lambda: call_blocking(handler, arguments, timeout_sec=300))
         return asyncio.run_coroutine_threadsafe(read(), loop).result()
 
-    def get_run(run_id):
-        if invocations is not None:
-            try:
-                row = invocations.get(run_id)
-            except OrchestrationError as exc:
-                if exc.code != "INVOCATION_NOT_FOUND":
-                    raise
-            else:
-                if row.get("invocation_id") != run_id:
-                    raise ValueError("Invocation identity mismatch")
-                return {**row, "run_id": run_id}
-        # Exact historical Run lookup remains available only after a confirmed
-        # absence in the current Invocation store, never after a read failure.
-        return repository.get_run(run_id)
+    def get_run(invocation_id):
+        if invocations is None:
+            return None
+        try:
+            row = invocations.get(invocation_id)
+        except OrchestrationError as exc:
+            if exc.code != "INVOCATION_NOT_FOUND":
+                raise
+            return None
+        if row.get("invocation_id") != invocation_id:
+            raise ValueError("Invocation identity mismatch")
+        return row
 
     return ReadOnlyHarnessGateway(
         knowledge_search=knowledge.search,
         waybill_lookup=WaybillRepository(memory.connection_factory).get_by_number,
         tracking_lookup=tracking,
-        list_work_items=lambda limit: repository.list_work_items(limit=limit, offset=0),
         get_run=get_run,
-        get_evidence=repository.get_evidence,
         finance_summary=finance_summary,
         shipment_query=ShipmentQueryService(read_day=unavailable_shipment_source),
         read_boundary=read_boundary if invocations is not None else None,

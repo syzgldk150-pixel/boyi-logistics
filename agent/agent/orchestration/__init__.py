@@ -1,4 +1,4 @@
-"""Durable command, work-item, approval, and run orchestration."""
+"""Project policy, Direct invocation helpers and the shared orchestration models."""
 
 from agent.orchestration.models import (
     Actor,

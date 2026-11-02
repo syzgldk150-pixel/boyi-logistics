@@ -26,7 +26,6 @@ CORE_MODULE_CODES = frozenset(
         "harness",
         "automation_accounts",
         "llm_settings",
-        "work_items",
         "system_settings",
     }
 )
@@ -122,8 +121,8 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
     """Validate the exact source-owned module set once, at import time."""
 
     catalog = tuple(items)
-    if len(catalog) != 16:
-        raise ValueError("business module catalog must contain exactly 16 current menu identities")
+    if len(catalog) != 15:
+        raise ValueError("business module catalog must contain exactly 15 current menu identities")
     if any(not isinstance(item, BusinessModuleCode) for item in catalog):
         raise TypeError("business module catalog entries must be BusinessModuleCode")
     codes = tuple(item.module_code for item in catalog)
@@ -132,12 +131,11 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
     if set(codes) != {
         "overview", "waybill_entry", "waybill_query", "tracking", "receipts", "customer_service",
         "finance", "dispatch", "line_haul", "automations", "warehouse_monitor", "harness", "automation_accounts",
-        "llm_settings",
-        "work_items", "system_settings",
+        "llm_settings", "system_settings",
     }:
         raise ValueError("business module catalog must cover the exact current Console menu identities")
     if {item.module_code for item in catalog if not item.disable_allowed} != CORE_MODULE_CODES:
-        raise ValueError("only the seven core modules may be non-disableable")
+        raise ValueError("only the six core modules may be non-disableable")
     for field_name in ("menu_contributions", "page_contributions", "api_contributions", "permission_contributions"):
         contributions = [value for item in catalog for value in getattr(item, field_name)]
         if len(contributions) != len(set(contributions)):
@@ -167,7 +165,6 @@ BUSINESS_MODULE_CATALOG = register_business_modules(
         _module("harness", "/harness", "Harness 助手", disable_allowed=False, api_prefixes=("/harness",)),
         _module("automation_accounts", "/automation-accounts", "业务账号", disable_allowed=False, api_prefixes=("/automation-accounts",)),
         _module("llm_settings", "/settings/llm", "智能模型", disable_allowed=False, api_prefixes=("/settings/llm",)),
-        _module("work_items", "/work-items", "事项中心", disable_allowed=False, api_prefixes=("/control-plane",)),
         _module("system_settings", "/settings/accounts", "系统管理", disable_allowed=False, api_prefixes=("/settings/accounts",)),
     )
 )

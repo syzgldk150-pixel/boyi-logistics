@@ -278,10 +278,6 @@ class RuntimeGenerationLease:
     acquired_at: datetime
     expires_at: datetime
     outcome: RuntimeLeaseOutcome = RuntimeLeaseOutcome.RUNNING
-    # Legacy rows from before migration 019 intentionally remain unbound.
-    # New runtime acquisitions always populate this from the trusted
-    # orchestration invocation context.
-    orchestration_run_id: str | None = None
     invocation_id: str | None = None
 
 
@@ -294,7 +290,6 @@ class GenerationVerificationContext:
     account_bindings_sha256: str
     requires_write_verification: bool
     started_mutating_call_count: int | None = None
-    orchestration_run_id: str | None = None
     host_call_observations: tuple[Mapping[str, Any], ...] = ()
     plugin_id: str = ""
     invocation_id: str | None = None

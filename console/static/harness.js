@@ -195,9 +195,7 @@
           "knowledge.search": "帮我查询业务知识：",
           "waybill.lookup": "帮我查一下这个运单：",
           "tracking.lookup": "帮我查一下物流轨迹：",
-          "work_items.list_open": "帮我看看现在有哪些待处理事项",
-          "runs.get_summary": "帮我查看这个任务的运行结果：",
-          "artifact.inspect": "帮我查看这条运行证据：",
+          "runs.get_summary": "帮我查看这个插件执行结果：",
         };
         messageInput.value = examples[String(tool.tool_id || "")] || `帮我${title}`;
         resizeComposer();

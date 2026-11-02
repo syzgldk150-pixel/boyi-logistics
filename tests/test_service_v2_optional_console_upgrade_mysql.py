@@ -25,7 +25,7 @@ from shared.orchestration_repository_support import (
     ConcurrentUpdateError, IdempotencyConflict, OrchestrationPersistenceError,
 )
 from shared.plugin_json import plugin_json_digest
-from tests.test_legacy_unknown_scope_migration_mysql import database  # noqa: F401
+from tests.mysql_isolated_fixtures import database  # noqa: F401
 
 PROJECT = "upgrade-instance"
 ACTOR = "isolated-console-admin"

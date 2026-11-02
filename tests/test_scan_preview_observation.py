@@ -1,43 +1,9 @@
 """Diagnostic helpers retain validation failures and never publish a PASS."""
-from datetime import datetime, timezone
 import json
 
 import pytest
 
-from agent.orchestration import scan_preview_binding
-from agent.orchestration.models import OrchestrationError
 from tests.v32_acceptance import scan_preview_observation as observation
-
-
-@pytest.mark.parametrize('field', ['result_summary_json', 'result_summary'])
-@pytest.mark.parametrize('encoded', [False, True])
-def test_timestamp_observer_preserves_exact_validation_exception(monkeypatch, tmp_path, field, encoded):
-    error = OrchestrationError('SCAN_PREVIEW_INVALID', 'The scan preview observation time is in the future')
-    supplied = {'preview_run_id': 'synthetic-preview', 'now': datetime.now(timezone.utc)}
-    calls = []
-
-    def validator(_uow, **arguments):
-        calls.append(arguments)
-        raise error
-
-    class Steps:
-        def list_for_run(self, run_id):
-            assert run_id == supplied['preview_run_id']
-            result = {'data': {'preview_evidence': {'observed_at': '2026-09-07T18:00:00.123456+08:00'}}}
-            return [{field: json.dumps(result) if encoded else result}]
-
-    class Uow:
-        steps = Steps()
-
-    monkeypatch.setattr(scan_preview_binding, '_load_persisted_scan_preview', validator)
-    output = tmp_path / 'timing.json'
-    with observation.observe_preview_timestamps(output), pytest.raises(OrchestrationError) as caught:
-        scan_preview_binding._load_persisted_scan_preview(Uow(), **supplied)
-    assert caught.value is error and calls == [supplied]
-    report = json.loads(output.read_text())
-    assert report['status'] == 'FAIL'
-    assert report['persisted_times'][0]['observed_at'] == '2026-09-07T18:00:00.123456+08:00'
-    assert report['validation_now'] == str(supplied['now'])
 
 
 def test_partial_checkpoint_cannot_pass_or_hide_failed_case(tmp_path):

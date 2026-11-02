@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-10-31
+updated: 2026-11-02
 ---
 
 # 身份权限与统一对话
@@ -65,7 +65,7 @@ Service V2 明确返回 `NOT_APPLIED` 且宿主实际观察到零次写入时，
 
 客服韵达来源身份与寄件查询统一由 `agent/agent/tms_runtime/yunda_business_identity.py` 读取当前绑定会话的 `client/user/info`，只提取实际组织与网点字段，不能从账号前缀、调用参数或历史记录猜测。客服采集的“发布给我的”使用原页 `issuer_site=1`，发布方向使用原生发布列表；每页要求真实 `rows/total`，缺少组织、总数或原始问题件编号即失败，权威零记录保留为零。既有日期条件与人工查询入口不变，采集未见的历史记录仍走精确详情复核，不能直接当作已解决。
 
-AI 的 `runs.get_summary` 通过同一个受控读取入口先查精确 Invocation 编号，再在确实不存在时查历史 Run；数据库错误不能被解释成“未找到”。输出只包含状态、时间、插件版本、计数及脱敏错误，不向模型展开原始业务结果或参数。后台和飞书共用此实现。
+AI 的 `runs.get_summary` 通过同一个受控读取入口只查精确 Invocation 编号（2026-11 起不再回查历史 Run）；数据库错误不能被解释成“未找到”。待处理事项与运行证据两个旧只读工具已随事项中心删除。输出只包含状态、时间、插件版本、计数及脱敏错误，不向模型展开原始业务结果或参数。后台和飞书共用此实现。
 
 固定查询的参数校验使用 `ToolCatalogPort.validate_arguments`，不依赖单独核心目录的私有接口；组合目录继续校验当前核心和插件合同、禁用状态与身份权限。`tests/test_direct_readers.py` 覆盖后台与飞书通过生产组合目录查询，以及非法参数和已屏蔽能力不得到达实际处理器。
 

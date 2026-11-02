@@ -150,8 +150,7 @@ def test_harness_factory_tracking_reaches_actual_http_capability_and_normalizer(
     async def exercise():
         lifecycle = DirectPluginInvocationService(object(), SimpleNamespace(), None, release_hold_provider=lambda: False)
         runtime = SimpleNamespace(memory=SimpleNamespace(search_knowledge=lambda **kwargs: [], connection_factory=lambda: None))
-        repository = SimpleNamespace(list_work_items=lambda **kwargs: [], get_run=lambda _: None, get_evidence=lambda _: None)
-        gateway = build_read_only_harness_gateway(runtime, repository, invocations=lifecycle)
+        gateway = build_read_only_harness_gateway(runtime, invocations=lifecycle)
         # Only the optional database enrichment boundary is empty. The actual
         # tracking tool, capability, HTTP client, route, dispatcher and formatter run.
         with patch.object(track_waybill_tool, "get_waybill_tracking_cache", return_value=None):

@@ -546,10 +546,8 @@ FIXED_HARNESS_TOOL_IDS = (
     "knowledge.search",
     "waybill.lookup",
     "tracking.lookup",
-    "work_items.list_open",
     "finance.summary",
     "runs.get_summary",
-    "artifact.inspect",
     "shipment.query",
 )
 
@@ -559,9 +557,7 @@ _FIXED_ARGUMENT_KEYS = {
     "waybill.lookup": frozenset({"waybill_number"}),
     "tracking.lookup": frozenset({"tracking_number"}),
     "finance.summary": frozenset({"start_date", "end_date"}),
-    "work_items.list_open": frozenset({"limit"}),
     "runs.get_summary": frozenset({"run_id"}),
-    "artifact.inspect": frozenset({"artifact_id"}),
 }
 
 
@@ -605,15 +601,6 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
             input_schema=_object_schema({"tracking_number": string_id}, ("tracking_number",)),
         ),
         ToolDescriptor(
-            tool_id="work_items.list_open",
-            title="查看待处理事项",
-            description="查看当前待处理、受阻或需要关注的事项。",
-            input_schema=_object_schema(
-                {"limit": {"type": "integer", "minimum": 1, "maximum": 50}},
-                ("limit",),
-            ),
-        ),
-        ToolDescriptor(
             tool_id="finance.summary",
             title="查询财务汇总",
             description="读取指定日期范围的真实财务汇总，用于回答和分析；不触发采集。",
@@ -625,15 +612,9 @@ def build_fixed_harness_tools() -> tuple[FixedHarnessTool, ...]:
         ),
         ToolDescriptor(
             tool_id="runs.get_summary",
-            title="查看任务运行结果",
-            description="按任务运行编号查看安全摘要。",
+            title="查看插件执行结果",
+            description="按插件执行编号查看安全摘要。",
             input_schema=_object_schema({"run_id": string_id}, ("run_id",)),
-        ),
-        ToolDescriptor(
-            tool_id="artifact.inspect",
-            title="查看运行证据",
-            description="按证据编号查看脱敏后的运行证据摘要。",
-            input_schema=_object_schema({"artifact_id": string_id}, ("artifact_id",)),
         ),
         ToolDescriptor(tool_id="shipment.query", title="查询发货吨位",
             description="按网点和开单日期查询计费重量吨位，可按日、目的地分组及比较昨日。station 必须逐字保留用户给出的完整网点名称，禁止缩写、改名或删掉前缀；追问继承用空字符串。period=today 今天，yesterday 昨天（无已有参照的前一天），previous_day 已有单日查询的前一天，range 明确日期区间，inherit 继承有效日期。start_date/end_date 仅 range 填 YYYY-MM-DD，其余填空字符串。group_by=total/date/destination/inherit。comparison 仅要求比较时选 previous_day_full（昨日全天）或 previous_day_same_time（昨日同截止），否则 none。不能用于实际重量、结算重量、利润或扫描量。",
@@ -883,13 +864,6 @@ def _validate_fixed_arguments(
             raise _error("日期须为 YYYY-MM-DD", "HARNESS_ARGUMENT_INVALID") from exc
         if start > end or (end - start).days >= 366:
             raise _error("日期范围无效", "HARNESS_ARGUMENT_INVALID")
-    elif handle_id == "work_items.list_open":
-        if (
-            isinstance(safe.get("limit"), bool)
-            or not isinstance(safe.get("limit"), int)
-            or not 1 <= safe["limit"] <= 50
-        ):
-            raise _error("Fixed Harness arguments are invalid", "HARNESS_ARGUMENT_INVALID")
     else:
         field = next(iter(expected))
         if not isinstance(safe.get(field), str) or not 1 <= len(safe[field]) <= 191:

@@ -231,11 +231,8 @@ class AutomationProjectScheduleRepositoryMixin:
 
             cursor.execute(
                 """
-                SELECT task.*, policy.task_id AS policy_task_id,
-                       policy.mode AS policy_mode
+                SELECT task.*
                 FROM scheduled_tasks AS task
-                LEFT JOIN scheduled_task_approval_policies AS policy
-                  ON policy.task_id=task.id
                 WHERE task.automation_id=%s
                 ORDER BY task.id FOR UPDATE
                 """,
@@ -254,8 +251,6 @@ class AutomationProjectScheduleRepositoryMixin:
                 task.get("automation_generation") != committed_generation
                 or task.get("configuration_version") != current_version
                 or str(task.get("tool_name") or "") != tool_name
-                or task.get("policy_task_id") is None
-                or str(task.get("policy_mode") or "") == "EXACT_SCHEDULE_EXEMPT"
                 for task in existing_tasks
             ):
                 return ineligible("PHYSICAL_ROWS_DRIFT")
@@ -316,13 +311,6 @@ class AutomationProjectScheduleRepositoryMixin:
                         for task in new_tasks
                     ],
                 )
-                cursor.executemany(
-                    """
-                    INSERT INTO scheduled_task_approval_policies (task_id, mode)
-                    VALUES (%s, %s)
-                    """,
-                    [(task["id"], "REQUIRE_EACH_RUN") for task in new_tasks],
-                )
             stale_ids = sorted(
                 str(task["id"])
                 for cron, task in by_cron.items()
@@ -330,7 +318,6 @@ class AutomationProjectScheduleRepositoryMixin:
             )
             if stale_ids:
                 placeholders = ", ".join(["%s"] * len(stale_ids))
-                # Approval policy rows follow through ON DELETE CASCADE.
                 cursor.execute(
                     f"""
                     DELETE FROM scheduled_tasks

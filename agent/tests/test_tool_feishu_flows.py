@@ -162,7 +162,7 @@ class ToolFeishuFlowTests(unittest.TestCase):
 
         with (
             patch("feishu.bot.get_agent_core", return_value=_FakeAgent()),
-            patch.object(message_handler, "_FEISHU_APPROVAL_RUNTIME", _ApprovalRuntime()),
+            patch.object(message_handler, "_FEISHU_BINDING_RUNTIME", _ApprovalRuntime()),
             patch("feishu.message_handler.get_pending", return_value=None),
             patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
         ):

@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from agent.identity_access import authorize_console_request, require_project_access
-from agent.orchestration.feishu_approval_service import FeishuApprovalService
+from agent.orchestration.feishu_binding_service import FeishuBindingService
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.identity_repository import IdentityRepository
 from tests.test_feishu_bindings_mysql import binding_repository as binding_repository, pytestmark, seed_admin
@@ -15,13 +15,13 @@ from tests.mysql_migrated_database import database as database
 def setup_identities(repository):
     identities = IdentityRepository(repository._connection_factory)
     admin_id = seed_admin(repository)
-    service = FeishuApprovalService(repository, None, send_text=lambda *_: True, identity_access=identities)
+    service = FeishuBindingService(repository, identity_access=identities)
     return identities, admin_id, service
 
 
 def ordinary_account(repository, identities, role_id):
     account_id = seed_admin(repository)
-    with repository.unit_of_work() as uow, uow.feishu_approvals.cursor() as cursor:
+    with repository.unit_of_work() as uow, uow.feishu_bindings.cursor() as cursor:
         cursor.execute("UPDATE admin_users SET role='admin',control_plane_role='admin' WHERE id=%s", (account_id,))
         uow.commit()
     identities.assign_account(account_id, role_id)

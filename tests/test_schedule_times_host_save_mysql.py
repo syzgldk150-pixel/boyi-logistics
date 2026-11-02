@@ -81,9 +81,8 @@ def _rows(host, automation_id):
     with host.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
         cursor.execute(
             """SELECT task.id, task.cron_expression, task.automation_generation, task.configuration_version,
-                      task.enabled, task.tool_params, policy.mode
+                      task.enabled, task.tool_params
                FROM scheduled_tasks AS task
-               LEFT JOIN scheduled_task_approval_policies AS policy ON policy.task_id=task.id
                WHERE task.automation_id=%s ORDER BY task.cron_expression""",
             (automation_id,),
         )
@@ -160,8 +159,8 @@ def test_times_only_save_rewrites_rows_on_the_committed_generation(database, tmp
         rows = _rows(host, project)
         assert [row["cron_expression"] for row in rows] == ["0 8 * * *", "30 9 * * *"]
         assert rows[0]["id"] == first_rows[0]["id"]
-        assert {(row["automation_generation"], row["configuration_version"], bool(row["enabled"]),
-                 row["mode"]) for row in rows} == {(committed, version, True, "REQUIRE_EACH_RUN")}
+        assert {(row["automation_generation"], row["configuration_version"], bool(row["enabled"]))
+                for row in rows} == {(committed, version, True)}
         assert len({row["tool_params"] for row in rows}) == 1
         # Catalog/readiness reads and one save transaction, never the
         # dozens of per-step connections of a generation switch.
@@ -209,7 +208,7 @@ def test_times_only_save_rewrites_rows_on_the_committed_generation(database, tmp
         assert _generation_count(host, project) == generations
         assert host.catalog.require(project).committed_generation == committed
 
-        # Removing a time deletes only its row (and its policy row).
+        # Removing a time deletes only its row.
         _save(host, project, ["09:30"], expected={"kind": "daily_times", "times": ["08:00", "09:30"], "enabled": True})
         assert [row["cron_expression"] for row in _rows(host, project)] == ["30 9 * * *"]
 

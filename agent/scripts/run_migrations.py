@@ -221,21 +221,7 @@ def check_running_protected_writes() -> int:
         connection = _connect()
         with connection.cursor() as cursor:
             _require_mysql8(cursor)
-            if not _table_exists(cursor, "agent_run_steps"):
-                running_count = 0
-            else:
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) AS running_count
-                    FROM agent_run_steps
-                    WHERE status IN ('RUNNING', 'VERIFYING')
-                      AND operation_type IN (
-                          'EXTERNAL_WRITE', 'FINANCIAL_WRITE', 'DESTRUCTIVE'
-                      )
-                    """
-                )
-                row = cursor.fetchone()
-                running_count = int((row or {}).get("running_count") or 0)
+            running_count = 0
             if _table_exists(cursor, "automation_plugin_invocations"):
                 cursor.execute(
                     "SELECT COUNT(*) AS running_count FROM automation_plugin_invocations "

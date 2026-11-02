@@ -101,12 +101,6 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if project_route and project_route[1] == "/invocations":
         app._handle_automation_invocations_get(handler, project_route[0])
         return True
-    if project_route and project_route[1] == "/pending-approvals":
-        app._handle_automation_project_pending_approvals_get(
-            handler,
-            project_route[0],
-        )
-        return True
     return False
 
 
@@ -168,15 +162,4 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         if automation_id and "/" not in automation_id:
             app._handle_automation_plugin_settings_bridge(handler, automation_id)
             return True
-    project_route = _automation_project_route(path)
-    if project_route and project_route[1] in {
-        "/pending-approvals/approve",
-        "/pending-approvals/reject",
-    }:
-        app._handle_automation_project_pending_approvals_action(
-            handler,
-            project_route[0],
-            project_route[1].rsplit("/", 1)[-1],
-        )
-        return True
     return False

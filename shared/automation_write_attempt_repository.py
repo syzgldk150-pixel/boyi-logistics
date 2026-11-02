@@ -30,13 +30,10 @@ def record_generation_write_attempt_row(
     """Insert or exactly replay one STARTED receipt under the global locks."""
 
     required = {
-        "automation_id", "generation", "lease_id", "orchestration_run_id",
-        "step_id", "request_id", "operation", "action", "argument_sha256",
+        "automation_id", "generation", "lease_id", "invocation_id",
+        "request_id", "operation", "action", "argument_sha256",
         "target_ref_sha256", "target_ref_json",
     }
-    direct = "invocation_id" in receipt
-    if direct:
-        required = (required - {"orchestration_run_id", "step_id"}) | {"invocation_id"}
     if not required <= set(receipt) or set(receipt) - required - {"execution_resource_keys_json"}:
         raise ValueError("write attempt receipt fields are invalid")
     resource_keys = receipt.get('execution_resource_keys_json')
@@ -49,9 +46,7 @@ def record_generation_write_attempt_row(
     automation_id = _required_text(receipt["automation_id"], "automation_id")
     generation = _positive_int(receipt["generation"], "generation")
     lease_id = _required_text(receipt["lease_id"], "lease_id")
-    run_id = None if direct else _required_text(receipt["orchestration_run_id"], "orchestration_run_id")
-    step_id = None if direct else _required_text(receipt["step_id"], "step_id")
-    invocation_id = _required_text(receipt["invocation_id"], "invocation_id") if direct else None
+    invocation_id = _required_text(receipt["invocation_id"], "invocation_id")
     request_id = _required_text(receipt["request_id"], "request_id")
     operation = _required_text(receipt["operation"], "operation")
     action = _required_text(receipt["action"], "action")
@@ -92,13 +87,10 @@ def record_generation_write_attempt_row(
     ))
     expected = {
         "receipt_id": receipt_id, "automation_id": automation_id,
-        "generation": generation, "lease_id": lease_id,
-        "orchestration_run_id": run_id, "step_id": step_id,
+        "generation": generation, "lease_id": lease_id, "invocation_id": invocation_id,
         "request_id": request_id, "operation": operation, "action": action,
         "argument_sha256": argument_sha256, "target_ref_sha256": target_ref_sha256,
     }
-    if direct:
-        expected["invocation_id"] = invocation_id
 
     def require_exact(existing: Mapping[str, Any] | None) -> None:
         if existing is None or any(existing.get(key) != value for key, value in expected.items()):
@@ -108,8 +100,8 @@ def record_generation_write_attempt_row(
             raise IdempotencyConflict("write attempt target reference conflicts with an existing request")
 
     receipt_select = (
-        "SELECT receipt_id, automation_id, generation, lease_id, orchestration_run_id, "
-        "step_id, invocation_id, request_id, operation, action, argument_sha256, target_ref_sha256, "
+        "SELECT receipt_id, automation_id, generation, lease_id, "
+        "invocation_id, request_id, operation, action, argument_sha256, target_ref_sha256, "
         "target_ref_json FROM automation_write_attempt_receipts "
         "WHERE receipt_id=%s FOR UPDATE"
     )
@@ -147,8 +139,7 @@ def record_generation_write_attempt_row(
             locked_lease is None
             or str(locked_lease.get("automation_id") or "") != automation_id
             or int(locked_lease.get("generation") or 0) != generation
-            or locked_lease.get("orchestration_run_id") != run_id
-            or (direct and locked_lease.get("invocation_id") != invocation_id)
+            or locked_lease.get("invocation_id") != invocation_id
         ):
             raise IdempotencyConflict("write attempt generation lease changed")
         if str(locked_lease.get("outcome") or "") != "RUNNING":
@@ -159,14 +150,14 @@ def record_generation_write_attempt_row(
             """
             INSERT INTO automation_write_attempt_receipts (
                 receipt_id, automation_id, generation, lease_id,
-                orchestration_run_id, step_id, invocation_id, request_id, operation, action,
+                invocation_id, request_id, operation, action,
                 argument_sha256, target_ref_sha256, target_ref_json, outcome, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                       'STARTED', NOW(6), NOW(6))
             ON DUPLICATE KEY UPDATE receipt_id=receipt_id
             """,
             (
-                receipt_id, automation_id, generation, lease_id, run_id, step_id,
+                receipt_id, automation_id, generation, lease_id,
                 invocation_id,
                 request_id, operation, action, argument_sha256, target_ref_sha256,
                 _json_param(dict(target_ref), {}),

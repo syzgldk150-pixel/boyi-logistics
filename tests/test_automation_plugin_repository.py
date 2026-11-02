@@ -10,7 +10,6 @@ from shared.automation_plugin_generation_unknown_write_repository import (
     lock_archival_unknown_predecessor,
 )
 from shared.automation_project_policy_repository import AutomationProjectPolicyRepository
-from shared.feishu_approval_repository import FeishuApprovalRepository
 from shared.orchestration_repository_support import (
     ConcurrentUpdateError,
     IdempotencyConflict,
@@ -1266,7 +1265,6 @@ class AutomationPluginRepositoryTests(TestCase):
                 ),
                 ("FROM automation_project_policies", policy, 0),
                 ("FROM scheduled_tasks", [], 0),
-                ("FROM scheduled_tasks AS task", [], 0),
                 ("UPDATE automation_project_configs", None, 1),
                 ("UPDATE automation_projects", None, 1),
                 ("INSERT INTO automation_project_policy_events", None, 1),
@@ -1284,18 +1282,18 @@ class AutomationPluginRepositoryTests(TestCase):
         generation_sql, generation_params = executions[3]
         self.assertIn("ORDER BY generation FOR UPDATE", generation_sql)
         self.assertEqual(("instance-one",), generation_params)
-        project_sql, project_params = executions[8]
+        project_sql, project_params = executions[7]
         self.assertIn("target_generation=%s", project_sql)
         self.assertIn("committed_generation <=> %s", project_sql)
         self.assertEqual(
             (2, "instance-one", 7, 1, 1, "STABLE", "ENABLED"),
             project_params,
         )
-        policy_event_sql, policy_event_params = executions[9]
+        policy_event_sql, policy_event_params = executions[8]
         self.assertIn("project_generation", policy_event_sql)
         self.assertEqual("PROJECT_FULL_AUTO", policy_event_params[3])
         self.assertEqual(2, policy_event_params[4])
-        policy_sql, policy_params = executions[10]
+        policy_sql, policy_params = executions[9]
         self.assertIn("project_generation=%s", policy_sql)
         self.assertIn("version=%s", policy_sql)
         self.assertEqual((2, 3, "instance-one", 4), policy_params)
@@ -1442,7 +1440,6 @@ class AutomationPluginRepositoryTests(TestCase):
                         ),
                         ("FROM automation_project_policies", policy, 0),
                         ("FROM scheduled_tasks", [], 0),
-                        ("FROM scheduled_tasks AS task", [], 0),
                         ("UPDATE automation_project_configs", None, 1),
                         ("UPDATE automation_projects", None, 1),
                         ("INSERT INTO automation_project_policy_events", None, 1),
@@ -1455,9 +1452,9 @@ class AutomationPluginRepositoryTests(TestCase):
 
                 _save_configuration(AutomationPluginRepository(connection))
 
-                event_params = connection.cursor_instance.executions[9][1]
+                event_params = connection.cursor_instance.executions[8][1]
                 self.assertEqual(mode, event_params[2])
-                update_sql, update_params = connection.cursor_instance.executions[10]
+                update_sql, update_params = connection.cursor_instance.executions[9]
                 self.assertNotIn("SET mode=", update_sql)
                 self.assertIn("contract_hash=NULL", update_sql)
                 self.assertEqual((2, 3, "instance-one", 4), update_params)
@@ -1501,7 +1498,6 @@ class AutomationPluginRepositoryTests(TestCase):
                 ),
                 ("FROM automation_project_policies", policy, 0),
                 ("FROM scheduled_tasks", [], 0),
-                ("FROM scheduled_tasks AS task", [], 0),
                 ("UPDATE automation_project_configs", None, 1),
                 ("UPDATE automation_projects", None, 0),
             ]
@@ -1527,160 +1523,6 @@ class AutomationPluginRepositoryTests(TestCase):
         with self.assertRaises(OrchestrationPersistenceError):
             _save_configuration(AutomationPluginRepository(upgrading))
         self.assertEqual(1, len(upgrading.cursor_instance.executions))
-
-    def test_project_change_invalidates_pending_approvals_and_wakes_runs(self):
-        connection = _ScriptedConnection(
-            [
-                (
-                    "FROM agent_runs AS run",
-                    [{"run_id": "run-a"}, {"run_id": "run-b"}],
-                    0,
-                ),
-                ("UPDATE approval_requests", None, 2),
-                ("UPDATE agent_runs", None, 2),
-            ]
-        )
-        repository = AutomationProjectPolicyRepository(connection)
-
-        run_ids = repository.invalidate_pending_approvals_and_wake_runs(
-            "instance-one"
-        )
-
-        self.assertEqual(("run-a", "run-b"), run_ids)
-        select_sql, _ = connection.cursor_instance.executions[0]
-        self.assertIn("ORDER BY run.run_id", " ".join(select_sql.split()))
-        self.assertIn("FOR UPDATE", select_sql)
-        approval_sql, approval_params = connection.cursor_instance.executions[1]
-        self.assertIn("status='INVALIDATED'", approval_sql)
-        self.assertIn("status IN ('PENDING', 'APPROVED')", approval_sql)
-        self.assertEqual(("run-a", "run-b"), approval_params)
-        run_sql, run_params = connection.cursor_instance.executions[2]
-        self.assertIn("next_attempt_at=NOW(6)", run_sql)
-        self.assertEqual(("run-a", "run-b"), run_params)
-
-    def test_project_change_emits_feishu_queue_completion_for_invalidated_approval(self):
-        connection = _ScriptedConnection(
-            [
-                (
-                    "FROM agent_runs AS run",
-                    [{"run_id": "run-a"}],
-                    0,
-                ),
-                (
-                    "FROM approval_requests AS approval",
-                    [
-                        {
-                            "approval_id": "approval-a",
-                            "work_item_id": "work-a",
-                            "run_id": "run-a",
-                            "plan_hash": "a" * 64,
-                            "correlation_id": "correlation-a",
-                            "causation_id": None,
-                        }
-                    ],
-                    0,
-                ),
-                ("UPDATE approval_requests", None, 1),
-                ("UPDATE agent_runs", None, 1),
-            ]
-        )
-        repository = AutomationProjectPolicyRepository(connection)
-
-        class _Events:
-            def __init__(self):
-                self.rows = []
-
-            def append_with_outbox(self, event, deliveries):
-                self.rows.append((dict(event), tuple(deliveries)))
-
-        events = _Events()
-
-        run_ids = repository.invalidate_pending_approvals_and_wake_runs(
-            "instance-one",
-            event_repository=events,
-        )
-
-        self.assertEqual(("run-a",), run_ids)
-        self.assertEqual(1, len(events.rows))
-        event, deliveries = events.rows[0]
-        self.assertEqual("agent.approval.invalidated", event["event_type"])
-        self.assertEqual("approval-a", event["entity_id"])
-        self.assertEqual(
-            {"orchestration.audit", "feishu.approval"},
-            {row["consumer_name"] for row in deliveries},
-        )
-
-    def test_feishu_active_lookup_locks_binding_then_delivery_before_projection(self):
-        connection = _ScriptedConnection(
-            [
-                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
-                ("FROM feishu_approval_deliveries", {"delivery_id": "d-1"}, 0),
-                (
-                    "JOIN approval_requests AS approval",
-                    {"delivery_id": "d-1", "approval_id": "approval-a"},
-                    0,
-                ),
-            ]
-        )
-        repository = FeishuApprovalRepository(connection)
-
-        active = repository.active_for_binding("binding-a", for_update=True)
-
-        self.assertEqual("approval-a", active["approval_id"])
-        binding_lock_sql, _ = connection.cursor_instance.executions[0]
-        delivery_lock_sql, _ = connection.cursor_instance.executions[1]
-        projection_sql, _ = connection.cursor_instance.executions[2]
-        self.assertIn("FOR UPDATE", binding_lock_sql)
-        self.assertIn("FROM feishu_admin_bindings", binding_lock_sql)
-        self.assertIn("FOR UPDATE", delivery_lock_sql)
-        self.assertNotIn("approval_requests", delivery_lock_sql)
-        self.assertNotIn("agent_runs", delivery_lock_sql)
-        self.assertNotIn("FOR UPDATE", projection_sql)
-        self.assertIn("command.automation_id AS automation_id", projection_sql)
-        self.assertNotIn("run.automation_id", projection_sql)
-        self.assertIn("FROM agent_run_steps AS step", projection_sql)
-        self.assertIn("AS tool_names", projection_sql)
-        self.assertNotIn("plan_json", projection_sql)
-
-    def test_feishu_single_binding_finish_never_expands_to_other_bindings(self):
-        connection = _ScriptedConnection(
-            [
-                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
-                ("UPDATE feishu_approval_deliveries", None, 1),
-                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
-                ("UPDATE feishu_approval_deliveries", None, 0),
-                ("FROM feishu_approval_deliveries", {"delivery_id": "d-next"}, 0),
-                ("FROM feishu_admin_bindings", {"binding_id": "binding-a"}, 0),
-                ("FROM feishu_approval_deliveries", {"delivery_id": "d-next"}, 0),
-                (
-                    "JOIN approval_requests AS approval",
-                    {"delivery_id": "d-next", "approval_id": "approval-next"},
-                    0,
-                ),
-            ]
-        )
-        repository = FeishuApprovalRepository(connection)
-
-        binding_ids = repository.finish_active_for_binding(
-            "binding-a",
-            "approval-stale",
-            status="SKIPPED",
-        )
-
-        self.assertEqual(["binding-a"], binding_ids)
-        statements = [
-            " ".join(str(sql).split())
-            for sql, _params in connection.cursor_instance.executions
-        ]
-        self.assertFalse(
-            any("SELECT DISTINCT binding_id" in sql for sql in statements)
-        )
-        update_sql, update_params = connection.cursor_instance.executions[1]
-        self.assertIn("WHERE binding_id=%s AND approval_id=%s", update_sql)
-        self.assertEqual(
-            ("SKIPPED", "binding-a", "approval-stale"),
-            update_params,
-        )
 
     def test_system_schedule_is_closed_and_reversible_without_browser_cron_or_ids(self):
         schedule = _normalized_project_schedule(
@@ -1776,49 +1618,6 @@ class AutomationPluginRepositoryTests(TestCase):
                     {"cron_expression": "7 0 * * *", "enabled": True},
                 ]
             )
-
-    def test_grouped_approval_idempotency_binds_actor_comment_and_decided_set(self):
-        persisted = {
-            "decision": "APPROVED",
-            "expected_pending_set_hash": "a" * 64,
-            "decided_pending_set_hash": "a" * 64,
-            "decided_count": 2,
-            "actor_id": "admin-one",
-            "actor_role": "super_admin",
-            "comment": "approve both",
-        }
-        repository = AutomationProjectPolicyRepository(_Connection())
-        repository.get_batch_by_request = lambda *_args, **_kwargs: dict(persisted)  # type: ignore[method-assign]
-        base = {
-            "batch_id": "batch-one",
-            "automation_id": "instance-one",
-            "request_id": "request-one",
-            "decision": "APPROVED",
-            "expected_pending_set_hash": "a" * 64,
-            "decided_pending_set_hash": "a" * 64,
-            "decided_count": 2,
-            "actor_id": "admin-one",
-            "actor_role": "super_admin",
-            "comment": "approve both",
-            "result_json": {},
-        }
-        self.assertEqual(
-            repository.create_batch(base)["actor_id"],
-            "admin-one",
-        )
-        for field, value in (
-            ("actor_id", "admin-two"),
-            ("actor_role", "admin"),
-            ("comment", "different"),
-            ("decided_pending_set_hash", "b" * 64),
-            ("decided_count", 1),
-        ):
-            changed = dict(base)
-            changed[field] = value
-            with self.subTest(field=field):
-                with self.assertRaises(IdempotencyConflict):
-                    repository.create_batch(changed)
-
 
 if __name__ == "__main__":
     import unittest

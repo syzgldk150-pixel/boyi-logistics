@@ -2,7 +2,7 @@
 module: 项目验收
 type: 验收映射
 status: historical
-updated: 2026-10-29
+updated: 2026-11-02
 ---
 
 # 架构 V1 与原 V3.2 验收映射
@@ -56,6 +56,8 @@ isolated "$TASK_PYTHON" agent/scripts/accept_low_maintenance_v32.py --phase all 
 ## 每组原始驱动映射
 
 `pytest` 列列出矩阵中的原始测试文件；精确函数引用与完整需求直接见机器矩阵，避免维护第二套条件。`probe` 对应下一节实际命令。全部适用组由上面的完整驱动一次执行。
+
+2026-11 第三期删除旧控制平面后，表中 `tests/test_workflow_runner_*`、`agent/tests/test_outbox_dispatcher.py`、`console/tests/test_control_plane_ui.py`、`tests/test_service_v2_policy_runtime.py` 等旧 Runner、Outbox、事项中心与 Plan 策略用例已随代码删除；驱动会跳过不存在的文件，相关组的现行证据以 Direct 调用测试（`tests/test_direct_*_mysql.py`、`tests/test_automation_project_policy_service.py`）为准。
 
 | 组 | 场景 | pytest 文件 | probe |
 |---|---|---|---|
@@ -152,7 +154,6 @@ P4 真实运行命令与证据见 `docs/direct_waybill_query.md`。已完成两�
 ```bash
 isolated "$TASK_PYTHON" -m pytest -q \
   tests/test_waybill_source_coverage_mysql.py tests/test_yunda_source_contracts.py \
-  tests/test_legacy_execution_retirement_mysql.py tests/test_retired_execution_rollback.py \
   tests/test_direct_invocation_public_metadata.py \
   tests/test_automation_invocation_history_browser_mysql.py \
   console/tests/test_automation_invocation_history.py \

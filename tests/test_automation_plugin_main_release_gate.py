@@ -16,21 +16,6 @@ from agent.core import AgentCore
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-class _Runner:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-
-    def resume_after_release(self) -> dict[str, Any]:
-        self.events.append("runner-running")
-        return {"state": "reserved", "release_hold": False, "active_runs": 0}
-
-    def runtime_status(self) -> dict[str, Any]:
-        return {"state": "reserved", "release_hold": False, "active_runs": 0}
-
-    def hold_for_release(self) -> None:
-        self.events.append("runner-held")
-
-
 class _PluginRuntime:
     def __init__(
         self,
@@ -97,12 +82,6 @@ class _HealthStatusProvider:
         raise AssertionError("internal health must not wait on the provider session lock")
 
 
-class _HealthRepository:
-    @staticmethod
-    def outbox_health() -> dict[str, Any]:
-        return {"status": "ok"}
-
-
 def _install_activation_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -111,7 +90,6 @@ def _install_activation_fakes(
     plugin_runnable: bool = True,
 ) -> None:
     monkeypatch.setattr(main, "_require_console_admin_request", lambda _request: None)
-    monkeypatch.setattr(main, "workflow_runner", _Runner(events))
     monkeypatch.setattr(
         main,
         "automation_plugin_runtime",
@@ -156,7 +134,6 @@ def test_release_marker_is_consumed_when_plugin_service_is_healthy(
         "plugins-reconciled",
         "plugins-health-checked",
         "scheduler-running",
-        "runner-running",
         "marker-consumed",
     ]
 
@@ -174,7 +151,6 @@ def test_plugin_service_integrity_failure_keeps_every_runtime_held(
     assert events == [
         "plugins-reconciled",
         "plugins-health-checked",
-        "runner-held",
         "scheduler-held",
     ]
     assert "marker-consumed" not in events
@@ -199,7 +175,6 @@ def test_explicitly_unavailable_projects_do_not_block_release_activation(
         "plugins-reconciled",
         "plugins-health-checked",
         "scheduler-running",
-        "runner-running",
         "marker-consumed",
     ]
 
@@ -217,8 +192,6 @@ def test_internal_health_accepts_plugin_execution_router_observability(
     runtime.llm = _HealthStatusProvider()
     runtime.memory = _HealthStatusProvider()
     monkeypatch.setattr(main, "agent_core", runtime)
-    monkeypatch.setattr(main, "orchestration_repository", _HealthRepository())
-    monkeypatch.setattr(main, "workflow_runner", _Runner([]))
     monkeypatch.setattr(main, "feishu_event_mode", lambda: "websocket")
     monkeypatch.setattr(
         main,
@@ -266,21 +239,6 @@ def test_running_plugin_health_remains_a_live_check(
 
     assert health["ok"] is True
     assert events == ["plugins-health-checked"]
-
-
-def test_runner_concurrency_settings_are_positive_and_explicit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("WORKFLOW_RUNNER_CONCURRENCY", raising=False)
-    assert main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2) == 2
-
-    monkeypatch.setenv("WORKFLOW_RUNNER_CONCURRENCY", "3")
-    assert main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2) == 3
-
-    for invalid in ("0", "-1", "invalid"):
-        monkeypatch.setenv("WORKFLOW_RUNNER_CONCURRENCY", invalid)
-        with pytest.raises(RuntimeError, match="positive integer"):
-            main._positive_runtime_int("WORKFLOW_RUNNER_CONCURRENCY", 2)
 
 
 def test_windows_worker_routes_are_not_mounted(

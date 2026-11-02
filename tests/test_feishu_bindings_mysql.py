@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from agent.orchestration.feishu_approval_service import FeishuApprovalService
+from agent.orchestration.feishu_binding_service import FeishuBindingService
 from shared.orchestration_repository import OrchestrationRepository
 from tests.mysql_migrated_database import database as database
 
@@ -32,7 +32,7 @@ def binding_repository(database, request):
 
 
 def seed_admin(repository):
-    with repository.unit_of_work() as uow, uow.feishu_approvals.cursor() as cursor:
+    with repository.unit_of_work() as uow, uow.feishu_bindings.cursor() as cursor:
         cursor.execute(
             "INSERT INTO admin_users (username, password_hash, display_name, is_active, role, control_plane_role, created_at, updated_at) "
             "VALUES (%s, 'synthetic-not-a-login', 'Binding test', 1, 'super_admin', 'super_admin', NOW(6), NOW(6))",
@@ -46,7 +46,7 @@ def seed_admin(repository):
 def test_fresh_binding_is_accepted_with_either_database_timezone(binding_repository):
     repository = binding_repository
     admin_id = seed_admin(repository)
-    service = FeishuApprovalService(repository, None, send_text=lambda *_: True)
+    service = FeishuBindingService(repository)
     challenge = service.create_binding_challenge(admin_id)
     sender = f"ou-synthetic-{uuid4().hex}"
     assert "绑定成功" in service.handle_binding_text(sender, "test-chat", challenge["command"])
@@ -57,9 +57,9 @@ def test_fresh_binding_is_accepted_with_either_database_timezone(binding_reposit
 def test_expired_binding_is_not_reported_as_another_administrator(binding_repository):
     repository = binding_repository
     admin_id = seed_admin(repository)
-    service = FeishuApprovalService(repository, None, send_text=lambda *_: True)
+    service = FeishuBindingService(repository)
     challenge = service.create_binding_challenge(admin_id)
-    with repository.unit_of_work() as uow, uow.feishu_approvals.cursor() as cursor:
+    with repository.unit_of_work() as uow, uow.feishu_bindings.cursor() as cursor:
         cursor.execute("UPDATE feishu_admin_binding_challenges SET expires_at=%s WHERE challenge_id=%s",
                        (datetime(2000, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None), challenge["challenge_id"]))
         uow.commit()

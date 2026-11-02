@@ -13,7 +13,6 @@ from . import (
     auth,
     automation,
     business_modules,
-    control_plane,
     customer_service,
     extensions,
     finance,
@@ -34,7 +33,6 @@ class ConsoleRouteDispatcher:
     _ROUTERS = (
         auth,
         business_modules,
-        control_plane,
         harness,
         llm_settings,
         extensions,

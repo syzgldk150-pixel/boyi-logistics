@@ -1,7 +1,7 @@
 """Closed internal HTTP projection for project-level automation policy.
 
 The signed Console principal is resolved by the composition root.  Browser
-payloads never carry actors, approval IDs, plan hashes, plugin manifests, or
+payloads never carry actors, plugin manifests, or
 runtime generation material.
 """
 
@@ -34,14 +34,6 @@ class ProjectPolicyUpdateRequest(BaseModel):
     comment: str = Field(default="", max_length=500)
     expected_policy_version: int = Field(ge=1)
     expected_project_configuration_version: int = Field(ge=1)
-
-
-class ProjectPendingDecisionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    expected_pending_set_hash: str
-    request_id: str
-    comment: str = Field(default="", max_length=500)
 
 
 class ProjectInvokeRequest(BaseModel):
@@ -114,59 +106,6 @@ def create_automation_project_router(
         except OrchestrationError as exc:
             raise HTTPException(status_code=422, detail=exc.code) from exc
         return api_success(await asyncio.to_thread(service_provider().list_policies, automation_ids=sorted(selected)))
-
-    @router.get(
-        "/internal/v1/automation-projects/{automation_id}/pending-approvals"
-    )
-    async def get_pending_project_approvals(
-        automation_id: str,
-        request: Request,
-    ) -> dict[str, Any]:
-        actor = actor_provider(request)
-        return api_success(
-            service_provider().pending_approvals(automation_id, actor=actor)
-        )
-
-    async def decide_pending(
-        automation_id: str,
-        payload: ProjectPendingDecisionRequest,
-        request: Request,
-        *,
-        decision: str,
-    ) -> dict[str, Any]:
-        actor_provider(request)
-        return JSONResponse(status_code=410, content={"ok": False, "error": {
-            "code": "HISTORICAL_RUN_READ_ONLY", "message": "历史执行记录仅供查看；请重新触发插件。"}})
-
-    @router.post(
-        "/internal/v1/automation-projects/{automation_id}/pending-approvals/approve"
-    )
-    async def approve_pending_project_approvals(
-        automation_id: str,
-        payload: ProjectPendingDecisionRequest,
-        request: Request,
-    ) -> dict[str, Any]:
-        return await decide_pending(
-            automation_id,
-            payload,
-            request,
-            decision="APPROVED",
-        )
-
-    @router.post(
-        "/internal/v1/automation-projects/{automation_id}/pending-approvals/reject"
-    )
-    async def reject_pending_project_approvals(
-        automation_id: str,
-        payload: ProjectPendingDecisionRequest,
-        request: Request,
-    ) -> dict[str, Any]:
-        return await decide_pending(
-            automation_id,
-            payload,
-            request,
-            decision="REJECTED",
-        )
 
     @router.get(
         "/internal/v1/automation-projects/{automation_id}/scan-previews/{preview_invocation_id}"
@@ -308,7 +247,6 @@ def create_automation_project_router(
 
 __all__ = [
     "ProjectInvokeRequest",
-    "ProjectPendingDecisionRequest",
     "ProjectPolicyUpdateRequest",
     "ProjectSelectionConfirmationRequest",
     "ProjectSelectionPreviewRequest",

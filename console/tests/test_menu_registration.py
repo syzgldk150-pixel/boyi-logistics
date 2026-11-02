@@ -46,7 +46,6 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "harness",
         "automation_accounts",
         "llm_settings",
-        "work_items",
         "system_settings",
     )
     assert CONSOLE_NAVIGATION == tuple(
@@ -54,9 +53,6 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         for item in CONSOLE_MENU_REGISTRATIONS
         if item.show_in_navigation
     )
-    assert next(
-        item for item in CONSOLE_MENU_REGISTRATIONS if item.menu_id == "work_items"
-    ).show_in_navigation is False
     assert "/work-items" not in {item["route"] for item in CONSOLE_NAVIGATION}
     assert all(
         set(item) == {"route", "label", "mobile_label", "icon", "section"}
@@ -65,7 +61,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
 
 
 def test_system_status_menu_is_retired() -> None:
-    assert len(BUSINESS_MODULE_CATALOG) == 16
+    assert len(BUSINESS_MODULE_CATALOG) == 15
     assert CONSOLE_MENU_REGISTRATIONS[-1].menu_id == "system_settings"
     assert "/settings/system-status" not in NAVIGATION_BY_ROUTE
     assert "/settings/modules" not in {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES}

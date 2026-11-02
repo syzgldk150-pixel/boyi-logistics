@@ -95,34 +95,6 @@ def test_policy_list_exact_scope_is_optional_and_validated():
     assert len(service.calls) == 2
 
 
-def test_grouped_approval_route_never_accepts_approval_ids_or_plan_hashes() -> None:
-    client, service, actor = _client()
-    body = {
-        "expected_pending_set_hash": "a" * 64,
-        "request_id": "request-3",
-        "comment": "approve visible set",
-    }
-
-    approved = client.post(
-        "/internal/v1/automation-projects/project-a/pending-approvals/approve",
-        json=body,
-    )
-
-    assert approved.status_code == 410
-    assert approved.json()["error"]["code"] == "HISTORICAL_RUN_READ_ONLY"
-    assert service.calls == []
-    denied = client.post("/internal/v1/automation-projects/project-a/pending-approvals/reject", json=body)
-    assert denied.status_code == 410
-    assert service.calls == []
-
-    rejected = client.post(
-        "/internal/v1/automation-projects/project-a/pending-approvals/approve",
-        json={**body, "approval_ids": ["forged"], "plan_hash": "b" * 64},
-    )
-    assert rejected.status_code == 422
-    assert len(service.calls) == 0
-
-
 def test_console_invoke_passes_runtime_inputs_for_manifest_validation() -> None:
     client, service, actor = _client()
     inputs = {"address": "测试省测试市示例路1号", "weight": 12.5, "volume": 0.045}

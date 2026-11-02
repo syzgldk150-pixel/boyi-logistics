@@ -1,4 +1,4 @@
-"""Project-scoped authorization, grouped approvals, and typed invocation.
+"""Project-scoped authorization and typed invocation.
 
 The service never accepts task identities, plan hashes, contract hashes, or
 actor fields from a browser.  Those values are resolved from the immutable
@@ -10,9 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from typing import Any, Awaitable
 
 from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES
@@ -23,32 +21,19 @@ from agent.automation_plugins.catalog import (
     project_contract_fragment,
 )
 from agent.automation_plugins.catalog_read_scope import catalog_read_transaction, catalog_row_cache
-from agent.automation_plugins.service_v2_contract import (
-    SELECTION_ARGUMENT_FIELDS,
-    SELECTION_PHASE_FORMAL,
-    SELECTION_PHASE_PREVIEW,
-    resolve_service_v2_selection_phase,
-)
 from agent.orchestration.automation_project_service_v2 import (
     validate_service_v2_compiled_target,
 )
-from agent.orchestration.command_gateway import CommandGateway
 from agent.orchestration.models import (
     Actor,
     ActorType,
-    OperationType,
     OrchestrationError,
-    Plan,
-    RiskLevel,
 )
-from agent.orchestration.policy_engine import ProjectPolicyEvaluation
 from agent.orchestration.automation_project_policy_support import (
     policy_list_automation_ids, scoped_policy_projection, _automation_id,
     _datetime_text,
-    _pending_set_hash,
     _policy_summary,
     _positive_int,
-    _project_denied,
     _selection_contribution_id,
 )
 from agent.orchestration.scan_preview_binding import (
@@ -56,12 +41,10 @@ from agent.orchestration.scan_preview_binding import (
 )
 from agent.orchestration.selection_preview_binding import (
     is_selection_preview_project,
-    selection_preview_contribution,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
     AutomationProjectContractError,
-    AutomationProjectInvocation,
     AutomationProjectPolicyMode,
     CompiledAutomationProjectContract,
     compile_automation_project_contract,
@@ -75,16 +58,6 @@ from shared.automation_project_policy_repository import (
 logger = logging.getLogger(__name__)
 
 
-_SOURCE_LABELS = {
-    "console": "后台",
-    "harness": "Harness",
-    "scheduler": "定时",
-    "feishu": "飞书",
-    "webhook": "Webhook",
-    "events": "Event",
-    "module_slots": "模块扩展",
-}
-_RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3}
 _DEFAULT_FULL_AUTO_ACTOR_ID = "system:migration:automation-full-auto-v1"
 _DEFAULT_FULL_AUTO_REASON = "AUTOMATION_DEFAULT_FULL_AUTO"
 _PROJECT_FULL_AUTO = AutomationProjectPolicyMode.PROJECT_FULL_AUTO.value
@@ -98,8 +71,6 @@ class AutomationProjectPolicyService:
         repository: Any,
         plugin_catalog: PluginCatalog,
         *,
-        command_gateway: CommandGateway | None = None,
-        wake_runner: Callable[[str], None] | None = None,
         dynamic_resolver: (Callable[[str, str, Mapping[str, Any]], Any] | None) = None,
         release_hold_provider: Callable[[], bool] | None = None,
         contribution_registry: Any | None = None,
@@ -107,18 +78,10 @@ class AutomationProjectPolicyService:
     ) -> None:
         self._repository = repository
         self._plugin_catalog = plugin_catalog
-        self._command_gateway = command_gateway
-        self._wake_runner = wake_runner
         self._dynamic_resolver = dynamic_resolver
         self._release_hold_provider = release_hold_provider
         self._contribution_registry = contribution_registry
         self.direct_invocations = direct_invocations
-
-    @property
-    def command_gateway(self) -> CommandGateway:
-        if self._command_gateway is None:
-            raise OrchestrationError("PROJECT_INVOKE_UNAVAILABLE", "Automation project command gateway is unavailable")
-        return self._command_gateway
 
     def list_policies(self, *, automation_ids: Sequence[str] | None = None) -> dict[str, Any]:
         selected = policy_list_automation_ids(automation_ids) if automation_ids is not None else None
@@ -226,19 +189,6 @@ class AutomationProjectPolicyService:
                 changed += 1
             uow.commit()
         return {"changed": changed}
-
-    def pending_approvals(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
-        safe_id = _automation_id(automation_id)
-        self._require_console_admin(actor)
-        with self._repository.unit_of_work() as uow:
-            if uow.automation_plugins.get_project(safe_id) is None:
-                raise OrchestrationError(
-                    "AUTOMATION_PROJECT_NOT_FOUND",
-                    "Automation project is not installed",
-                )
-            rows = uow.automation_projects.list_pending_approvals(safe_id)
-            projection = self._pending_projection(safe_id, rows, actor=actor)
-        return projection
 
     def get_scan_preview_projection(self, automation_id: str, *, preview_invocation_id: str) -> dict[str, Any]:
         from agent.orchestration.direct_invocation_previews import project_preview
@@ -386,202 +336,6 @@ class AutomationProjectPolicyService:
             if is_selection_preview_project(entry):
                 result["selection_preview"] = self.get_selection_preview_projection(automation_id, preview_invocation_id=result["invocation_id"])
         return result
-
-    def evaluate_invocation(
-        self,
-        plan: Plan,
-        actor: Actor,
-        source: str,
-        execution_context: Mapping[str, Any],
-        invocation: AutomationProjectInvocation,
-        project_transaction: Any | None = None,
-    ) -> ProjectPolicyEvaluation:
-        del actor
-        if source != invocation.entrypoint.value:
-            return _project_denied(
-                "PROJECT_ENTRYPOINT_MISMATCH",
-                "Automation invocation source is not its signed entrypoint",
-            )
-        try:
-            entry = self._plugin_catalog.require(invocation.automation_id)
-            if project_transaction is None:
-                with self._repository.unit_of_work() as uow:
-                    contract, _config = self._lock_and_compile_contract(
-                        uow,
-                        entry,
-                        require_enabled=True,
-                        lock_rows=False,
-                    )
-                    policy = uow.automation_projects.get_policy(
-                        invocation.automation_id,
-                    )
-                    policy_events = (
-                        uow.automation_projects.list_policy_events(
-                            invocation.automation_id,
-                        )
-                        if is_scan_preview_project(entry)
-                        else []
-                    )
-            else:
-                contract, _config = self._lock_and_compile_contract(
-                    project_transaction,
-                    entry,
-                    require_enabled=True,
-                    lock_rows=True,
-                )
-                policy = project_transaction.automation_projects.get_policy(
-                    invocation.automation_id,
-                    for_update=True,
-                )
-                policy_events = (
-                    project_transaction.automation_projects.list_policy_events(
-                        invocation.automation_id,
-                        for_update=True,
-                    )
-                    if is_scan_preview_project(entry)
-                    else []
-                )
-        except (AutomationProjectContractError, KeyError, ValueError):
-            return _project_denied(
-                "PROJECT_INVOCATION_STALE",
-                "Automation project contract is no longer current",
-            )
-        if policy is None:
-            return _project_denied(
-                "PROJECT_POLICY_NOT_INITIALIZED",
-                "Automation project policy is not initialized",
-            )
-        # The invocation binds the accepted command to one exact plugin and
-        # project-configuration contract.  Policy is different: it is durable
-        # administrator intent and must be re-read when a persisted Run is
-        # resumed.  Rejecting an older policy_version here would make a
-        # REQUIRE_EACH_RUN -> PROJECT_FULL_AUTO change wake a waiting Run only
-        # to fail it as stale before the current policy can take effect.
-        # Contract/generation/configuration matching below remains strict.
-        if getattr(entry, "runtime_model", None) != "SERVICE_V2":
-            return _project_denied(
-                "PROJECT_RUNTIME_MODEL_INVALID",
-                "Only current plugin projects can be evaluated",
-            )
-        selection_phase: str | None = None
-        selection_invocation = False
-        if is_selection_preview_project(entry):
-            declaration = selection_preview_contribution(entry, source)
-            selection_invocation = bool(
-                declaration is not None
-                and declaration.get("id") == invocation.contract_id
-            )
-        if selection_invocation:
-            if len(plan.steps) != 1:
-                return _project_denied(
-                    "SELECTION_EXECUTION_PHASE_INVALID",
-                    "Selection execution requires one exact governed step",
-                )
-            try:
-                selection_phase = resolve_service_v2_selection_phase(
-                    plan.steps[0].arguments
-                )
-                if execution_context.get("selection_phase") != selection_phase:
-                    raise ValueError("selection phase context drifted")
-            except ValueError:
-                return _project_denied(
-                    "SELECTION_EXECUTION_PHASE_INVALID",
-                    "Selection execution phase is incomplete or ambiguous",
-                )
-        contract_plan = plan
-        if selection_phase in {SELECTION_PHASE_PREVIEW, SELECTION_PHASE_FORMAL}:
-            selection_step = plan.steps[0]
-            if selection_phase == SELECTION_PHASE_PREVIEW and (
-                selection_step.operation_type is not OperationType.READ
-                or selection_step.risk_level is not RiskLevel.LOW
-            ):
-                return _project_denied(
-                    "SELECTION_EXECUTION_PHASE_INVALID",
-                    "Selection preview plan does not use read-only governance",
-                )
-            contract_step = replace(
-                selection_step,
-                arguments={
-                    field_name: value
-                    for field_name, value in selection_step.arguments.items()
-                    if field_name not in SELECTION_ARGUMENT_FIELDS
-                },
-            )
-            if selection_phase == SELECTION_PHASE_PREVIEW:
-                try:
-                    signed_operation = OperationType(contract.operation_type)
-                except ValueError:
-                    return _project_denied(
-                        "PROJECT_INVOCATION_STALE",
-                        "Automation project contract is no longer current",
-                    )
-                contract_step = replace(
-                    contract_step,
-                    operation_type=signed_operation,
-                )
-            contract_plan = replace(plan, steps=(contract_step,))
-        if not contract.matches_plan(
-            contract_plan,
-            invocation,
-            source=source,
-            execution_context=execution_context,
-            dynamic_resolver=self._dynamic_resolver,
-        ):
-            if selection_phase is not None:
-                diagnostic_step = contract_plan.steps[0]
-                diagnostic_contract = contract.invocation_contracts.get(
-                    invocation.contract_id
-                )
-                logger.error(
-                    "Selection contract mismatch automation_id=%s "
-                    "tool_name_match=%s tool_version_match=%s operation_match=%s "
-                    "plan_binding_match=%s expected_argument_keys=%s "
-                    "actual_argument_keys=%s dynamic_argument_keys=%s",
-                    invocation.automation_id,
-                    diagnostic_step.tool_name == contract.tool_name,
-                    diagnostic_step.tool_version == contract.tool_version,
-                    diagnostic_step.operation_type.value == contract.operation_type,
-                    (
-                        contract_plan.automation_id == contract.automation_id
-                        and contract_plan.automation_generation
-                        == contract.automation_generation
-                        and contract_plan.automation_contract_hash
-                        == contract.contract_hash
-                    ),
-                    sorted(
-                        (diagnostic_contract.expected_arguments or {}).keys()
-                        if diagnostic_contract is not None
-                        else []
-                    ),
-                    sorted(diagnostic_step.arguments.keys()),
-                    sorted(
-                        (diagnostic_contract.dynamic_argument_resolvers or {}).keys()
-                        if diagnostic_contract is not None
-                        else []
-                    ),
-                )
-            return _project_denied(
-                "PROJECT_INVOCATION_STALE",
-                "Automation plan does not match the committed project contract",
-            )
-        if selection_phase == SELECTION_PHASE_PREVIEW:
-            return ProjectPolicyEvaluation(
-                allowed=True,
-                requires_approval=False,
-                code="SELECTION_PREVIEW_ALLOWED",
-                reason="The governed selection preview is read-only",
-            )
-        if not contract.can_full_auto:
-            return _project_denied(
-                contract.restriction_code or "PROJECT_CONTRACT_NOT_RUNNABLE",
-                "The current signed project contract is not runnable",
-            )
-        return ProjectPolicyEvaluation(
-            allowed=True,
-            requires_approval=False,
-            code="PROJECT_FULL_AUTO",
-            reason="Current signed project contract is fully automatic",
-        )
 
     def _load_contract(
         self,
@@ -888,42 +642,6 @@ class AutomationProjectPolicyService:
                 ),
                 "project_configuration_version",
             ),
-        }
-
-    def _pending_projection(
-        self,
-        automation_id: str,
-        rows: Sequence[Mapping[str, Any]],
-        *,
-        actor: Actor,
-    ) -> dict[str, Any]:
-        pending_count = len(rows)
-        if pending_count:
-            highest = max(
-                (str(row.get("risk_level") or "LOW").upper() for row in rows),
-                key=lambda value: _RISK_ORDER.get(value, -1),
-            )
-            if highest == "EXTREME":
-                highest = "CRITICAL"
-            sources = Counter(str(row.get("source") or "unknown") for row in rows)
-            source_summary = "，".join(
-                f"{_SOURCE_LABELS.get(source, source)} {count}"
-                for source, count in sorted(sources.items())
-            )
-            pending_hash = _pending_set_hash(rows)
-        else:
-            highest = ""
-            source_summary = ""
-            pending_hash = ""
-        can_decide = self._is_super_admin(actor)
-        return {
-            "automation_id": automation_id,
-            "pending_count": pending_count,
-            "highest_risk": highest,
-            "source_summary": source_summary,
-            "pending_set_hash": pending_hash,
-            "can_approve": can_decide,
-            "can_reject": can_decide,
         }
 
     @staticmethod

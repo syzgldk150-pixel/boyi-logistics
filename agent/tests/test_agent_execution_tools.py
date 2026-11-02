@@ -21,76 +21,9 @@ def _resolved_r7_test_params(params, **_kwargs):
     return resolved
 
 
-class _CompletedRunSteps:
-    def __init__(self, data):
-        self._data = data
-
-    def list_for_run(self, _run_id):
-        return [
-            {
-                "result_summary_json": {
-                    "status": "SUCCESS",
-                    "data": self._data,
-                    "meta": {},
-                    "warnings": [],
-                    "error": None,
-                }
-            }
-        ]
-
-
 class _NoApprovals:
     def get_latest_for_run(self, _run_id, *, for_update=False):
         return None
-
-
-class _CompletedRunUow:
-    def __init__(self, data):
-        self.steps = _CompletedRunSteps(data)
-        self.approvals = _NoApprovals()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-
-class _CompletedRunRepository:
-    def __init__(self, data):
-        self._data = data
-
-    def unit_of_work(self):
-        return _CompletedRunUow(self._data)
-
-
-class _CompletedRunGateway:
-    def __init__(self):
-        self.commands = []
-
-    async def submit_and_wait(self, command, *, timeout_seconds):
-        self.commands.append(command)
-        return {
-            "status": "COMPLETED",
-            "command_id": command.command_id,
-            "work_item_id": "work-item-1",
-            "run_id": "run-1",
-            "correlation_id": command.correlation_id,
-        }
-
-
-def _configure_completed_control_plane(core, *, data):
-    gateway = _CompletedRunGateway()
-    core.configure_direct_readers({name: (lambda _arguments: data)
-                                  for name in ("track_waybill",)
-                                  if name not in core._direct_tool_runners})
-    core.configure_orchestration(
-        command_gateway=gateway,
-        repository=_CompletedRunRepository(data),
-        workflow_runner=object(),
-        execution_runtime=object(),
-    )
-    return gateway
 
 
 class AgentExecutionToolTests(unittest.TestCase):
@@ -159,15 +92,10 @@ class AgentExecutionToolTests(unittest.TestCase):
         run_track = Mock(return_value={"tracking_number": "R00014513348", "route_rows": []})
         core = AgentCore(direct_tool_runners={"track_waybill": run_track})
         core.registry = _FakeRegistry()
-        gateway = _configure_completed_control_plane(
-            core,
-            data={"tracking_number": "R00014513348", "route_rows": []},
-        )
 
         result = asyncio.run(core.execute_tool("track_waybill", {"tracking_number": "R00014513348"}, actor=direct_admin(), source="console"))
 
         run_track.assert_called_once_with({"tracking_number": "R00014513348"})
-        self.assertEqual([], gateway.commands)
         self.assertTrue(result["success"])
         self.assertEqual("R00014513348", result["data"]["tracking_number"])
 

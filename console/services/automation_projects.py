@@ -66,7 +66,6 @@ from console.services.automation_catalog_projection import (
     normalize_automation_project_policy_items as normalize_automation_project_policy_items,
     build_automation_project_policy_view as build_automation_project_policy_view,
     apply_automation_project_execution_gate as apply_automation_project_execution_gate,
-    normalize_automation_pending_approvals as normalize_automation_pending_approvals,
     normalize_automation_approval_batch_result as normalize_automation_approval_batch_result,
     _normalize_plugin_account_roles as _normalize_plugin_account_roles,
     _normalize_plugin_resource_roles as _normalize_plugin_resource_roles,
@@ -448,18 +447,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             return None
         return safe[0]
 
-    @staticmethod
-    def _automation_pending_from_result(
-        result: dict[str, Any],
-        automation_id: str,
-    ) -> dict[str, Any] | None:
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        raw_pending = data.get("pending") if isinstance(data.get("pending"), dict) else data
-        return normalize_automation_pending_approvals(
-            raw_pending,
-            expected_automation_id=automation_id,
-        )
-
     def _automation_project_agent_error(
         self,
         handler: BaseHTTPRequestHandler,
@@ -468,7 +455,6 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
         automation_id: str,
         fallback_code: str,
         fallback_message: str,
-        include_pending: bool = False,
     ) -> None:
         try:
             status = HTTPStatus(int(result.get("status")))
@@ -484,180 +470,11 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Mod
             HTTPStatus.SERVICE_UNAVAILABLE,
         }:
             status = HTTPStatus.BAD_GATEWAY
-        safe_data: dict[str, Any] | None = None
-        if include_pending:
-            pending = self._automation_pending_from_result(result, automation_id)
-            if pending is not None:
-                safe_data = {"pending": pending}
         self._control_plane_error(
             handler,
             status,
             str(result.get("error_code") or fallback_code)[:128],
             normalize_feedback_text(str(result.get("error") or fallback_message))[:1000],
-            data=safe_data,
-        )
-
-    def _handle_automation_project_pending_approvals_get(
-        self,
-        handler: BaseHTTPRequestHandler,
-        automation_id: str,
-    ) -> None:
-        automation_id = self._automation_project_id(automation_id)
-        if not automation_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_PROJECT_NOT_FOUND",
-                "自动化项目不存在。",
-            )
-            return
-        trusted_context = self._control_plane_read_context(handler)
-        if trusted_context is None:
-            return
-        result = self._agent_request(
-            "GET",
-            f"/internal/v1/automation-projects/{quote(automation_id, safe='')}/pending-approvals",
-            timeout=12,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PENDING_APPROVALS_UNAVAILABLE",
-                fallback_message="待审批集合暂时不可用。",
-            )
-            return
-        pending = self._automation_pending_from_result(result, automation_id)
-        if pending is None:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_GATEWAY,
-                "INVALID_PENDING_APPROVALS_RESPONSE",
-                "智能服务未返回有效的待审批集合。",
-            )
-            return
-        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {"pending": pending}})
-
-    def _handle_automation_project_pending_approvals_action(
-        self,
-        handler: BaseHTTPRequestHandler,
-        automation_id: str,
-        action: str,
-    ) -> None:
-        automation_id = self._automation_project_id(automation_id)
-        if not automation_id or action not in {"approve", "reject"}:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                "AUTOMATION_APPROVAL_ACTION_NOT_FOUND",
-                "批量审批操作不存在。",
-            )
-            return
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.FORBIDDEN,
-                "SUPER_ADMIN_REQUIRED",
-                "只有超级管理员可以批量处理自动化审批。",
-            )
-            return
-        values = self._read_control_plane_json(handler)
-        if values is None:
-            return
-        allowed_fields = {"expected_pending_set_hash", "request_id", "comment"}
-        if set(values) - allowed_fields:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "UNSUPPORTED_PENDING_APPROVAL_FIELDS",
-                "批量审批请求不能包含审批标识或计划摘要。",
-            )
-            return
-        expected_hash = str(values.get("expected_pending_set_hash") or "").strip()
-        request_id = self._normalize_browser_request_uuid(values.get("request_id"))
-        comment = normalize_feedback_text(str(values.get("comment") or "")).strip()
-        if not AUTOMATION_PENDING_SET_HASH_RE.fullmatch(expected_hash):
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "EXPECTED_PENDING_SET_HASH_REQUIRED",
-                "待审批集合已缺失，请原位刷新后重试。",
-            )
-            return
-        if not request_id:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "BROWSER_REQUEST_UUID_REQUIRED",
-                "缺少有效且稳定的请求标识，批量审批未提交。",
-            )
-            return
-        if len(comment) > AUTOMATION_PROJECT_COMMENT_MAX_CHARS:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_REQUEST,
-                "COMMENT_TOO_LONG",
-                "说明不能超过 500 个字符。",
-            )
-            return
-        result = self._agent_request(
-            "POST",
-            (
-                f"/internal/v1/automation-projects/{quote(automation_id, safe='')}"
-                f"/pending-approvals/{action}"
-            ),
-            payload={
-                "expected_pending_set_hash": expected_hash,
-                "request_id": request_id,
-                "comment": comment,
-            },
-            timeout=20,
-            console_principal=trusted_context["_console_principal"],
-        )
-        if not result.get("ok"):
-            self._automation_project_agent_error(
-                handler,
-                result,
-                automation_id=automation_id,
-                fallback_code="PENDING_APPROVAL_ACTION_FAILED",
-                fallback_message="批量审批操作失败。",
-                include_pending=True,
-            )
-            return
-        pending = self._automation_pending_from_result(result, automation_id)
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        batch = normalize_automation_approval_batch_result(
-            data,
-            expected_automation_id=automation_id,
-            expected_decision="APPROVED" if action == "approve" else "REJECTED",
-        )
-        if pending is None or batch is None:
-            self._control_plane_error(
-                handler,
-                HTTPStatus.BAD_GATEWAY,
-                "INVALID_PENDING_APPROVAL_ACTION_RESPONSE",
-                "智能服务未返回完整的批量审批结果。",
-            )
-            return
-        safe_data: dict[str, Any] = {
-            "pending": pending,
-            "decided_count": batch["decided_count"],
-        }
-        if action == "approve":
-            safe_data["run_receipts"] = batch["run_receipts"]
-        self._send_json(
-            handler,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "data": safe_data,
-                "message": "已批量通过。" if action == "approve" else "已批量驳回。",
-            },
         )
 
     def _handle_automation_plugin_configuration_save(

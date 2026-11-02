@@ -51,7 +51,6 @@ from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.automation_project_api import create_automation_project_router
 from agent.orchestration.automation_project_policy_service import AutomationProjectPolicyService
 from agent.orchestration.automation_project_entrypoints import TrustedDynamicArgumentResolver
-from agent.orchestration.command_gateway import CommandGateway
 from shared.contracts import api_failure
 from shared.orchestration_repository import OrchestrationRepository
 from shared.plugin_management import MODULE_DATASETS
@@ -213,7 +212,6 @@ class ManagementFixture:
             self.repository, self.catalog,
             dynamic_resolver=TrustedDynamicArgumentResolver(),
             release_hold_provider=lambda: False,
-            command_gateway=CommandGateway(self.repository),
             contribution_registry=self.contribution_registry,
         )
         self.app = FastAPI()
