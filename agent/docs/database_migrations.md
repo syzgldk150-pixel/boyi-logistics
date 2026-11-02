@@ -11,6 +11,8 @@ updated: 2026-10-30
 
 `064_retire_pre_v2_plugin_rows.sql` 删除 V1 退役后残留的插件数据：当前安装版本不是 Service V2（或来源不是 `super_admin_upload/builtin_bundle`）的项目、旧逐日财务采集 `sync_finance_bills_v2` 的实例（含已卸载实例的调用、卸载日志等遗留事实），连同它们的代次、配置、策略、调用、租约、写入回执（含未知写）、旧 Command/Run/Step/审批/事件历史、定时行与包版本；非 `automation.*` 的旧工具定时行一并删除。迁移配对三表、018 引导/备份/映射七表和 Windows Worker 五表整表删除。财务账本、运单、回单、客服发布、每日应签与模块数据源不动。之后插件版本与代次只允许 `SERVICE_V2` 和上述两种来源，`runtime_model`/`plugin_api` 不再有默认值。迁移器经 `scripts/migration_064_retire_pre_v2.py` 执行：每条 `DROP TABLE` 和 `DELETE` 执行前先把它要删的行写入迁移备份目录（ECS 为 `/home/boyce/agent/runtime/migration-backups/`）的 `*-migration-064-removed-rows.jsonl`（权限 0600），业务验收后随回滚材料清理。仍有旧项目在运行时迁移拒绝执行；存活项目若仍引用待删版本，外键失败使整个删除事务回滚。各步可重复执行。回归见 `tests/test_migration_064_mysql.py`。
 
+`065_rename_arrive_list_instance.sql` 只把生产到货清单实例（`9ed48d33-…`，插件 `sync_arrive_list_v2`）仍为原名 `arrive-list` 时的显示名改为“到货清单”；其他实例或已改名时不变，可重复执行。
+
 `063_finance_platform_captures.sql` 在 `finance_db` 新建统计查询抓取的 4 张表：抓取（每次一行，含两种日期口径的统计合计、明细行数与净额、字段对照、请求口径和内容哈希）、统计行、明细行（原始 JSON 原样保存，另投影单号、流水号、客户、物品等）、按日发布记录；全部经外键挂在抓取行上。`migration_055_domain_databases.py` 的 `LATER_FINANCE_TABLES` 把它们投影为 `agent_db` 同名视图。新代码的财务结构校验要求这些表存在，必须先迁移再重启；回退旧代码时新表闲置无害。规则见 [财务模块说明](finance_module.md#统计查询月度抓取)。
 
 `062_finance_period_close.sql` 在 `finance_db` 新建月度清点与封账的 5 张表（期间状态、逐项核对、封账版本、快照明细、操作事件），并给 `finance_anomalies` 增加确认知悉的人、时间、原因和确认时的笔数与金额。迁移通过 `{{finance_db}}` 绑定实体库，执行后由 `migration_055_domain_databases.py` 投影同名视图并重建 `finance_anomalies` 视图。新代码的财务结构校验要求这些表存在，必须先迁移再重启 Agent 与 Console；回退到旧代码时新表和新列闲置无害。业务规则见 [财务模块说明](finance_module.md#月度清点与封账)。
