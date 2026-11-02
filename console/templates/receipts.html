@@ -190,15 +190,17 @@
   .receipt-count-muted { color: var(--faint); font-size: 0.8125rem; font-weight: 600; }
   .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); }
   .receipt-table { width: 100%; min-width: 0; table-layout: fixed; }
+  .receipt-col-select { width: 4%; }
   .receipt-col-photo { width: 6%; }
   .receipt-col-platform { width: 8%; }
-  .receipt-col-waybill { width: 16%; }
+  .receipt-col-waybill { width: 18%; }
   .receipt-col-status { width: 13%; }
   .receipt-col-audit { width: 12%; }
   .receipt-col-photo-status { width: 11%; }
   .receipt-col-signed { width: 10%; }
-  .receipt-col-updated { width: 16%; }
-  .receipt-col-action { width: 8%; }
+  .receipt-col-updated { width: 18%; }
+  .receipt-select-cell { cursor: default; }
+  .receipt-select-cell input { width: 18px; height: 18px; margin: 0; accent-color: var(--text-strong); cursor: pointer; vertical-align: middle; }
   .receipt-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
   .receipt-table th,
   .receipt-table td { overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
@@ -826,7 +828,7 @@
       </div>
       <div class="receipt-toolbar-actions">
         <button class="ghost-btn" type="button" data-receipt-download-images>
-          <i data-feather="download"></i> 下载图片
+          <i data-feather="download"></i> <span data-receipt-download-label>下载图片</span>
         </button>
         <div class="inline-actions" data-receipt-pagination-actions>
           {% if prev_url %}<a class="ghost-btn" href="{{ prev_url }}" data-receipt-page="{{ pagination.page - 1 }}"><i data-feather="chevron-left"></i> 上一页</a>{% endif %}
@@ -837,6 +839,7 @@
     <div class="receipt-table-wrap">
       <table class="receipt-table" data-receipt-table>
         <colgroup>
+          <col class="receipt-col-select">
           <col class="receipt-col-photo">
           <col class="receipt-col-platform">
           <col class="receipt-col-waybill">
@@ -845,10 +848,10 @@
           <col class="receipt-col-photo-status">
           <col class="receipt-col-signed">
           <col class="receipt-col-updated">
-          <col class="receipt-col-action">
         </colgroup>
         <thead>
           <tr>
+            <th class="receipt-select-cell"><input type="checkbox" data-receipt-select-all aria-label="全选本页回单"></th>
             <th>照片</th>
             <th>平台</th>
             <th>运单号</th>
@@ -857,12 +860,12 @@
             <th>照片状态</th>
             <th>签收确认</th>
             <th>更新时间</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
           {% for row in rows %}
           <tr class="receipt-row" data-receipt-id="{{ row.id }}" data-platform="{{ row.platform }}" data-direction="{{ row.direction }}">
+            <td class="receipt-select-cell"><input type="checkbox" data-receipt-select value="{{ row.id }}" aria-label="选择回单 {{ row.waybill_no or row.id }}"></td>
             <td>
               <div class="receipt-thumb-list">
                 {% if row.thumbnail_url %}
@@ -883,11 +886,6 @@
             <td><span class="receipt-chip {% if row.photo_count %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.photo_status or '无照片' }}</span></td>
             <td><span class="receipt-chip {% if row.signed_confirmed in ['是', '已确认'] %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.signed_confirmed or '-' }}</span></td>
             <td class="receipt-updated-cell" title="{{ row.updated_at }}">{{ row.updated_at }}</td>
-            <td>
-              <button class="receipt-icon-btn" type="button" data-receipt-original-open title="回单审核" aria-label="打开回单审核">
-                <i data-feather="shield"></i>
-              </button>
-            </td>
           </tr>
           {% else %}
           <tr>
@@ -1031,6 +1029,8 @@
   const receiptCount = page.querySelector("[data-receipt-count]");
   const paginationActions = page.querySelector("[data-receipt-pagination-actions]");
   const downloadImagesButton = page.querySelector("[data-receipt-download-images]");
+  const downloadImagesLabel = page.querySelector("[data-receipt-download-label]");
+  const selectAllReceipts = page.querySelector("[data-receipt-select-all]");
   const preview = page.querySelector("[data-receipt-preview]");
   const previewTitle = page.querySelector("[data-receipt-preview-title]");
   const previewSubtitle = page.querySelector("[data-receipt-preview-subtitle]");
@@ -2193,27 +2193,6 @@
     }
   };
 
-  const openAudit = async (id, row) => {
-    table?.querySelectorAll("[data-receipt-id]").forEach((item) => item.classList.toggle("is-selected", item === row));
-    openModal(auditModal);
-    if (auditTitle) auditTitle.textContent = "正在加载";
-    if (auditSubtitle) auditSubtitle.textContent = "正在读取回单审核详情。";
-    try {
-      const detail = await fetchDetail(id);
-      const record = detail.record || {};
-      const heading = record.waybill_no || record.receipt_no || "回单审核";
-      const meta = [record.platform_label || record.platform, record.direction_label || record.direction, record.audit_status]
-        .filter(Boolean)
-        .join(" · ");
-      if (auditTitle) auditTitle.textContent = heading;
-      if (auditSubtitle) auditSubtitle.textContent = meta || "后台回单审核";
-    } catch (error) {
-      stopAuditAutoQuery();
-      if (auditTitle) auditTitle.textContent = "加载失败";
-      if (auditSubtitle) auditSubtitle.textContent = error.message || String(error);
-    }
-  };
-
   preview?.querySelector("[data-receipt-preview-close]")?.addEventListener("click", closePreview);
   previewImage?.addEventListener("load", () => {
     previewStage?.classList.remove("is-broken");
@@ -2338,6 +2317,21 @@
     window.feather?.replace?.();
   };
 
+  const selectedReceiptIds = () => Array.from(table?.querySelectorAll("[data-receipt-select]:checked") || [])
+    .map((input) => input.value)
+    .filter(Boolean);
+
+  const updateReceiptSelection = () => {
+    const boxes = Array.from(table?.querySelectorAll("[data-receipt-select]") || []);
+    const checked = boxes.filter((input) => input.checked).length;
+    if (selectAllReceipts) {
+      selectAllReceipts.checked = boxes.length > 0 && checked === boxes.length;
+      selectAllReceipts.indeterminate = checked > 0 && checked < boxes.length;
+      selectAllReceipts.disabled = boxes.length === 0;
+    }
+    if (downloadImagesLabel) downloadImagesLabel.textContent = checked ? `下载所选图片（${checked}）` : "下载图片";
+  };
+
   const bindReceiptRows = () => {
     table?.querySelectorAll("[data-receipt-id]").forEach((row) => {
       row.addEventListener("click", () => openReview(row.dataset.receiptId, row));
@@ -2345,10 +2339,8 @@
         event.stopPropagation();
         openReview(row.dataset.receiptId, row);
       });
-      row.querySelector("[data-receipt-original-open]")?.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openAudit(row.dataset.receiptId, row);
-      });
+      row.querySelector(".receipt-select-cell")?.addEventListener("click", (event) => event.stopPropagation());
+      row.querySelector("[data-receipt-select]")?.addEventListener("change", updateReceiptSelection);
       row.querySelectorAll("[data-receipt-thumb-image]").forEach((image) => {
         if (image.complete && image.naturalWidth === 0) markBrokenThumbnail(image);
         image.addEventListener("error", () => markBrokenThumbnail(image), { once: true });
@@ -2404,6 +2396,7 @@
       const signedOk = row.signed_confirmed === "是" || row.signed_confirmed === "已确认";
       return `
         <tr class="receipt-row" data-receipt-id="${id}" data-platform="${platform}" data-direction="${direction}">
+          <td class="receipt-select-cell"><input type="checkbox" data-receipt-select value="${id}" aria-label="选择回单 ${escapeHtml(row.waybill_no || row.id || "")}"></td>
           <td><div class="receipt-thumb-list">${thumbnail}</div></td>
           <td><span class="receipt-chip receipt-chip--${platformClassFor(row.platform)}">${escapeHtml(row.platform_label || row.platform || "-")}</span></td>
           <td><span class="receipt-code" title="${escapeHtml(row.waybill_no || "")}">${escapeHtml(row.waybill_no || "-")}</span></td>
@@ -2412,16 +2405,12 @@
           <td><span class="receipt-chip ${okClassFor(photoCount > 0)}">${escapeHtml(row.photo_status || "无照片")}</span></td>
           <td><span class="receipt-chip ${okClassFor(signedOk)}">${escapeHtml(row.signed_confirmed || "-")}</span></td>
           <td class="receipt-updated-cell" title="${escapeHtml(row.updated_at || "")}">${escapeHtml(row.updated_at || "")}</td>
-          <td>
-            <button class="receipt-icon-btn" type="button" data-receipt-original-open title="回单审核" aria-label="打开回单审核">
-              <i data-feather="shield"></i>
-            </button>
-          </td>
         </tr>
       `;
     }).join("");
     window.feather?.replace?.();
     bindReceiptRows();
+    updateReceiptSelection();
   };
 
   const buildReceiptParams = (pageNumber = 1) => {
@@ -2434,9 +2423,10 @@
 
   const receiptUrlForPage = (pageNumber) => `/receipts?${buildReceiptParams(pageNumber).toString()}`;
 
-  const receiptImageArchiveUrl = () => {
+  const receiptImageArchiveUrl = (receiptIds = []) => {
     const params = buildReceiptParams(1);
     params.delete("page");
+    if (receiptIds.length) params.set("receipt_ids", receiptIds.join(","));
     return `/receipts/download-images?${params.toString()}`;
   };
 
@@ -2475,6 +2465,7 @@
   };
 
   bindReceiptRows();
+  updateReceiptSelection();
 
   const formatDate = (date) => {
     const year = date.getFullYear();
@@ -2730,7 +2721,14 @@
       setSyncStatus("请先查询回单列表后再下载图片。", "is-error");
       return;
     }
-    window.location.href = receiptImageArchiveUrl();
+    window.location.href = receiptImageArchiveUrl(selectedReceiptIds());
+  });
+
+  selectAllReceipts?.addEventListener("change", () => {
+    table?.querySelectorAll("[data-receipt-select]").forEach((input) => {
+      input.checked = selectAllReceipts.checked;
+    });
+    updateReceiptSelection();
   });
 
   paginationActions?.addEventListener("click", async (event) => {

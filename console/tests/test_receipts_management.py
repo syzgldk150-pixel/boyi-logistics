@@ -1203,6 +1203,38 @@ class ReceiptRouteTests(unittest.TestCase):
             self.assertEqual(["2003441427.png", "980606124-231-2606000006.jpg", "980777777-444-2606000007.webp"], names)
             self.assertEqual(b"\xff\xd8yunda", archive.read("980606124-231-2606000006.jpg"))
 
+    def test_receipt_image_archive_downloads_only_checked_receipts(self):
+        repo = _ReceiptRepo()
+        app = _build_app(repo)
+        for platform, record_id, name, content in (("yunda", 3, "receipt.jpg", b"\xff\xd8yunda"),
+                                                   ("ronghui", 4, "receipt.png", b"\x89PNGronghui")):
+            target = app.settings.runtime_dir / "receipts" / platform / str(record_id) / name
+            target.parent.mkdir(parents=True)
+            target.write_bytes(content)
+        handler = _Handler()
+
+        app._handle_receipts_image_archive(handler, {"queried": ["1"], "receipt_ids": ["4"]})
+
+        self.assertEqual(HTTPStatus.OK, handler.status)
+        with zipfile.ZipFile(io.BytesIO(handler.wfile.getvalue())) as archive:
+            self.assertEqual(["2003441427.png"], archive.namelist())
+
+    def test_receipt_image_archive_rejects_malformed_selection(self):
+        app = _build_app(_ReceiptRepo())
+        for raw in ("4,abc", "0", "4,,5"):
+            handler = _Handler()
+            app._handle_receipts_image_archive(handler, {"queried": ["1"], "receipt_ids": [raw]})
+            self.assertEqual(HTTPStatus.BAD_REQUEST, handler.status, raw)
+
+    def test_receipt_image_archive_selection_outside_query_finds_nothing(self):
+        app = _build_app(_ReceiptRepo())
+        handler = _Handler()
+
+        app._handle_receipts_image_archive(handler, {"queried": ["1"], "receipt_ids": ["999"]})
+
+        self.assertEqual(HTTPStatus.NOT_FOUND, handler.status)
+        self.assertIn("所选回单没有可下载的图片", handler.wfile.getvalue().decode("utf-8"))
+
     def test_receipt_attachment_fetches_whitelisted_ronghui_obs_image(self):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
@@ -1568,7 +1600,11 @@ class ReceiptTemplateTests(unittest.TestCase):
         self.assertIn("data-receipt-preview-download", template)
         self.assertIn("data-receipt-download-images", template)
         self.assertIn("data-receipt-review-modal", template)
-        self.assertIn("data-receipt-original-open", template)
+        self.assertNotIn("data-receipt-original-open", template)
+        self.assertNotIn("<th>操作</th>", template)
+        self.assertIn("data-receipt-select-all", template)
+        self.assertEqual(2, template.count('type="checkbox" data-receipt-select value='))
+        self.assertIn('params.set("receipt_ids", receiptIds.join(","))', template)
         self.assertIn("data-receipt-audit-modal", template)
         self.assertNotIn("data-receipt-audit-frame", template)
         self.assertIn("审核直接提交原平台", template)
@@ -1654,7 +1690,7 @@ class ReceiptTemplateTests(unittest.TestCase):
 
         for expected in (
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
-            ".receipt-col-updated { width: 16%; }",
+            ".receipt-col-updated { width: 18%; }",
             ".receipt-table .receipt-updated-cell",
             "text-overflow: clip;",
             "font-size: 0.8125rem;",
@@ -1673,7 +1709,7 @@ class ReceiptTemplateTests(unittest.TestCase):
             ".receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden;",
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
             ".receipt-col-photo { width: 6%; }",
-            ".receipt-col-action { width: 8%; }",
+            ".receipt-col-select { width: 4%; }",
         ):
             self.assertIn(expected, template)
 

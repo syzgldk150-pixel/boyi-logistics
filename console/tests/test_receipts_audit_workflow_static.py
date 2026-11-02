@@ -67,7 +67,7 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertNotIn("<th>回单号</th>", template)
         self.assertNotIn("<th>返回单号</th>", template)
         self.assertNotIn("<th>照片数</th>", template)
-        self.assertIn("data-receipt-original-open", template)
+        self.assertNotIn("data-receipt-original-open", template)
         self.assertIn("data-receipt-review-modal", template)
         self.assertIn("data-receipt-review-status", template)
         self.assertIn("data-receipt-review-summary", template)

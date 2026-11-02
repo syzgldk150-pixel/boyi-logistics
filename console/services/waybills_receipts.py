@@ -927,13 +927,21 @@ class WaybillsReceiptsServiceMixin:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请先查询回单列表后再下载图片。"})
             return
         filters = self._receipt_filters_from_query(query)
+        selected_ids = self._parse_receipt_archive_ids(query)
+        if selected_ids is None:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "所选回单编号无效，请重新勾选后下载。"})
+            return
         try:
             attachments = self.repository.list_receipt_image_attachments_for_filters(filters)
         except Exception as exc:
             self._send_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": f"回单图片查询失败：{exc}"})
             return
+        if selected_ids:
+            # Selection only narrows the current query; rows outside it are never added.
+            attachments = [item for item in attachments if self._safe_receipt_record_id(item) in selected_ids]
         if not attachments:
-            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "当前查询列表没有可下载的回单图片。"})
+            message = "所选回单没有可下载的图片。" if selected_ids else "当前查询列表没有可下载的回单图片。"
+            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": message})
             return
         archive_buffer = io.BytesIO()
         used_names: set[str] = set()
@@ -965,6 +973,24 @@ class WaybillsReceiptsServiceMixin:
             "application/zip",
             extra_headers={"Content-Disposition": self._content_disposition_attachment(filename)},
         )
+
+    @staticmethod
+    def _parse_receipt_archive_ids(query: dict[str, list[str]]) -> set[int] | None:
+        """Return the checked receipt IDs, an empty set when none, or None when malformed."""
+        raw = str((query or {}).get("receipt_ids", [""])[0] or "").strip()
+        if not raw:
+            return set()
+        parts = raw.split(",")
+        if len(parts) > 500 or not all(part.isdigit() and int(part) > 0 for part in parts):
+            return None
+        return {int(part) for part in parts}
+
+    @staticmethod
+    def _safe_receipt_record_id(attachment: dict[str, Any]) -> int:
+        try:
+            return int(attachment.get("record_id") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _receipt_attachment_context(self) -> dict[str, Any] | None:
         # Uncached Yunda images are read by Agent with the admin's signed identity.
