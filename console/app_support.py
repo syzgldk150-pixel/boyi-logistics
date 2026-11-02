@@ -226,6 +226,10 @@ RECEIPT_DETAIL_KEYS = (
 )
 RONGHUI_LIVE_ALLOWED_PREFIXES = RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES
 RONGHUI_DIRECT_ATTACHMENT_HOSTS = {"rhk13.obs.cn-east-3.myhuaweicloud.com"}
+# Since 2026-11 Ronghui returns receipt images as login-free download links on
+# its TMS host; only this path prefix is public, so only it is fetched.
+RONGHUI_PUBLIC_DOWNLOAD_HOST = "tms.ronghuiwl.com"
+RONGHUI_PUBLIC_DOWNLOAD_PREFIX = "/unauth/download/"
 RECEIPT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 RECEIPT_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 RECEIPT_REMARK_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})-(\d{10})(?!\d)")

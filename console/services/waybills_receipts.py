@@ -1248,7 +1248,9 @@ class WaybillsReceiptsServiceMixin:
     def _fetch_direct_receipt_attachment(self, source_url: str) -> tuple[bytes, str] | None:
         parsed = urlparse(source_url)
         host = str(parsed.hostname or "").strip().lower()
-        if parsed.scheme.lower() != "https" or host not in RONGHUI_DIRECT_ATTACHMENT_HOSTS:
+        public_download = host == RONGHUI_PUBLIC_DOWNLOAD_HOST and (parsed.path or "").startswith(
+            RONGHUI_PUBLIC_DOWNLOAD_PREFIX)
+        if parsed.scheme.lower() != "https" or not (host in RONGHUI_DIRECT_ATTACHMENT_HOSTS or public_download):
             return None
         suffix = Path(parsed.path or "").suffix.lower()
         if suffix not in RECEIPT_IMAGE_SUFFIXES:

@@ -1211,6 +1211,27 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual((b"\xff\xd8receipt-image", "image/jpeg"), result)
         self.assertIn("rhk13.obs.cn-east-3.myhuaweicloud.com", mocked_urlopen.call_args.args[0].full_url)
 
+    def test_receipt_attachment_fetches_ronghui_public_download_image(self):
+        app = _build_app(_ReceiptRepo())
+        response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
+        url = "https://tms.ronghuiwl.com/unauth/download/k13/obs/20261101/179350808020121.jpg"
+
+        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+            result = app._fetch_receipt_attachment_source({"platform": "ronghui"}, url)
+
+        self.assertEqual((b"\xff\xd8receipt-image", "image/jpeg"), result)
+        self.assertEqual(url, mocked_urlopen.call_args.args[0].full_url)
+
+    def test_receipt_attachment_does_not_fetch_other_ronghui_tms_paths(self):
+        app = _build_app(_ReceiptRepo())
+
+        with patch("console.services.waybills_receipts.urlopen") as mocked_urlopen:
+            result = app._fetch_receipt_attachment_source(
+                {"platform": "ronghui"}, "https://tms.ronghuiwl.com/file/k13/20261101/demo.jpg")
+
+        self.assertIsNone(result)
+        mocked_urlopen.assert_not_called()
+
     def test_receipt_attachment_normalizes_bare_ronghui_obs_image_url(self):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
