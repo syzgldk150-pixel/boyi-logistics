@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import ssl
 import sys
 import tempfile
 import types
@@ -1221,6 +1222,9 @@ class ReceiptRouteTests(unittest.TestCase):
 
         self.assertEqual((b"\xff\xd8receipt-image", "image/jpeg"), result)
         self.assertEqual(url, mocked_urlopen.call_args.args[0].full_url)
+        context = mocked_urlopen.call_args.kwargs["context"]
+        self.assertEqual(ssl.CERT_REQUIRED, context.verify_mode)
+        self.assertTrue(context.check_hostname)
 
     def test_receipt_attachment_does_not_fetch_other_ronghui_tms_paths(self):
         app = _build_app(_ReceiptRepo())

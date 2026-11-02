@@ -1,5 +1,7 @@
 """Console application services grouped by business responsibility."""
 
+import ssl
+
 from console.app_support import *  # noqa: F403
 from console.services.business_calls import call_business
 from console.services.waybill_printing import build_waybill_print_data
@@ -1256,8 +1258,14 @@ class WaybillsReceiptsServiceMixin:
         if suffix not in RECEIPT_IMAGE_SUFFIXES:
             return None
         request = Request(source_url, headers={"Accept": "image/*,*/*", "User-Agent": "Mozilla/5.0"})
+        context = None
+        if public_download:
+            # The Ronghui TMS host only negotiates legacy ciphers (as in the
+            # Agent's Ronghui session); the certificate is still verified.
+            context = ssl.create_default_context()
+            context.set_ciphers("DEFAULT:@SECLEVEL=1")
         try:
-            with urlopen(request, timeout=180) as response:
+            with urlopen(request, timeout=180, context=context) as response:
                 status_code = int(getattr(response, "status", 200) or 200)
                 if status_code < 200 or status_code >= 300:
                     return None
