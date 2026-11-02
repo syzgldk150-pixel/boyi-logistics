@@ -32,7 +32,6 @@
 - 飞书 CLI：
   - `feishu_knowledge.py`、`feishu_knowledge_pdf.py`：限定授权 Wiki 空间的只读 CLI；支持在线正文与 PDF 文字层，PDF 子进程有界解析、按命中页及邻页摘录并标注页码，不把图表或整书误报为已读。不切换共享身份，权限不足和解析不完整明确失败。维护边界见 `../../docs/shipment_knowledge_queries.md`。
   - `feishu_cli_tool.py`
-  - `receipt_feishu_detail_query_tool.py`（回单页缺失韵达明细时使用的精确只读能力；只接受 `waybill_no`，服务端固定飞书资源和字段，必须证明分页完整且只命中一条，歧义、缺字段或分页未知均显式失败；不得改用宽泛 `feishu_operation`）
 - 共享仓储与 helper：
   - `phase7_mysql_store.py`（Phase 7 共享 MySQL 存储：`waybill_data` 到货基础表、扫描快照 `scan_codes`、分批未齐表，以及控制台 `waybills` 表的同步 upsert 入口；`waybills.status` 使用 `pending/in_transit/signed/cancelled`，`waybills.scan_status` 保存明确来源返回的当前扫描状态，同步时必须保留手动作废的 `cancelled`）。生产库在跨地域 RDS 上，单次往返约 35ms：批量写入的 `executemany` SQL 必须在 VALUES 中全部使用占位符（字面量会让 PyMySQL 逐行执行），`ensure_phase7_tables()` 按进程和连接目标只做一次成功校验。
   - `daily_sign_store.py` / `daily_sign_values.py`（每日应签版本化 MySQL 仓储与数据规范化；应签计算只在插件包的 `daily_sign_rules.py`，禁止在宿主复制口径）

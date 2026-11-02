@@ -612,7 +612,7 @@ class WaybillsReceiptsServiceMixin:
         code = str(waybill_no or "").strip().upper()
         return platform in {"ronghui", "r7"} or code.startswith("R")
 
-    def _receipt_detail_should_query_feishu(self, record: dict[str, Any], waybill_no: str) -> bool:
+    def _receipt_detail_should_query_yunda(self, record: dict[str, Any], waybill_no: str) -> bool:
         return self._receipt_detail_platform(record) == "yunda" and bool(str(waybill_no or "").strip())
 
     def _receipt_detail_first_matching_row(self, rows: list[Any], waybill_no: str) -> tuple[dict[str, Any] | None, str]:
@@ -684,6 +684,38 @@ class WaybillsReceiptsServiceMixin:
         }
         return {key: self._receipt_detail_text(values.get(key)) for key in RECEIPT_DETAIL_KEYS if self._receipt_detail_text(values.get(key))}, ""
 
+    def _receipt_detail_from_yunda(self, waybill_no: str) -> tuple[dict[str, str], str]:
+        response = call_business(self, "yunda_waybill_tracking", {"tracking_number": waybill_no},
+            trusted_context={"_console_principal": self._mysql_console_principal()},
+            timeout_sec=max(45, min(120, int(getattr(self.settings, "agent_timeout_seconds", 30) or 30) + 15)))
+        if not response.get("ok"):
+            return {}, self._receipt_detail_text(response.get("error")) or "韵达详情接口不可达"
+        data = response.get("data")
+        for _ in range(4):
+            if not isinstance(data, dict) or "waybill_stub" in data or not isinstance(data.get("data"), dict):
+                break
+            data = data["data"]
+        if not isinstance(data, dict):
+            return {}, "韵达详情接口返回格式异常"
+        if data.get("ok") is False:
+            return {}, self._receipt_detail_text(data.get("message") or data.get("error")) or "韵达详情接口返回失败"
+        stub = data.get("waybill_stub")
+        if not isinstance(stub, dict) or not stub:
+            return {}, "韵达详情接口未返回数据"
+        if self._receipt_detail_text(stub.get("waybill_no")) != waybill_no:
+            return {}, "韵达详情接口返回的运单号不一致"
+        values = {
+            "recipient_name": stub.get("recipient_name"),
+            "recipient_address": stub.get("disp_address"),
+            "goods_name": stub.get("goods_name"),
+            "package_type": stub.get("package_type"),
+            "piece_count": stub.get("pieces"),
+            "actual_weight": stub.get("weight"),
+            "volume": stub.get("volume"),
+            "waybill_no": stub.get("waybill_no"),
+        }
+        return {key: self._receipt_detail_text(values.get(key)) for key in RECEIPT_DETAIL_KEYS if self._receipt_detail_text(values.get(key))}, ""
+
     def _enrich_receipt_detail_record(self, record: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(record)
         summary, sources = self._receipt_detail_summary_from_record(enriched)
@@ -710,14 +742,15 @@ class WaybillsReceiptsServiceMixin:
                 errors.append(f"tms_detail: {error}")
             self._receipt_detail_merge_missing(summary, values, source="tms_detail", sources=sources)
 
+        if waybill_no and self._receipt_detail_missing(summary) and self._receipt_detail_should_query_yunda(enriched, waybill_no):
+            values, error = self._receipt_detail_from_yunda(waybill_no)
+            if error:
+                errors.append(f"yunda_detail: {error}")
+            self._receipt_detail_merge_missing(summary, values, source="yunda_detail", sources=sources)
+
         enriched["detail_summary"] = {key: self._receipt_detail_text(summary.get(key)) for key in RECEIPT_DETAIL_KEYS}
         enriched["detail_summary_source"] = ",".join(sources) if sources else "无数据"
         enriched["detail_summary_missing"] = self._receipt_detail_missing(enriched["detail_summary"])
-        enriched["feishu_detail_query_available"] = bool(
-            waybill_no
-            and enriched["detail_summary_missing"]
-            and self._receipt_detail_should_query_feishu(enriched, waybill_no)
-        )
         if errors:
             enriched["detail_summary_error"] = "；".join(errors)
         else:
@@ -742,76 +775,6 @@ class WaybillsReceiptsServiceMixin:
             detail = dict(detail)
             detail["record"] = self._enrich_receipt_detail_record(record)
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": detail})
-
-    @staticmethod
-    def _parse_receipt_feishu_detail_path_id(path: str) -> int | None:
-        raw = str(path or "").strip().rstrip("/")
-        prefix = "/receipts/"
-        suffix = "/feishu-detail-query"
-        if not raw.startswith(prefix) or not raw.endswith(suffix):
-            return None
-        tail = raw[len(prefix) : -len(suffix)].strip("/")
-        if not tail or "/" in tail:
-            return None
-        try:
-            value = int(tail)
-        except ValueError:
-            return None
-        return value if value > 0 else None
-
-    def _handle_receipt_feishu_detail_query(
-        self,
-        handler: BaseHTTPRequestHandler,
-        path: str,
-    ) -> None:
-        trusted_context = self._control_plane_write_context(handler)
-        if trusted_context is None:
-            return
-        receipt_id = self._parse_receipt_feishu_detail_path_id(path)
-        if receipt_id is None:
-            self._send_json(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                {"ok": False, "message": "回单不存在。"},
-            )
-            return
-        try:
-            record = self.repository.get_receipt_record(receipt_id)
-        except Exception as exc:
-            self._send_json(
-                handler,
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                {"ok": False, "message": f"回单详情查询失败：{exc}"},
-            )
-            return
-        if not isinstance(record, dict):
-            self._send_json(
-                handler,
-                HTTPStatus.NOT_FOUND,
-                {"ok": False, "message": "回单不存在。"},
-            )
-            return
-        waybill_no = self._receipt_detail_text(record.get("waybill_no"))
-        if not self._receipt_detail_should_query_feishu(record, waybill_no):
-            self._send_json(
-                handler,
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                {
-                    "ok": False,
-                    "error_code": "FEISHU_RECEIPT_QUERY_NOT_APPLICABLE",
-                    "message": "仅支持按韵达运单号提交飞书回单详情精确查询。",
-                },
-            )
-            return
-        result = call_business(self, "receipt-feishu-detail", {"waybill_no": waybill_no},
-            trusted_context=trusted_context,
-            request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""))
-        if not result.get("ok"):
-            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False,
-                "message": str(result.get("error") or "飞书明细查询失败。")})
-            return
-        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data") or {},
-            "message": "飞书明细查询完成。"})
 
     def _parse_receipt_audit_path_id(self, path: str) -> int | None:
         raw = str(path or "").strip().rstrip("/")

@@ -32,9 +32,6 @@ def handle_post(app: Any, handler: Any, path: str, raw_path: str, query: dict[st
     if path == "/receipts/sync":
         app._handle_receipts_sync(handler)
         return True
-    if path.startswith("/receipts/") and path.endswith("/feishu-detail-query"):
-        app._handle_receipt_feishu_detail_query(handler, path)
-        return True
     if path.startswith("/receipts/") and path.endswith("/audit"):
         app._handle_receipt_audit(handler, path)
         return True

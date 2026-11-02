@@ -117,7 +117,7 @@ UNKNOWN 不意味着未写；只有权威业务证据允许再次写，证据不
 |---|---|---|
 | Console `/finance/summary`、`/finance/trend`、`/finance/entries` | 当前登录身份和财务模块权限；来源及日期等现有筛选由 `console/services/monitoring_finance.py` 转交财务服务 | 已发布的本地金额/明细；来源、业务日期与发布时间分开，部分失败不等于完整新采集 |
 | Console `/customer-service/problems/query` | 管理页面的真实写上下文鉴别；请求 `source_ids/account_ids` 与 `filters.direction/q/date_from/date_to/rows/page` | 只读已发布本地明细、统计、来源状态与错误；不可达返回 `CUSTOMER_LOCAL_DATA_UNAVAILABLE`，不是空成功 |
-| 直接业务注册 `send-waybills-query`、`receipts-query`、`receipt-feishu-detail` | `agent/business_composition.py` 组合现有服务；账号与资源来自宿主，沿用现有查询参数校验 | 原有运单/回单读取；不能让模型自行提交凭据、执行身份或任意 SQL |
+| 直接业务注册 `send-waybills-query`、`receipts-query`（2026-11-02 起 `receipt-feishu-detail` 已删除，韵达回单明细改查韵达运单详情） | `agent/business_composition.py` 组合现有服务；账号与资源来自宿主，沿用现有查询参数校验 | 原有运单/回单读取；不能让模型自行提交凭据、执行身份或任意 SQL |
 | 插件管理及执行 | `/automations`、`/modules/finance/data-sources`、`/modules/customer-service/data-sources`；准确实例、已保存角色绑定、配置版本与新 request_id | 统一 Direct Invocation，终态与写回执可追溯；预览确认使用原预览身份，不能绕过 |
 
 “今天邵阳大祥站发了多少吨”尚需第二轮核实：真实站点与来源身份、发货日期时区/业务口径、重量字段及单位、退货/作废处理、完整分页和采集时点。本轮没有确认该自然语言问题的完整可用字段链，不能用到货统计、地址关键词或重量体积混合文本推测发货吨位；没有建立新 LLM 路由、Skill、知识库或指标引擎。

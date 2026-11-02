@@ -345,7 +345,6 @@
     font-weight: 600;
   }
   .receipt-review-status[hidden] { display: none; }
-  [data-receipt-feishu-detail-query][hidden] { display: none; }
   .receipt-review-status i { width: 17px; height: 17px; flex: 0 0 auto; }
   .receipt-review-status strong { color: var(--success-ink); }
   .receipt-review-status span { color: var(--success-ink); font-weight: 600; }
@@ -917,7 +916,6 @@
         <div class="receipt-modal-actions">
           <button class="receipt-icon-btn" type="button" data-receipt-record-prev title="上一个单号" aria-label="上一个单号"><i data-feather="skip-back"></i></button>
           <button class="receipt-icon-btn" type="button" data-receipt-record-next title="下一个单号" aria-label="下一个单号"><i data-feather="skip-forward"></i></button>
-          <button class="ghost-btn" type="button" data-receipt-feishu-detail-query hidden><i data-feather="search"></i> 查询飞书明细</button>
           <button class="ghost-btn" type="button" data-receipt-audit-fail><i data-feather="x-circle"></i> 审核不通过</button>
           <button class="primary-btn" type="button" data-receipt-audit-pass><i data-feather="check-circle"></i> 审核通过</button>
           <button class="receipt-close-btn" type="button" data-receipt-review-close aria-label="关闭审核"><i data-feather="x"></i></button>
@@ -1060,7 +1058,6 @@
   const reviewRotationLabel = page.querySelector("[data-receipt-review-rotation]");
   const reviewRecordPrev = page.querySelector("[data-receipt-record-prev]");
   const reviewRecordNext = page.querySelector("[data-receipt-record-next]");
-  const reviewFeishuDetailQuery = page.querySelector("[data-receipt-feishu-detail-query]");
   const reviewAuditPass = page.querySelector("[data-receipt-audit-pass]");
   const reviewAuditFail = page.querySelector("[data-receipt-audit-fail]");
   const reviewReasonPanel = page.querySelector("[data-receipt-fail-reason-panel]");
@@ -2017,7 +2014,6 @@
     reviewImage?.removeAttribute("src");
     resetReviewImageTransform();
     resetReceiptAuditFeedback();
-    if (reviewFeishuDetailQuery) reviewFeishuDetailQuery.hidden = true;
     hideFailReasonPanel();
     closeReceiptAuditConfirmation();
     table?.querySelectorAll("[data-receipt-id]").forEach((row) => row.classList.remove("is-selected"));
@@ -2031,7 +2027,6 @@
     if (reviewTitle) reviewTitle.textContent = "正在加载";
     if (reviewSubtitle) reviewSubtitle.textContent = "正在读取回单详情。";
     renderReviewSummary({}, {});
-    if (reviewFeishuDetailQuery) reviewFeishuDetailQuery.hidden = true;
     if (reviewReason) reviewReason.value = "";
     hideFailReasonPanel();
     reviewAttachments = [];
@@ -2048,9 +2043,6 @@
       if (reviewTitle) reviewTitle.textContent = heading;
       if (reviewSubtitle) reviewSubtitle.textContent = meta || "本地回单详情";
       renderReviewSummary(record.detail_summary || {}, record);
-      if (reviewFeishuDetailQuery) {
-        reviewFeishuDetailQuery.hidden = !record.feishu_detail_query_available;
-      }
       if (record.audit_status === "审核通过") {
         showReceiptAuditFeedback({result: "passed"}, "当前回单已审核通过。");
       } else if (record.audit_status === "审核不通过") {
@@ -2155,45 +2147,6 @@
     return {record, auditStatus, message};
   };
 
-  const submitReceiptFeishuDetailQuery = async () => {
-    if (!reviewReceiptId || !reviewFeishuDetailQuery) return;
-    const browserRequestUuid = newBrowserRequestUuid();
-    reviewFeishuDetailQuery.disabled = true;
-    reviewFeishuDetailQuery.setAttribute("aria-busy", "true");
-    try {
-      const response = await fetch(
-        `/receipts/${encodeURIComponent(reviewReceiptId)}/feishu-detail-query`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json; charset=UTF-8",
-            "Accept": "application/json",
-            "X-Browser-Request-UUID": browserRequestUuid,
-          },
-          body: "{}",
-        },
-      );
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.message || `飞书回单详情查询提交失败（${response.status}）。`);
-      }
-      const message = payload.message || "飞书明细查询完成。";
-      if (reviewStatus) {
-        reviewStatus.textContent = `${message} ${JSON.stringify(payload.data || {})}`;
-        reviewStatus.hidden = false;
-      }
-      if (reviewSubtitle) reviewSubtitle.textContent = message;
-    } catch (error) {
-      if (reviewStatus) {
-        reviewStatus.textContent = error.message || String(error);
-        reviewStatus.hidden = false;
-      }
-    } finally {
-      reviewFeishuDetailQuery.disabled = false;
-      reviewFeishuDetailQuery.removeAttribute("aria-busy");
-    }
-  };
-
   const submitReceiptAuditDirect = async (audit) => {
     const browserRequestUuid = newBrowserRequestUuid();
     const response = await fetch(`/receipts/${encodeURIComponent(audit.receiptId)}/audit`, {
@@ -2295,7 +2248,6 @@
   });
   reviewRecordPrev?.addEventListener("click", () => openReviewByOffset(-1));
   reviewRecordNext?.addEventListener("click", () => openReviewByOffset(1));
-  reviewFeishuDetailQuery?.addEventListener("click", submitReceiptFeishuDetailQuery);
   reviewReasonClose?.addEventListener("click", hideFailReasonPanel);
   reviewReasonCancel?.addEventListener("click", hideFailReasonPanel);
   reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"));

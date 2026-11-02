@@ -349,9 +349,8 @@ authenticated_by 一律不能覆盖该 principal。签名密钥未配置时 Cons
   手工财务计划属于高风险操作，必须等待 `super_admin` 审批，页面不得同步等待执行结果。
 - `GET /waybills` 只读取已持久化快照，不得因日期筛选暗中触发同步；外部刷新只能从
   自动化入口显式提交受控命令。
-- 回单详情 GET 不再用宽泛 `feishu_operation` 自动兜底。管理员可显式 POST
-  `/receipts/{id}/feishu-detail-query` 提交 `query_receipt_feishu_detail`；该能力只接受精确
-  运单号，服务端锁定飞书资源与字段，要求完整分页证明和唯一命中，并把证据写入 Run。
+- 回单详情 GET 不再用宽泛 `feishu_operation` 自动兜底。原飞书明细查询
+  （`query_receipt_feishu_detail`）已于 2026-11-02 删除，韵达回单明细改由 Console 直接查韵达运单详情。
 - CI 的内部 API 边界检查禁止 Console 生产代码引用 `/internal/v1/tools/run`；宽泛
   `feishu_operation` 继续保持 disabled。
 

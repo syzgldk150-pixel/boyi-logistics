@@ -87,8 +87,6 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn("data-receipt-record-next", template)
         self.assertIn("data-receipt-audit-pass", template)
         self.assertIn("data-receipt-audit-fail", template)
-        self.assertIn("data-receipt-feishu-detail-query", template)
-        self.assertIn("[data-receipt-feishu-detail-query][hidden] { display: none; }", template)
         self.assertIn("data-receipt-fail-reason-submit", template)
         self.assertIn("data-receipt-audit-confirm", template)
         self.assertIn("data-receipt-audit-confirm-cancel", template)
@@ -220,18 +218,14 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn("audit_log_request", app_source)
         self.assertNotIn("request_summary=params", app_source)
 
-    def test_feishu_detail_is_an_explicit_narrow_direct_query(self):
+    def test_yunda_receipt_detail_is_read_from_yunda_not_feishu(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
         route_source = (CONSOLE_DIR / "routes" / "receipts.py").read_text(encoding="utf-8")
         service_source = (CONSOLE_DIR / "services" / "waybills_receipts.py").read_text(encoding="utf-8")
 
-        self.assertIn("/feishu-detail-query", route_source)
-        self.assertIn('"receipt-feishu-detail"', service_source)
-        self.assertIn('"X-Browser-Request-UUID": browserRequestUuid', template)
-        self.assertIn("JSON.stringify(payload.data || {})", template)
-        self.assertNotIn("payload.work_item_id", template)
-        self.assertNotIn('tool_name="feishu_operation"', service_source)
-        self.assertNotIn('"/internal/v1/tools/run"', service_source)
+        self.assertNotIn("feishu-detail-query", template + route_source + service_source)
+        self.assertNotIn("receipt-feishu-detail", service_source)
+        self.assertIn('"yunda_waybill_tracking"', service_source)
 
 
 if __name__ == "__main__":

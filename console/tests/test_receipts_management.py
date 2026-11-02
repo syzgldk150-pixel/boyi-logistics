@@ -750,6 +750,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_detail_returns_record_attachments_and_audit_logs(self):
         repo = _ReceiptRepo()
         app = _build_app(repo)
+        app._agent_request = lambda *args, **kwargs: {"ok": False, "error": "韵达账号未登录"}
         handler = _Handler(headers={"Accept": "application/json"})
 
         app._handle_receipt_detail(handler, "/receipts/3")
@@ -830,6 +831,7 @@ class ReceiptRouteTests(unittest.TestCase):
             "weight_volume": "28.50 / 0.32",
         }
         app = _build_app(repo)
+        app._agent_request = lambda *args, **kwargs: {"ok": False, "error": "韵达账号未登录"}
         handler = _Handler(headers={"Accept": "application/json"})
 
         app._handle_receipt_detail(handler, "/receipts/3")
@@ -839,6 +841,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("", record["detail_summary"]["volume"])
         self.assertIn("actual_weight", record["detail_summary_missing"])
         self.assertIn("volume", record["detail_summary_missing"])
+        self.assertIn("yunda_detail: 韵达账号未登录", record["detail_summary_error"])
 
     def test_receipt_detail_enriches_ronghui_from_tms_detail_when_local_missing(self):
         repo = _ReceiptRepo()
@@ -893,7 +896,7 @@ class ReceiptRouteTests(unittest.TestCase):
         self.assertEqual("/internal/v1/business/query_waybill_detail", agent_calls[0]["endpoint"])
         self.assertEqual(["2003441429"], agent_calls[0]["payload"]["params"]["bill_codes"])
 
-    def test_receipt_detail_get_does_not_submit_or_execute_feishu_query(self):
+    def test_yunda_receipt_detail_reads_yunda_waybill_detail(self):
         repo = _ReceiptRepo()
         repo.receipt_detail = {
             "record": {
@@ -911,8 +914,25 @@ class ReceiptRouteTests(unittest.TestCase):
         agent_calls = []
 
         def fake_agent(method, endpoint, *, payload=None, timeout=None, console_principal=None):
-            agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
-            self.fail("receipt detail GET must not submit or execute a Feishu query")
+            agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload})
+            return {
+                "ok": True,
+                "data": {
+                    "ok": True,
+                    "type": "yunda",
+                    "tracking_number": "981296115",
+                    "waybill_stub": {
+                        "waybill_no": "981296115",
+                        "recipient_name": "韵达收货人",
+                        "disp_address": "山东省烟台市",
+                        "goods_name": "泵",
+                        "package_type": "木箱",
+                        "pieces": "2件",
+                        "weight": "672kg",
+                        "volume": "2方",
+                    },
+                },
+            }
 
         app._agent_request = fake_agent
         handler = _Handler(headers={"Accept": "application/json"})
@@ -920,48 +940,32 @@ class ReceiptRouteTests(unittest.TestCase):
         app._handle_receipt_detail(handler, "/receipts/5")
 
         record = json.loads(handler.wfile.getvalue().decode("utf-8"))["data"]["record"]
-        self.assertEqual("", record["detail_summary"]["recipient_name"])
-        self.assertTrue(record["feishu_detail_query_available"])
-        self.assertEqual([], agent_calls)
+        self.assertEqual("韵达收货人", record["detail_summary"]["recipient_name"])
+        self.assertEqual("山东省烟台市", record["detail_summary"]["recipient_address"])
+        self.assertEqual("672kg", record["detail_summary"]["actual_weight"])
+        self.assertEqual("yunda_detail", record["detail_summary_source"])
+        self.assertNotIn("feishu_detail_query_available", record)
+        self.assertEqual(["/internal/v1/business/yunda_waybill_tracking"], [call["endpoint"] for call in agent_calls])
+        self.assertEqual({"tracking_number": "981296115"}, agent_calls[0]["payload"]["params"])
 
-    def test_receipt_feishu_detail_query_returns_direct_data(self):
+    def test_yunda_receipt_detail_reports_mismatched_waybill_instead_of_using_it(self):
         repo = _ReceiptRepo()
+        repo.receipt_detail = {
+            "record": {"id": 6, "platform": "yunda", "direction": "send", "waybill_no": "981296115",
+                       "raw_payload": {}, "detail_summary": {}},
+            "attachments": [],
+            "audit_logs": [],
+        }
         app = _build_app(repo)
-        calls = []
+        app._agent_request = lambda *args, **kwargs: {"ok": True, "data": {
+            "ok": True, "waybill_stub": {"waybill_no": "000000000", "recipient_name": "别的单"}}}
+        handler = _Handler(headers={"Accept": "application/json"})
 
-        def agent_request(method, endpoint, *, payload=None, timeout=None, console_principal=None):
-            calls.append({"method": method, "endpoint": endpoint, "payload": payload})
-            return {
-                "ok": True,
-                "status": HTTPStatus.ACCEPTED,
-                "data": {
-                    "waybill_no": "979903652", "recipient_name": "fixture-recipient",
-                },
-            }
+        app._handle_receipt_detail(handler, "/receipts/6")
 
-        app._agent_request = agent_request
-        handler = _Handler(
-            body=b"{}",
-            headers={
-                "Content-Type": "application/json",
-                "X-Browser-Request-UUID": BROWSER_REQUEST_UUID,
-            },
-        )
-
-        app._handle_receipt_feishu_detail_query(
-            handler,
-            "/receipts/3/feishu-detail-query",
-        )
-
-        payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-        self.assertEqual(HTTPStatus.OK, handler.status)
-        self.assertTrue(payload["ok"])
-        self.assertNotIn("pending", payload)
-        self.assertEqual("fixture-recipient", payload["data"]["recipient_name"])
-        self.assertEqual("/internal/v1/business/receipt-feishu-detail", calls[0]["endpoint"])
-        command = calls[0]["payload"]
-        self.assertEqual({"waybill_no": "979903652"}, command["params"])
-        self.assertEqual(BROWSER_REQUEST_UUID, command["request_id"])
+        record = json.loads(handler.wfile.getvalue().decode("utf-8"))["data"]["record"]
+        self.assertEqual("", record["detail_summary"]["recipient_name"])
+        self.assertIn("yunda_detail: 韵达详情接口返回的运单号不一致", record["detail_summary_error"])
 
     def test_receipt_detail_keeps_images_available_when_external_enrichment_fails(self):
         repo = _ReceiptRepo()
