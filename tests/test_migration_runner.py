@@ -598,7 +598,10 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
     def test_running_protected_write_gate_is_read_only_and_redacted(self):
         for running_count, expected in ((0, 0), (2, 1)):
             with self.subTest(running_count=running_count):
-                cursor = _ReleaseRestoreCursor(running_count=running_count)
+                cursor = _ReleaseRestoreCursor(
+                    running_count=running_count,
+                    tables={"automation_plugin_invocations"},
+                )
                 connection = _WindowConnection(cursor)
                 with (
                     patch.object(self.runner, "_connect", return_value=connection),
@@ -617,9 +620,9 @@ class MigrationRunnerMySQLVersionTests(unittest.TestCase):
                     for sql, _ in cursor.calls
                     if sql.startswith("SELECT COUNT(*) AS running_count")
                 )
-                self.assertIn("status IN ('RUNNING', 'VERIFYING')", protected_query)
-                self.assertIn("'DESTRUCTIVE'", protected_query)
-                self.assertNotIn("INTERNAL_PROJECTION_WRITE", protected_query)
+                self.assertIn("FROM automation_plugin_invocations", protected_query)
+                self.assertIn("status IN ('STARTING','RUNNING','CANCELLING')", protected_query)
+                self.assertFalse(any("agent_run_steps" in sql for sql, _ in cursor.calls))
 
     def test_scheduled_write_window_uses_shanghai_daily_boundaries(self):
         zone = ZoneInfo("Asia/Shanghai")
