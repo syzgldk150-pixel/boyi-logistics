@@ -207,9 +207,9 @@ def test_migration_057_projects_entity_table_and_console_select_insert_permissio
         runtime, waybill, _ = migration.names(cursor)
         assert migration.table_type(cursor, waybill, "boyi_waybill_edit_logs") == "BASE TABLE"
         assert migration.table_type(cursor, runtime, "boyi_waybill_edit_logs") == "VIEW"
-        cursor.execute(f"CREATE USER '{username}'@'127.0.0.1'")
+        cursor.execute(f"CREATE USER '{username}'@'%'")
         for schema in (runtime, waybill):
-            cursor.execute(f"GRANT SELECT, INSERT ON `{schema}`.boyi_waybill_edit_logs TO '{username}'@'127.0.0.1'")
+            cursor.execute(f"GRANT SELECT, INSERT ON `{schema}`.boyi_waybill_edit_logs TO '{username}'@'%'")
     try:
         with pymysql.connect(host="127.0.0.1", port=33330, user=username, password="", database=runtime,
                              cursorclass=pymysql.cursors.DictCursor, autocommit=True) as console:
@@ -223,7 +223,7 @@ def test_migration_057_projects_entity_table_and_console_select_insert_permissio
             assert cursor.fetchone()["n"] == 1
     finally:
         with connection.cursor() as cursor:
-            cursor.execute(f"DROP USER '{username}'@'127.0.0.1'")
+            cursor.execute(f"DROP USER '{username}'@'%'")
 
 
 def test_http_replay_survives_changed_validator_and_keeps_origin_checks(repository):
