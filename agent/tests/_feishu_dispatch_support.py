@@ -9,7 +9,7 @@ from feishu import message_handler
 FIXED_COMMAND_ROUTES = {
     **{command: route for route, command in PREVIEW_ROUTES.items()},
     "统计到货数据": "builtin.arrival_stats",
-    "arrive-list": "builtin.arrive_list",
+    "到货清单": "builtin.arrive_list",
 }
 
 

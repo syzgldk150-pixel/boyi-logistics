@@ -7,7 +7,7 @@ from agent.orchestration.models import Actor, ActorType
 
 
 # Commands the current plugin packages declare for their fixed Feishu routes.
-_DECLARED_FEISHU_COMMANDS = frozenset({"扫描", "自提到货问题件", "分批", "统计到货数据", "arrive-list"})
+_DECLARED_FEISHU_COMMANDS = frozenset({"扫描", "自提到货问题件", "分批", "统计到货数据", "到货清单"})
 
 
 class _FakeAutomationProjectEntrypoints:
@@ -320,10 +320,10 @@ class ToolFeishuFlowTests(unittest.TestCase):
             patch("feishu.message_handler.get_pending", return_value=None),
             patch("feishu.message_handler._reply_text", side_effect=_fake_reply_text),
         ):
-            asyncio.run(message_handler._process_and_reply("arrive-list", "user-1", "chat-1"))
+            asyncio.run(message_handler._process_and_reply("到货清单", "user-1", "chat-1"))
 
         self.assertNotIn("execute_tool", calls)
-        self.assertEqual("arrive-list", self.project_entrypoints.calls[-1]["command_text"])
+        self.assertEqual("到货清单", self.project_entrypoints.calls[-1]["command_text"])
         self.assertNotIn("runtime_inputs", self.project_entrypoints.calls[-1])
         self.assertTrue(replies)
 
