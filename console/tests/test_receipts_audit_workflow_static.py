@@ -88,6 +88,7 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn("data-receipt-audit-pass", template)
         self.assertIn("data-receipt-audit-fail", template)
         self.assertIn("data-receipt-feishu-detail-query", template)
+        self.assertIn("[data-receipt-feishu-detail-query][hidden] { display: none; }", template)
         self.assertIn("data-receipt-fail-reason-submit", template)
         self.assertIn("data-receipt-audit-confirm", template)
         self.assertIn("data-receipt-audit-confirm-cancel", template)
