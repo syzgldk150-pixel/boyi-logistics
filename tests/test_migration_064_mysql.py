@@ -229,7 +229,7 @@ def test_064_removes_only_retired_facts_exports_them_and_repeats(database, tmp_p
     # Applying the same file again changes nothing and removes no row.
     with database.helper._connection(autocommit=True) as connection, connection.cursor() as cursor:
         path = next(path for version, path in database.helper.runner.discover_migrations() if version == "064")
-        helper = database.helper.runner._load_script_helper("migration_064_retire_pre_v2.py")
+        helper = database.helper.runner._load_script_helper("migration_row_export.py")
         again = helper.apply(cursor, path, database.helper.runner.split_sql_statements, tmp_path / "again")
     assert _snapshot(database) == after
     assert _export_records(again)[-1]["removed_rows"] == {}

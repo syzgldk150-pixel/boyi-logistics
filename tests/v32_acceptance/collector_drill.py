@@ -104,10 +104,6 @@ def require_complete(invocation_id, *, connection_factory=connect):
         leases = cursor.fetchall()
         cursor.execute("SELECT action,outcome,COUNT(*) AS n FROM automation_write_attempt_receipts WHERE invocation_id=%s GROUP BY action,outcome ORDER BY action,outcome", (invocation_id,))
         receipts = cursor.fetchall()
-        cursor.execute("SELECT COUNT(*) AS n FROM agent_runs")
-        assert cursor.fetchone()["n"] == 0, "direct collection must not create or resume a Run"
-        cursor.execute("SELECT COUNT(*) AS n FROM agent_commands")
-        assert cursor.fetchone()["n"] == 0, "direct collection must not create a Command"
     if not leases or any(lease["outcome"] not in {"SUCCEEDED", "WRITE_VERIFIED"} or not lease["released_at"] for lease in leases):
         raise AssertionError(f"actual generation lease did not finish: {leases}")
     for lease in leases:

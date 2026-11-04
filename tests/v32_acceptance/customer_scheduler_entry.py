@@ -89,10 +89,6 @@ def exercise_scheduler_entry(*, management, connection_factory, automation_id, s
         with connection_factory() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT source,invocation_json FROM automation_plugin_invocations WHERE invocation_id=%s", (first["invocation_id"],))
             call = cursor.fetchone()
-            cursor.execute("SELECT COUNT(*) AS n FROM agent_commands")
-            assert cursor.fetchone()["n"] == 0, "direct scheduler must not create a Command"
-            cursor.execute("SELECT COUNT(*) AS n FROM agent_runs")
-            assert cursor.fetchone()["n"] == 0, "direct scheduler must not create a Run"
         invocation = json.loads(call["invocation_json"])
         if call["source"] != "scheduler" or invocation["entrypoint"] != "scheduler":
             raise AssertionError("scheduled adapter did not persist its actual entrypoint")

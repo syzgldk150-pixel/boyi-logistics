@@ -94,7 +94,8 @@ class IsolatedProjectDatabase:
                         live_sibling_lease=False):
         """Insert one historical Command/Run/Step with its lease and write receipt.
 
-        Only historical migration tests use this; current code never creates
+        Only historical migration tests use this, on a database migrated to
+        before 066 (which drops these tables); current code never creates
         these rows.
         """
 

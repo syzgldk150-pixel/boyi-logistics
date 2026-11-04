@@ -123,33 +123,6 @@ def test_migration_reentry_is_safe(database, migration_name):
             "finance_source_run_bindings": "YES", "customer_problem_publications": "YES"}
 
 
-@pytest.mark.parametrize("run_status", [None, "RECEIVED", "PLANNED", "RUNNING", "VERIFYING",
-    "WAITING_APPROVAL", "FAILED_RETRYABLE", "COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"])
-def test_uninstall_uses_actual_run_state_after_command_acceptance(database, run_status):
-    from shared.automation_plugin_repository import AutomationPluginRepository
-
-    fixture, name = database
-    producer, command_id, item_id, run_id = (str(uuid4()) for _ in range(4))
-    with fixture._connection(name) as connection, connection.cursor() as cursor:
-        cursor.execute("""INSERT INTO agent_commands(command_id,command_type,source,actor_type,actor_roles_json,
-            entity_refs_json,parameters_json,idempotency_key,correlation_id,requested_at,automation_id,status)
-            VALUES(%s,'automation.run','console','console_admin','[]','[]','{}',%s,%s,UTC_TIMESTAMP(6),%s,'RECEIVED')""",
-            (command_id, command_id, command_id, producer))
-        if run_status:
-            cursor.execute("""INSERT INTO work_items(work_item_id,command_id,type,title,source,dedupe_key)
-                VALUES(%s,%s,'AUTOMATION','synthetic lifecycle boundary','console',%s)""", (item_id, command_id, item_id))
-            cursor.execute("""INSERT INTO agent_runs(run_id,work_item_id,command_id,run_no,status,mode,planner_kind,correlation_id)
-                VALUES(%s,%s,%s,1,%s,'AUTO','deterministic',%s)""", (run_id, item_id, command_id, run_status, command_id))
-        blocks = AutomationPluginRepository(connection).list_execution_blocks(producer)
-        if run_status in {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}:
-            assert blocks == []
-        else:
-            assert len(blocks) == 1
-            assert blocks[0]["kind"] == ("VERIFYING" if run_status == "VERIFYING" else "RUNNING")
-            assert blocks[0]["message"] == "control-plane run blocks plugin uninstall"
-        connection.rollback()
-
-
 def test_recent_failed_collection_keeps_published_history(database):
     import json
     fixture, name = database
@@ -194,8 +167,7 @@ def test_legacy_finance_import_is_incremental_and_reports_missing_identity(datab
         def control_plane():
             result = {}
             for table, identity_column in (("automation_projects", "automation_id"),
-                    ("automation_project_configs", "automation_id"), ("scheduled_tasks", "id"),
-                    ("agent_commands", "command_id"), ("agent_runs", "run_id")):
+                    ("automation_project_configs", "automation_id"), ("scheduled_tasks", "id")):
                 cursor.execute(f"SELECT * FROM {table} ORDER BY {identity_column}")
                 result[table] = cursor.fetchall()
             return result

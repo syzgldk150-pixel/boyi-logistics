@@ -308,16 +308,10 @@ def _persist_transition_task_before_image(
                 transition_token, task_id, automation_generation,
                 name, tool_name, tool_params, cron_expression, enabled,
                 last_run, last_status, last_duration_ms, last_message,
-                configuration_version, task_created_at, task_updated_at,
-                policy_mode, policy_contract_hash,
-                policy_contract_snapshot_json, policy_tool_contract_hash,
-                policy_approved_by_actor_id, policy_approved_by_actor_role,
-                policy_approved_by_actor_display_name, policy_approved_at,
-                policy_comment, policy_version, policy_updated_at
+                configuration_version, task_created_at, task_updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s
             )
             """,
             (
@@ -345,19 +339,6 @@ def _persist_transition_task_before_image(
                 item.get("last_message"),
                 item["configuration_version"],
                 item["created_at"],
-                item["updated_at"],
-                # The retired per-task approval policy columns are NOT NULL
-                # until migration 066 drops them; store a fixed placeholder.
-                "REQUIRE_EACH_RUN",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                1,
                 item["updated_at"],
             ),
         )

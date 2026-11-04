@@ -14,11 +14,12 @@ from tests.test_module_data_sources_mysql import database  # noqa: F401
 
 
 def _legacy_counts(fixture, name):
+    """Migration 066 removed the old control plane; the query must not need it."""
     with fixture._connection(name) as connection, connection.cursor() as cursor:
-        result = {}
-        for table in ("agent_commands", "work_items", "agent_runs", "agent_run_steps"):
-            cursor.execute(f"SELECT COUNT(*) AS count FROM {table}")
-            result[table] = cursor.fetchone()["count"]
+        cursor.execute("""SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()
+            AND TABLE_NAME IN ('agent_commands','work_items','agent_runs','agent_run_steps')""")
+        result = sorted(row["TABLE_NAME"] for row in cursor.fetchall())
+        assert result == []
         return result
 
 
@@ -28,7 +29,6 @@ def operations(database):
     # test below uses or removes the caller's AGENT_DB_NAME database.
     fixture, name = database
     before = _legacy_counts(fixture, name)
-    assert all(count == 0 for count in before.values())
     created_ids = []
 
     def insert(status, started_at, updated_at=None):

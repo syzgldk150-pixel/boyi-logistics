@@ -39,11 +39,12 @@ def direct_runtime(direct_repository):  # noqa: F811 - imported pytest fixture
 
 
 def _legacy_counts(repository):
+    """Migration 066 removed the old control plane; a direct call must not need it."""
     with repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
-        result = {}
-        for table in ("agent_commands", "work_items", "agent_runs", "agent_run_steps"):
-            cursor.execute("SELECT COUNT(*) AS n FROM " + table)
-            result[table] = cursor.fetchone()["n"]
+        cursor.execute("""SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()
+            AND TABLE_NAME IN ('agent_commands','work_items','agent_runs','agent_run_steps')""")
+        result = sorted(row["TABLE_NAME"] for row in cursor.fetchall())
+        assert result == []
         return result
 
 

@@ -20,16 +20,7 @@ _required_text = _repository._required_text
 _row_dict = _repository._row_dict
 _rows = _repository._rows
 _safe_error = _repository._safe_error
-_selected_ids = _repository._selected_ids
 _sql_placeholders = _repository._sql_placeholders
-
-# An accepted command retains RECEIVED after its run is created. Only commands
-# without a run are pending on that status; otherwise the durable run decides.
-_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE = """(
-    (command.status='RECEIVED' AND run.run_id IS NULL)
-    OR run.status NOT IN ('COMPLETED', 'PARTIAL', 'FAILED_TERMINAL', 'CANCELLED')
-)"""
-
 
 def _delete_disposed_execution_references(cursor: Any, automation_id: str) -> None:
     cursor.execute("""SELECT generation FROM automation_project_generations
@@ -44,8 +35,7 @@ def _delete_disposed_execution_references(cursor: Any, automation_id: str) -> No
         WHERE automation_id=%s AND outcome IN ('STARTED','WRITE_OUTCOME_UNKNOWN') FOR UPDATE""", (automation_id,))
     if _rows(cursor):
         raise AutomationPluginPurgeBlocked("unresolved write receipt blocks uninstall cleanup")
-    # Migration 025 receipts reference leases and runs; migration 019 leases
-    # reference runs. Remove only resolved control-plane children in that order.
+    # Receipts reference leases; remove only resolved children in that order.
     cursor.execute("DELETE FROM automation_write_attempt_receipts WHERE automation_id=%s", (automation_id,))
     cursor.execute("DELETE FROM automation_project_generation_leases WHERE automation_id=%s", (automation_id,))
 
@@ -97,18 +87,6 @@ class AutomationPluginPurgeRepositoryMixin:
             raise OrchestrationPersistenceError("automation project is not installed")
         with self.cursor() as cursor:
             cursor.execute(
-                f"""
-                SELECT command.command_id, run.run_id
-                FROM agent_commands AS command
-                LEFT JOIN agent_runs AS run ON run.command_id=command.command_id
-                WHERE command.automation_id=%s
-                  AND {_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE}
-                FOR UPDATE
-                """,
-                (_required_text(automation_id, "automation_id"),),
-            )
-            run_blocked = _rows(cursor)
-            cursor.execute(
                 """
                 SELECT lease_id, outcome
                 FROM automation_project_generation_leases
@@ -119,7 +97,7 @@ class AutomationPluginPurgeRepositoryMixin:
                 (_required_text(automation_id, "automation_id"),),
             )
             lease_blocked = _rows(cursor)
-            if run_blocked or lease_blocked:
+            if lease_blocked:
                 raise AutomationPluginPurgeBlocked(
                     "non-terminal or outcome-unknown execution blocks hard uninstall"
                 )
@@ -327,39 +305,6 @@ class AutomationPluginPurgeRepositoryMixin:
         blocks: list[dict[str, Any]] = []
         with self.cursor() as cursor:
             cursor.execute(
-                f"""
-                SELECT command.command_id, run.run_id, run.status,
-                       EXISTS (
-                           SELECT 1 FROM agent_run_steps AS blocked_step
-                           WHERE blocked_step.run_id=run.run_id
-                             AND blocked_step.error_code='WRITE_OUTCOME_UNKNOWN'
-                       ) AS outcome_unknown
-                FROM agent_commands AS command
-                LEFT JOIN agent_runs AS run ON run.command_id=command.command_id
-                WHERE command.automation_id=%s
-                  AND {_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE}
-                ORDER BY run.run_id
-                """,
-                (safe_automation_id,),
-            )
-            for row in _rows(cursor):
-                status = str(row.get("status") or "")
-                blocks.append(
-                    {
-                        "kind": (
-                            "VERIFYING"
-                            if status == "VERIFYING"
-                            else (
-                                "WRITE_OUTCOME_UNKNOWN"
-                                if bool(row.get("outcome_unknown"))
-                                else "RUNNING"
-                            )
-                        ),
-                        "run_id": str(row.get("run_id") or ""),
-                        "message": "control-plane run blocks plugin uninstall",
-                    }
-                )
-            cursor.execute(
                 """
                 SELECT lease_id, outcome
                 FROM automation_project_generation_leases
@@ -438,18 +383,6 @@ class AutomationPluginPurgeRepositoryMixin:
                     "automation project is not safely revoked for uninstall"
                 )
             cursor.execute(
-                f"""
-                SELECT command.command_id, run.run_id
-                FROM agent_commands AS command
-                LEFT JOIN agent_runs AS run ON run.command_id=command.command_id
-                WHERE command.automation_id=%s
-                  AND {_CONTROL_PLANE_UNINSTALL_BLOCK_PREDICATE}
-                FOR UPDATE
-                """,
-                (automation_id,),
-            )
-            blocked_runs = _rows(cursor)
-            cursor.execute(
                 """
                 SELECT generation, state FROM automation_project_generations
                 WHERE automation_id=%s AND state<>'DISPOSED' FOR UPDATE
@@ -467,7 +400,7 @@ class AutomationPluginPurgeRepositoryMixin:
                 (automation_id,),
             )
             lease_blocks = _rows(cursor)
-            if blocked_runs or generation_blocks or lease_blocks:
+            if generation_blocks or lease_blocks:
                 raise AutomationPluginPurgeBlocked(
                     "execution or runtime generation appeared before purge finalize"
                 )
@@ -511,7 +444,7 @@ class AutomationPluginPurgeRepositoryMixin:
         return reserved
 
     def hard_delete_project_application_state(self, purge_id: str) -> None:
-        """Delete one instance and its exact control-plane graph in FK order."""
+        """Delete one instance and its exact application state in FK order."""
 
         safe_purge_id = _required_text(purge_id, "purge_id")
         with self.cursor() as cursor:
@@ -547,167 +480,6 @@ class AutomationPluginPurgeRepositoryMixin:
                 )
             _delete_disposed_execution_references(cursor, automation_id)
 
-            command_ids = _selected_ids(
-                cursor,
-                "SELECT command_id FROM agent_commands "
-                "WHERE automation_id=%s FOR UPDATE",
-                (automation_id,),
-                "command_id",
-            )
-            work_item_ids: list[str] = []
-            run_ids: list[str] = []
-            step_ids: list[str] = []
-            approval_ids: list[str] = []
-            if command_ids:
-                command_placeholders = _sql_placeholders(command_ids)
-                work_item_ids = _selected_ids(
-                    cursor,
-                    f"SELECT work_item_id FROM work_items "
-                    f"WHERE command_id IN ({command_placeholders}) FOR UPDATE",
-                    command_ids,
-                    "work_item_id",
-                )
-                run_ids = _selected_ids(
-                    cursor,
-                    f"SELECT run_id FROM agent_runs "
-                    f"WHERE command_id IN ({command_placeholders}) FOR UPDATE",
-                    command_ids,
-                    "run_id",
-                )
-            if run_ids:
-                run_placeholders = _sql_placeholders(run_ids)
-                cursor.execute(
-                    f"""
-                    SELECT run_id FROM agent_runs
-                    WHERE retry_of_run_id IN ({run_placeholders})
-                      AND run_id NOT IN ({run_placeholders})
-                    FOR UPDATE
-                    """,
-                    tuple([*run_ids, *run_ids]),
-                )
-                if _rows(cursor):
-                    raise AutomationPluginPurgeBlocked(
-                        "another project Run references this project's retry chain"
-                    )
-                step_ids = _selected_ids(
-                    cursor,
-                    f"SELECT step_id FROM agent_run_steps "
-                    f"WHERE run_id IN ({run_placeholders}) FOR UPDATE",
-                    run_ids,
-                    "step_id",
-                )
-                approval_ids = _selected_ids(
-                    cursor,
-                    f"SELECT approval_id FROM approval_requests "
-                    f"WHERE run_id IN ({run_placeholders}) FOR UPDATE",
-                    run_ids,
-                    "approval_id",
-                )
-
-            event_conditions = ["(entity_type='automation_project' AND entity_id=%s)"]
-            event_params: list[Any] = [automation_id]
-            if work_item_ids:
-                event_conditions.append(
-                    f"work_item_id IN ({_sql_placeholders(work_item_ids)})"
-                )
-                event_params.extend(work_item_ids)
-            if run_ids:
-                event_conditions.append(f"run_id IN ({_sql_placeholders(run_ids)})")
-                event_params.extend(run_ids)
-            if step_ids:
-                event_conditions.append(f"step_id IN ({_sql_placeholders(step_ids)})")
-                event_params.extend(step_ids)
-            event_ids = _selected_ids(
-                cursor,
-                "SELECT event_id FROM domain_events WHERE "
-                + " OR ".join(event_conditions)
-                + " FOR UPDATE",
-                event_params,
-                "event_id",
-            )
-            if event_ids:
-                event_placeholders = _sql_placeholders(event_ids)
-                cursor.execute(
-                    f"DELETE FROM event_consumptions "
-                    f"WHERE event_id IN ({event_placeholders})",
-                    tuple(event_ids),
-                )
-                cursor.execute(
-                    f"DELETE FROM outbox_events WHERE event_id IN ({event_placeholders})",
-                    tuple(event_ids),
-                )
-                cursor.execute(
-                    f"DELETE FROM domain_events WHERE event_id IN ({event_placeholders})",
-                    tuple(event_ids),
-                )
-            if approval_ids:
-                approval_placeholders = _sql_placeholders(approval_ids)
-                cursor.execute(
-                    f"DELETE FROM approval_decisions "
-                    f"WHERE approval_id IN ({approval_placeholders})",
-                    tuple(approval_ids),
-                )
-                cursor.execute(
-                    f"DELETE FROM approval_requests "
-                    f"WHERE approval_id IN ({approval_placeholders})",
-                    tuple(approval_ids),
-                )
-            if work_item_ids:
-                work_placeholders = _sql_placeholders(work_item_ids)
-                cursor.execute(
-                    f"DELETE FROM evidence_records "
-                    f"WHERE work_item_id IN ({work_placeholders})",
-                    tuple(work_item_ids),
-                )
-            if run_ids or step_ids:
-                log_conditions: list[str] = []
-                log_params: list[Any] = []
-                if run_ids:
-                    log_conditions.append(f"run_id IN ({_sql_placeholders(run_ids)})")
-                    log_params.extend(run_ids)
-                if step_ids:
-                    log_conditions.append(f"step_id IN ({_sql_placeholders(step_ids)})")
-                    log_params.extend(step_ids)
-                cursor.execute(
-                    "DELETE FROM tool_logs WHERE " + " OR ".join(log_conditions),
-                    tuple(log_params),
-                )
-            if step_ids:
-                step_placeholders = _sql_placeholders(step_ids)
-                cursor.execute(
-                    f"DELETE FROM agent_run_steps WHERE step_id IN ({step_placeholders})",
-                    tuple(step_ids),
-                )
-            if run_ids:
-                run_placeholders = _sql_placeholders(run_ids)
-                cursor.execute(
-                    f"UPDATE agent_runs SET retry_of_run_id=NULL "
-                    f"WHERE run_id IN ({run_placeholders})",
-                    tuple(run_ids),
-                )
-                cursor.execute(
-                    f"DELETE FROM agent_runs WHERE run_id IN ({run_placeholders})",
-                    tuple(run_ids),
-                )
-            if work_item_ids:
-                work_placeholders = _sql_placeholders(work_item_ids)
-                cursor.execute(
-                    f"DELETE FROM work_item_entities "
-                    f"WHERE work_item_id IN ({work_placeholders})",
-                    tuple(work_item_ids),
-                )
-                cursor.execute(
-                    f"DELETE FROM work_items WHERE work_item_id IN ({work_placeholders})",
-                    tuple(work_item_ids),
-                )
-            if command_ids:
-                command_placeholders = _sql_placeholders(command_ids)
-                cursor.execute(
-                    f"DELETE FROM agent_commands "
-                    f"WHERE command_id IN ({command_placeholders})",
-                    tuple(command_ids),
-                )
-
             cursor.execute(
                 "SELECT id FROM scheduled_tasks WHERE automation_id=%s FOR UPDATE",
                 (automation_id,),
@@ -716,23 +488,9 @@ class AutomationPluginPurgeRepositoryMixin:
             if task_ids:
                 task_placeholders = _sql_placeholders(task_ids)
                 cursor.execute(
-                    f"DELETE FROM scheduled_task_approval_policy_events "
-                    f"WHERE task_id IN ({task_placeholders})",
-                    tuple(task_ids),
-                )
-                cursor.execute(
-                    f"DELETE FROM scheduled_task_approval_policies "
-                    f"WHERE task_id IN ({task_placeholders})",
-                    tuple(task_ids),
-                )
-                cursor.execute(
                     f"DELETE FROM scheduled_tasks WHERE id IN ({task_placeholders})",
                     tuple(task_ids),
                 )
-            cursor.execute(
-                "DELETE FROM automation_project_approval_batches WHERE automation_id=%s",
-                (automation_id,),
-            )
             cursor.execute(
                 "DELETE FROM automation_project_policy_events WHERE automation_id=%s",
                 (automation_id,),
