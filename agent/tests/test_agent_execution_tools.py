@@ -12,15 +12,6 @@ def direct_admin():
     return Actor(ActorType.CONSOLE_ADMIN, "test-admin", roles=("admin",), authenticated_by="mysql_admin_session")
 
 
-def _resolved_r7_test_params(params, **_kwargs):
-    resolved = dict(params or {})
-    resolved.setdefault("account_id", "r7_default")
-    resolved.setdefault("session_profile", "r7_default")
-    resolved.setdefault("username", "synthetic-r7-user")
-    resolved.setdefault("password", "synthetic-r7-password")
-    return resolved
-
-
 class AgentExecutionToolTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(

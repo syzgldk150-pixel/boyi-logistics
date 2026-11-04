@@ -5,14 +5,6 @@ from unittest.mock import ANY
 from _tms_runtime_test_support import *  # noqa: F403
 
 
-def _ronghui_params(**values):
-    return {"account_id": "configured-ronghui-test", **values}
-
-
-def _yunda_params(**values):
-    return {"account_id": "configured-yunda-test", **values}
-
-
 def _daily_persisted_snapshot_proof(**kwargs):
     return {
         "ok": True,

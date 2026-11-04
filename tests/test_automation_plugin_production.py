@@ -83,34 +83,6 @@ class _AccountManager:
         }
 
 
-class _ScriptedGenerationCursor:
-    def __init__(self, actions: list[tuple[str, object, int]]) -> None:
-        self._actions = list(actions)
-        self._row: object = None
-        self.rowcount = 0
-
-    def execute(self, sql: object, _params: object = None) -> None:
-        if not self._actions:
-            raise AssertionError(f"unexpected SQL: {sql}")
-        marker, self._row, self.rowcount = self._actions.pop(0)
-        normalized = " ".join(str(sql).split())
-        assert marker in normalized
-
-    def fetchone(self) -> object:
-        return self._row
-
-    def close(self) -> None:
-        return None
-
-
-class _ScriptedGenerationConnection:
-    def __init__(self, actions: list[tuple[str, object, int]]) -> None:
-        self._cursor = _ScriptedGenerationCursor(actions)
-
-    def cursor(self) -> _ScriptedGenerationCursor:
-        return self._cursor
-
-
 def test_reconcile_all_quarantines_one_project_and_continues() -> None:
     entries = tuple(
         SimpleNamespace(automation_id=automation_id)

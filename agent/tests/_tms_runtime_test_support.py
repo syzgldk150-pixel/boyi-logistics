@@ -314,80 +314,6 @@ class _DummySession:
         return self.post_response
 
 
-class _FakeLoginLocator:
-    def __init__(self, page, selector):
-        self.page = page
-        self.selector = selector
-
-    def fill(self, value):
-        self.page.filled[self.selector] = value
-
-    def click(self):
-        self.page.clicked.append(self.selector)
-        self.page.url = self.page.home_url
-
-
-class _FakeIndependentLoginPage:
-    def __init__(self, login_url, home_url):
-        self.login_url = login_url
-        self.home_url = home_url
-        self.url = ""
-        self.filled = {}
-        self.clicked = []
-
-    def goto(self, url, wait_until=None, timeout=None):
-        self.url = url
-
-    def wait_for_load_state(self, state, timeout=None):
-        return None
-
-    def wait_for_timeout(self, ms):
-        return None
-
-    def wait_for_selector(self, selector, state=None, timeout=None):
-        return _FakeLoginLocator(self, selector)
-
-    def content(self):
-        return "<html></html>"
-
-    def is_visible(self, selector):
-        return self.url == self.login_url
-
-
-class _FakeR7Cookie:
-    name = "r7-session"
-    value = "cookie-value"
-    domain = "r7.ronghuiwl.com"
-    path = "/"
-    secure = True
-    expires = None
-    _rest = {"HttpOnly": True, "SameSite": "Lax"}
-
-
-class _FakeR7Session:
-    def __init__(self):
-        self.cookies = [_FakeR7Cookie()]
-
-
-class _FakeR7HttpLoginContext:
-    def __init__(self):
-        self.cookies = []
-
-    def add_cookies(self, cookies):
-        self.cookies.extend(cookies)
-
-
-class _FakeR7HttpLoginPage(_FakeIndependentLoginPage):
-    def __init__(self, login_url, home_url):
-        super().__init__(login_url, home_url)
-        self.context = _FakeR7HttpLoginContext()
-        self.evaluated = []
-
-    def evaluate(self, script, arg=None):
-        self.evaluated.append((script, arg))
-        return None
-
-
 class _FakeLaunchContext:
     def __init__(self):
         self.kwargs = None
@@ -421,7 +347,6 @@ class _FakeLaunchPlaywright:
 
     def start(self):
         return self
-
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]

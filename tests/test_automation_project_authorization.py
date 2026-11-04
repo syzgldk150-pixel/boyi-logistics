@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
 import unittest
 
 from agent.automation_plugins.host_capability_registry import governance_for_effect
@@ -16,20 +15,6 @@ from shared.automation_project_manifest import (
     TRUSTED_AUTOMATION_ENTRYPOINTS,
     AutomationProjectInstanceDefinition,
 )
-
-
-def _definition(tool_name: str):
-    return AutomationProjectInstanceDefinition(
-        automation_id="instance_one",
-        plugin_id=f"{tool_name}_plugin",
-        tool_name=tool_name,
-        argument_templates={"console": {}},
-        dynamic_argument_resolvers={},
-        account_bindings={"primary": "account_one"},
-        allowed_entrypoints=frozenset({"console"}),
-        project_config={},
-        resource_bindings={},
-    )
 
 
 def _service_v2_fragment(definition):
@@ -109,14 +94,6 @@ def _service_v2_fragment(definition):
         ),
         "device_binding_sha256": "5" * 64,
     }
-
-
-@dataclass(frozen=True)
-class _Step:
-    tool_name: str
-    tool_version: str
-    operation_type: str
-    arguments: dict
 
 
 class AutomationProjectAuthorizationTests(unittest.TestCase):

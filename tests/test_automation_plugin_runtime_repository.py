@@ -20,7 +20,6 @@ from agent.automation_plugins.models import (
     RuntimeActivationPhase,
     RuntimeCoeffectKind,
     RuntimeCoeffectSnapshot,
-    RuntimeEffectKind,
     RuntimeEffectRecord,
     RuntimeEffectState,
     RuntimeGenerationLease,
@@ -138,33 +137,6 @@ def _persisted_sha(value: Any) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
-
-
-def _config_record(
-    snapshot: RuntimeGenerationSnapshot,
-    *,
-    marker: str,
-    account_id: str,
-    schedule_time: str,
-) -> AutomationProjectConfigRecord:
-    return AutomationProjectConfigRecord(
-        automation_id=snapshot.automation_id,
-        config={"marker": marker},
-        account_bindings={"source": account_id},
-        resource_bindings={},
-        schedule={
-            "kind": "daily_times",
-            "times": [schedule_time],
-            "enabled": True,
-        },
-        config_version=snapshot.generation,
-        configured=True,
-        config_sha256=snapshot.project_config_sha256,
-        account_bindings_sha256=snapshot.account_bindings_sha256,
-        resource_bindings_sha256=snapshot.resource_bindings_sha256,
-        device_binding_sha256=snapshot.device_binding_sha256,
-        enabled_entrypoints=("console",),
-    )
 
 
 class _CatalogRepository:
@@ -628,36 +600,6 @@ class _ReadyCoeffects:
                 ready=True,
             ),
         )
-
-
-class _RuntimeEffectPlanner:
-    def plan(
-        self,
-        snapshot: RuntimeGenerationSnapshot,
-    ) -> Sequence[RuntimeEffectPlan]:
-        return (
-            RuntimeEffectPlan(
-                kind=RuntimeEffectKind.PACKAGE_REFERENCE,
-                effect_key=f"package:{snapshot.plugin_version}",
-                payload={"version": snapshot.plugin_version},
-            ),
-        )
-
-
-class _RuntimeEffectDriver:
-    def ensure_applied(
-        self,
-        *,
-        snapshot: RuntimeGenerationSnapshot,
-        plan: RuntimeEffectPlan,
-        effect: RuntimeEffectRecord,
-    ) -> RuntimeEffectRecord:
-        assert snapshot.generation == effect.generation
-        assert plan.effect_key == effect.effect_key
-        return replace(effect, state=RuntimeEffectState.APPLIED)
-
-    def dispose(self, effect: RuntimeEffectRecord) -> None:
-        assert effect.reversible is True
 
 
 class _UnitOfWork:

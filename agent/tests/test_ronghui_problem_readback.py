@@ -44,26 +44,6 @@ def _problem_row(**overrides):
     return row
 
 
-def _complaint_row(**overrides):
-    row = {
-        "BILL_CODE": "R1",
-        "EXCEPTION_ID": "exception-1",
-        "STATUS": "待处理",
-        "EXCEPTION_DATE": "2026-08-15T01:00:00Z",
-        "CATEGORY": "违规操作类",
-        "EXCEPTION_TYPE": "分批",
-        "REMARK": "问题子单：R1-1",
-        "EXCEPTIONSITE_SIDE_CODE": "site-code",
-        "EXCEPTIONSITE_SIDE": "目标网点",
-        "EXCEPTION_SITE": "登记网点",
-        "COMPLAINANT_NAME": "登记人",
-        "EXCEPTION_DEPT_SIDE": "",
-        "EXCEPTION_MAN_SIDE": "",
-    }
-    row.update(overrides)
-    return row
-
-
 class RonghuiProblemReadbackTests(unittest.TestCase):
     def test_page_query_reads_every_declared_row_with_exact_protocol(self):
         session = _Session(
