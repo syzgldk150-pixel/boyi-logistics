@@ -58,7 +58,7 @@ Console 不负责：
 - 管理员命令、审批、账号和旧模块审计读取还必须绑定真实 MySQL 管理员会话，并由服务端签名。
 - 浏览器不能声明或覆盖管理员 principal、角色或来源。
 - 物流跟踪由 Console `/tracking` 代理 Agent `/internal/v1/tms/tracking_query`。
-- 普通查询和人工操作使用 `/internal/v1/business/{operation}`；插件使用 `/internal/v1/automation-projects/{automation_id}/invoke`。旧 `/internal/v1/commands` 不接受新业务，不进入领取队列。
+- 普通查询和人工操作使用 `/internal/v1/business/{operation}`；插件使用 `/internal/v1/automation-projects/{automation_id}/invoke`。旧 `/internal/v1/commands|runs|work-items|approvals` 已于 2026-11 删除。
 - Basic Auth 仅为应急兼容入口，不具备控制平面写权限。
 
 ## 数据库

@@ -4,7 +4,7 @@ type: 模块文档
 tags: [客服系统, 问题件, 融辉, 韵达, 原页接口, Console, Agent]
 related: [../code_navigation_index.md, ../project_overview.md]
 status: active
-updated: 2026-10-08
+updated: 2026-11-04
 ---
 
 # 客服系统模块说明
@@ -81,7 +81,7 @@ updated: 2026-10-08
 - Console 样式：`console/static/style.css`
 - Agent 只读 target：`agent/tms_runtime/scripts/customer_service_problem.py`
 - Agent 调度注册：`agent/tms_runtime/dispatch.py`
-- Console 写操作编排：`console/services/customer_service.py` → `/internal/v1/commands`
+- Console 查询与写操作：`console/services/customer_service.py` → `call_business` → `/internal/v1/business/customer-service-{action}`
 
 ## 原页抓取规则
 

@@ -53,10 +53,8 @@ updated: 2026-11-04
 - Agent 会话、消息、工具日志、知识库和 Phase 7 表；
 - R7 监控事件/状态及到达、发车打卡日志。
 - 每日应签权威账本、来源运行、到货/问题件/主单签收证据与影子差异；
-- Agent 控制平面的 Command、Work Item、Run、Step、Approval、Evidence 和实体映射；
-- 不可变领域事件、事务 Outbox、死信状态和消费者幂等回执。
-- 定时任务的配置版本、当前审批策略及不可变策略审计事件；策略快照不保存凭据、Cookie、Token、
-  原始请求体或可执行 HTML。
+- 定时任务的配置版本（任务级审批策略及其审计事件，以及旧控制平面的 Command、Work Item、Run、Step、
+  Approval、Evidence、领域事件与 Outbox 表已由迁移 066 删除）。
 - 自动化插件的包、项目、代际、租约、写尝试回执，（迁移 064 起只允许 `SERVICE_V2` 版本与 `super_admin_upload/builtin_bundle` 来源）、
   服务/贡献和托管文档；
 - 迁移 `027` 中历史 14 个业务模块的生命周期和 Lite 审计（之后新增的 Harness 与监控查询模块不回写历史 seed）；

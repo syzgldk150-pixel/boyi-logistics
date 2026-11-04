@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-02
+updated: 2026-11-04
 ---
 
 # 身份权限与统一对话
@@ -108,7 +108,7 @@ Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层�
 | 真实账号、身份与飞书绑定存储 | `shared/identity_repository.py` |
 | HTTP 权限映射 | `shared/identity_routes.py`、`agent/agent/identity_access.py` |
 | 后台身份管理 | `console/services/identities.py`、`console/templates/identity_management.html` |
-| 飞书绑定验证 | `shared/feishu_approval_repository.py`、`agent/agent/orchestration/feishu_approval_service.py` |
+| 飞书绑定验证 | `shared/feishu_binding_repository.py`、`agent/agent/orchestration/feishu_binding_service.py` |
 | 统一 AI 会话 | `agent/agent/harness_application.py`、`agent/agent/channel_chat.py` |
 | 确定性业务文本查询 | `agent/agent/chat_text_queries.py` |
 

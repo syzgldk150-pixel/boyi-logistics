@@ -949,7 +949,6 @@
       "scenario": "20 次已打开标签切换，再关闭标签／设置页",
       "requirement": "无重复整页获取和重复初始化；监听器、轮询、在途请求没有线性积累；终态停止、隐藏退避、关闭清理",
       "tests": [
-        "console/tests/test_control_plane_ui.py",
         "probe:navigation_probe"
       ],
       "minimum_cases": 1,
@@ -961,7 +960,7 @@
       "runtime_model": "DIRECT_SERVICE_V2",
       "applicability": "REQUIRED",
       "historical_evidence_note": "实际Chromium已打开20次保留DOM标签切换及设置保存/关闭重开，结合页面控制器监听/轮询/终态清理回归；性能和错误由本次navigation probe判断。",
-      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。 2026-11 第三期删除旧控制平面后，console/tests/test_control_plane_ui.py 随旧代码删除，移入 historical_tests。",
       "historical_tests": [
         "console/tests/test_control_plane_ui.py",
         "probe:navigation_probe"
@@ -1184,7 +1183,6 @@
         "tests/test_automation_project_policy_service.py",
         "probe:navigation_probe",
         "probe:run_acceptance",
-        "tests/test_service_v2_policy_runtime.py",
         "tests/test_plugin_service_v2_foundation.py",
         "probe:settings_effective",
         "probe:customer_collection_flow"
@@ -1198,7 +1196,7 @@
       "runtime_model": "DIRECT_SERVICE_V2",
       "applicability": "REQUIRED",
       "historical_evidence_note": "真实默认设置/两实例、账号与配置历史恢复、模块采集设置与真实单Scheduler Job、完整签名版本升级/失败候选/在途旧版本与新Run新版本/历史回退组合。所有操作走既有管理服务，不要求每种入口重复同一生命周期。",
-      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。 2026-11 第三期删除旧控制平面后，tests/test_service_v2_policy_runtime.py 随旧代码删除，移入 historical_tests。",
       "historical_tests": [
         "tests/test_automation_plugin_lifecycle.py",
         "tests/test_automation_project_policy_service.py",
@@ -1359,7 +1357,6 @@
       "scenario": "通知失败、可重建展示更新失败",
       "requirement": "已确认业务成功不被改为业务失败；可靠重试通知／展示，不重跑外部写；关键账本失败则不能假报成功",
       "tests": [
-        "agent/tests/test_outbox_dispatcher.py",
         "tests/test_feishu_readback_delayed.py",
         "probe:daily_concurrency"
       ],
@@ -1372,7 +1369,7 @@
       "runtime_model": "DIRECT_SERVICE_V2",
       "applicability": "REQUIRED",
       "historical_evidence_note": "四个实际日常Run完成后，真实Outbox消费者分别外部HTTP503后200、原生产可重建展示事件事务失败回滚后重试；PENDING attempt1到PUBLISHED attempt2，业务Run/Step/执行次数及TMS/Sheet ledger不变。关键账本写失败不可完成沿用真实扫描/财务失败和发布门。",
-      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。",
+      "evidence_note": "执行结果只取本次新鲜工件；历史说明不构成本次通过证据。 2026-11 第三期删除旧控制平面后，agent/tests/test_outbox_dispatcher.py 随旧代码删除，移入 historical_tests。",
       "historical_tests": [
         "agent/tests/test_outbox_dispatcher.py",
         "tests/test_feishu_readback_delayed.py",
