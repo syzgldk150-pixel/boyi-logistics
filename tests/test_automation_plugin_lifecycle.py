@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 
 import pytest
@@ -9,146 +8,11 @@ import agent.automation_plugins.storage as plugin_storage
 from agent.automation_plugins.errors import (
     PluginConflictError,
     PluginPackageError,
-    PluginUninstallBlocked,
 )
-from agent.automation_plugins.models import ExecutionBlock, PluginInstanceRecord, PluginProjectState, PluginVersionRecord
-from agent.automation_plugins.ports import HardUninstallPreparation
 from agent.automation_plugins.storage import FilesystemPluginStorage
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-
-
-class _MemoryPluginRepository:
-    def __init__(self) -> None:
-        self.versions: dict[tuple[str, str], PluginVersionRecord] = {}
-        self.instances: dict[str, PluginInstanceRecord] = {}
-        self.requests: dict[str, tuple[str, str, str]] = {}
-        self.fail_install = False
-        self.blocks: list[ExecutionBlock] = []
-        self.preparations: dict[tuple[str, str], HardUninstallPreparation] = {}
-        self.acked: set[str] = set()
-        self.call_log: list[str] = []
-
-    def get_package_version(self, plugin_id: str, version: str):
-        return self.versions.get((plugin_id, version))
-
-    def get_instance(self, automation_id: str):
-        return self.instances.get(automation_id)
-
-    def list_instances(self):
-        return list(self.instances.values())
-
-    def install_instance(
-        self,
-        version: PluginVersionRecord,
-        *,
-        instance_name: str,
-        actor_id: str,
-        actor_role: str,
-        request_id: str,
-        install_payload_sha256: str | None = None,
-    ) -> PluginInstanceRecord:
-        assert actor_id and actor_role == "super_admin"
-        identity = (install_payload_sha256 or version.package_sha256, instance_name)
-        existing = self.requests.get(request_id)
-        if existing is not None:
-            if existing[:2] != identity:
-                raise PluginConflictError("IDEMPOTENCY_CONFLICT")
-            return self.instances[existing[2]]
-        if self.fail_install:
-            raise RuntimeError("fault injection before atomic commit")
-        automation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{request_id}:{instance_name}"))
-        instance = PluginInstanceRecord(
-            automation_id=automation_id,
-            display_name=instance_name,
-            plugin_id=version.plugin_id,
-            state=PluginProjectState.INSTALLED,
-            active_version=version,
-        )
-        self.versions[(version.plugin_id, version.version)] = version
-        self.instances[automation_id] = instance
-        self.requests[request_id] = (version.package_sha256, instance_name, automation_id)
-        return instance
-
-    def upgrade_instance(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def bootstrap_missing(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def set_enabled(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def list_execution_blocks(self, automation_id: str):
-        return tuple(self.blocks)
-
-    def persist_cleanup_requests(self, preparation: HardUninstallPreparation) -> None:
-        assert preparation.cleanup_requests
-        self.call_log.append("persist_cleanup")
-
-    def get_hard_uninstall_preparation(self, *, automation_id: str, purge_id: str):
-        return self.preparations.get((automation_id, purge_id))
-
-    def all_cleanup_acknowledged(self, preparation: HardUninstallPreparation) -> bool:
-        return all(item.command_id in self.acked for item in preparation.cleanup_requests)
-
-    def reserve_hard_uninstall_finalize(self, preparation: HardUninstallPreparation):
-        if not self.all_cleanup_acknowledged(preparation):
-            raise PluginConflictError("cleanup not acknowledged")
-        if self.blocks:
-            raise PluginUninstallBlocked("protected state")
-        self.call_log.append("reserve")
-        return preparation
-
-    def hard_delete_application_state(self, preparation: HardUninstallPreparation) -> None:
-        self.call_log.append("db_delete")
-        self.instances.pop(preparation.instance.automation_id, None)
-
-    def complete_hard_uninstall(self, preparation: HardUninstallPreparation) -> None:
-        self.call_log.append("complete")
-        self.versions.pop(
-            (preparation.instance.plugin_id, preparation.instance.active_version.version),
-            None,
-        )
-        self.preparations.pop((preparation.instance.automation_id, preparation.purge_id), None)
-
-    def mark_purge_failed(
-        self,
-        preparation: HardUninstallPreparation,
-        *,
-        error_code: str,
-        error_summary: str,
-    ) -> None:
-        assert error_code and error_summary
-        self.call_log.append("failed")
-
-
-class _LoggingStorage(FilesystemPluginStorage):
-    def __init__(self, root: Path, call_log: list[str]) -> None:
-        super().__init__(root)
-        self._call_log = call_log
-        self.fail_remove = False
-
-    def remove_version_root(self, install_root: Path) -> None:
-        self._call_log.append("fs_delete")
-        if self.fail_remove:
-            raise OSError("fault injection during filesystem purge")
-        super().remove_version_root(install_root)
-
-
-class _RejectingSignatureVerifier:
-    def verify(self, **_kwargs: object) -> None:
-        raise AssertionError("service-v2 installation must not invoke Ed25519 verification")
-
-
-class _StubServiceV2EnvironmentBuilder:
-    def build(self, version_root: Path, manifest: object) -> Path:
-        assert getattr(manifest, "runtime_model", None) == "service_v2"
-        python_path = version_root / "venv" / "bin" / "python"
-        python_path.parent.mkdir(parents=True)
-        python_path.write_bytes(b"python-3.10-runtime-placeholder")
-        return python_path
 
 
 def test_storage_refuses_symlink_or_path_escape_during_materialization(tmp_path: Path) -> None:

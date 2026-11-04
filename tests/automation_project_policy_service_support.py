@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import TestCase
 from uuid import uuid4
@@ -17,12 +17,8 @@ from agent.orchestration.automation_project_policy_service import (
 from agent.orchestration.models import (
     Actor,
     ActorType,
-    CommandReceipt,
     OperationType,
-    Plan,
-    PlanStep,
     RiskLevel,
-    RunStatus,
 )
 from shared.automation_project_authorization import (
     AutomationEntrypoint,
@@ -55,20 +51,12 @@ __all__ = [
     "_contract",
     "_contract_for",
     "_invocation",
-    "_plan",
-    "_pending",
     "_State",
     "_AutomationProjects",
     "_AutomationPlugins",
-    "_Approvals",
-    "_Events",
-    "_Runs",
-    "_WorkItems",
-    "_Commands",
     "_Uow",
     "_Repository",
     "_Catalog",
-    "_Gateway",
     "_ContributionRegistry",
     "_ModuleSlotRegistry",
     "AutomationProjectPolicyServiceTestBase",
@@ -147,60 +135,6 @@ def _invocation(*, request_id: str = "invoke-one") -> AutomationProjectInvocatio
     )
 
 
-def _plan(invocation: AutomationProjectInvocation) -> Plan:
-    return Plan(
-        command_type="automation.project.invoke",
-        context_fingerprint="context-one",
-        tool_catalog_hash="catalog-one",
-        steps=(
-            PlanStep(
-                step_key="execute",
-                tool_name=f"automation.{AUTOMATION_ID}.run",
-                tool_version="1.0.0",
-                operation_type=OperationType.EXTERNAL_WRITE,
-                arguments={"mode": "saved"},
-                account_id=None,
-                depends_on=(),
-                idempotency_key="step-one",
-                expected_evidence=(),
-                postconditions=(),
-                risk_level=RiskLevel.HIGH,
-                requires_approval=True,
-            ),
-        ),
-        automation_id=AUTOMATION_ID,
-        automation_generation=invocation.automation_generation,
-        automation_contract_hash=invocation.contract_hash,
-    )
-
-
-def _pending(approval_id: str, invocation: AutomationProjectInvocation) -> dict:
-    plan = _plan(invocation)
-    return {
-        "approval_id": approval_id,
-        "work_item_id": f"work-{approval_id}",
-        "run_id": f"run-{approval_id}",
-        "approval_round": 1,
-        "plan_hash": plan.plan_hash,
-        "current_plan_hash": plan.plan_hash,
-        "risk_level": "HIGH",
-        "required_role": "super_admin",
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
-        "created_at": datetime.now(timezone.utc),
-        "source": "console",
-        "run_status": "WAITING_APPROVAL",
-        "plan_json": plan.to_dict(),
-        "parameters_json": {
-            "tool_name": f"automation.{AUTOMATION_ID}.run",
-            "arguments": {"mode": "saved"},
-            "execution_context": {},
-        },
-        "automation_invocation_json": invocation.to_dict(),
-        "correlation_id": f"correlation-{approval_id}",
-        "causation_id": None,
-    }
-
-
 class _State:
     def __init__(self) -> None:
         self.project = {
@@ -221,22 +155,9 @@ class _State:
             "approved_by_actor_id": None,
             "approved_by_actor_role": None,
         }
-        self.pending: list[dict] = []
-        self.decisions: list[dict] = []
-        self.batches: dict[tuple[str, str], dict] = {}
         self.policy_events: list[dict] = []
-        self.domain_events: list[dict] = []
-        self.outbox_events: list[dict] = []
-        self.commands_by_idempotency: dict[tuple[str, str], dict] = {}
-        self.command_models_by_id: dict[str, object] = {}
-        self.gateway_receipts: dict[str, dict] = {}
         self.acceptance_lock_trace: list[str] = []
-        self.active_automation_run: dict | None = None
-        self.automation_runs: list[dict] = []
-        self.automation_run_facts: dict[str, dict] = {}
-        self.work_items: dict[str, dict] = {}
-        self.fail_gateway_create_after_guard = False
-        self.fail_decision_at: int | None = None
+        self.fail_invocation_create_after_guard = False
 
 
 class _AutomationProjects:
@@ -288,53 +209,6 @@ class _AutomationProjects:
     def list_configuration_rows(self, _automation_id, **_kwargs):
         return []
 
-    def expire_pending_approvals(self, _automation_id):
-        return 0
-
-    def invalidate_pending_approvals_and_wake_runs(
-        self,
-        automation_id,
-        *,
-        event_repository=None,
-    ):
-        del event_repository
-        if automation_id != AUTOMATION_ID:
-            return ()
-        run_ids = tuple(
-            str(row["run_id"])
-            for row in self._state.pending
-            if row.get("run_status", "WAITING_APPROVAL")
-            == "WAITING_APPROVAL"
-        )
-        self._state.pending = []
-        self._repository.runnable_run_ids.extend(run_ids)
-        return run_ids
-
-    def lock_waiting_approval_runs(self, automation_id):
-        if automation_id != AUTOMATION_ID:
-            return ()
-        return tuple(
-            str(row["run_id"])
-            for row in self._state.pending
-            if row.get("run_status", "WAITING_APPROVAL")
-            == "WAITING_APPROVAL"
-        )
-
-    def list_pending_approvals(self, automation_id, **_kwargs):
-        if automation_id != AUTOMATION_ID:
-            return []
-        return [copy.deepcopy(row) for row in self._state.pending]
-
-    def get_batch_by_request(self, automation_id, request_id, **_kwargs):
-        row = self._state.batches.get((automation_id, request_id))
-        return copy.deepcopy(row) if row is not None else None
-
-    def create_batch(self, row):
-        key = (row["automation_id"], row["request_id"])
-        self._state.batches[key] = copy.deepcopy(dict(row))
-        return copy.deepcopy(dict(row))
-
-
 class _AutomationPlugins:
     def require_migration_direct_entrypoint(self, automation_id, *, source, super_admin):
         # This unit fixture contains no migration pairs; migration ownership
@@ -362,279 +236,11 @@ class _AutomationPlugins:
         )
 
 
-class _Approvals:
-    def __init__(self, repository: "_Repository") -> None:
-        self._repository = repository
-
-    def record_decision(self, row, *, expected_plan_hash):
-        state = self._repository.state
-        if state.fail_decision_at is not None and len(state.decisions) + 1 == state.fail_decision_at:
-            raise InvalidStateError("approval changed")
-        target = next(
-            item
-            for item in state.pending
-            if item["approval_id"] == row["approval_id"]
-        )
-        if target["plan_hash"] != expected_plan_hash:
-            return {"_decision_error": "PLAN_CHANGED"}
-        state.pending.remove(target)
-        state.decisions.append(dict(row))
-        return dict(row)
-
-    def get_latest_for_run(self, run_id, *, for_update=False):
-        del for_update
-        rows = [row for row in self._repository.state.pending if row["run_id"] == run_id]
-        if not rows:
-            return None
-        row = max(rows, key=lambda value: int(value.get("approval_round") or 0))
-        result = copy.deepcopy(row)
-        result.setdefault("status", "PENDING")
-        return result
-
-    def invalidate_pending(self, *, run_id, reason=None):
-        del reason
-        changed = 0
-        for row in self._repository.state.pending:
-            if row["run_id"] != run_id or row.get("status", "PENDING") not in {
-                "PENDING",
-                "APPROVED",
-            }:
-                continue
-            row["status"] = "INVALIDATED"
-            row["decided_at"] = datetime.now(timezone.utc)
-            changed += 1
-        return changed
-
-
-class _Events:
-    def __init__(self, repository: "_Repository") -> None:
-        self._repository = repository
-
-    def append_with_outbox(self, event, outbox):
-        self._repository.state.domain_events.append(copy.deepcopy(dict(event)))
-        self._repository.state.outbox_events.extend(
-            copy.deepcopy(list(outbox))
-        )
-
-
-def _default_work_item_status(run_status: str) -> str:
-    return {
-        "NEEDS_CLARIFICATION": "NEEDS_CLARIFICATION",
-        "BLOCKED_LOGIN": "BLOCKED_LOGIN",
-        "BLOCKED_DATA": "BLOCKED_DATA",
-        "WAITING_APPROVAL": "WAITING_APPROVAL",
-        "RUNNING": "IN_PROGRESS",
-        "VERIFYING": "IN_PROGRESS",
-        "FAILED_RETRYABLE": "OPEN",
-    }.get(run_status, "OPEN")
-
-
-class _Runs:
-    def __init__(self, repository: "_Repository") -> None:
-        self._repository = repository
-
-    def make_waiting_approval_runnable(self, run_id):
-        self._repository.runnable_run_ids.append(str(run_id))
-        return {"run_id": str(run_id), "status": "WAITING_APPROVAL"}
-
-    def _rows(self) -> list[dict]:
-        state = self._repository.state
-        if not state.automation_runs and state.active_automation_run is not None:
-            state.automation_runs.append(copy.deepcopy(state.active_automation_run))
-        for index, row in enumerate(state.automation_runs, start=1):
-            run_id = str(row.get("run_id") or f"run-{index}")
-            row.setdefault("run_id", run_id)
-            row.setdefault("command_id", f"command-{run_id}")
-            row.setdefault("work_item_id", f"work-{run_id}")
-            row.setdefault("version", 1)
-            row.setdefault("correlation_id", f"correlation-{run_id}")
-            row.setdefault("worker_id", None)
-            row.setdefault("lease_expires_at", None)
-            row.setdefault("error_code", None)
-            item_id = str(row["work_item_id"])
-            state.work_items.setdefault(
-                item_id,
-                {
-                    "work_item_id": item_id,
-                    "command_id": row["command_id"],
-                    "status": _default_work_item_status(str(row.get("status") or "")),
-                    "version": 1,
-                },
-            )
-        return state.automation_runs
-
-    def list_unfinished_for_automation(self, automation_id, *, limit=100):
-        self._repository.state.acceptance_lock_trace.append("unfinished:scan")
-        if automation_id != AUTOMATION_ID:
-            return []
-        terminal = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
-        rows = [
-            row
-            for row in self._rows()
-            if str(row.get("status") or "") not in terminal
-        ]
-
-        def is_blocking(row):
-            facts = self._repository.state.automation_run_facts.get(
-                str(row["run_id"]),
-                {},
-            )
-            lease_expires_at = row.get("lease_expires_at")
-            now = datetime.now(timezone.utc)
-            if (
-                isinstance(lease_expires_at, datetime)
-                and lease_expires_at.tzinfo is None
-            ):
-                now = now.replace(tzinfo=None)
-            live_run_lease = bool(str(row.get("worker_id") or "").strip()) and (
-                isinstance(lease_expires_at, datetime)
-                and lease_expires_at > now
-            )
-            return (
-                str(row.get("status") or "")
-                in {
-                    "RECEIVED",
-                    "CONTEXT_READY",
-                    "PLANNED",
-                    "VALIDATED",
-                }
-                or live_run_lease
-                or bool(facts.get("has_live_generation_lease"))
-            )
-
-        rows.sort(key=lambda row: 0 if is_blocking(row) else 1)
-        return [
-            str(row["run_id"])
-            for row in rows
-        ][:limit]
-
-    def get(self, run_id, *, for_update=False):
-        del for_update
-        row = next(
-            (row for row in self._rows() if row.get("run_id") == run_id),
-            None,
-        )
-        return copy.deepcopy(row) if row is not None else None
-
-    def get_automation_supersession_facts(self, run_id):
-        return copy.deepcopy(
-            self._repository.state.automation_run_facts.get(run_id, {})
-        )
-
-    def cancel_suspended(
-        self,
-        run_id,
-        *,
-        expected_version,
-        expected_statuses,
-        error_code,
-        error_summary,
-        finished_at,
-    ):
-        row = next(item for item in self._rows() if item["run_id"] == run_id)
-        if row["version"] != expected_version or row["status"] not in expected_statuses:
-            raise InvalidStateError("run CAS mismatch")
-        row.update(
-            {
-                "status": "CANCELLED",
-                "error_code": error_code,
-                "error_summary": error_summary,
-                "retryable": False,
-                "worker_id": None,
-                "lease_expires_at": None,
-                "finished_at": finished_at,
-                "version": int(row["version"]) + 1,
-            }
-        )
-        return copy.deepcopy(row)
-
-    def get_active_for_automation(self, automation_id, *, for_update=False):
-        del for_update
-        if automation_id != AUTOMATION_ID:
-            return None
-        row = self._repository.state.active_automation_run
-        return copy.deepcopy(row) if row is not None else None
-
-
-class _WorkItems:
-    def __init__(self, repository: "_Repository") -> None:
-        self._repository = repository
-
-    def get(self, work_item_id, *, for_update=False):
-        del for_update
-        _Runs(self._repository)._rows()
-        row = self._repository.state.work_items.get(work_item_id)
-        return copy.deepcopy(row) if row is not None else None
-
-    def transition(
-        self,
-        work_item_id,
-        *,
-        expected_version,
-        expected_statuses,
-        status,
-        reason_code=None,
-        reason_summary=None,
-        resolution=None,
-        closed_at=None,
-    ):
-        row = self._repository.state.work_items[work_item_id]
-        if row["version"] != expected_version or row["status"] not in expected_statuses:
-            raise InvalidStateError("work item CAS mismatch")
-        row.update(
-            {
-                "status": status,
-                "current_reason_code": reason_code,
-                "current_reason_summary": reason_summary,
-                "resolution_json": copy.deepcopy(resolution),
-                "closed_at": closed_at,
-                "version": int(row["version"]) + 1,
-            }
-        )
-        return copy.deepcopy(row)
-
-
-class _Commands:
-    def __init__(self, repository: "_Repository") -> None:
-        self._repository = repository
-
-    def get_by_idempotency(self, source, idempotency_key, *, for_update=False):
-        self._repository.state.acceptance_lock_trace.append(
-            "idempotency:lock" if for_update else "idempotency:plain"
-        )
-        row = self._repository.state.commands_by_idempotency.get(
-            (source, idempotency_key)
-        )
-        return copy.deepcopy(row) if row is not None else None
-
-    def get(self, command_id, *, for_update=False):
-        del for_update
-        _Runs(self._repository)._rows()
-        row = next(
-            (
-                {
-                    "command_id": item["command_id"],
-                    "automation_id": AUTOMATION_ID,
-                }
-                for item in self._repository.state.automation_runs
-                if item.get("command_id") == command_id
-            ),
-            None,
-        )
-        return copy.deepcopy(row) if row is not None else None
-
-
 class _Uow:
     def __init__(self, repository: "_Repository") -> None:
         self._repository = repository
         self.automation_projects = _AutomationProjects(repository)
         self.automation_plugins = _AutomationPlugins(repository)
-        self.approvals = _Approvals(repository)
-        self.events = _Events(repository)
-        self.runs = _Runs(repository)
-        self.work_items = _WorkItems(repository)
-        self.commands = _Commands(repository)
-        self.scheduled_policies = SimpleNamespace()
         self._snapshot: _State | None = None
 
     def __enter__(self):
@@ -656,7 +262,6 @@ class _Repository:
         self.state = _State()
         self.account_lock_events: list[tuple] = []
         self.block_account_locks = False
-        self.runnable_run_ids: list[str] = []
         self.generation_rows: dict[tuple[str, int], dict] = {}
 
     def unit_of_work(self):
@@ -692,101 +297,6 @@ class _Catalog:
 
     def list(self):
         return (self._entry,)
-
-
-class _Gateway:
-    def __init__(self, repository: _Repository) -> None:
-        self.repository = repository
-        self.command = None
-        self.run_result = None
-
-    def submit(
-        self,
-        command,
-        *,
-        uow_guard=None,
-        uow_acceptance_guard=None,
-    ):
-        with self.repository.unit_of_work() as uow:
-            if uow_guard is not None:
-                uow_guard(uow)
-            if uow_acceptance_guard is not None:
-                acceptance_result = uow_acceptance_guard(
-                    uow,
-                    {
-                        "command_id": command.command_id,
-                        "work_item_id": "work-invoke",
-                        "run_id": "run-invoke",
-                    },
-                )
-            else:
-                acceptance_result = None
-            if self.repository.state.fail_gateway_create_after_guard:
-                raise InvalidStateError("synthetic gateway create failure")
-            uow.commit()
-        replay_row = (
-            acceptance_result.get("replay_command")
-            if isinstance(acceptance_result, dict)
-            else None
-        )
-        if replay_row is not None:
-            command_id = str(replay_row["command_id"])
-            receipt = self.repository.state.gateway_receipts.get(command_id, {})
-            self.command = self.repository.state.command_models_by_id.get(
-                command_id,
-                command,
-            )
-            return CommandReceipt(
-                command_id=command_id,
-                work_item_id=str(receipt.get("work_item_id") or "work-invoke"),
-                run_id=str(receipt.get("run_id") or "run-invoke"),
-                status=RunStatus(str(receipt.get("status") or "RECEIVED")),
-                reused=True,
-            )
-        self.command = command
-        self.repository.state.commands_by_idempotency[
-            (command.source, command.idempotency_key)
-        ] = {
-            "command_id": command.command_id,
-            "command_type": command.command_type,
-            "source": command.source,
-            "actor_type": command.actor.actor_type.value,
-            "actor_id": command.actor.actor_id,
-            "actor_roles_json": list(command.actor.roles),
-            "entity_refs_json": [ref.to_dict() for ref in command.entity_refs],
-            "parameters_json": copy.deepcopy(dict(command.parameters)),
-            "automation_id": command.automation_invocation.automation_id,
-            "automation_generation": command.automation_invocation.automation_generation,
-            "automation_invocation_json": command.automation_invocation.to_dict(),
-            "idempotency_key": command.idempotency_key,
-            "correlation_id": command.correlation_id,
-            "requested_at": command.requested_at,
-        }
-        self.repository.state.command_models_by_id[command.command_id] = command
-        self.repository.state.gateway_receipts[command.command_id] = {
-            "work_item_id": "work-invoke",
-            "run_id": "run-invoke",
-            "status": "RECEIVED",
-        }
-        return CommandReceipt(
-            command_id=command.command_id,
-            work_item_id="work-invoke",
-            run_id="run-invoke",
-            status=RunStatus.RECEIVED,
-            reused=False,
-        )
-
-    async def wait_for_run(self, run_id, *, timeout_seconds):
-        self.waited = (run_id, timeout_seconds)
-        if self.run_result is not None:
-            return dict(self.run_result)
-        return {
-            "run_id": run_id,
-            "command_id": self.command.command_id,
-            "work_item_id": "work-invoke",
-            "status": "COMPLETED",
-            "correlation_id": self.command.correlation_id,
-        }
 
 
 class _ContributionRegistry:
@@ -890,7 +400,7 @@ class _DirectCalls:
             return public_invocation(replay)
         with self.policy_repository.unit_of_work() as uow:
             fields["admission_guard"](uow)
-            if self.policy_repository.state.fail_gateway_create_after_guard:
+            if self.policy_repository.state.fail_invocation_create_after_guard:
                 raise InvalidStateError("synthetic direct invocation create failure")
             uow.commit()
         preview_id = fields.get("preview_invocation_id")
@@ -941,8 +451,6 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
         self.addCleanup(patch.stopall)
         patch("agent.orchestration.direct_project_invocation.project_capability_from_snapshot", side_effect=capability).start()
         patch("agent.orchestration.direct_project_invocation.PluginExecutionRouter._service_contribution_capability", side_effect=lambda capability, **_: capability).start()
-        self.gateway = _Gateway(self.repository)
-        self.woken_run_ids: list[str] = []
         # Every project is Service V2; its exact committed contribution is active.
         self.contribution_registry = _ContributionRegistry()
         self.service = AutomationProjectPolicyService(
@@ -1031,97 +539,6 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
             },
             allowed_entrypoints=frozenset({"console"}),
         )
-
-    def _persisted_selection_confirmation(
-        self,
-        *,
-        preview_run_id: str,
-        request_id: str,
-        observed_at: datetime,
-    ) -> tuple[str, dict]:
-        actor = _admin()
-        idempotency_key = (
-            f"automation:{AUTOMATION_ID}:console:{actor.actor_id}:"
-            f"selection:{preview_run_id}:{request_id}"
-        )
-        selected = ["R0001"]
-        formal_arguments = {
-            "mode": "saved",
-            "dry_run": False,
-            "selected_bill_codes": selected,
-            "preview_fingerprint": "f" * 64,
-        }
-        observed_text = observed_at.astimezone(timezone.utc).isoformat().replace(
-            "+00:00", "Z"
-        )
-        expires_text = (
-            observed_at.astimezone(timezone.utc) + timedelta(minutes=15)
-        ).isoformat().replace("+00:00", "Z")
-        selection_context = {
-            "contract_version": 1,
-            "plugin_id": "selection_v2",
-            "preview_run_id": preview_run_id,
-            "preview_step_id": "preview-step",
-            "preview_result_sha256": "b" * 64,
-            "project_instance_id": AUTOMATION_ID,
-            "generation": 1,
-            "contract_digest": CONTRACT_HASH,
-            "configuration_version": 1,
-            "entrypoint": "console",
-            "contribution_id": "execute_console",
-            "preview_fingerprint": "f" * 64,
-            "candidate_count": 1,
-            "candidates_sha256": "c" * 64,
-            "selection_count": 1,
-            "selection_sha256": canonical_sha256(selected),
-            "formal_arguments_sha256": canonical_sha256(formal_arguments),
-            "observed_at": observed_text,
-            "expires_at": expires_text,
-        }
-        selection_context["context_sha256"] = canonical_sha256(selection_context)
-        invocation = AutomationProjectInvocation(
-            automation_id=AUTOMATION_ID,
-            automation_generation=1,
-            entrypoint=AutomationEntrypoint.CONSOLE,
-            contract_id="execute_console",
-            contract_hash=CONTRACT_HASH,
-            policy_version=1,
-            project_configuration_version=1,
-            request_id=request_id,
-        )
-        return idempotency_key, {
-            "command_id": f"command-{request_id}",
-            "command_type": "automation.project.invoke",
-            "source": "console",
-            "actor_type": actor.actor_type.value,
-            "actor_id": actor.actor_id,
-            "actor_roles_json": list(actor.roles),
-            "entity_refs_json": [
-                {
-                    "entity_type": "automation_project",
-                    "entity_id": AUTOMATION_ID,
-                    "source_system": "agent",
-                    "relation_type": "subject",
-                    "metadata": {},
-                }
-            ],
-            "parameters_json": {
-                "tool_name": f"automation.{AUTOMATION_ID}.run",
-                "arguments": formal_arguments,
-                "execution_context": {
-                    "project_request_id": request_id,
-                    "entrypoint": "console",
-                    "occurred_at": observed_text,
-                    "contribution_id": "execute_console",
-                    "selection_phase": "FORMAL",
-                    "selection_preview": selection_context,
-                },
-            },
-            "automation_invocation_json": invocation.to_dict(),
-            "idempotency_key": idempotency_key,
-            "correlation_id": f"correlation-{request_id}",
-            "requested_at": observed_at,
-        }
 
     def _set_service_v2_feishu_contract(self) -> None:
         self.entry.runtime_model = "SERVICE_V2"
@@ -1219,19 +636,6 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
             authenticated_by="managed_event_dispatcher",
         )
 
-    def _set_scan_project(self) -> None:
-        self.entry.automation_id = "scan_codes"
-        self.entry.plugin_id = "sync_scan_codes"
-        self.entry.trust_source = "super_admin_upload"
-        self.entry.project_full_auto_allowed = True
-        self.entry.governance_anchor = {
-            "operation_type": "internal_projection_write",
-            "risk_level": "medium",
-            "approval": {"required_role": "admin"},
-            "permissions": {"required_roles": ["admin"]},
-            "project_full_auto_allowed": True,
-        }
-
     def _set_selection_project(
         self,
         automation_id: str = "split_pending_problem_upload",
@@ -1259,130 +663,3 @@ class AutomationProjectPolicyServiceTestBase(TestCase):
                 )
             },
         )
-
-    def _scan_policy_subject(self, *, dry_run: bool):
-        self._set_scan_project()
-        console_contract = _contract().invocation_contracts["console"]
-        scan_invocation_contracts = {
-            source: replace(
-                console_contract,
-                contract_id=source,
-                entrypoint=source,
-            )
-            for source in ("console", "feishu", "webhook")
-        }
-        self.contract = replace(
-            _contract(),
-            automation_id="scan_codes",
-            tool_name="automation.scan_codes.run",
-            operation_type=OperationType.INTERNAL_PROJECTION_WRITE.value,
-            risk_level=RiskLevel.MEDIUM.value,
-            code_owned_plan_fields=frozenset(
-                {"dry_run", "_scan_preview_binding"}
-            ),
-            invocation_contracts={
-                source: replace(
-                    contract,
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "mode": {"type": "string"},
-                            "dry_run": {"type": "boolean"},
-                            "_scan_preview_binding": {
-                                "type": "object",
-                                "additionalProperties": True,
-                            },
-                        },
-                    },
-                )
-                for source, contract in scan_invocation_contracts.items()
-            },
-            allowed_entrypoints=frozenset({"console", "feishu", "webhook"}),
-        )
-        invocation = AutomationProjectInvocation(
-            automation_id="scan_codes",
-            automation_generation=1,
-            entrypoint=AutomationEntrypoint.CONSOLE,
-            contract_id="console",
-            contract_hash=CONTRACT_HASH,
-            policy_version=1,
-            project_configuration_version=1,
-            request_id="scan-policy",
-        )
-        arguments = {"mode": "saved", "dry_run": dry_run}
-        if not dry_run:
-            arguments["_scan_preview_binding"] = {"context_sha256": "a" * 64}
-        plan = Plan(
-            command_type="automation.project.invoke",
-            context_fingerprint="context-one",
-            tool_catalog_hash="catalog-one",
-            steps=(
-                PlanStep(
-                    step_key="execute",
-                    tool_name="automation.scan_codes.run",
-                    tool_version="1.0.0",
-                    operation_type=(
-                        OperationType.READ
-                        if dry_run
-                        else OperationType.INTERNAL_PROJECTION_WRITE
-                    ),
-                    arguments=arguments,
-                    account_id=None,
-                    depends_on=(),
-                    idempotency_key="scan-step",
-                    expected_evidence=(),
-                    postconditions=(),
-                    risk_level=RiskLevel.LOW if dry_run else RiskLevel.MEDIUM,
-                    requires_approval=not dry_run,
-                ),
-            ),
-            automation_id="scan_codes",
-            automation_generation=1,
-            automation_contract_hash=CONTRACT_HASH,
-        )
-        return plan, invocation
-
-    def _selection_policy_subject(self, *, dry_run: bool):
-        self._set_selection_project()
-        invocation = AutomationProjectInvocation(
-            automation_id="split_pending_problem_upload",
-            automation_generation=1,
-            entrypoint=AutomationEntrypoint.CONSOLE,
-            contract_id="console",
-            contract_hash=CONTRACT_HASH,
-            policy_version=1,
-            project_configuration_version=1,
-            request_id="selection-policy",
-        )
-        arguments = {
-            "dry_run": dry_run,
-            "selected_bill_codes": [] if dry_run else ["R1"],
-            "preview_fingerprint": "" if dry_run else "a" * 64,
-        }
-        plan = Plan(
-            command_type="automation.project.invoke",
-            context_fingerprint="context-one",
-            tool_catalog_hash="catalog-one",
-            steps=(
-                PlanStep(
-                    step_key="execute",
-                    tool_name="automation.split_pending_problem_upload.run",
-                    tool_version="1.0.0",
-                    operation_type=(
-                        OperationType.READ if dry_run else OperationType.EXTERNAL_WRITE
-                    ),
-                    arguments=arguments,
-                    account_id=None,
-                    depends_on=(),
-                    idempotency_key="selection-step",
-                    expected_evidence=(),
-                    postconditions=(),
-                    risk_level=RiskLevel.LOW if dry_run else RiskLevel.HIGH,
-                    requires_approval=not dry_run,
-                ),
-            ),
-            automation_id="split_pending_problem_upload",
-            automation_generation=1,
-            automation_contract_hash=CONTRACT_HASH,
-        )
-        return plan, invocation

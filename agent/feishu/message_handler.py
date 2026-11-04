@@ -172,9 +172,8 @@ MENU_KEY_ALIASES = {
     "sync_scan_codes": "扫描",
     "get_and_scan": "扫描",
 }
-RUNNING_CANCEL_PENDING_TTL = 300
-ACTIVE_RUN_PENDING_TTL = 21600
-RUN_TERMINAL_STATUSES = {"COMPLETED", "PARTIAL", "FAILED_TERMINAL", "CANCELLED"}
+
+
 def _automation_task_name(route_key: str) -> str:
     """Return the business-facing name for one fixed Feishu project route."""
 

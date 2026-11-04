@@ -6,7 +6,10 @@ from typing import Any, Mapping
 
 from agent.automation_plugins.host_primitive_common import customer_problem_identity
 from agent.automation_plugins.models import GenerationVerificationContext
-from agent.orchestration.models import OrchestrationError, ToolResult, WorkItemStatus
+from agent.orchestration.models import OrchestrationError, ToolResult
+
+# Plugin result status of an exact item kept for a context error.
+_BLOCKED_DATA = "BLOCKED_DATA"
 
 _OPAQUE_CUSTOMER_PROBLEM_RE = re.compile(r"^problem:v[12]:[0-9a-f]{64}$")
 
@@ -156,7 +159,7 @@ def _opaque_detail_recheck_map(
                 len(context_error) > 100
                 or re.fullmatch(r"[A-Z][A-Z0-9_]*", context_error) is None
                 or str(raw.get("status") or "").strip().upper()
-                != WorkItemStatus.BLOCKED_DATA.value
+                != _BLOCKED_DATA
                 or str(raw.get("resolution_reason") or "").strip()
                 or str(raw.get("error_code") or "").strip() != context_error
                 or raw.get("source_returned") is not False
@@ -184,7 +187,7 @@ def _opaque_detail_recheck_map(
             output[key] = {
                 "dedupe_key": supplied,
                 "context_error": context_error,
-                "status": WorkItemStatus.BLOCKED_DATA.value,
+                "status": _BLOCKED_DATA,
                 "resolution_reason": "",
                 "error_code": context_error,
                 "source_returned": False,

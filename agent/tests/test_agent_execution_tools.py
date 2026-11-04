@@ -21,11 +21,6 @@ def _resolved_r7_test_params(params, **_kwargs):
     return resolved
 
 
-class _NoApprovals:
-    def get_latest_for_run(self, _run_id, *, for_update=False):
-        return None
-
-
 class AgentExecutionToolTests(unittest.TestCase):
     def setUp(self):
         self.internal_token_patch = patch.dict(
