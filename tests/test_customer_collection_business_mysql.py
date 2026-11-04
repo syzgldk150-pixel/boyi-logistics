@@ -113,9 +113,9 @@ def test_direct_publish_recheck_uses_business_rows_preserves_manual_fields_and_u
         assert len(rows) == 1 and rows[0]["note"] == "保留人工备注"
         assert rows[0]["resolved"] is (detail_state == "reply")
         with connection.cursor() as cursor:
-            for table in ("agent_commands", "agent_runs", "agent_run_steps", "work_items"):
-                cursor.execute("SELECT COUNT(*) AS n FROM " + table)
-                assert cursor.fetchone()["n"] == 0
+            cursor.execute("""SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()
+                AND TABLE_NAME IN ('agent_commands','agent_runs','agent_run_steps','work_items')""")
+            assert cursor.fetchall() in ((), [])  # removed by migration 066
         connection.rollback()
 
 

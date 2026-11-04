@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-11-02
+updated: 2026-11-04
 ---
 
 # 物流 Agent 代码定位索引
@@ -182,7 +182,7 @@ updated: 2026-11-02
 - 隔离环境复现、宿主冻结与两次维护演练：仓库 `tests/v32_acceptance/environment.md`、`isolated_environment.sh`、`host_freeze.py`、`decision_maintenance.py`（字段变化演练原基于旧财务采集包，已随其退役）。
 - 来源身份/接续/历史：仓库 `shared/data_sources.py`、`shared/data_source_migration.py`、`scripts/migrate_module_data_sources.py`；增量结构 `migrations/039_module_data_sources.sql`，卸载后生产者溯源为 `migrations/040_source_producer_provenance.sql`。
 - Console 投影与本地来源：仓库 `console/services/automation_catalog_projection.py`、`console/services/module_data_sources.py`；默认/专属设置共用原管理服务和设置桥。
-- 真实验收组合：仓库 `tests/v32_acceptance/daily_concurrency.py`、`settings_effective.py`、`catalog_guards.py`；延迟目录及整库故障为 `catalog_delivery.py`，业务成功后的通知/展示投递为 `post_success_delivery.py`；调度超时/取消/重启为 `tests/test_scheduler_runner_lifecycle_mysql.py`。隔离库准备复用 `owned_database.py` 和已有正式迁移器。
+- 真实验收组合：仓库 `tests/v32_acceptance/daily_concurrency.py`、`settings_effective.py`、`catalog_guards.py`；延迟目录及整库故障为 `catalog_delivery.py`；调度超时/取消/重启为 `tests/test_scheduler_runner_lifecycle_mysql.py`。隔离库准备复用 `owned_database.py` 和已有正式迁移器。
 - 扫描未知写与资源隔离：仓库 `docs/scan_recovery_v32.md`、`shared/scan_snapshot_recovery.py`、`shared/execution_resource_journal.py`；扫描快照与原执行资源日志使用 `migrations/041_scan_write_recovery_snapshot.sql`。
 - 验收环境完整重建及时间诊断：仓库 `tests/v32_acceptance/prepare_database.py`、`management_fixture.py`、`scan_preview_observation.py`；运行目录与测试库互斥重建，扫描逐轮进度和原时间拒绝证据保留，均不改变宿主业务校验。
 

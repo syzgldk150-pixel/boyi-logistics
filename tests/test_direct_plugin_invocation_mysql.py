@@ -61,9 +61,9 @@ def test_real_service_plugin_uses_invocation_foreign_key_without_legacy_rows(dir
     assert replay["invocation_id"] == receipt["invocation_id"]
     assert _legacy_counts(management.repository) == before
     with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
-        cursor.execute("SELECT invocation_id,orchestration_run_id,outcome FROM automation_project_generation_leases WHERE invocation_id=%s", (receipt["invocation_id"],))
+        cursor.execute("SELECT invocation_id,outcome FROM automation_project_generation_leases WHERE invocation_id=%s", (receipt["invocation_id"],))
         leases = cursor.fetchall()
-    assert len(leases) == 1 and leases[0]["orchestration_run_id"] is None
+    assert len(leases) == 1
     assert leases[0]["outcome"] == "SUCCEEDED"
 
 

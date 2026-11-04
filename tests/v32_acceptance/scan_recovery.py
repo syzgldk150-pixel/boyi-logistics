@@ -69,9 +69,9 @@ def invoke(management, runner, *, preview_invocation_id=None, automation_id=None
 
 def write_receipts(invocation_id):
     with connection_factory() as connection, connection.cursor() as cursor:
-        cursor.execute('SELECT invocation_id,orchestration_run_id,step_id,outcome,action FROM automation_write_attempt_receipts WHERE invocation_id=%s', (invocation_id,))
+        cursor.execute('SELECT invocation_id,step_id,outcome,action FROM automation_write_attempt_receipts WHERE invocation_id=%s', (invocation_id,))
         rows = cursor.fetchall()
-    assert rows and all(row['orchestration_run_id'] is None and row['step_id'] is None for row in rows), rows
+    assert rows and all(row['step_id'] is None for row in rows), rows
     return rows
 
 

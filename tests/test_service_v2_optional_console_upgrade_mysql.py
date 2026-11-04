@@ -44,11 +44,6 @@ def _rows(database):
         ):
             cursor.execute(f"SELECT * FROM {table} WHERE automation_id=%s", (PROJECT,))
             result[table] = cursor.fetchall()
-        cursor.execute("SELECT * FROM domain_events WHERE entity_id=%s", (PROJECT,))
-        result["domain_events"] = cursor.fetchall()
-        cursor.execute("""SELECT o.* FROM outbox_events o JOIN domain_events d ON d.event_id=o.event_id
-            WHERE d.entity_id=%s""", (PROJECT,))
-        result["outbox_events"] = cursor.fetchall()
     return result
 
 

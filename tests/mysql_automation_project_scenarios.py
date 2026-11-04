@@ -133,10 +133,9 @@ def run_test_project_invocation_serializes_and_replays_on_real_mysql(case):
             case.assertEqual(result["output"], replay["output"])
             case.assertEqual(before, _legacy_counts(management.repository))
             with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
-                cursor.execute("SELECT invocation_id,orchestration_run_id FROM automation_project_generation_leases WHERE invocation_id IN (%s,%s,%s)", tuple(row["invocation_id"] for row in (accepted, waiting, fresh)))
+                cursor.execute("SELECT invocation_id FROM automation_project_generation_leases WHERE invocation_id IN (%s,%s,%s)", tuple(row["invocation_id"] for row in (accepted, waiting, fresh)))
                 leases = cursor.fetchall()
             case.assertEqual({accepted["invocation_id"], waiting["invocation_id"], fresh["invocation_id"]}, {row["invocation_id"] for row in leases})
-            case.assertTrue(all(row["orchestration_run_id"] is None for row in leases))
 
 
 def run_test_automation_project_024_original_plugin_full_auto(case):

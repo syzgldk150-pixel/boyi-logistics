@@ -15,7 +15,7 @@ def exercise(management, runner, boundary, unrelated, connection_factory):
     with connection_factory() as connection, connection.cursor() as cursor:
         cursor.execute('SELECT * FROM automation_write_attempt_receipts WHERE invocation_id=%s ORDER BY receipt_id', (stopped['invocation_id'],))
         saved_receipts = cursor.fetchall()
-    assert saved_receipts and all(row['orchestration_run_id'] is None for row in saved_receipts)
+    assert saved_receipts and all('orchestration_run_id' not in row for row in saved_receipts)
     assert runner.service.active_invocations() == []
     boundary.mode = 'SUCCESS'
     continued = scan_recovery.invoke(management, runner, automation_id=unrelated)
