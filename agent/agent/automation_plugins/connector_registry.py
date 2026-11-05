@@ -496,9 +496,10 @@ def _reject_sensitive_result(
                 checked = value[1:]
         # Arrival-list remarks are operator-entered free text: a leading slash
         # before a quantity or Chinese note is business punctuation, not an
-        # absolute path (for example "/3.00-10 Z105,200条"). Only that exact
-        # prefix is dropped; every other rule still covers the remaining text.
-        if business_field == "remarks" and re.match(r"^/(?:[0-9]|[\u4e00-\u9fff])", value):
+        # absolute path (for example "/3.00-10 Z105,200条"). A lone "/" is the
+        # operator's empty placeholder. Only that exact prefix is dropped; every
+        # other rule still covers the remaining text.
+        if business_field == "remarks" and re.match(r"^/(?:[0-9]|[\u4e00-\u9fff]|$)", value):
             checked = checked[1:]
         validate_connector_public_text(checked, subject="result")
         return
@@ -529,8 +530,17 @@ def _result_validation_view(service: str, operation: str, result: dict) -> dict:
     rows = result.get("rows")
     if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
         return result  # The ordinary closed output schema still rejects drift.
-    fields = {"收件电话": "receiver_phone", "收货电话": "receiver_phone",
-              "收件地址": "recipient_address", "收件人地址": "recipient_address"}
+    # Map the operator-entered business columns onto their reviewed field
+    # semantics. Sheet rows arrive as raw lists, so without this mapping a
+    # remark such as "/3.00-10 Z105,200条" is checked as anonymous text and
+    # its leading slash is mistaken for an absolute path.
+    fields = {
+        "收件电话": "receiver_phone",
+        "收货电话": "receiver_phone",
+        "收件地址": "recipient_address",
+        "收件人地址": "recipient_address",
+        "备注": "remarks",
+    }
     columns = {index: fields[heading] for index, heading in enumerate(rows[0])
                if isinstance(heading, str) and heading in fields}
     # This view is used only by the leak check. Never rewrite source cells,

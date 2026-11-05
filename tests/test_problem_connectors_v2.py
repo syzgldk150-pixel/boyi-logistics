@@ -104,12 +104,27 @@ def test_problem_sheet_preserves_phone_and_address_column_semantics(prefix, maxi
 
 
 @pytest.mark.parametrize("prefix,maximum", [("self_pickup", 2000), ("split_pending", 5000)])
+def test_problem_sheet_remark_column_keeps_the_operator_arrival_remark(prefix, maximum):
+    # The 备注 column carries the same operator text the arrival-list connector
+    # already accepts, for example "/3.00-10 Z105,200条". Rejecting it here
+    # failed the whole source read before the package saw a single row.
+    from tests.test_problem_plugin_production_adapter import _split_header, _split_row
+    row = _split_row("R12345678901", expected=3, arrived=1)
+    row[8] = "/3.00-10 Z105,200条"
+    rows = [_split_header(), row]
+    host = _host(prefix + "_problem", sheet_rows_read=lambda *_: {"complete": True, "rows": rows})
+    result = host.invoke(prefix + "_source_sheet", "read_rows", {"end_column": "S", "max_rows": maximum})
+    assert result == {"complete": True, "rows": rows}
+    assert row[8] == "/3.00-10 Z105,200条"
+
+
+@pytest.mark.parametrize("prefix,maximum", [("self_pickup", 2000), ("split_pending", 5000)])
 @pytest.mark.parametrize("column,value", [
     (12, "/etc/passwd"),
     (12, "/湖南省测试地址 https://private.invalid"),
     (12, "/湖南省测试地址 password=fixture-secret"),
     (8, "123456789012//34/56"),
-    (8, "/湖南省邵阳市测试地址"),
+    (8, "/etc/passwd"),
 ])
 def test_problem_sheet_exceptions_remain_scoped_to_business_columns(prefix, maximum, column, value):
     from tests.test_problem_plugin_production_adapter import _split_header, _split_row

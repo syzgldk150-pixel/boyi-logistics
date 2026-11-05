@@ -6,6 +6,7 @@ import pytest
 from agent.automation_plugins.connector_registry import (
     ConnectorSensitiveDataDenied,
     _reject_sensitive_result,
+    _result_validation_view,
 )
 
 
@@ -115,3 +116,41 @@ def test_arrival_list_remark_leading_slash_is_business_punctuation():
 def test_arrival_remark_exception_keeps_other_targets_and_secrets_denied(value):
     with pytest.raises(ConnectorSensitiveDataDenied):
         check(value)
+
+
+SHEET_HEADERS = [
+    "运单编号", "货物名称", "包装类型", "派送方式", "件数", "回单号", "实际重量",
+    "体积", "备注", "目的站点", "收件人", "收件电话", "收件地址", "结算重量",
+    "体积重", "运费", "支付类型", "到付款", "累计到货件数",
+]
+
+
+def sheet_result(remark):
+    row = ["R00000000001", "", "", "", "1", "", "", "", remark, "", "", "", "",
+           "", "", "", "", "", "0"]
+    return {"complete": True, "rows": [list(SHEET_HEADERS), row]}
+
+
+@pytest.mark.parametrize("service", [
+    "connector.boyi.self_pickup_source_sheet@1",
+    "connector.boyi.split_pending_source_sheet@1",
+])
+@pytest.mark.parametrize("remark", ["/3.00-10 Z105,200条", "/转邵阳站", "/"])
+def test_problem_source_sheet_remark_keeps_the_operator_leading_slash(service, remark):
+    # Source sheets arrive as raw rows; the reviewed 备注 column semantics must
+    # still apply, exactly as they do for the arrival-list page records.
+    check(_result_validation_view(service, "read_rows", sheet_result(remark)))
+
+
+@pytest.mark.parametrize("remark", [
+    "/etc/passwd",
+    "/var/tmp/result.json",
+    "https://internal.invalid",
+    "/1 password=fixture-secret",
+])
+def test_problem_source_sheet_remark_still_rejects_other_targets(remark):
+    view = _result_validation_view(
+        "connector.boyi.split_pending_source_sheet@1", "read_rows", sheet_result(remark)
+    )
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check(view)
