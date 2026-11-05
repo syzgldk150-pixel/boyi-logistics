@@ -494,6 +494,12 @@ def _reject_sensitive_result(
         if business_field in {"recipient_address", "dispAddress", "ACCEPT_MAN_ADDRESS", "收件地址", "收件人地址", "values"}:
             if re.match(r"^/[\u4e00-\u9fff]{2}", value):
                 checked = value[1:]
+        # Arrival-list remarks are operator-entered free text: a leading slash
+        # before a quantity or Chinese note is business punctuation, not an
+        # absolute path (for example "/3.00-10 Z105,200条"). Only that exact
+        # prefix is dropped; every other rule still covers the remaining text.
+        if business_field == "remarks" and re.match(r"^/(?:[0-9]|[\u4e00-\u9fff])", value):
+            checked = checked[1:]
         validate_connector_public_text(checked, subject="result")
         return
     if not isinstance(value, bool) and isinstance(value, (int, float)):

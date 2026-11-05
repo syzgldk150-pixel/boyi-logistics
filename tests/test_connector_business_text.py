@@ -94,3 +94,24 @@ def test_phone_cell_exception_does_not_extend_to_other_fields():
     # the same text in any other field is still checked.
     with pytest.raises(ConnectorSensitiveDataDenied):
         check({"other_field": "123456789012//34/56"})
+
+
+def test_arrival_list_remark_leading_slash_is_business_punctuation():
+    # Real Ronghui arrival remarks start with a quantity/weight note, for
+    # example "/3.00-10 Z105,200条", followed by a transfer code.
+    value = {"items": [{"tracking_number": "R00024167009", "remarks": "/3.00-10 Z105,200条\n"}]}
+    check(value)
+    assert value["items"][0]["remarks"] == "/3.00-10 Z105,200条\n"
+    check({"remarks": "/转邵阳站"})
+
+
+@pytest.mark.parametrize("value", [
+    {"remarks": "/var/tmp/result.json"},
+    {"remarks": "/etc/passwd"},
+    {"remarks": "/a/b"},
+    {"remarks": "/1 https://internal.invalid"},
+    {"remarks": "/1 password=fixture-secret"},
+])
+def test_arrival_remark_exception_keeps_other_targets_and_secrets_denied(value):
+    with pytest.raises(ConnectorSensitiveDataDenied):
+        check(value)
