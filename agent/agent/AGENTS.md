@@ -1,6 +1,6 @@
 # agent
 
-Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一预览上限校验，缺失即失败。问题件查询必须显式绑定类型、责任方、说明摘要和顺延标志；分批快照接受插件提交的完整分类，Host 不重算业务规则。财务合同绑定包内计划及实际捕获页大小，保留来源总数、金额和写后回读校验。
+Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一预览上限校验，缺失即失败。问题件查询必须显式绑定类型、责任方、说明摘要和顺延标志；分批快照接受插件提交的完整分类，Host 不重算业务规则。
 
 ## 当前身份与统一对话边界
 
@@ -10,7 +10,7 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - `customer_collection_business.py` 从当前客服业务来源准备精确复核并在已验证 Invocation 完成前事务发布；`customer_source_projection.py` 共享来源身份/数据发布，`customer_collection_validation.py` 复用同一身份和关闭校验。
 
-- `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。直接 reader 继续校验角色与参数，财务金额仍由原账本聚合。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
+- `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。直接 reader 继续校验角色与参数；财务总账重建期间 `BusinessFinanceQueryService` 校验参数后固定返回 `BUSINESS_QUERY_FINANCE_REBUILDING`，不输出金额。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
 
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
 - 扫描批次计划由已安装插件独立生成；Host 校验预览结构、候选集合及批次数量约束，原样绑定插件提交的批次数与计划摘要，不按宿主默认值重新分批。插件在首个写入前重读来源并校验完整计划，Host 仍核验实际写回执与独立读后证据。
@@ -102,13 +102,11 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
   - `memory.py`
   - `llm_client.py`
   - `llm_settings.py`
-  - `finance_brain.py`
   - `core.py`
   - 全系统只使用一个手工激活的供应商和模型；DeepSeek/GLM 地址固定。调用失败必须显式失败，不得自动切换供应商、回退环境配置或复用旧结果。数据库从未激活过模型版本时才允许继续使用升级前的环境托管配置。
-  - 财务大脑只接收未知类目的脱敏聚合证据并返回建议，不得修改正式映射、原始流水、源码或运单事实；所有确认都在 Console 后台由管理员完成。
   - 统一会话允许普通能力说明与澄清；只有实际工具返回才能作为业务执行或查询成功的依据，不得把模型描述当作执行结果
   - 确定性单号和财务查询复用共享 formatter；自然对话分析仅依据真实工具结果，插件完成状态来自实际 Invocation
-  - 飞书自然语言财务查询是独立的代码拥有只读路由：`query_business_finance` 必须保持 `llm_exposed=false`；日期由中国标准时间的受信任当天确定性解析，混合或模糊期间、写意图、利润口径、未启用来源均在提交前拒绝；后台或已绑定飞书身份具有 `finance.read` 权限时可经已注册直接查询接口读取，金额只由专用 formatter 输出
+  - 飞书自然语言财务查询是独立的代码拥有只读路由：`query_business_finance` 必须保持 `llm_exposed=false`；日期由中国标准时间的受信任当天确定性解析，混合或模糊期间、写意图、利润口径、未启用来源均在提交前拒绝；后台或已绑定飞书身份具有 `finance.read` 权限时可经已注册直接查询接口读取，金额只由专用 formatter 输出；总账重建期间该接口只返回重建提示
 - 改飞书文本指令直达路由（不走 LLM 的确定性命令）：
   - `direct_tool_router.py`
   - `tracking_number_validation.py`（单号查询本地格式预检；格式错误直接返回本地结果，不启动 `track_waybill`）

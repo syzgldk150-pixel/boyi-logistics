@@ -458,34 +458,12 @@ class ToolRegistryValidationTests(unittest.TestCase):
             "backfill_daily_sign_ledger",
             "sync_finance_bills",
             "sync_scan_codes",
+            "analyze_finance_reviews",
         ):
             self.assertIsNone(
                 registry.get_capability(retired),
                 f"retired V1 plugin tool {retired} must not re-enter the catalog",
             )
-        finance_analysis = registry.get_capability("analyze_finance_reviews")
-        self.assertEqual(
-            finance_analysis["operation_type"],
-            "internal_projection_write",
-        )
-        self.assertEqual(finance_analysis["risk_level"], "medium")
-        self.assertFalse(finance_analysis["llm_exposed"])
-        self.assertEqual(
-            finance_analysis["approval"],
-            {"mode": "required", "required_role": "admin"},
-        )
-        self.assertEqual(
-            finance_analysis["account_scope"],
-            {"mode": "none", "allow_implicit_default": False},
-        )
-        self.assertEqual(
-            finance_analysis["retry"],
-            {"safe": False, "max_attempts": 1},
-        )
-        self.assertEqual(
-            finance_analysis["executor"],
-            "tools/finance_review_analysis_tool.py",
-        )
         self.assertIsNone(
             registry.get_capability("finance_etl"),
             "the retired legacy ETL must not re-enter the production catalog",

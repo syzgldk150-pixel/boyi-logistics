@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import importlib.util
+import json
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -10,7 +11,6 @@ import pymysql
 import pytest
 
 from console.database import DocumentRepository
-from shared.finance.repository import FinanceRepository
 from shared.runtime_repositories import WAYBILL_FIELDS, WaybillRepository
 from shared.waybill_source_coverage import WaybillSourceRepository, WaybillSourceScope
 
@@ -81,11 +81,12 @@ def database(tmp_path):
         with conn.cursor() as cursor:
             migration.apply(cursor, ROOT / "agent/migrations/055_domain_database_split.sql", runner.split_sql_statements, tmp_path)
 
-    finance_repo = FinanceRepository(connect)
-    batch = finance_repo.create_batch(trigger_type="fixture", start_date="2026-09-08", end_date="2026-09-08")
-    run = finance_repo.start_run(batch_id=batch, platform="ronghui", account_id="fixture",
-                                 login_account="fixture", session_profile="fixture", target_date="2026-09-08")
     with conn.cursor() as cursor:
+        # The pre-055 finance ledger rows that 055 relocates and 067 retires.
+        cursor.execute("INSERT INTO finance_sync_batches(trigger_type,requested_start_date,requested_end_date,status,frozen_at,started_at,created_at) VALUES('fixture','2026-09-08','2026-09-08','RUNNING',NOW(6),NOW(6),NOW(6))")
+        batch = cursor.lastrowid
+        cursor.execute("INSERT INTO finance_sync_runs(batch_id,platform,account_id,login_account,session_profile,target_date,attempt_no,status,started_at,created_at) VALUES(%s,'ronghui','fixture','fixture','fixture','2026-09-08',1,'RUNNING',NOW(6),NOW(6))", (batch,))
+        run = cursor.lastrowid
         for direction, income, expense, before, after in (
             ("income", "12.3456", "0.0000", "100.0000", "112.3456"),
             ("expense", "0.0000", "7.8901", "112.3456", "104.4555"),
@@ -134,20 +135,53 @@ def test_physical_split_preserves_rows_links_and_finance_foreign_keys(database):
         assert str(totals["income"]) == "12.3456"
         assert str(totals["expense"]) == "7.8901"
         assert str(totals["net"]) == "4.4555"
-        # The current finance schema also needs the later period-close and capture tables.
+
+
+def _insert_source(cur, source_id, module):
+    cur.execute(
+        "INSERT INTO module_data_sources(source_id,identity_fingerprint,module,provider,organization_key,dataset,"
+        "contract_version,dedup_contract,display_name,producer_generation,revision,last_request_id,status,"
+        "created_at,updated_at) VALUES(%s,%s,%s,'ronghui','org','dataset','1','dedup','fixture',1,1,'req','ACTIVE',"
+        "NOW(6),NOW(6))", (source_id, source_id.replace("-", "").ljust(64, "0"), module))
+    cur.execute("INSERT INTO module_data_source_accounts(module,provider,account_id,source_id) VALUES(%s,'ronghui',%s,%s)",
+                (module, "acct-" + module, source_id))
+
+
+def test_migration_067_retires_every_finance_table_and_finance_source_with_exported_rows(database, tmp_path):
+    conn, _connect, migration, apply = database
+    apply()
+    runner = load("run_migrations")
+    export = load("migration_row_export")
+    finance_source, customer_source = str(uuid4()), str(uuid4())
+    with conn.cursor() as cur:
+        runtime, _, finance = migration.names(cur)
         for filename in ("062_finance_period_close.sql", "063_finance_platform_captures.sql"):
             sql = (ROOT / "agent/migrations" / filename).read_text(encoding="utf-8")
-            migration.apply_later_migration(cur, sql, load("run_migrations").split_sql_statements)
-        for table in ("finance_periods", "finance_platform_captures", "finance_platform_detail_rows"):
-            assert migration.table_type(cur, finance, table) == "BASE TABLE"
-            assert migration.table_type(cur, runtime, table) == "VIEW"
-    finance_repo = FinanceRepository(connect)
-    finance_repo.initialize_schema()
-    batch_id = finance_repo.create_batch(trigger_type="manual", start_date="2026-09-08", end_date="2026-09-08")
-    assert batch_id > 0
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS n FROM `{finance}`.finance_sync_batches WHERE id=%s", (batch_id,))
-        assert cur.fetchone()["n"] == 1
+            migration.apply_later_migration(cur, sql, runner.split_sql_statements)
+        # The fixture stops before 044; 067's running-collector guard reads Invocations.
+        cur.execute("CREATE TABLE IF NOT EXISTS automation_plugin_invocations (plugin_id VARCHAR(191) NOT NULL, status VARCHAR(32) NOT NULL)")
+        _insert_source(cur, finance_source, "finance")
+        _insert_source(cur, customer_source, "customer_service")
+        path = ROOT / "agent/migrations/067_retire_finance_statement_ledger.sql"
+        exported = export.apply(cur, path, runner.split_sql_statements, tmp_path, bind=migration.bind_database_names)
+        migration.refresh_views(cur)
+        cur.execute("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA IN (%s,%s) AND TABLE_NAME LIKE 'finance\\_%%'",
+                    (runtime, finance))
+        assert list(cur.fetchall()) == []
+        cur.execute("SELECT module FROM module_data_sources ORDER BY module")
+        assert [row["module"] for row in cur.fetchall()] == ["customer_service"]
+        cur.execute("SELECT module FROM module_data_source_accounts")
+        assert [row["module"] for row in cur.fetchall()] == ["customer_service"]
+        # Repeating the retirement is a no-op; the projected logistics views survive.
+        export.apply(cur, path, runner.split_sql_statements, tmp_path, bind=migration.bind_database_names)
+        migration.refresh_views(cur)
+        assert migration.table_type(cur, runtime, "waybills") == "VIEW"
+    records = [json.loads(line) for line in exported.read_text(encoding="utf-8").splitlines()]
+    removed = records[-1]["removed_rows"]
+    assert removed[f"{finance}.finance_transactions"] == 2
+    assert removed[f"{finance}.finance_sync_runs"] == 1
+    assert removed["module_data_sources"] == 1
+    assert removed["module_data_source_accounts"] == 1
 
 
 def apply_platform_link_migration(conn, migration):

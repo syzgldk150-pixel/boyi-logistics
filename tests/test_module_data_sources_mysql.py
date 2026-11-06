@@ -119,8 +119,10 @@ def test_migration_reentry_is_safe(database, migration_name):
         cursor.execute("""SELECT TABLE_NAME,IS_NULLABLE FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA=DATABASE() AND COLUMN_NAME='producer_snapshot_json'
             AND TABLE_NAME IN ('finance_source_run_bindings','customer_problem_publications')""")
-        assert {row["TABLE_NAME"]: row["IS_NULLABLE"] for row in cursor.fetchall()} == {
-            "finance_source_run_bindings": "YES", "customer_problem_publications": "YES"}
+        # Migration 067 retired the finance source bindings; re-running 039/040 by hand may
+        # recreate that old table, but the live customer publication column must stay nullable.
+        assert {row["TABLE_NAME"]: row["IS_NULLABLE"] for row in cursor.fetchall()}.get(
+            "customer_problem_publications") == "YES"
 
 
 def test_recent_failed_collection_keeps_published_history(database):
@@ -155,97 +157,6 @@ def test_recent_failed_collection_keeps_published_history(database):
             assert result["source_statuses"][0]["collection_id"] == invocation_id
             assert [item["error_code"] for item in result["errors"]] == ([error] if error else [])
         json.dumps(result)
-        connection.rollback()
-
-
-def test_legacy_finance_import_is_incremental_and_reports_missing_identity(database):
-    from shared.data_source_migration import import_legacy_finance_sources
-
-    fixture, name = database
-    prefix = "synthetic-import-" + uuid4().hex
-    with fixture._connection(name) as connection, connection.cursor() as cursor:
-        def control_plane():
-            result = {}
-            for table, identity_column in (("automation_projects", "automation_id"),
-                    ("automation_project_configs", "automation_id"), ("scheduled_tasks", "id")):
-                cursor.execute(f"SELECT * FROM {table} ORDER BY {identity_column}")
-                result[table] = cursor.fetchall()
-            return result
-        previous_control_plane = control_plane()
-        cursor.execute("""INSERT INTO finance_sync_batches
-            (trigger_type,requested_start_date,requested_end_date,rescan_days,status,frozen_at,started_at,created_at,finished_at)
-            VALUES('manual','2026-09-07','2026-09-07',1,'success',UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP())""")
-        batch = cursor.lastrowid
-        for suffix, site in (("first", prefix), ("same-site", prefix), ("missing", "")):
-            cursor.execute("""INSERT INTO finance_sync_runs
-                (batch_id,platform,account_id,target_date,source_site_code,source_site_name,attempt_no,status,started_at,created_at)
-                VALUES(%s,'ronghui',%s,'2026-09-07',%s,'合成已验证站点',1,'success',UTC_TIMESTAMP(),UTC_TIMESTAMP())""",
-                (batch, prefix + suffix, site))
-        dry = import_legacy_finance_sources(connection)
-        assert dry["amounts_unchanged"] and dry["rows_unchanged"]
-        assert any(row["account_id"] == prefix + "missing" and row["reason"] == "SOURCE_IDENTITY_MISSING" for row in dry["unresolved"])
-        first = import_legacy_finance_sources(connection, apply=True)
-        second = import_legacy_finance_sources(connection, apply=True)
-        selected = [row for row in first["mapped"] if row["account_id"].startswith(prefix)]
-        assert len(selected) == 2 and len({row["source_id"] for row in selected}) == 1
-        assert first == second
-        # This incremental source migration must not re-create or rewrite the
-        # existing instance IDs, bound roles, schedules, enabled state or runs.
-        assert control_plane() == previous_control_plane
-        source = DataSourceRepository(connection).get(selected[0]["source_id"])
-        assert source["status"] == "legacy_unassigned" and source["producer_instance_id"] is None
-        claimed = DataSourceRepository(connection).register_source(SourceIdentity(module="finance", provider="ronghui",
-            organization_key=prefix, dataset="finance.transactions", contract_version="1", dedup_contract="provider-guid-per-business-date-v1"),
-            display_name="合成已验证站点", producer_instance_id=prefix, producer_generation=1, request_id=prefix)
-        assert claimed["source_id"] == source["source_id"] and claimed["status"] == "active"
-        connection.rollback()
-
-
-def test_finance_repository_rolls_back_with_autocommit_factory(database):
-    from shared.finance.repository import FinanceRepository
-
-    fixture, name = database
-    source_identity = identity("synthetic-transaction-" + uuid4().hex)
-    from contextlib import contextmanager
-
-    @contextmanager
-    def factory():
-        with fixture._connection(name) as connection:
-            connection.autocommit(True)
-            yield connection
-    repository = FinanceRepository(factory)
-    with pytest.raises(RuntimeError, match="synthetic rollback"):
-        with repository._connection() as connection:
-            DataSourceRepository(connection).register_source(source_identity, display_name="隔离回滚",
-                producer_instance_id="synthetic-rollback", producer_generation=1, request_id=uuid4().hex)
-            raise RuntimeError("synthetic rollback")
-    with fixture._connection(name) as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) AS n FROM module_data_sources WHERE identity_fingerprint=%s", (source_identity.fingerprint,))
-        assert cursor.fetchone()["n"] == 0
-
-
-def test_finance_publication_hides_unfinished_batch_and_deduplicates_site(database):
-    from shared.finance.publication import LATEST_PUBLISHED_RUNS
-
-    fixture, name = database
-    organization = "synthetic-finance-" + uuid4().hex
-    with fixture._connection(name) as connection, connection.cursor() as cursor:
-        def add(status, account, finalized):
-            cursor.execute("""INSERT INTO finance_sync_batches
-                (trigger_type,requested_start_date,requested_end_date,rescan_days,status,frozen_at,started_at,created_at,finished_at)
-                VALUES('manual','2026-09-07','2026-09-07',1,%s,UTC_TIMESTAMP(),UTC_TIMESTAMP(),UTC_TIMESTAMP(),%s)""", (status, finalized))
-            batch = cursor.lastrowid
-            cursor.execute("""INSERT INTO finance_sync_runs
-                (batch_id,platform,account_id,target_date,source_site_code,attempt_no,status,started_at,created_at)
-                VALUES(%s,'ronghui',%s,'2026-09-07',%s,1,'success',UTC_TIMESTAMP(),UTC_TIMESTAMP())""", (batch, account, organization))
-            return batch, cursor.lastrowid
-        _old_batch, old_run = add("success", "synthetic-original-account", "2026-09-07 10:00:00")
-        next_batch, new_run = add("running", "synthetic-equivalent-account", None)
-        cursor.execute("SELECT latest.latest_run_id FROM (" + LATEST_PUBLISHED_RUNS + ") latest JOIN finance_sync_runs r ON r.id=latest.latest_run_id WHERE r.source_site_code=%s", (organization,))
-        assert [row["latest_run_id"] for row in cursor.fetchall()] == [old_run]
-        cursor.execute("UPDATE finance_sync_batches SET status='partial_failed',finished_at=UTC_TIMESTAMP() WHERE id=%s", (next_batch,))
-        cursor.execute("SELECT latest.latest_run_id FROM (" + LATEST_PUBLISHED_RUNS + ") latest JOIN finance_sync_runs r ON r.id=latest.latest_run_id WHERE r.source_site_code=%s", (organization,))
-        assert [row["latest_run_id"] for row in cursor.fetchall()] == [new_run]
         connection.rollback()
 
 

@@ -8,7 +8,7 @@
 - 普通业务直接接口、独立插件调用与结果核验
 - 飞书消息接入
 - 后台 AI 助手与飞书共用的对话服务、权限与已注册能力
-- 融辉生产财务账本同步等 Host 业务接口（韵达财务待真实页面验收后启用）；三平台报价由 `service_v2_plugins/quote_prices_v2/` 插件承担
+- 财务总账重建中（见 `docs/finance_module.md`）；三平台报价由 `service_v2_plugins/quote_prices_v2/` 插件承担
 
 ## 不在这里改什么
 
@@ -31,9 +31,7 @@
 - `docs/`
   项目文档、模块说明、代码定位索引
 - `../shared/finance/`
-  财务领域模型、金额规则、校验、费用映射与共享账本仓储
-- `service_v2_plugins/sync_ronghui_finance_statement_v2/`、`plugin_core_adapters/finance_platform_capture.py`
-  融辉统计查询月度抓取插件及其 Host 连接器；韵达财务未接入
+  财务领域包；当前保留 Decimal 金额规则，总账分期加入
 
 ## 常见修改入口
 

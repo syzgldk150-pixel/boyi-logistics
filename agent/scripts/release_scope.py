@@ -21,7 +21,6 @@ if sys.platform == "win32":
 STANDALONE_SERVICE_V2_PLUGIN_IDS = frozenset({
     "quote_prices_v2",
     "r7_vehicle_checkin_v2",
-    "sync_ronghui_finance_statement_v2",
     "sync_ronghui_route_status_v2",
 })
 # Packages built by ``_shared/build_zip.py`` from ``payload/plugin.py`` and a settings page.

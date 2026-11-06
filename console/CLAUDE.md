@@ -185,20 +185,11 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `app.py`
   - `database.py`
   - 页面入口 `/receipts` 使用本地 `receipt_records/receipt_attachments/receipt_audit_logs`。查询走普通 receipts-query，审核走 receipts-audit 直接业务动作；独立读回核验成功后才更新本地审核状态，未知结果不得伪造成功。不创建旧 Command/Run 或隐式写 iframe。
-- 改财务工作台：
-  - `templates/base.html`
+- 改财务模块（总账重建中）：
   - `templates/finance.html`
-  - `static/finance.css`
-  - `static/finance.js`
-  - `finance_service.py`
-  - `app.py`
-  - 页面入口为 `/modules/finance`，包含“BI 总览 / 交易明细 / 费用项目绑定 / 异常审批 / 月度封账 / 运单财务 / 同步记录”页签；数据统一经 `shared.finance` 仓储读取，金额保持字符串并在服务端生成图形比例，前端不得自行计算结算金额。
-  - “月度封账”页签读取 `GET /finance/periods/{YYYY-MM}`。逐项核对（`POST .../confirmations`）与缺运单号异常确认知悉（`POST /finance/anomalies/{id}/acknowledge`）需 `finance.manage`；封账与反结账（`.../close`、`.../reopen`）只允许真实 MySQL 超级管理员，路由权限与处理器双重校验。所有写入要求同源会话以及 body 与 `X-Browser-Request-UUID` 一致。检查、快照、锁定与漂移规则只在 `shared/finance/periods.py`，Console 不重算；规则见 `../agent/docs/finance_module.md` 的“月度清点与封账”。页签顶部“平台原始数据”展示本月统计查询抓取、按费用项目的两种日期口径金额、单号格式与归类提示（只作参考，不改绑定）；网点金额下钻只读 `GET /finance/periods/{YYYY-MM}/platform-details`（`finance.read`，每页 50 行，可展开原始字段），口径见同文档“统计查询月度抓取”。
-  - 财务查询经共享账本直接读取，不触发采集；页面不再提供手动同步、历史回溯或批次重试，“同步记录”只读列出批次。统计查询月度抓取在财务数据源页由 `sync_ronghui_finance_statement_v2` 实例的 Console 入口发起。
-  - 费用方向由共享仓储中锁定的费用项目决定，保存绑定时不得信任前端传入的 `direction`；运单级必须绑定共享仓储返回的平台录单费用项目，运营级不得绑定录单项目。
-  - Console 与 Agent 必须连接同一套 Agent MySQL；“同步记录”只读列出统计查询抓取批次，失败批次显示账号、日期和错误，缺失或失败日期不得补零。
-  - 当前生产只启用融辉财务来源，由统计查询月度抓取按月核对后发布；韵达财务未启用。
-  - 财务采集完成不自动分析；显式分析才调用已注册分析接口，读取共享账本。Console 不另启模型或通过旧 execute_tool/Run 完成事件重复执行；模型设置、测试、reload 仍要求签名管理员。
+  - `routes/finance.py`
+  - `services/monitoring_finance.py`（`_render_finance`）
+  - 旧融辉账户收支工作台（BI、交易明细、费用绑定、月度封账、同步记录）与全部 `/finance/*` 接口已随迁移 067 删除；`/modules/finance` 只显示重建说明，不提供任何金额。财务数据源页 `/modules/finance/data-sources` 保留，新连接器在此管理。总账按 `../agent/docs/finance_module.md` 分期重建，每期补充页签、接口与权限（查看 `finance.read`，制单/核销/规则 `finance.manage`，封账/反结账超级管理员）。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`

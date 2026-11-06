@@ -33,12 +33,9 @@ NEW_TABLES = (
 )
 # Entity tables created by later migrations; projected once they exist.
 LATER_WAYBILL_TABLES = ("boyi_waybill_edit_logs",)
-LATER_FINANCE_TABLES = (
-    "finance_periods", "finance_period_item_reviews", "finance_period_closes",
-    "finance_period_close_lines", "finance_period_events",
-    "finance_platform_captures", "finance_platform_statement_rows",
-    "finance_platform_detail_rows", "finance_platform_capture_days",
-)
+# Migration 067 retired every finance table listed above and those of 062/063;
+# the general-ledger tables of later migrations are added here as they land.
+LATER_FINANCE_TABLES = ()
 
 
 def quote(identifier):
@@ -194,8 +191,9 @@ def _views(cursor, runtime, waybill, finance):
     later = tuple(table for table in LATER_WAYBILL_TABLES if table in present)
     cursor.execute("SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s", (finance,))
     finance_present = {row["name"] for row in cursor.fetchall()}
-    later_finance = tuple(table for table in LATER_FINANCE_TABLES if table in finance_present)
-    for schema, tables in ((finance, (*FINANCE_TABLES, *later_finance)), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences", *later))):
+    # 055's own finance tables are projected only while they exist (067 retired them).
+    finance_tables = tuple(table for table in (*FINANCE_TABLES, *LATER_FINANCE_TABLES) if table in finance_present)
+    for schema, tables in ((finance, finance_tables), (waybill, (*LOGISTICS_TABLES, *NEW_TABLES, "receipt_sequences", *later))):
         for table in tables:
             cursor.execute(f"CREATE OR REPLACE ALGORITHM=MERGE SQL SECURITY INVOKER VIEW {qualified(runtime, table)} AS SELECT * FROM {qualified(schema, table)}")
     wb_columns = columns(cursor, waybill, "ronghui_waybills")

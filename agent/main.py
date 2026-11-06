@@ -25,13 +25,11 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
-from shared.finance import FinanceRepository
 from shared.plugin_invocation_repository import PluginInvocationRepository
 from agent.automation_plugins.direct_invocation import DirectPluginInvocationService
 from agent.plugin_business_results import PluginBusinessResults
 from agent.tms_runtime.routes import bind_direct_business_service
 from business_composition import build_business_service
-from shared.finance.sources import enabled_finance_platforms
 from shared.runtime_events import (
     register_account_session_restored,
     register_finance_alert,
@@ -698,10 +696,7 @@ async def lifespan(app: FastAPI):
     automation_plugin_runtime = plugin_runtime
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
-    business_finance_query = BusinessFinanceQueryService(
-        FinanceRepository(runtime.memory.connection_factory),
-        enabled_platforms=enabled_finance_platforms(),
-    )
+    business_finance_query = BusinessFinanceQueryService()
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
@@ -1648,13 +1643,6 @@ class LLMClearCredentialRequest(BaseModel):
     actor: str
 
 
-class FinanceAnalyzeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    limit: int = Field(default=20, ge=1, le=100)
-    request_id: uuid.UUID
-
-
 @app.get("/tools", deprecated=True)
 async def list_tools():
     return {"tools": _runtime().registry.list_tools()}
@@ -1836,21 +1824,6 @@ async def internal_clear_llm_credential(req: LLMClearCredentialRequest, request:
     return api_success(
         {"provider": req.provider, "configured": False, "runtime": runtime_status}
     )
-
-
-@app.post("/internal/v1/admin/finance/reviews/analyze")
-async def internal_analyze_finance_reviews(req: FinanceAnalyzeRequest, request: Request):
-    actor = _require_console_admin_request(request)
-    brain = _runtime().finance_brain
-    if brain is None:
-        raise HTTPException(status_code=503, detail="财务分析接口不可用")
-    result = await _automation_project_policies().direct_invocations.call_business(
-        operation="finance-review-analysis", request_id=str(req.request_id),
-        actor_id=actor.actor_id, source="console", arguments={"limit": req.limit},
-        handler=lambda: brain.analyze_pending(limit=req.limit), write=True,
-        resource_keys=(("finance-review", "pending"),),
-    )
-    return api_success(result)
 
 
 @app.post("/knowledge", deprecated=True)

@@ -178,9 +178,6 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
     assert set(handlers) - daily_sign_broker_action_keys() == {
         ("ledger.invoke", "sync_daily_send_orders.lock.acquire"),
         ("ledger.invoke", "sync_daily_send_orders.lock.release"),
-        ("ledger.invoke", "finance.platform_capture.write"),
-        ("ledger.invoke", "finance.platform_capture.publish_day"),
-        ("ledger.invoke", "finance.platform_capture.finalize"),
         ("ledger.invoke", "daily_sign.problem_event.upsert"),
         ("browser.invoke", "ronghui.clock.precheck"),
         ("browser.invoke", "ronghui.clock.submit"),

@@ -36,26 +36,17 @@ def collector_invocation_navigation(connection, invocation_id):
         if len(modules) != 1:
             return unknown
         module, = modules
-        if module == "finance":
-            # The statement capture records this exact Invocation; its publish
-            # batch runs carry the source binding of that producer generation.
-            cursor.execute("""SELECT DISTINCT source.source_id,source.display_name
-                FROM finance_platform_captures capture
-                JOIN finance_sync_runs capture_run ON capture_run.batch_id=capture.publish_batch_id
-                JOIN finance_source_run_bindings binding ON binding.run_id=capture_run.id
-                    AND BINARY binding.producer_instance_id=BINARY capture.automation_id
-                    AND binding.producer_generation=capture.generation
-                JOIN module_data_sources source ON source.source_id=binding.source_id
-                WHERE BINARY capture.invocation_id=BINARY %s AND source.module='finance'
-                ORDER BY source.source_id""", (invocation_id,))
-        else:
-            cursor.execute("""SELECT DISTINCT source.source_id,source.display_name
-                FROM customer_problem_publications publication
-                JOIN module_data_sources source ON source.source_id=publication.source_id
-                JOIN automation_project_generation_leases lease ON BINARY lease.automation_id=BINARY publication.producer_instance_id
-                    AND lease.generation=publication.producer_generation AND BINARY lease.invocation_id=BINARY publication.run_id
-                WHERE BINARY publication.run_id=BINARY %s AND source.module='customer_service'
-                ORDER BY source.source_id""", (invocation_id,))
+        if module != "customer_service":
+            # Finance collectors were retired with the ledger rebuild
+            # (migration 067); no current producer records finance provenance.
+            return unknown
+        cursor.execute("""SELECT DISTINCT source.source_id,source.display_name
+            FROM customer_problem_publications publication
+            JOIN module_data_sources source ON source.source_id=publication.source_id
+            JOIN automation_project_generation_leases lease ON BINARY lease.automation_id=BINARY publication.producer_instance_id
+                AND lease.generation=publication.producer_generation AND BINARY lease.invocation_id=BINARY publication.run_id
+            WHERE BINARY publication.run_id=BINARY %s AND source.module='customer_service'
+            ORDER BY source.source_id""", (invocation_id,))
         sources = [row_dict(cursor, row) for row in cursor.fetchall()]
     query_path, = BUSINESS_MODULE_BY_CODE[module].page_contributions
     return {"status": "known", "module": module, "module_url": MODULE_PATHS[module],

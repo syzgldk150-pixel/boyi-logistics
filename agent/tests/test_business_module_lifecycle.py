@@ -283,10 +283,9 @@ def test_catalog_contribution_contracts_are_exact_and_nonempty_for_manageable_mo
     assert {"/waybills/manual", "/waybills/quote-options", "/original-pages", "/runtime/originals", "/runtime/artifacts", "/runtime/logs"}.issubset(
         set(BUSINESS_MODULE_BY_CODE["waybill_entry"].api_contributions)
     )
-    assert "/runtime/finance_knowledge" in BUSINESS_MODULE_BY_CODE["finance"].api_contributions
+    assert "/runtime/finance_knowledge" not in BUSINESS_MODULE_BY_CODE["finance"].api_contributions
     extensions = {item.module_code: set(item.internal_extensions) for item in BUSINESS_MODULE_CATALOG}
-    assert "finance.ronghui.source.enabled" in extensions["finance"]
-    assert "finance.yunda.source.not_launched" in extensions["finance"]
+    assert extensions["finance"] == {"finance.general_ledger"}
     assert "customer_service.ronghui.problem_source_adapter" in extensions["customer_service"]
     assert "tracking.line_haul.source_adapter" in extensions["tracking"]
     assert "automations.signed_action_package_platform" in extensions["automations"]
@@ -301,9 +300,9 @@ def test_every_catalog_owned_tool_exists_exactly_once_in_registry() -> None:
             assert sum(line.strip() == f"- name: {tool_name}" for line in registered) == 1
 
 
-def test_finance_analysis_command_is_owned_by_finance_module() -> None:
-    assert BUSINESS_MODULE_TOOL_OWNERS["analyze_finance_reviews"] == "finance"
-    assert "analyze_finance_reviews" in BUSINESS_MODULE_BY_CODE["finance"].tool_names
+def test_finance_module_owns_only_the_closed_finance_reader() -> None:
+    assert BUSINESS_MODULE_BY_CODE["finance"].tool_names == ("query_business_finance",)
+    assert "analyze_finance_reviews" not in BUSINESS_MODULE_TOOL_OWNERS
 
 
 def test_migration_seeds_the_exact_enabled_baseline() -> None:

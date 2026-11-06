@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-04
+updated: 2026-11-06
 source_of_truth: console/AGENTS.md
 ---
 
@@ -44,7 +44,6 @@ Console 不负责：
 - `navigation.py`：15 个固定模块菜单的唯一静态注册处；插件管理归入自动化，不注册“扩展中心”。
 - `database.py`：MySQL 文档仓储；只验证结构及读写数据。
 - `config.py`：无副作用配置解析；`runtime_config.py` 只由服务入口执行一次运行时 bootstrap。
-- `finance_service.py`：财务查询、分页、金额字符串和受控命令参数的 Console 适配层。
 - `templates/`、`static/`：页面模板、样式和浏览器交互。
 - `tests/`：Console 路由、服务、模板和契约回归测试。
 
@@ -100,7 +99,7 @@ ECS 的 Console 使用独立 `console@%` 账号，由 `/home/boyce/console/.env`
 - `/tracking`：单票物流跟踪
 - `/receipts`：回单管理
 - `/modules/customer-service`：客服问题件
-- `/modules/finance`：财务工作台
+- `/modules/finance`：财务模块（总账重建中）
 - `/dispatch`：map-only 路线、距离与运输方案比价，不包含车辆档案或真实派单
 - `/line-haul-contacts`：专线分流资料
 - `/extensions` 与旧详情 GET：重定向到自动化或对应插件筛选；旧生命周期 POST 返回 410

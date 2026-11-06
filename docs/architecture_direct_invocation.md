@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-02
+updated: 2026-11-06
 ---
 
 # 业务接口与独立插件调用
@@ -106,15 +106,12 @@ Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次�
 | 插件身份与入口授权 | `agent/agent/orchestration/direct_project_invocation.py`、项目策略和入口 API | 核心更新 |
 | 普通页面查询与人工操作 | `agent/agent/tms_runtime/direct_business.py`、`console/services/business_calls.py` | 对应业务接口/页面；不建任务 |
 | 寄件补查与数据完整性 | `agent/agent/send_waybills_business.py`、`shared/waybill_source_coverage.py`、迁移 045 | 共享语义改变时核心更新 |
-| 财务采集 | `sync_ronghui_finance_statement_v2` 插件、`shared/finance/platform_capture*.py` | 相容采集变化只更新财务插件 |
-| 财务汇总和分析 | 既有财务账本、查询服务、显式分析接口 | 公共账本变化属于核心更新 |
+| 财务（总账重建中） | `shared/finance/`、`agent/agent/business_query.py` | 旧账本、采集插件与分析接口已随迁移 067 退役；重建期间财务查询固定返回重建提示，总账与连接器契约属于核心更新 |
 | 客服采集发布、列表消失后的精确复核 | `agent/agent/customer_collection_business.py`、共享来源发布与纯校验模块 | 公共数据合同变化属于核心更新；插件字段解析独立维护 |
 | Agent 固定只读接口 | `agent/agent/direct_readers.py`、Harness 网关 | 注册接口；保留权限与实际结果检查 |
 | 全系统接线 | `agent/main.py`、`agent/business_composition.py`、`agent/harness_composition.py` | 核心更新 |
 
-财务采集完成不自动触发分析。只有显式点击分析或调用已注册分析接口才运行对应分析。
-
-财务同步与历史回溯表单只选择日期和重扫天数，采集范围来自插件已配置的全部数据源；账号在数据源管理设置。财务查询的账号筛选仅影响读取，不改变采集范围。
+财务模块按 `agent/docs/finance_module.md` 分期重建为总账；数据来源改由连接器按标准流水契约提交。
 
 插件运行输出按需读取本项目的真实 Invocation 列表，包含手动、飞书和定时触发。刷新页面后可重新选中和查看原执行；查询与取消使用精确执行标识，不重提执行请求。输出是当前结果快照，每次替换显示，避免将旧状态当作追加日志保留。
 目前 Agent 不新增模型框架、自动修复、通用节点编辑器或新的后台长任务系统。

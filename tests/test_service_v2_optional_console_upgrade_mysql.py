@@ -32,7 +32,8 @@ ACTOR = "isolated-console-admin"
 MYSQL = pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reason="requires isolated MySQL 8")
 CONSOLE = "monthly_capture"
 SCHEDULER = "monthly_schedule"
-_MANIFEST = Path(__file__).resolve().parents[1] / "agent/service_v2_plugins/sync_ronghui_finance_statement_v2/manifest.json"
+# A retired collector manifest whose upgrade added an optional Console input.
+_MANIFEST = Path(__file__).resolve().parent / "fixtures/service_v2/monthly_capture_collector_manifest.json"
 
 
 def _rows(database):

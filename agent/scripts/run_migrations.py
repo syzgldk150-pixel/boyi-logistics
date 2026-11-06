@@ -181,6 +181,11 @@ def run(*, check_only: bool) -> int:
                     if version in {"064", "066"}:  # Exports every removed row before removing it.
                         _load_script_helper("migration_row_export.py").apply(
                             cursor, path, split_sql_statements, backup_directory)
+                    elif version == "067":  # Retires the finance entity tables; same row export.
+                        domain = _load_domain_database_migration()
+                        _load_script_helper("migration_row_export.py").apply(
+                            cursor, path, split_sql_statements, backup_directory, bind=domain.bind_database_names)
+                        domain.refresh_views(cursor)
                     else:
                         _load_domain_database_migration().apply_version(cursor, version, path, split_sql_statements, backup_directory)
                 elif version == "027":

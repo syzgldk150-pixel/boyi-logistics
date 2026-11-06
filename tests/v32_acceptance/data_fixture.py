@@ -46,17 +46,15 @@ def seed_customer(connection_factory, instances):
 
 def main():
     from agent.orchestration.models import Actor, ActorType
-    from tests.v32_acceptance.finance_data_fixture import seed_finance
     from tests.v32_acceptance.management_fixture import ManagementFixture, TASK_ENV, connect
 
     actor = Actor(ActorType.CONSOLE_ADMIN, "v32-data-seed", roles=("super_admin",), authenticated_by="mysql_admin_session")
     with ManagementFixture() as management:
         projections = {module: management.management.catalog_projection(actor=actor, module=module, summary=True)["instances"]
-            for module in ("customer_service", "finance")}
-        result = {"customer_service": seed_customer(connect, projections["customer_service"]),
-            "finance": seed_finance(connect, projections["finance"])}
+            for module in ("customer_service",)}
+        result = {"customer_service": seed_customer(connect, projections["customer_service"])}
         (TASK_ENV / "synthetic-business-data.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-        print(json.dumps({"customer_records": result["customer_service"]["records"], "finance": result["finance"]}, ensure_ascii=False, default=str))
+        print(json.dumps({"customer_records": result["customer_service"]["records"]}, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":

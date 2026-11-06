@@ -8,7 +8,6 @@ checked against what the production Connector registry actually binds
 from __future__ import annotations
 
 from agent.automation_plugins.daily_sign_connectors_v2 import daily_sign_broker_action_keys
-from agent.automation_plugins.finance_connectors_v2 import finance_platform_capture_broker_action_keys
 from agent.automation_plugins.route_status_connectors_v2 import route_status_broker_action_keys
 
 
@@ -74,7 +73,6 @@ REVIEWED_HOST_PRIMITIVES: frozenset[tuple[str, str]] = (
     _DIRECT_PRIMITIVES
     | daily_sign_broker_action_keys()
     | route_status_broker_action_keys()
-    | finance_platform_capture_broker_action_keys()
 )
 
 __all__ = ["REVIEWED_HOST_PRIMITIVES"]

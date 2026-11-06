@@ -126,11 +126,10 @@ def validate_probe(name, data, *, root):
         _require(not [row for row in data['fault_boundary_calls'] if row['phase'] == 'measurement'], 'cold navigation waited for faulted remote dependencies')
     elif name == 'detail_browser':
         _require(data['concurrent_clients'] >= 4 and data['distinct_authenticated_administrators'] >= 4, 'detail clients missing')
+        # The finance BI half was retired with the statement ledger (migration 067).
         _require(data['data']['customer_service']['records'] >= 10000
-                 and len(data['data']['customer_service']['sources']) >= 50
-                 and data['data']['finance']['source_count'] >= 50
-                 and data['data']['finance']['proof']['row_count'] >= 10000, 'published detail data volume incomplete')
-        for module in ('finance', 'customer_service'):
+                 and len(data['data']['customer_service']['sources']) >= 50, 'published detail data volume incomplete')
+        for module in ('customer_service',):
             rows = [row for row in data['raw_samples'] if row['module'] == module]
             _distribution(rows, 'query_dom_ms', 1500, 100, data['results'][module])
     elif name == 'run_acceptance':

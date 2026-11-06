@@ -1931,6 +1931,7 @@ _BUSINESS_FINANCE_FAILURE_REPLIES = MappingProxyType(
         "BUSINESS_QUERY_RECONCILIATION_FAILED": "财务数据对账未通过，暂不提供金额。",
         "BUSINESS_QUERY_CONTRACT_INVALID": "财务查询结果校验失败，暂不提供金额。",
         "BUSINESS_QUERY_UNAVAILABLE": "财务查询服务当前不可用，请稍后重试。",
+        "BUSINESS_QUERY_FINANCE_REBUILDING": "财务模块正在重建为总账体系，暂不提供金额。",
         "CONTROL_PLANE_UNAVAILABLE": "财务查询服务当前不可用，请稍后重试。",
     }
 )

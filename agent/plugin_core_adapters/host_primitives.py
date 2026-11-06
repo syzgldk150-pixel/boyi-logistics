@@ -20,7 +20,6 @@ from agent.connector_namespaces import (
     DAILY_SEND_TOOL,
     DAILY_SIGN_TOOL,
     DELIVERY_STATUS_TOOL,
-    FINANCE_STATEMENT_TOOL,
     ROUTE_STATUS_TOOL,
     SITE_SEND_TOOL,
 )
@@ -51,7 +50,6 @@ from plugin_core_adapters.delivery_site import (
     build_production_delivery_site_handler_map,
     read_delivery_projection_identities,
 )
-from plugin_core_adapters.finance_platform_capture import build_production_finance_statement_handler_map
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
 from plugin_core_adapters.scan_snapshot import replace_scan_snapshot_verified
 
@@ -2362,14 +2360,6 @@ def build_production_host_primitive_handler_map(
                     ("network.request", "feishu.bitable.write_records"),
                 }
             ),
-        ),
-        (
-            FINANCE_STATEMENT_TOOL,
-            build_production_finance_statement_handler_map(
-                cursor_secret=cursor_secret,
-                account_manager=manager,
-            ),
-            frozenset(),
         ),
         (
             ROUTE_STATUS_TOOL,

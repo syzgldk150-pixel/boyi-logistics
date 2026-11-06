@@ -13,9 +13,7 @@ from typing import Any, Optional
 
 from agent.llm_client import LLMClient
 from agent.direct_readers import invoke_registered_reader
-from agent.finance_brain import FinanceBrain
 from agent.llm_settings import LLMSettingsRepository
-from shared.finance import FinanceRepository
 from agent.memory import Memory
 from agent.orchestration.models import Actor
 from agent.tool_registry import ToolRegistry
@@ -38,7 +36,6 @@ class AgentCore:
         self.llm = LLMClient()
         self.registry = ToolRegistry()
         self.memory = Memory()
-        self.finance_brain: FinanceBrain | None = None
         self._feishu_connected = False
         # Closed host readers are direct requests. Plugins use their dedicated
         # signed invocation entrypoints and never the historical Command path.
@@ -73,10 +70,6 @@ class AgentCore:
             self.memory.init()
             await self.llm.bind_repository(
                 LLMSettingsRepository(self.memory.connection_factory)
-            )
-            self.finance_brain = FinanceBrain(
-                FinanceRepository(self.memory.connection_factory),
-                self.llm,
             )
         except Exception as exc:
             logger.error("MySQL connection failed; conversation memory is unavailable: %s", exc)

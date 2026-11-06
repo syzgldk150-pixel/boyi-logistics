@@ -38,19 +38,6 @@ from agent.orchestration.result_verifier import ResultVerifier
 from agent.tool_registry import ToolRegistry, validate_schema_instance
 
 
-class _FinanceRepository:
-    def __init__(self, result=None, error: Exception | None = None) -> None:
-        self.result = result
-        self.error = error
-        self.queries = []
-
-    def get_business_summary(self, query):
-        self.queries.append(query)
-        if self.error is not None:
-            raise self.error
-        return deepcopy(self.result)
-
-
 class _OperationsRepository:
     def __init__(self, result=None, error: Exception | None = None) -> None:
         self.result = result if result is not None else {
@@ -68,25 +55,6 @@ class _OperationsRepository:
         if self.error is not None:
             raise self.error
         return deepcopy(self.result)
-
-
-def _verified_summary(**overrides):
-    result = {
-        "entry_count": 2,
-        "total_income": "10.01",
-        "total_expense": "3.00",
-        "net_change": "7.00",
-        "pending_fee_items": 1,
-        "latest_success_at": "2026-01-31 00:10:00",
-        "data_through_date": "2026-01-31",
-        "validation_status": "passed",
-        "coverage_status": "complete",
-        "reconciliation_status": "passed",
-        "failed_sources": [],
-        "accounts": [{"account_id": "must-not-leak"}],
-    }
-    result.update(overrides)
-    return result
 
 
 def _finance_payload(**overrides):
@@ -231,109 +199,42 @@ class AutomationOperationsQueryTests(unittest.TestCase):
 
 
 class BusinessFinanceQueryTests(unittest.TestCase):
-    def _service(self, result=None, error=None):
-        repository = _FinanceRepository(
-            result if result is not None else _verified_summary(),
-            error,
-        )
-        return BusinessFinanceQueryService(
-            repository,
-            enabled_platforms=("ronghui",),
-        ), repository
-
-    def test_returns_only_reviewed_aggregate_fields_and_accepts_rounded_display_values(self):
-        service, repository = self._service()
-
-        result = service.run(
-            {
-                "start_date": "2026-01-01",
-                "end_date": "2026-01-31",
-                "platform": "ronghui",
-            }
-        )
-
-        self.assertEqual(result["availability"], "DATA")
-        self.assertEqual(
-            result["summary"],
-            {
-                "total_income": "10.01",
-                "total_expense": "3.00",
-                "net_change": "7.00",
-                "pending_fee_items": 1,
-            },
-        )
-        self.assertEqual(result["record_count"], 2)
-        self.assertNotIn("accounts", result)
-        self.assertIn("不得把净变动解释为利润", result["warnings"][0])
-        self.assertEqual(repository.queries[0].platform.value, "ronghui")
-
-    def test_verified_empty_ledger_is_explicit_no_data_without_zero_amounts(self):
-        service, _ = self._service(
-            _verified_summary(
-                entry_count=0,
-                total_income="0.00",
-                total_expense="0.00",
-                net_change="0.00",
-                pending_fee_items=0,
-            )
-        )
-
-        result = service.run({"start_date": "2026-01-01", "end_date": "2026-01-31"})
-
-        self.assertEqual(result["availability"], "NO_DATA")
-        self.assertEqual(result["summary"], {})
-        self.assertEqual(result["record_count"], 0)
+    def test_well_formed_request_fails_closed_while_the_ledger_is_rebuilt(self):
+        service = BusinessFinanceQueryService()
+        for arguments in (
+            {"start_date": "2026-01-01", "end_date": "2026-01-31"},
+            {"start_date": "2026-01-01", "end_date": "2026-01-31", "platform": "ronghui"},
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(BusinessQueryError) as caught:
+                service.run(arguments)
+            self.assertEqual(caught.exception.code, "BUSINESS_QUERY_FINANCE_REBUILDING")
 
     def test_query_boundary_allows_366_calendar_days_and_rejects_367(self):
-        service, repository = self._service(
-            _verified_summary(data_through_date="2024-12-31")
-        )
-        service.run({"start_date": "2024-01-01", "end_date": "2024-12-31"})
-        self.assertEqual(len(repository.queries), 1)
-
+        service = BusinessFinanceQueryService()
+        with self.assertRaises(BusinessQueryError) as caught:
+            service.run({"start_date": "2024-01-01", "end_date": "2024-12-31"})
+        self.assertEqual(caught.exception.code, "BUSINESS_QUERY_FINANCE_REBUILDING")
         with self.assertRaises(BusinessQueryError) as caught:
             service.run({"start_date": "2024-01-01", "end_date": "2025-01-01"})
         self.assertEqual(caught.exception.code, "BUSINESS_QUERY_INVALID")
-        self.assertEqual(len(repository.queries), 1)
 
-    def test_rejects_unknown_fields_non_string_and_disabled_platforms(self):
-        service, repository = self._service()
-        invalid_arguments = (
+    def test_rejects_unknown_fields_and_non_string_platform(self):
+        service = BusinessFinanceQueryService()
+        for arguments in (
             {"start_date": "2026-01-01", "end_date": "2026-01-31", "sql": "SELECT 1"},
             {"start_date": "2026-01-01", "end_date": "2026-01-31", "platform": 1},
-            {"start_date": "2026-01-01", "end_date": "2026-01-31", "platform": "yunda"},
-        )
-        for arguments in invalid_arguments:
-            with self.subTest(arguments=arguments), self.assertRaises(BusinessQueryError):
+            {"start_date": "2026-01-31", "end_date": "2026-01-01"},
+            "not-an-object",
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(BusinessQueryError) as caught:
                 service.run(arguments)
-        self.assertEqual(repository.queries, [])
+            self.assertEqual(caught.exception.code, "BUSINESS_QUERY_INVALID")
 
-    def test_fails_closed_for_unverified_incomplete_and_unreconciled_results(self):
-        cases = (
-            (_verified_summary(validation_status="warning"), "BUSINESS_QUERY_DATA_UNVERIFIED"),
-            (_verified_summary(failed_sources=[{"source": "x"}]), "BUSINESS_QUERY_DATA_UNVERIFIED"),
-            (_verified_summary(coverage_status="incomplete"), "BUSINESS_QUERY_DATA_INCOMPLETE"),
-            (
-                _verified_summary(reconciliation_status="failed"),
-                "BUSINESS_QUERY_RECONCILIATION_FAILED",
-            ),
-            (_verified_summary(data_through_date="2026-01-30"), "BUSINESS_QUERY_DATA_INCOMPLETE"),
+    def test_rebuild_failure_has_a_fixed_reply_without_amounts(self):
+        reply = format_business_finance_reply(
+            {"success": False, "error_code": "BUSINESS_QUERY_FINANCE_REBUILDING"}
         )
-        for raw, expected_code in cases:
-            with self.subTest(expected_code=expected_code):
-                service, _ = self._service(raw)
-                with self.assertRaises(BusinessQueryError) as caught:
-                    service.run({"start_date": "2026-01-01", "end_date": "2026-01-31"})
-                self.assertEqual(caught.exception.code, expected_code)
-
-    def test_repository_failure_uses_fixed_non_sensitive_error(self):
-        service, _ = self._service(error=RuntimeError("synthetic-secret-value"))
-
-        with self.assertRaises(BusinessQueryError) as caught:
-            service.run({"start_date": "2026-01-01", "end_date": "2026-01-31"})
-
-        self.assertEqual(caught.exception.code, "BUSINESS_QUERY_UNAVAILABLE")
-        self.assertNotIn("synthetic-secret-value", str(caught.exception))
+        self.assertEqual(reply, "财务模块正在重建为总账体系，暂不提供金额。")
 
     @staticmethod
     def _plan_step(*, account_id=None) -> PlanStep:

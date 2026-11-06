@@ -53,7 +53,6 @@ from console.routes import ConsoleRouteDispatcher
 from console.task_queue import DocumentTaskQueue
 from console.template_store import TemplateStore
 
-from console.finance_service import FinanceError, FinanceService, FinanceValidationError
 from shared.redaction import redact_sensitive, redact_text
 from shared.manual_entry_contracts import (
     RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES,

@@ -93,11 +93,6 @@ class LocalDocFlowApp(
         )
         self._prepare_management_templates()
         self.project_modules = self._build_project_modules()
-        self.finance_service = FinanceService(
-            self.repository,
-            agent_request=self._agent_request,
-        )
-        self.finance_service.initialize_schema()
         self.automation_virtual_task_state: dict[str, dict[str, Any]] = {}
         # Original carrier pages execute on www.boyi.homes.  Keep the short-lived
         # ticket and the resulting capability server-side so the Console session
@@ -243,24 +238,6 @@ class LocalDocFlowApp(
         if path == "/modules/customer-service":
             self._render_customer_service(handler, query)
             return
-        if path == "/modules/finance":
-            self._render_finance(handler, query)
-            return
-        if path == "/finance/summary":
-            self._handle_finance_get(handler, "summary", query)
-            return
-        if path == "/finance/trend":
-            self._handle_finance_get(handler, "trend", query)
-            return
-        if path == "/finance/entries":
-            self._handle_finance_get(handler, "entries", query)
-            return
-        if path == "/finance/fee-mappings":
-            self._handle_finance_get(handler, "fee_mappings", query)
-            return
-        if path == "/finance/sync-batches":
-            self._handle_finance_get(handler, "sync_batches", query)
-            return
         if path == "/customer-service/problems/attachments/preview":
             self._handle_customer_service_attachment_preview(handler, query)
             return
@@ -403,10 +380,6 @@ class LocalDocFlowApp(
             return
         if path == "/customer-service/problems/attachments/upload":
             self._handle_customer_service_attachment_upload(handler)
-            return
-
-        if re.fullmatch(r"/finance/fee-mappings/\d+", path):
-            self._handle_finance_post(handler, "save_mapping", path=path)
             return
 
         if path == "/tracking/query":

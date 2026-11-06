@@ -92,7 +92,7 @@ def test_legacy_project_module_maturity_statuses_remain_independent() -> None:
     assert {slug: module.status for slug, module in project_modules.items()} == {
         "ocr": "ready",
         "pricing": "maintained",
-        "finance": "ready",
+        "finance": "in-progress",
         "customer-service": "in-progress",
         "ai-service": "planned",
         "dispatch": "in-progress",
