@@ -3,14 +3,150 @@
 {% block title %}财务模块 | {{ app_title }}{% endblock %}
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
-{% block subtitle %}总账重建中{% endblock %}
+{% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-gl">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
 {% block content %}
-<section class="finance-rebuild" aria-labelledby="finance-rebuild-title">
-  <h1 id="finance-rebuild-title">财务模块正在重建为总账体系</h1>
-  <p>原融辉账户收支账本、费用项目绑定和月度封账已停用。新的财务模块按《小企业会计准则》建立科目、凭证、总账、往来和期间封账，数据来源统一通过财务数据源页的连接器接入。</p>
-  <p>重建完成前，本页和财务查询不提供任何金额。</p>
+<section class="finance-ledger" data-finance-ledger data-can-manage="{{ 'true' if can_manage else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}">
+  <div class="finance-tabs" role="tablist" aria-label="财务功能">
+    <button type="button" role="tab" class="finance-tab" aria-selected="true" aria-controls="finance-panel-vouchers" id="finance-tab-vouchers" data-tab="vouchers">凭证</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-trial" id="finance-tab-trial" data-tab="trial" tabindex="-1">科目余额表</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-ledger" id="finance-tab-ledger" data-tab="ledger" tabindex="-1">明细账</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-journal" id="finance-tab-journal" data-tab="journal" tabindex="-1">序时账</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-accounts" id="finance-tab-accounts" data-tab="accounts" tabindex="-1">科目</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-settings" id="finance-tab-settings" data-tab="settings" tabindex="-1">设置</button>
+  </div>
+  <p class="finance-status" role="status" aria-live="polite" data-finance-status></p>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-vouchers" aria-labelledby="finance-tab-vouchers" data-panel="vouchers">
+    <div class="finance-toolbar">
+      <label class="finance-field">月份 <input class="review-input" type="month" data-voucher-month></label>
+      <label class="finance-field">状态
+        <select class="review-input" data-voucher-status>
+          <option value="">全部</option><option value="draft">草稿</option><option value="submitted">已提交</option><option value="cancelled">已冲销</option>
+        </select>
+      </label>
+      <button type="button" class="ghost-btn" data-voucher-refresh>查询</button>
+      {% if can_manage %}<button type="button" class="primary-btn" data-voucher-new>新建凭证</button>{% endif %}
+    </div>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">凭证号</th><th scope="col">日期</th><th scope="col">类型</th><th scope="col">摘要</th><th scope="col" class="num">借方合计</th><th scope="col" class="num">贷方合计</th><th scope="col">状态</th><th scope="col">制单人</th></tr></thead>
+      <tbody data-voucher-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-trial" aria-labelledby="finance-tab-trial" data-panel="trial" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">月份 <input class="review-input" type="month" data-trial-month></label>
+      <label class="finance-check"><input type="checkbox" data-trial-zero> 显示无发生额科目</label>
+      <button type="button" class="ghost-btn" data-trial-refresh>查询</button>
+      <span class="finance-badge" data-trial-balanced hidden></span>
+    </div>
+    <div class="table-wrap"><table class="finance-table finance-table--tree">
+      <thead>
+        <tr><th scope="col" rowspan="2">科目</th><th scope="colgroup" colspan="2">期初余额</th><th scope="colgroup" colspan="2">本期发生额</th><th scope="colgroup" colspan="2">期末余额</th></tr>
+        <tr><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th></tr>
+      </thead>
+      <tbody data-trial-rows></tbody>
+      <tfoot data-trial-totals></tfoot>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-ledger" aria-labelledby="finance-tab-ledger" data-panel="ledger" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">科目 <select class="review-input" data-ledger-account></select></label>
+      <label class="finance-field">开始 <input class="review-input" type="date" data-ledger-start></label>
+      <label class="finance-field">结束 <input class="review-input" type="date" data-ledger-end></label>
+      <button type="button" class="ghost-btn" data-ledger-refresh>查询</button>
+    </div>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">科目</th><th scope="col">摘要</th><th scope="col">运单号</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col">方向</th><th scope="col" class="num">余额</th></tr></thead>
+      <tbody data-ledger-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-journal" aria-labelledby="finance-tab-journal" data-panel="journal" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">月份 <input class="review-input" type="month" data-journal-month></label>
+      <button type="button" class="ghost-btn" data-journal-refresh>查询</button>
+    </div>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">摘要</th><th scope="col">科目</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col">状态</th></tr></thead>
+      <tbody data-journal-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-accounts" aria-labelledby="finance-tab-accounts" data-panel="accounts" hidden>
+    <div class="finance-toolbar">
+      <p class="section-note">只有末级科目可以记账。已有凭证的科目只能停用或冻结，不能删除或改属性。{% if not is_super_admin %}修改科目结构需要超级管理员。{% endif %}</p>
+      {% if is_super_admin %}<button type="button" class="primary-btn" data-account-new>新增科目</button>{% endif %}
+    </div>
+    <div class="table-wrap"><table class="finance-table finance-table--tree">
+      <thead><tr><th scope="col">代码</th><th scope="col">名称</th><th scope="col">类别</th><th scope="col">属性</th><th scope="col">方向</th><th scope="col">状态</th>{% if is_super_admin %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-account-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-settings" aria-labelledby="finance-tab-settings" data-panel="settings" hidden>
+    <form class="finance-settings" data-settings-form>
+      <label class="finance-field">总账启用月 <input class="review-input" type="month" name="start_month" required></label>
+      <p class="section-note" data-settings-lock></p>
+      <label class="finance-field">暂记科目 <select class="review-input" name="suspense_account" data-account-type="suspense"></select></label>
+      <label class="finance-field">资金在途科目 <select class="review-input" name="transit_account" data-account-type="transit"></select></label>
+      <label class="finance-field">本年利润科目 <select class="review-input" name="current_profit_account" data-account-type="equity"></select></label>
+      <label class="finance-field">未分配利润科目 <select class="review-input" name="retained_earnings_account" data-account-type="equity"></select></label>
+      {% if is_super_admin %}<div><button type="submit" class="primary-btn">保存设置</button></div>{% else %}<p class="section-note">修改财务设置需要超级管理员。</p>{% endif %}
+    </form>
+  </div>
 </section>
+
+<dialog class="finance-dialog" data-voucher-dialog aria-labelledby="finance-voucher-title">
+  <form method="dialog" class="finance-dialog-body" data-voucher-form>
+    <header class="finance-dialog-head">
+      <h2 id="finance-voucher-title" data-voucher-title>新建凭证</h2>
+      <button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button>
+    </header>
+    <div class="finance-voucher-meta">
+      <label class="finance-field">记账日期 <input class="review-input" type="date" name="posting_date" required></label>
+      <label class="finance-field">类型
+        <select class="review-input" name="voucher_type"><option value="manual">记账凭证</option><option value="opening">期初凭证</option></select>
+      </label>
+      <label class="finance-field finance-field--wide">摘要 <input class="review-input" name="summary" maxlength="255"></label>
+    </div>
+    <div class="table-wrap"><table class="finance-table finance-lines">
+      <thead><tr><th scope="col">摘要</th><th scope="col">科目</th><th scope="col">运单号</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col"><span class="sr-only">删除</span></th></tr></thead>
+      <tbody data-line-rows></tbody>
+      <tfoot><tr><td colspan="3"><button type="button" class="ghost-btn" data-line-add>添加分录</button></td><td class="num" data-line-debit>0.00</td><td class="num" data-line-credit>0.00</td><td></td></tr></tfoot>
+    </table></div>
+    <p class="finance-status" role="status" aria-live="polite" data-voucher-message></p>
+    <footer class="finance-dialog-actions" data-voucher-actions></footer>
+  </form>
+</dialog>
+
+<dialog class="finance-dialog finance-dialog--narrow" data-account-dialog aria-labelledby="finance-account-title">
+  <form method="dialog" class="finance-dialog-body" data-account-form>
+    <header class="finance-dialog-head"><h2 id="finance-account-title" data-account-title>新增科目</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <label class="finance-field">科目代码 <input class="review-input" name="code" inputmode="numeric" pattern="[1-6][0-9]{3}([0-9]{2}){0,4}" required></label>
+    <p class="section-note">一级 4 位；下级为上级代码加 2 位，例如 100201。</p>
+    <label class="finance-field">名称 <input class="review-input" name="name" maxlength="64" required></label>
+    <label class="finance-field" data-top-only>类别
+      <select class="review-input" name="root_type"><option value="asset">资产</option><option value="liability">负债</option><option value="equity">所有者权益</option><option value="cost">成本</option><option value="profit_loss">损益</option></select>
+    </label>
+    <label class="finance-field" data-top-only>余额方向 <select class="review-input" name="normal_balance"><option value="debit">借</option><option value="credit">贷</option></select></label>
+    <label class="finance-field">属性
+      <select class="review-input" name="account_type">
+        <option value="">与上级相同</option><option value="cash">现金</option><option value="bank">银行</option><option value="fund">其他货币资金</option><option value="transit">资金在途</option><option value="receivable">应收类</option><option value="payable">应付类</option><option value="suspense">暂记</option><option value="income">收入</option><option value="cost">成本</option><option value="expense">费用</option><option value="equity">权益</option><option value="other">其他</option>
+      </select>
+    </label>
+    <label class="finance-check"><input type="checkbox" name="requires_waybill"> 记账必须填写运单号</label>
+    <label class="finance-check" data-edit-only><input type="checkbox" name="is_active"> 启用</label>
+    <label class="finance-check" data-edit-only><input type="checkbox" name="frozen"> 冻结（暂停记账）</label>
+    <p class="finance-status" role="status" aria-live="polite" data-account-message></p>
+    <footer class="finance-dialog-actions" data-account-actions></footer>
+  </form>
+</dialog>
 {% endblock %}
+
+{% block scripts %}<script src="/static/finance.js?v=20261107-gl"></script>{% endblock %}

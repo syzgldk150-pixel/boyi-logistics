@@ -185,11 +185,19 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `app.py`
   - `database.py`
   - 页面入口 `/receipts` 使用本地 `receipt_records/receipt_attachments/receipt_audit_logs`。查询走普通 receipts-query，审核走 receipts-audit 直接业务动作；独立读回核验成功后才更新本地审核状态，未知结果不得伪造成功。不创建旧 Command/Run 或隐式写 iframe。
-- 改财务模块（总账重建中）：
-  - `templates/finance.html`
-  - `routes/finance.py`
-  - `services/monitoring_finance.py`（`_render_finance`）
-  - 旧融辉账户收支工作台（BI、交易明细、费用绑定、月度封账、同步记录）与全部 `/finance/*` 接口已随迁移 067 删除；`/modules/finance` 只显示重建说明，不提供任何金额。财务数据源页 `/modules/finance/data-sources` 保留，新连接器在此管理。总账按 `../agent/docs/finance_module.md` 分期重建，每期补充页签、接口与权限（查看 `finance.read`，制单/核销/规则 `finance.manage`，封账/反结账超级管理员）。
+- 改财务模块（总账重建中，P1 总账内核已上线）：
+  - `templates/finance.html`、`static/finance.js`、`static/finance.css`
+  - `routes/finance.py`、`services/finance_ledger.py`（总账接口）、`services/monitoring_finance.py`（`_render_finance`）
+  - 规则全部在 `../shared/finance/`：Console 只经 `FinanceRepository(self.repository.connect)` 读写，不在页面或服务里写总账 SQL。
+  - P1 页签：凭证、科目余额表、明细账、序时账、科目、设置。
+  - 权限由 `shared/identity_routes.py` 投影：
+    - 查看 `finance.read`；
+    - 制单和提交 `finance.manage`；
+    - 冲销凭证、改科目结构、改启用月和默认科目只允许超级管理员。
+  - 写请求必须满足：真实 MySQL 后台账号、同源请求、`X-Browser-Request-UUID` 与请求体 `request_id` 一致；修改类请求带 `expected_revision`。
+  - 金额在浏览器中只按字符串和整数（万分之一单位）计算，不用浮点数。
+  - 旧融辉账户收支工作台已随迁移 067 删除。财务数据源页 `/modules/finance/data-sources` 保留，新连接器在此管理。
+  - 后续分期见 `../agent/docs/finance_module.md`。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`

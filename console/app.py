@@ -8,6 +8,7 @@ from console.services.auth import AuthServiceMixin
 from console.services.identities import IdentitiesServiceMixin
 from console.services.control_plane import ControlPlaneServiceMixin
 from console.services.harness import HarnessServiceMixin
+from console.services.finance_ledger import FinanceLedgerServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
 from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.customer_service import CustomerServiceMixin
@@ -47,6 +48,7 @@ class LocalDocFlowApp(
     HarnessServiceMixin,
     LLMSettingsServiceMixin,
     MonitoringFinanceServiceMixin,
+    FinanceLedgerServiceMixin,
     CustomerServiceMixin,
     WaybillsReceiptsServiceMixin,
     TmsProxyServiceMixin,

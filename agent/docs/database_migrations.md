@@ -4,12 +4,14 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 数据库迁移
 
 `067_retire_finance_statement_ledger.sql` 退役融辉账户收支账本（用户确认生产从未在业务中使用，不做转换）：先删除运行库 23 个 `finance_*` 视图，再删除 `finance_db` 中 004/009/039/062/063 建立的全部 `finance_*` 实体表，最后删除 `module_data_sources` 中 `module='finance'` 的来源及其 `module_data_source_accounts` 绑定，客服来源不受影响。执行器先绑定实体库名，经 `scripts/migration_row_export.py` 在每条 `DROP TABLE`/`DELETE` 前把将被删除的行写入迁移备份目录的 JSON-lines 导出（`DROP VIEW` 不含数据，不导出），完成后重建运行库视图；`scripts/migration_055_domain_databases.py` 只为仍存在的财务表投影视图。旧融辉统计查询抓取插件仍在运行时拒绝执行。每步可重复执行。总账新表由后续迁移加入。
+
+`068_finance_gl_core.sql` 在 `finance_db` 新建总账内核 8 张表：`finance_accounts`、`finance_settings`、`finance_periods`、`finance_voucher_sequences`、`finance_vouchers`、`finance_voucher_lines`、`finance_gl_entries`、`finance_events`。同时以 `INSERT IGNORE` 预置《小企业会计准则》科目和默认设置（启用月为空）。执行器走 055 之后的通用路径：绑定库名、执行，再按 `LATER_FINANCE_TABLES` 重建运行库视图。全部语句可重复执行。
 
 `066_retire_control_plane_tables.sql` 在旧 Command/Run/Step 控制平面代码删除（2026-11-03 发布）后删除其数据库残留：Runner、审批、Outbox、事项中心与事件消费表，任务级审批策略及其事件表、分组审批批次表，014/016/017/043 的一次性快照表，代次租约与写入回执上的 `orchestration_run_id` 列（先删外键），以及启用日志 `automation_project_generation_transition_tasks` 的 11 个退役 `policy_*` 列（检查约束改为只校验代次与配置版本）。Invocation、租约、写入回执、定时任务、项目策略与事件、飞书身份绑定、工具日志及全部业务和财务数据保留。迁移器经 `scripts/migration_row_export.py` 执行：每条 `DROP TABLE` 执行前导出整表，每条 `ALTER TABLE … DROP COLUMN` 执行前导出这些列非空的行，写入迁移备份目录的 `*-migration-066-removed-rows.jsonl`（权限 0600），业务验收后随回滚材料清理。各步可重复执行；066 之后不能回滚到阶段 A 之前的代码。回归见 `tests/test_migration_066_mysql.py`。
 

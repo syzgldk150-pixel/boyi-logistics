@@ -1,13 +1,13 @@
 ---
 module: 财务模块
 type: 模块文档
-tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, Decimal, 重建]
-related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md]
+tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, 凭证, 科目余额表, 明细账, Decimal, 重建]
+related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md, ../../docs/finance_connector_contract.md]
 status: active
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
-# 财务模块（总账重建中）
+# 财务模块（总账重建中，P1 总账内核已完成）
 
 ## 当前状态
 
@@ -19,7 +19,7 @@ updated: 2026-11-06
 
 重建期间的行为：
 
-- `/modules/finance` 只显示“总账重建中”说明，不提供任何金额；旧 `/finance/*` 接口已删除。
+- `/modules/finance` 自 P1 起提供总账页签（凭证、科目余额表、明细账、序时账、科目、设置），金额全部来自手工凭证，见下文“P1 总账内核”。旧 `/finance/*` 接口已删除，新的 `/finance/*` 只属于总账。
 - AI 与飞书的财务查询 `query_business_finance` 仍校验日期与参数，合法请求固定返回 `BUSINESS_QUERY_FINANCE_REBUILDING`，回复“财务模块正在重建为总账体系，暂不提供金额。”；“经营摘要”的财务部分同样显示该提示，不推断金额。
 - 已安装的旧融辉财务插件实例因 Connector 已删除而无法运行，应在财务数据源页卸载。
 
@@ -36,7 +36,56 @@ updated: 2026-11-06
 5. 期间层：封账前检查、余额快照、封账与反结账、漂移告警。
 6. 报表层：序时账、科目余额表、明细账、利润表、资产负债表、现金流量表、单票毛利、代账导出。
 
-分期：P0 清理（本次）→ P1 总账内核 → P2 往来 → P3 博益单记账 → P4 连接器接入 → P5 封账与报表。每期完成后在本文件补充对应章节、接口与表结构。
+分期：P0 清理（2026-11-06 完成）→ P1 总账内核（2026-11-07 完成）→ P2 往来 → P3 博益单记账 → P4 连接器接入 → P5 封账与报表。每期完成后在本文件补充对应章节、接口与表结构。连接器开发说明见 [标准流水契约 v1（草案）](../../docs/finance_connector_contract.md)。
+
+## P1 总账内核
+
+### 表结构（迁移 `068_finance_gl_core.sql`，`finance_db`）
+
+| 表 | 内容 |
+|---|---|
+| `finance_accounts` | 科目树：代码（一级 4 位，每级加 2 位）、上级、类别（资产/负债/所有者权益/成本/损益）、属性、余额方向、是否有下级、启用、冻结、必填往来单位/运单号、现金流分类、版本。迁移预置《小企业会计准则》一级科目与建议二级科目（暂记 `224199`、资金在途 `101299`、未分配利润 `310401` 等） |
+| `finance_settings` | 单行：总账启用月、暂记/资金在途/本年利润/未分配利润默认科目、版本 |
+| `finance_periods` | 期间状态 `open/closed`；P1 只读取状态拒绝封账期写入，封账操作在 P5 |
+| `finance_voucher_sequences` | 按“记”字和月份连续编号，提交时分配，如 `记-2026-10-0001` |
+| `finance_vouchers` / `finance_voucher_lines` | 凭证头与分录行；状态 `draft/submitted/cancelled`；每行借贷有且仅有一方大于 0（CHECK 约束）；维度：网点、来源、业务线、费用层级、运单号、往来单位（P2）、来源行（P4） |
+| `finance_gl_entries` | 只追加的总账分录，冲销时插入镜像行并给原分录和镜像行同时标 `is_cancelled=1` |
+| `finance_events` | 每次写操作一行，按浏览器请求 UUID 唯一；保存请求摘要和结果，同一 UUID 重放返回原结果，不同内容复用返回 `REQUEST_ID_REUSED` |
+
+八张表已登记在 `agent/scripts/migration_055_domain_databases.py` 的 `LATER_FINANCE_TABLES`，运行库 `agent_db` 有同名 INVOKER 视图。
+
+### 代码
+
+- `shared/finance/repository.py`：`FinanceRepository(connection_factory)` 组合各 mixin，是 `finance_*` 表的唯一写入方；`_write()` 让每个写操作在一个事务内完成并登记 `finance_events`。
+- `shared/finance/gl/posting.py`：唯一的总账写入口 `submit_voucher()` / `cancel_voucher()`。
+  - 提交在同一事务内依次执行：锁设置行（必须已设启用月）→ 锁凭证行（必须是草稿且版本一致）→ 检查日期不早于启用月（期初凭证只能在启用月）→ 至少两行、借贷相等且大于 0 → 锁期间行（封账拒绝 `PERIOD_CLOSED`）→ 科目必须存在、是末级、未冻结、本级和上级都已启用、必填维度齐全 → 分配凭证号 → 插入总账分录 → 回读核对行数和借贷合计。
+  - 冲销只允许超级管理员操作，必须填写原因，且只能在原凭证所在期间仍开放时进行。
+- `shared/finance/gl/vouchers.py`：草稿可以暂时借贷不平，提交时才校验；金额只接受数字文本，最多 4 位小数，拒绝浮点数和负数。
+- `shared/finance/gl/accounts.py`：
+  - 上级科目由代码推出。
+  - 已有凭证或分录的末级科目不能再加下级、改属性或删除。
+  - 设置中的默认科目不能停用、删除，也不能加下级。
+- `shared/finance/settings.py`：已有分录后启用月锁定（`START_MONTH_LOCKED`）。
+- `shared/finance/gl/balances.py` 提供三张账表，都排除已冲销的分录：
+  - 科目余额表：期初、本期借贷、期末，按上级逐级汇总，并检查试算平衡；
+  - 明细账：含下级科目，逐笔累计余额，一次最多查 366 天、5000 行；
+  - 序时账。
+
+### Console 接口（`console/services/finance_ledger.py`、`console/routes/finance.py`）
+
+| 方法 | 路径 | 权限 |
+|---|---|---|
+| GET | `/finance/settings`、`/finance/accounts`、`/finance/vouchers?month=&status=`、`/finance/vouchers/{id}`、`/finance/reports/trial-balance?month=`、`/finance/reports/ledger?account=&start=&end=`、`/finance/reports/journal?month=` | `finance.read` |
+| POST | `/finance/vouchers`（新建草稿）、`/finance/vouchers/{id}`（改草稿）、`/finance/vouchers/{id}/delete`、`/finance/vouchers/{id}/submit` | `finance.manage` |
+| POST | `/finance/vouchers/{id}/cancel`、`/finance/settings`、`/finance/accounts`、`/finance/accounts/{code}`、`/finance/accounts/{code}/delete` | 超级管理员 |
+
+写请求还必须满足三项：真实 MySQL 后台账号、同源请求、`X-Browser-Request-UUID` 与请求体中的 `request_id` 一致。修改类请求要带 `expected_revision`。错误统一返回 `{ok:false,error_code,message}`。
+
+### 回归
+
+- `tests/test_finance_gl.py`：纯规则。
+- `tests/test_finance_gl_mysql.py`：本地 MySQL 33330。覆盖迁移种子、启用月锁定、借贷不平/非末级/少于两行拒绝且不留分录、封账期拒绝提交和冲销、冲销后余额归零、请求重放与复用拒绝、四线程并发提交只入账一次、期初凭证限启用月、科目树规则、运单维度、明细账累计余额。
+- `console/tests/test_finance_ledger_routes.py`：路由、权限投影、写请求门禁。
 
 ## 金额规则
 

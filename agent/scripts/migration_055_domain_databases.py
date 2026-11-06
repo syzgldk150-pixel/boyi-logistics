@@ -35,7 +35,11 @@ NEW_TABLES = (
 LATER_WAYBILL_TABLES = ("boyi_waybill_edit_logs",)
 # Migration 067 retired every finance table listed above and those of 062/063;
 # the general-ledger tables of later migrations are added here as they land.
-LATER_FINANCE_TABLES = ()
+LATER_FINANCE_TABLES = (
+    # 068: general-ledger core.
+    "finance_accounts", "finance_settings", "finance_periods", "finance_voucher_sequences",
+    "finance_vouchers", "finance_voucher_lines", "finance_gl_entries", "finance_events",
+)
 
 
 def quote(identifier):
