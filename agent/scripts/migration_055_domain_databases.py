@@ -39,6 +39,8 @@ LATER_FINANCE_TABLES = (
     # 068: general-ledger core.
     "finance_accounts", "finance_settings", "finance_periods", "finance_voucher_sequences",
     "finance_vouchers", "finance_voucher_lines", "finance_gl_entries", "finance_events",
+    # 069: parties, open-item ledger and allocations.
+    "finance_parties", "finance_allocations", "finance_party_ledger",
 )
 
 

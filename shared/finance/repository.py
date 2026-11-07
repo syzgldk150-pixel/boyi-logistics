@@ -18,12 +18,16 @@ from shared.finance.gl.balances import ReportsMixin
 from shared.finance.gl.posting import PostingMixin
 from shared.finance.gl.vouchers import VouchersMixin
 from shared.finance.models import FinanceActor, parse_request_id
+from shared.finance.party.ledger import PartyLedgerMixin
+from shared.finance.party.parties import PartiesMixin
 from shared.finance.settings import SettingsMixin
 
 ConnectionFactory = Callable[[], Any]
 
 
-class FinanceRepository(SettingsMixin, AccountsMixin, VouchersMixin, PostingMixin, ReportsMixin):
+class FinanceRepository(
+    SettingsMixin, AccountsMixin, VouchersMixin, PostingMixin, ReportsMixin, PartiesMixin, PartyLedgerMixin,
+):
     """General-ledger persistence; the only code that writes ``finance_*`` tables."""
 
     def __init__(self, connection_factory: ConnectionFactory) -> None:

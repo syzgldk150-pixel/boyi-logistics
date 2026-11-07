@@ -60,6 +60,10 @@ def app():
     ("POST", "/finance/accounts", SUPER_ADMIN),
     ("POST", "/finance/accounts/100201", SUPER_ADMIN),
     ("POST", "/finance/accounts/100201/delete", SUPER_ADMIN),
+    ("GET", "/finance/open-items", "finance.read"),
+    ("POST", "/finance/parties", "finance.manage"),
+    ("POST", "/finance/allocations", "finance.manage"),
+    ("POST", "/finance/allocations/9/reverse", "finance.manage"),
 ])
 def test_route_permissions(method, path, permission):
     assert console_permission(method, path) == permission
@@ -75,6 +79,17 @@ def test_route_permissions(method, path, permission):
     ("POST", "/finance/vouchers/42/cancel", ("_handle_finance_ledger_post", "voucher_cancel", "42")),
     ("POST", "/finance/accounts/1002", ("_handle_finance_ledger_post", "account_update", "1002")),
     ("POST", "/finance/accounts/100201/delete", ("_handle_finance_ledger_post", "account_delete", "100201")),
+    ("GET", "/finance/parties", ("_handle_finance_ledger_get", "parties")),
+    ("GET", "/finance/parties/sender-candidates", ("_handle_finance_ledger_get", "sender_candidates")),
+    ("GET", "/finance/open-items", ("_handle_finance_ledger_get", "open_items")),
+    ("GET", "/finance/allocations", ("_handle_finance_ledger_get", "allocations")),
+    ("GET", "/finance/reports/aging", ("_handle_finance_ledger_get", "aging")),
+    ("GET", "/finance/reports/statement", ("_handle_finance_ledger_get", "statement")),
+    ("POST", "/finance/parties", ("_handle_finance_ledger_post", "party_create")),
+    ("POST", "/finance/parties/3", ("_handle_finance_ledger_post", "party_update", "3")),
+    ("POST", "/finance/allocations", ("_handle_finance_ledger_post", "allocation_create")),
+    ("POST", "/finance/allocations/auto-waybill", ("_handle_finance_ledger_post", "allocation_auto")),
+    ("POST", "/finance/allocations/9/reverse", ("_handle_finance_ledger_post", "allocation_reverse", "9")),
 ])
 def test_routes_dispatch(method, path, call):
     stub = Mock()
@@ -133,3 +148,14 @@ def test_get_reports_pass_query(app):
     app._handle_finance_ledger_get(handler, "trial_balance", {"month": ["2026-10"], "include_zero": ["1"]})
     app._finance_ledger_repository.trial_balance.assert_called_once_with("2026-10", include_zero=True)
     assert handler.result()["ok"]
+
+
+def test_party_id_query_is_validated_before_ledger(app):
+    handler = JsonHandler()
+    app._handle_finance_ledger_get(handler, "open_items", {"party_id": ["abc"]})
+    assert handler.status == 400 and handler.result()["error_code"] == "FINANCE_INVALID_REQUEST"
+    app._finance_ledger_repository.open_items.assert_not_called()
+    handler = JsonHandler()
+    app._finance_ledger_repository.open_items.return_value = {"items": []}
+    app._handle_finance_ledger_get(handler, "open_items", {"party_id": ["3"], "account": ["112201"]})
+    app._finance_ledger_repository.open_items.assert_called_once_with(party_id=3, account_code="112201", as_of=None)

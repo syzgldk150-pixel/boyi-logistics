@@ -47,3 +47,5 @@
   .finance-toolbar > * { flex: 1 1 100%; }
   .finance-dialog-body { padding: 16px; }
 }
+.finance-subhead { margin: 8px 0 0; font-size: 0.9375rem; color: var(--text-strong); }
+.finance-table td.num .review-input { min-width: 110px; text-align: right; }

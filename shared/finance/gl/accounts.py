@@ -27,7 +27,7 @@ ACCOUNT_COLUMNS = (
     " requires_party, requires_waybill, cash_flow_category, revision"
 )
 _FLAGS = ("is_group", "is_active", "frozen", "requires_party", "requires_waybill")
-_EDITABLE = {"name", "is_active", "frozen", "requires_waybill", "cash_flow_category", "account_type"}
+_EDITABLE = {"name", "is_active", "frozen", "requires_waybill", "requires_party", "cash_flow_category", "account_type"}
 
 
 def account_view(row: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +101,7 @@ class AccountsMixin:
         if not isinstance(payload, dict):
             raise FinanceValidationError("科目内容无效。")
         allowed = {"code", "name", "parent_code", "root_type", "account_type", "normal_balance",
-                   "cash_flow_category", "requires_waybill"}
+                   "cash_flow_category", "requires_waybill", "requires_party"}
         if set(payload) - allowed:
             raise FinanceValidationError("科目内容包含不支持的字段。")
         code = parse_account_code(payload.get("code"))
@@ -111,6 +111,7 @@ class AccountsMixin:
         if (payload.get("parent_code") or None) not in (None, parent_code):
             raise FinanceValidationError("下级科目代码应为上级代码加 2 位数字。", code="FINANCE_INVALID_ACCOUNT_CODE")
         requires_waybill = _flag(payload.get("requires_waybill", False), "必填运单号")
+        requires_party = _flag(payload.get("requires_party", False), "必填往来单位")
         cash_flow = payload.get("cash_flow_category") or None
         if cash_flow is not None:
             _choice(cash_flow, CASH_FLOW_CATEGORIES, "现金流分类")
@@ -132,6 +133,7 @@ class AccountsMixin:
                         raise FinanceError("ACCOUNT_IS_DEFAULT", f"科目 {parent['code']} 是财务设置中的默认科目，不能增加下级科目。")
                     cursor.execute("UPDATE finance_accounts SET is_group=1, revision=revision+1 WHERE code=%s", (parent["code"],))
                 root_type, normal_balance = parent["root_type"], parent["normal_balance"]
+                inherited_party = int(parent["requires_party"])
                 account_type = _choice(payload.get("account_type") or parent["account_type"], ACCOUNT_TYPES, "科目属性")
                 if "root_type" in payload and payload["root_type"] != root_type:
                     raise FinanceValidationError("下级科目的类别必须与上级一致。")
@@ -139,8 +141,9 @@ class AccountsMixin:
                     raise FinanceValidationError("下级科目的余额方向必须与上级一致。")
             cursor.execute(
                 "INSERT INTO finance_accounts (code, name, parent_code, root_type, account_type, normal_balance,"
-                " requires_waybill, cash_flow_category) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                " requires_waybill, requires_party, cash_flow_category) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (code, name, parent_code, root_type, account_type, normal_balance, int(requires_waybill),
+                 inherited_party if parent_code else int(requires_party),
                  cash_flow if parent_code is None else (cash_flow or self._parent_cash_flow(cursor, parent_code))),
             )
             cursor.execute(f"SELECT {ACCOUNT_COLUMNS} FROM finance_accounts WHERE code=%s", (code,))
@@ -166,7 +169,8 @@ class AccountsMixin:
         values: dict[str, Any] = {}
         if "name" in changes:
             values["name"] = _name(changes["name"])
-        for flag, label in (("is_active", "启用"), ("frozen", "冻结"), ("requires_waybill", "必填运单号")):
+        for flag, label in (("is_active", "启用"), ("frozen", "冻结"), ("requires_waybill", "必填运单号"),
+                            ("requires_party", "必填往来单位")):
             if flag in changes:
                 values[flag] = int(_flag(changes[flag], label))
         if "cash_flow_category" in changes:
@@ -181,6 +185,10 @@ class AccountsMixin:
                 raise FinanceError("FINANCE_REVISION_CONFLICT", "科目已被他人修改，请刷新后重试。")
             if values.get("account_type", current["account_type"]) != current["account_type"] and self._account_in_use(cursor, code):
                 raise FinanceError("ACCOUNT_HAS_ENTRIES", "科目已有凭证或分录，不能修改科目属性。")
+            if "requires_party" in values and values["requires_party"] != current["requires_party"]:
+                # Open items exist only for party accounts; switching would break "balance = open items".
+                if self._account_in_use(cursor, code):
+                    raise FinanceError("ACCOUNT_HAS_ENTRIES", "科目已有凭证或分录，不能修改“必填往来单位”。")
             if values.get("is_active") == 0 and self._account_is_default(cursor, code):
                 raise FinanceError("ACCOUNT_IS_DEFAULT", "该科目是财务设置中的默认科目，不能停用。")
             assignments = ", ".join(f"{key}=%s" for key in values)

@@ -37,7 +37,7 @@ LINE_COLUMNS = (
     "id, voucher_id, line_no, account_code, debit, credit, summary, site_code, source_id, business_line,"
     " fee_level, waybill_no, party_id, source_line_id"
 )
-_LINE_FIELDS = {"account_code", "debit", "credit", "summary", *DIMENSIONS}
+_LINE_FIELDS = {"account_code", "debit", "credit", "summary", "party_id", *DIMENSIONS}
 _DIMENSION_LIMITS = {"site_code": 64, "source_id": 64, "business_line": 64, "waybill_no": 128}
 
 
@@ -83,8 +83,9 @@ def line_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {key: row[key] for key in ("line_no", "account_code", "summary", *DIMENSIONS, "party_id", "source_line_id")}
     view["debit"] = amount_text(row["debit"])
     view["credit"] = amount_text(row["credit"])
-    if "account_name" in row:
-        view["account_name"] = row["account_name"]
+    for key in ("account_name", "party_name"):
+        if key in row:
+            view[key] = row[key]
     return view
 
 
@@ -127,6 +128,13 @@ def parse_voucher(payload: Any) -> dict[str, Any]:
         if fee_level is not None and fee_level not in FEE_LEVELS:
             raise FinanceValidationError(f"第 {index} 行费用层级无效。")
         line["fee_level"] = fee_level
+        party_id = raw.get("party_id")
+        if party_id in (None, ""):
+            line["party_id"] = None
+        elif isinstance(party_id, int) and not isinstance(party_id, bool) and party_id > 0:
+            line["party_id"] = party_id
+        else:
+            raise FinanceValidationError(f"第 {index} 行往来单位无效。")
         lines.append(line)
     return {
         "voucher_type": voucher_type,
@@ -160,8 +168,9 @@ class VouchersMixin:
     def _voucher_lines(cursor: Any, voucher_id: int) -> list[dict[str, Any]]:
         cursor.execute(
             "SELECT l.line_no, l.account_code, a.name AS account_name, l.debit, l.credit, l.summary, l.site_code,"
-            " l.source_id, l.business_line, l.fee_level, l.waybill_no, l.party_id, l.source_line_id, l.id"
+            " l.source_id, l.business_line, l.fee_level, l.waybill_no, l.party_id, p.name AS party_name, l.source_line_id, l.id"
             " FROM finance_voucher_lines l JOIN finance_accounts a ON a.code=l.account_code"
+            " LEFT JOIN finance_parties p ON p.id=l.party_id"
             " WHERE l.voucher_id=%s ORDER BY l.line_no",
             (voucher_id,),
         )
@@ -175,6 +184,13 @@ class VouchersMixin:
         missing = set(codes) - {row["code"] for row in fetchall(cursor)}
         if missing:
             raise FinanceValidationError(f"科目不存在：{', '.join(sorted(missing))}。", code="ACCOUNT_NOT_FOUND")
+        party_ids = sorted({line["party_id"] for line in voucher["lines"] if line["party_id"]})
+        if party_ids:
+            cursor.execute(
+                f"SELECT id FROM finance_parties WHERE id IN ({', '.join(['%s'] * len(party_ids))})", tuple(party_ids)
+            )
+            if len(fetchall(cursor)) != len(party_ids):
+                raise FinanceValidationError("所选往来单位不存在。", code="PARTY_NOT_FOUND")
 
     def _require_not_before_start(self, cursor: Any, voucher: dict[str, Any]) -> None:
         start_month = self._load_settings(cursor, lock="FOR SHARE")["start_month"]
@@ -185,10 +201,11 @@ class VouchersMixin:
     def _insert_lines(cursor: Any, voucher_id: int, voucher: dict[str, Any]) -> None:
         cursor.executemany(
             "INSERT INTO finance_voucher_lines (voucher_id, line_no, account_code, debit, credit, summary, site_code,"
-            " source_id, business_line, fee_level, waybill_no) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " source_id, business_line, fee_level, waybill_no, party_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (voucher_id, line["line_no"], line["account_code"], format(line["debit"], "f"), format(line["credit"], "f"),
-                 line["summary"], line["site_code"], line["source_id"], line["business_line"], line["fee_level"], line["waybill_no"])
+                 line["summary"], line["site_code"], line["source_id"], line["business_line"], line["fee_level"], line["waybill_no"],
+                 line["party_id"])
                 for line in voucher["lines"]
             ],
         )

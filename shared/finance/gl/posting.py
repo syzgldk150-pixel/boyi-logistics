@@ -81,6 +81,18 @@ class PostingMixin:
                 raise FinanceError("DIMENSION_REQUIRED", f"{label}（{account['name']}）必须填写运单号。")
             if account["requires_party"] and not line["party_id"]:
                 raise FinanceError("DIMENSION_REQUIRED", f"{label}（{account['name']}）必须选择往来单位。")
+        party_ids = sorted({int(line["party_id"]) for line in lines if line["party_id"]})
+        if party_ids:
+            cursor.execute(
+                f"SELECT id, name, is_active FROM finance_parties WHERE id IN ({', '.join(['%s'] * len(party_ids))}) FOR SHARE",
+                tuple(party_ids),
+            )
+            parties = {int(row["id"]): row for row in fetchall(cursor)}
+            for party_id in party_ids:
+                if party_id not in parties:
+                    raise FinanceError("PARTY_NOT_FOUND", f"往来单位 {party_id} 不存在。")
+                if not parties[party_id]["is_active"]:
+                    raise FinanceError("PARTY_INACTIVE", f"往来单位“{parties[party_id]['name']}”已停用。")
 
     def submit_voucher(self, voucher_id: int, payload: dict[str, Any], *, request_id: Any, actor: FinanceActor) -> dict[str, Any]:
         voucher_id = int(voucher_id)
@@ -134,6 +146,14 @@ class PostingMixin:
                 (voucher_no, debit, credit, actor.label, voucher_id),
             )
             self._verify_posted(cursor, voucher_id, count=len(lines), debit=debit, credit=credit)
+            recorded = self._record_open_items(cursor, voucher_id)
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM finance_gl_entries g JOIN finance_accounts a ON a.code=g.account_code"
+                " WHERE g.voucher_id=%s AND g.entry_kind='original' AND a.requires_party=1",
+                (voucher_id,),
+            )
+            if recorded != int(fetchone(cursor)["n"]):
+                raise FinanceError("GL_READBACK_MISMATCH", "往来未清项与总账分录数量不一致，本次提交已撤销。", http_status=500)
             return self._full_voucher(cursor, voucher_id)
 
         return self._write(request_id=request_id, action="voucher.submit", target_type="voucher", target_id=voucher_id,
@@ -167,6 +187,7 @@ class PostingMixin:
             if int(voucher["revision"]) != revision:
                 raise FinanceError("FINANCE_REVISION_CONFLICT", "凭证已被他人修改，请刷新后重试。")
             self._lock_open_period(cursor, voucher["period_month"])
+            self._release_open_items(cursor, voucher_id)
             cursor.execute(
                 f"SELECT id, voucher_line_id, posting_date, period_month, {_GL_COPY_COLUMNS} FROM finance_gl_entries"
                 " WHERE voucher_id=%s AND entry_kind='original' AND is_cancelled=0 ORDER BY id FOR UPDATE",

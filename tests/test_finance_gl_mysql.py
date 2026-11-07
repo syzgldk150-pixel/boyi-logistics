@@ -15,8 +15,11 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reaso
 
 ACTOR = FinanceActor("7", "测试会计")
 CLEAN = (
+    "DELETE FROM finance_party_ledger WHERE against_item_id IS NOT NULL", "DELETE FROM finance_party_ledger",
+    "DELETE FROM finance_allocations", "UPDATE finance_voucher_lines SET party_id=NULL",
     "DELETE FROM finance_gl_entries", "DELETE FROM finance_voucher_lines", "DELETE FROM finance_vouchers",
     "DELETE FROM finance_voucher_sequences", "DELETE FROM finance_periods", "DELETE FROM finance_events",
+    "DELETE FROM finance_parties",
 )
 
 

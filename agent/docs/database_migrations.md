@@ -13,6 +13,12 @@ updated: 2026-11-07
 
 `068_finance_gl_core.sql` 在 `finance_db` 新建总账内核 8 张表：`finance_accounts`、`finance_settings`、`finance_periods`、`finance_voucher_sequences`、`finance_vouchers`、`finance_voucher_lines`、`finance_gl_entries`、`finance_events`。同时以 `INSERT IGNORE` 预置《小企业会计准则》科目和默认设置（启用月为空）。执行器走 055 之后的通用路径：绑定库名、执行，再按 `LATER_FINANCE_TABLES` 重建运行库视图。全部语句可重复执行。
 
+`069_finance_party.sql` 在 `finance_db` 新建往来 3 张表：`finance_parties`、`finance_party_ledger`、`finance_allocations`。它还会：
+- 把应收应付类末级科目设为必填往来单位（已有无往来单位分录的科目跳过）；
+- 最后为凭证分录和总账分录的 `party_id` 加外键。
+
+建表与更新可以重复执行；末尾两条 `ALTER TABLE` 加外键是普通 DDL，不能重复执行。迁移器按 `schema_migrations` 记录只执行一次。
+
 `066_retire_control_plane_tables.sql` 在旧 Command/Run/Step 控制平面代码删除（2026-11-03 发布）后删除其数据库残留：Runner、审批、Outbox、事项中心与事件消费表，任务级审批策略及其事件表、分组审批批次表，014/016/017/043 的一次性快照表，代次租约与写入回执上的 `orchestration_run_id` 列（先删外键），以及启用日志 `automation_project_generation_transition_tasks` 的 11 个退役 `policy_*` 列（检查约束改为只校验代次与配置版本）。Invocation、租约、写入回执、定时任务、项目策略与事件、飞书身份绑定、工具日志及全部业务和财务数据保留。迁移器经 `scripts/migration_row_export.py` 执行：每条 `DROP TABLE` 执行前导出整表，每条 `ALTER TABLE … DROP COLUMN` 执行前导出这些列非空的行，写入迁移备份目录的 `*-migration-066-removed-rows.jsonl`（权限 0600），业务验收后随回滚材料清理。各步可重复执行；066 之后不能回滚到阶段 A 之前的代码。回归见 `tests/test_migration_066_mysql.py`。
 
 `064_retire_pre_v2_plugin_rows.sql` 删除 V1 退役后残留的插件数据：当前安装版本不是 Service V2（或来源不是 `super_admin_upload/builtin_bundle`）的项目、旧逐日财务采集 `sync_finance_bills_v2` 的实例（含已卸载实例的调用、卸载日志等遗留事实），连同它们的代次、配置、策略、调用、租约、写入回执（含未知写）、旧 Command/Run/Step/审批/事件历史、定时行与包版本；非 `automation.*` 的旧工具定时行一并删除。迁移配对三表、018 引导/备份/映射七表和 Windows Worker 五表整表删除。财务账本、运单、回单、客服发布、每日应签与模块数据源不动。之后插件版本与代次只允许 `SERVICE_V2` 和上述两种来源，`runtime_model`/`plugin_api` 不再有默认值。迁移器经 `scripts/migration_row_export.py`（064/066 共用）执行：每条 `DROP TABLE` 和 `DELETE` 执行前先把它要删的行写入迁移备份目录（ECS 为 `/home/boyce/agent/runtime/migration-backups/`）的 `*-migration-064-removed-rows.jsonl`（权限 0600），业务验收后随回滚材料清理。仍有旧项目在运行时迁移拒绝执行；存活项目若仍引用待删版本，外键失败使整个删除事务回滚。各步可重复执行。回归见 `tests/test_migration_064_mysql.py`。

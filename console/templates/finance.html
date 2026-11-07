@@ -4,7 +4,7 @@
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-gl">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-party">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
@@ -15,6 +15,8 @@
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-trial" id="finance-tab-trial" data-tab="trial" tabindex="-1">科目余额表</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-ledger" id="finance-tab-ledger" data-tab="ledger" tabindex="-1">明细账</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-journal" id="finance-tab-journal" data-tab="journal" tabindex="-1">序时账</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-parties" id="finance-tab-parties" data-tab="parties" tabindex="-1">往来核销</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-aging" id="finance-tab-aging" data-tab="aging" tabindex="-1">账龄与对账单</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-accounts" id="finance-tab-accounts" data-tab="accounts" tabindex="-1">科目</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-settings" id="finance-tab-settings" data-tab="settings" tabindex="-1">设置</button>
   </div>
@@ -78,6 +80,66 @@
     </table></div>
   </div>
 
+  <div class="finance-panel" role="tabpanel" id="finance-panel-parties" aria-labelledby="finance-tab-parties" data-panel="parties" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">往来单位 <select class="review-input" data-party-select></select></label>
+      <label class="finance-field">科目 <select class="review-input" data-party-account></select></label>
+      <label class="finance-field">截止日期 <input class="review-input" type="date" data-party-as-of></label>
+      <button type="button" class="ghost-btn" data-party-refresh>查询未清项</button>
+      {% if can_manage %}
+      <button type="button" class="ghost-btn" data-party-new>新建往来单位</button>
+      <button type="button" class="ghost-btn" data-party-edit>编辑往来单位</button>
+      <button type="button" class="ghost-btn" data-party-senders>从月结寄件人建档</button>
+      {% endif %}
+    </div>
+    <p class="section-note">核销不改总账，只把应收（应付）和收款（付款）配对；同一往来单位、同一科目两边金额必须相等。撤销核销后未清项恢复。</p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr>{% if can_manage %}<th scope="col"><span class="sr-only">选择</span></th>{% endif %}<th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">科目</th><th scope="col">运单号</th><th scope="col">摘要</th><th scope="col" class="num">原始金额</th><th scope="col" class="num">未清余额</th>{% if can_manage %}<th scope="col" class="num">本次核销</th>{% endif %}</tr></thead>
+      <tbody data-open-rows></tbody>
+      <tfoot data-open-totals></tfoot>
+    </table></div>
+    {% if can_manage %}
+    <div class="finance-toolbar">
+      <label class="finance-field">核销日期 <input class="review-input" type="date" data-allocation-date></label>
+      <label class="finance-field finance-field--wide">备注 <input class="review-input" maxlength="255" data-allocation-remark></label>
+      <span class="finance-badge" data-allocation-balance>已选：0.00 / 0.00</span>
+      <button type="button" class="primary-btn" data-allocation-submit>核销所选</button>
+      <button type="button" class="ghost-btn" data-allocation-auto>按运单号自动核销</button>
+    </div>
+    {% endif %}
+    <h3 class="finance-subhead">核销记录</h3>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">日期</th><th scope="col">科目</th><th scope="col">方式</th><th scope="col" class="num">金额</th><th scope="col">备注</th><th scope="col">操作人</th><th scope="col">状态</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-allocation-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-aging" aria-labelledby="finance-tab-aging" data-panel="aging" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">类型 <select class="review-input" data-aging-kind><option value="receivable">应收</option><option value="payable">应付</option></select></label>
+      <label class="finance-field">截止日期 <input class="review-input" type="date" data-aging-as-of></label>
+      <button type="button" class="ghost-btn" data-aging-refresh>查询账龄</button>
+    </div>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">往来单位</th><th scope="col" class="num">0–30 天</th><th scope="col" class="num">31–60 天</th><th scope="col" class="num">61–90 天</th><th scope="col" class="num">90 天以上</th><th scope="col" class="num">未核销款</th><th scope="col" class="num">合计</th></tr></thead>
+      <tbody data-aging-rows></tbody>
+      <tfoot data-aging-totals></tfoot>
+    </table></div>
+    <h3 class="finance-subhead">对账单</h3>
+    <div class="finance-toolbar">
+      <label class="finance-field">往来单位 <select class="review-input" data-statement-party></select></label>
+      <label class="finance-field">开始 <input class="review-input" type="date" data-statement-start></label>
+      <label class="finance-field">结束 <input class="review-input" type="date" data-statement-end></label>
+      <button type="button" class="ghost-btn" data-statement-refresh>生成对账单</button>
+      <button type="button" class="ghost-btn" data-statement-export disabled>导出 CSV</button>
+    </div>
+    <p class="section-note" data-statement-summary></p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">科目</th><th scope="col">运单号</th><th scope="col">摘要</th><th scope="col" class="num">增加</th><th scope="col" class="num">减少</th><th scope="col" class="num">余额</th></tr></thead>
+      <tbody data-statement-rows></tbody>
+    </table></div>
+  </div>
+
   <div class="finance-panel" role="tabpanel" id="finance-panel-accounts" aria-labelledby="finance-tab-accounts" data-panel="accounts" hidden>
     <div class="finance-toolbar">
       <p class="section-note">只有末级科目可以记账。已有凭证的科目只能停用或冻结，不能删除或改属性。{% if not is_super_admin %}修改科目结构需要超级管理员。{% endif %}</p>
@@ -116,9 +178,9 @@
       <label class="finance-field finance-field--wide">摘要 <input class="review-input" name="summary" maxlength="255"></label>
     </div>
     <div class="table-wrap"><table class="finance-table finance-lines">
-      <thead><tr><th scope="col">摘要</th><th scope="col">科目</th><th scope="col">运单号</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col"><span class="sr-only">删除</span></th></tr></thead>
+      <thead><tr><th scope="col">摘要</th><th scope="col">科目</th><th scope="col">往来单位</th><th scope="col">运单号</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col"><span class="sr-only">删除</span></th></tr></thead>
       <tbody data-line-rows></tbody>
-      <tfoot><tr><td colspan="3"><button type="button" class="ghost-btn" data-line-add>添加分录</button></td><td class="num" data-line-debit>0.00</td><td class="num" data-line-credit>0.00</td><td></td></tr></tfoot>
+      <tfoot><tr><td colspan="4"><button type="button" class="ghost-btn" data-line-add>添加分录</button></td><td class="num" data-line-debit>0.00</td><td class="num" data-line-credit>0.00</td><td></td></tr></tfoot>
     </table></div>
     <p class="finance-status" role="status" aria-live="polite" data-voucher-message></p>
     <footer class="finance-dialog-actions" data-voucher-actions></footer>
@@ -141,12 +203,42 @@
       </select>
     </label>
     <label class="finance-check"><input type="checkbox" name="requires_waybill"> 记账必须填写运单号</label>
+    <label class="finance-check"><input type="checkbox" name="requires_party"> 记账必须选往来单位（生成往来未清项；下级科目沿用上级设置）</label>
     <label class="finance-check" data-edit-only><input type="checkbox" name="is_active"> 启用</label>
     <label class="finance-check" data-edit-only><input type="checkbox" name="frozen"> 冻结（暂停记账）</label>
     <p class="finance-status" role="status" aria-live="polite" data-account-message></p>
     <footer class="finance-dialog-actions" data-account-actions></footer>
   </form>
 </dialog>
+<dialog class="finance-dialog finance-dialog--narrow" data-party-dialog aria-labelledby="finance-party-title">
+  <form method="dialog" class="finance-dialog-body" data-party-form>
+    <header class="finance-dialog-head"><h2 id="finance-party-title" data-party-title>新建往来单位</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <label class="finance-field">类型
+      <select class="review-input" name="party_type"><option value="customer">客户（月结）</option><option value="platform">平台</option><option value="sender">寄件人（代收货款）</option><option value="supplier">供应商</option><option value="employee">员工</option><option value="other">其他</option></select>
+    </label>
+    <label class="finance-field">名称 <input class="review-input" name="name" maxlength="128" required></label>
+    <label class="finance-field">电话 <input class="review-input" name="phone" maxlength="64"></label>
+    <label class="finance-field">关联博益寄件人姓名 <input class="review-input" name="boyi_sender_name" maxlength="128"></label>
+    <label class="finance-field">关联博益寄件人电话 <input class="review-input" name="boyi_sender_phone" maxlength="64"></label>
+    <p class="section-note">博益开单记账时按寄件人姓名和电话精确匹配月结客户，两项需同时填写或同时留空。</p>
+    <label class="finance-field">备注 <input class="review-input" name="remark" maxlength="255"></label>
+    <label class="finance-check" data-edit-only><input type="checkbox" name="is_active"> 启用</label>
+    <p class="finance-status" role="status" aria-live="polite" data-party-message></p>
+    <footer class="finance-dialog-actions" data-party-actions></footer>
+  </form>
+</dialog>
+
+<dialog class="finance-dialog" data-senders-dialog aria-labelledby="finance-senders-title">
+  <div class="finance-dialog-body">
+    <header class="finance-dialog-head"><h2 id="finance-senders-title">从月结寄件人建档</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <p class="section-note">列出博益开单中付款方式为“月结”、尚未关联往来单位的寄件人（按姓名 + 电话）。点“建档”创建客户并关联。</p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">寄件人</th><th scope="col">电话</th><th scope="col" class="num">运单数</th><th scope="col">最近开单</th><th scope="col">操作</th></tr></thead>
+      <tbody data-sender-rows></tbody>
+    </table></div>
+    <p class="finance-status" role="status" aria-live="polite" data-senders-message></p>
+  </div>
+</dialog>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance.js?v=20261107-gl"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance.js?v=20261107-party"></script>{% endblock %}

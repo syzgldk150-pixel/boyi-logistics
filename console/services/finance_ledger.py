@@ -1,4 +1,4 @@
-"""Finance general-ledger HTTP handlers (P1: settings, accounts, vouchers, ledger reports).
+"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties and allocations).
 
 Route permissions come from ``shared.identity_routes`` (read ``finance.read``,
 write ``finance.manage``, structure / start month / cancelling vouchers super
@@ -10,7 +10,7 @@ a same-origin request and an ``X-Browser-Request-UUID`` equal to the body's
 from __future__ import annotations
 
 from console.app_support import *  # noqa: F403
-from shared.finance import FinanceActor, FinanceError, FinanceRepository
+from shared.finance import FinanceActor, FinanceError, FinanceRepository, FinanceValidationError
 
 FINANCE_JSON_MAX_BYTES = 512 * 1024
 
@@ -75,10 +75,26 @@ class FinanceLedgerServiceMixin:
         values = query.get(name) or [default]
         return str(values[0] or default).strip()
 
+    @staticmethod
+    def _finance_id(value: Any, label: str = "编号", *, optional: bool = False) -> int | None:
+        text = str(value or "").strip()
+        if not text and optional:
+            return None
+        if not text.isdigit() or not 0 < int(text) < 10**18:
+            raise FinanceValidationError(f"{label}无效。")
+        return int(text)
+
     def _handle_finance_ledger_get(self, handler: BaseHTTPRequestHandler, action: str, query: dict[str, list[str]], target: str = "") -> None:
         ledger = self._finance_ledger()
         q = lambda name, default="": self._finance_query(query, name, default)  # noqa: E731
+        party = lambda optional=False: self._finance_id(q("party_id"), "往来单位", optional=optional)  # noqa: E731
         work: dict[str, Callable[[], Any]] = {
+            "parties": lambda: ledger.list_parties(party_type=q("type") or None, include_inactive=q("include_inactive") == "1"),
+            "sender_candidates": ledger.sender_candidates,
+            "open_items": lambda: ledger.open_items(party_id=party(), account_code=q("account") or None, as_of=q("as_of") or None),
+            "allocations": lambda: ledger.list_allocations(party_id=party(optional=True), month=q("month") or None),
+            "aging": lambda: ledger.aging(as_of=q("as_of"), kind=q("kind", "receivable"), party_id=party(optional=True)),
+            "statement": lambda: ledger.party_statement(party_id=party(), start_date=q("start"), end_date=q("end")),
             "settings": ledger.get_settings,
             "accounts": ledger.list_accounts,
             "vouchers": lambda: ledger.list_vouchers(month=q("month"), status=q("status") or None),
@@ -106,5 +122,10 @@ class FinanceLedgerServiceMixin:
             "voucher_delete": lambda: ledger.delete_draft(int(target), body, **common),
             "voucher_submit": lambda: ledger.submit_voucher(int(target), body, **common),
             "voucher_cancel": lambda: ledger.cancel_voucher(int(target), body, **common),
+            "party_create": lambda: ledger.create_party(body, **common),
+            "party_update": lambda: ledger.update_party(int(target), body, **common),
+            "allocation_create": lambda: ledger.allocate(body, **common),
+            "allocation_auto": lambda: ledger.auto_allocate_by_waybill(body, **common),
+            "allocation_reverse": lambda: ledger.reverse_allocation(int(target), body, **common),
         }
         self._finance_run(handler, work[action])

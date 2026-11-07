@@ -30,7 +30,8 @@ def test_parse_voucher_keeps_decimals_and_derives_period():
     ({"lines": [{"account_code": "1001"}]}, "VOUCHER_LINE_SIDE"),
     ({"lines": [{"account_code": "1001", "debit": "-1"}]}, "AMOUNT_INVALID"),
     ({"lines": [{"account_code": "1001", "debit": 0.1}]}, "AMOUNT_INVALID"),
-    ({"lines": [{"account_code": "1001", "debit": "1", "party_id": 3}]}, "FINANCE_INVALID_REQUEST"),
+    ({"lines": [{"account_code": "1001", "debit": "1", "party_id": "3"}]}, "FINANCE_INVALID_REQUEST"),
+    ({"lines": [{"account_code": "1001", "debit": "1", "source_line_id": 3}]}, "FINANCE_INVALID_REQUEST"),
     ({"lines": [{"account_code": "10", "debit": "1"}]}, "FINANCE_INVALID_ACCOUNT_CODE"),
     ({"posting_date": "2026/10/15"}, "FINANCE_INVALID_DATE"),
 ])
