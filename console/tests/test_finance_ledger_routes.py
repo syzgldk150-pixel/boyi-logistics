@@ -78,6 +78,8 @@ def app():
     ("POST", "/finance/periods/2026-10/close", SUPER_ADMIN),
     ("POST", "/finance/periods/2026-10/reopen", SUPER_ADMIN),
     ("GET", "/finance/reports/balance-sheet", "finance.read"),
+    ("GET", "/finance/exports/trial-balance.xlsx", "finance.read"),
+    ("POST", "/finance/reviews/6/suggest", "finance.manage"),
 ])
 def test_route_permissions(method, path, permission):
     assert console_permission(method, path) == permission
@@ -131,6 +133,7 @@ def test_route_permissions(method, path, permission):
     ("GET", "/finance/reports/balance-sheet", ("_handle_finance_ledger_get", "balance_sheet")),
     ("GET", "/finance/reports/cash-flow", ("_handle_finance_ledger_get", "cash_flow")),
     ("GET", "/finance/reports/waybill-margin", ("_handle_finance_ledger_get", "waybill_margin")),
+    ("POST", "/finance/reviews/6/suggest", ("_handle_finance_review_suggest", "6")),
 ])
 def test_routes_dispatch(method, path, call):
     stub = Mock()
@@ -220,3 +223,41 @@ def test_bill_upload_passes_raw_bytes_and_session_actor(app):
     refused.headers = {**handler.headers, "Origin": "http://evil.test"}
     app._handle_finance_source_upload(refused, "4")
     assert refused.status == 403
+
+
+def test_export_route_and_download_headers(app):
+    stub = Mock()
+    assert finance.handle_get(stub, "h", "/finance/exports/profit-loss.xlsx", "", {"month": ["2026-10"]})
+    stub._handle_finance_export.assert_called_once_with("h", "profit-loss", {"month": ["2026-10"]})
+    assert not finance.handle_get(stub, "h", "/finance/exports/Bad Kind.xlsx", "", {})
+    sent = {}
+    app._send_bytes = lambda handler, status, payload, content_type, **kwargs: sent.update(status=status, payload=payload, type=content_type, **kwargs)
+    app._finance_ledger_repository.trial_balance.return_value = {
+        "month": "2026-10", "rows": [], "totals": {k: "0.0000" for k in ("opening_debit", "opening_credit", "period_debit",
+                                                                          "period_credit", "closing_debit", "closing_credit")},
+        "balanced": True}
+    app._handle_finance_export(JsonHandler(), "trial-balance", {"month": ["2026-10"]})
+    assert sent["status"] == 200 and sent["payload"][:2] == b"PK"
+    assert "spreadsheetml" in sent["type"] and "filename*=UTF-8''" in sent["extra_headers"]["Content-Disposition"]
+    del app._send_bytes  # _send_json writes through the real _send_bytes
+    handler = JsonHandler()
+    app._handle_finance_export(handler, "nonsense", {})
+    assert handler.status == 400
+
+
+def test_review_suggest_is_signed_and_forwarded(app):
+    request_id = str(uuid4())
+    calls = []
+    app._control_plane_write_context = lambda handler: {"_console_principal": {"actor_id": "7"}}
+    app._read_control_plane_json = lambda handler: {"request_id": request_id}
+    app._agent_request = lambda method, endpoint, **kwargs: calls.append((method, endpoint, kwargs)) or {"ok": True, "data": {"id": 6}}
+    handler = JsonHandler({"request_id": request_id})
+    app._handle_finance_review_suggest(handler, "6")
+    assert handler.status == 200 and handler.result() == {"ok": True, "data": {"id": 6}}
+    method, endpoint, kwargs = calls[0]
+    assert (method, endpoint) == ("POST", "/internal/v1/admin/finance/reviews/6/suggest")
+    assert kwargs["payload"] == {"request_id": request_id} and kwargs["console_principal"] == {"actor_id": "7"}
+    app._agent_request = lambda *a, **k: {"ok": False, "status": 503, "error": {"code": "FINANCE_AI_UNAVAILABLE", "message": "尚未启用 AI 模型"}}
+    failed = JsonHandler({"request_id": request_id})
+    app._handle_finance_review_suggest(failed, "6")
+    assert failed.status == 503 and failed.result()["error_code"] == "FINANCE_AI_UNAVAILABLE"

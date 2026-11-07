@@ -26,8 +26,8 @@ _SOURCE_KEY = re.compile(r"^[a-z0-9][a-z0-9_]{1,63}$")
 _PROVIDER = re.compile(r"^[a-z0-9][a-z0-9_]{1,31}$")
 _INSTANCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 SOURCE_COLUMNS = (
-    "id, source_key, display_name, kind, provider, producer_instance_id, fund_account, is_enabled, remark, revision,"
-    " created_by, created_at"
+    "id, source_key, display_name, kind, provider, producer_instance_id, fund_account, site_code, business_line, is_enabled,"
+    " remark, revision, created_by, created_at"
 )
 
 
@@ -37,7 +37,7 @@ def _time(value: Any) -> str | None:
 
 def source_view(row: dict[str, Any]) -> dict[str, Any]:
     return {**{key: row[key] for key in ("source_key", "display_name", "kind", "provider", "producer_instance_id",
-                                          "fund_account", "remark", "created_by")},
+                                          "fund_account", "site_code", "business_line", "remark", "created_by")},
             "id": int(row["id"]), "is_enabled": bool(row["is_enabled"]), "revision": int(row["revision"]),
             "created_at": _time(row.get("created_at"))}
 
@@ -100,6 +100,9 @@ class SourcesMixin:
             fields["is_enabled"] = int(payload["is_enabled"])
         if "remark" in payload:
             fields["remark"] = optional_text(payload.get("remark"), "备注", 255) or ""
+        for key, label in (("site_code", "网点"), ("business_line", "业务线")):
+            if key in payload:
+                fields[key] = optional_text(payload.get(key), label, 64)
         return fields
 
     def list_sources(self) -> list[dict[str, Any]]:
@@ -117,7 +120,8 @@ class SourcesMixin:
         return self._read(work)
 
     def create_source(self, payload: dict[str, Any], *, request_id: Any, actor: FinanceActor) -> dict[str, Any]:
-        allowed = {"source_key", "display_name", "kind", "provider", "producer_instance_id", "fund_account", "remark"}
+        allowed = {"source_key", "display_name", "kind", "provider", "producer_instance_id", "fund_account", "remark",
+                   "site_code", "business_line"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise FinanceValidationError("来源内容包含不支持的字段。")
 
@@ -136,7 +140,8 @@ class SourcesMixin:
 
     def update_source(self, source_id: Any, payload: dict[str, Any], *, request_id: Any, actor: FinanceActor) -> dict[str, Any]:
         source_id = int(source_id)
-        allowed = {"display_name", "producer_instance_id", "fund_account", "is_enabled", "remark", "expected_revision"}
+        allowed = {"display_name", "producer_instance_id", "fund_account", "is_enabled", "remark", "site_code", "business_line",
+                   "expected_revision"}
         if not isinstance(payload, dict) or set(payload) - allowed:
             raise FinanceValidationError("来源修改包含不支持的字段（来源代码、接入方式和提供方建立后不能修改）。")
         revision = expected_revision(payload.get("expected_revision"))

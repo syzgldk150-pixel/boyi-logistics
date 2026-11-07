@@ -134,7 +134,10 @@ class LinePostingMixin:
             return [{"id": int(row["id"]), "source_id": int(row["source_id"]), "source_name": row["source_name"],
                      "provider": row["provider"], "item_l1": row["item_l1"], "item_l2": row["item_l2"], "direction": row["direction"],
                      "line_count": int(row["line_count"]), "amount_total": f"{Decimal(row['amount_total']):.4f}",
-                     "status": row["status"], "resolved_rule_id": row["resolved_rule_id"], "resolved_by": row["resolved_by"]}
+                     "status": row["status"], "resolved_rule_id": row["resolved_rule_id"], "resolved_by": row["resolved_by"],
+                     "suggestion": json.loads(row["suggestion_json"]) if isinstance(row["suggestion_json"], (str, bytes))
+                     else row["suggestion_json"], "suggested_by_model": row["suggested_by_model"],
+                     "suggested_at": row["suggested_at"].isoformat(sep=" ", timespec="seconds") if row["suggested_at"] else None}
                     for row in fetchall(cursor)]
 
         return self._read(work)
@@ -282,7 +285,8 @@ class LinePostingMixin:
         cursor.execute(f"SELECT {RULE_COLUMNS} FROM finance_line_rules WHERE provider=%s AND is_active=1", (source["provider"],))
         rules = {(r["item_l1"], r["item_l2"], r["direction"]): r for r in fetchall(cursor)}
         voucher_lines, outcomes, settlements = [], [], []
-        base = {"site_code": None, "source_id": source["source_key"], "business_line": None, "fee_level": None}
+        base = {"site_code": source.get("site_code"), "source_id": source["source_key"],
+                "business_line": source.get("business_line"), "fee_level": None}
         for line in lines:
             amount = Decimal(line["amount"])
             direction = "in" if amount > 0 else "out"

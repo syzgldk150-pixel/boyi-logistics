@@ -17,7 +17,16 @@ from typing import Any
 
 from shared.finance.db import fetchall, fetchone
 from shared.finance.errors import FinanceError, FinanceNotFoundError, FinanceValidationError
-from shared.finance.models import FinanceActor, expected_revision, month_bounds, month_of, parse_date, parse_month, parse_request_id
+from shared.finance.models import (
+    FinanceActor,
+    expected_revision,
+    month_bounds,
+    month_of,
+    optional_text,
+    parse_date,
+    parse_month,
+    parse_request_id,
+)
 from shared.finance.rules.doc_rules import (
     PARTY_MODES,
     PAYMENT_METHODS,
@@ -36,7 +45,7 @@ WAYBILL_COLUMNS = (
 )
 RULE_COLUMNS = (
     "payment_method, receivable_account, freight_income_account, transfer_income_account, party_mode, fixed_party_id,"
-    " revision, updated_by"
+    " site_code, business_line, revision, updated_by"
 )
 STATUS_TEXT = {
     "pending": "待确认", "confirmed": "已确认", "changed": "运单已改，待重新确认",
@@ -65,7 +74,8 @@ class WaybillPostingMixin:
         if payment_method not in PAYMENT_METHODS:
             raise FinanceValidationError("结算方式无效。")
         if not isinstance(payload, dict) or set(payload) - {"receivable_account", "freight_income_account", "transfer_income_account",
-                                                            "party_mode", "fixed_party_id", "expected_revision"}:
+                                                            "party_mode", "fixed_party_id", "site_code", "business_line",
+                                                            "expected_revision"}:
             raise FinanceValidationError("规则内容包含不支持的字段。")
         revision = expected_revision(payload.get("expected_revision"))
         if payload.get("party_mode") not in PARTY_MODES:
@@ -97,11 +107,14 @@ class WaybillPostingMixin:
                     raise FinanceValidationError(f"{label}必须是{rule}。", code="DOC_RULE_INVALID_ACCOUNT")
             if fixed is not None:
                 self._party_row(cursor, fixed)
+            dims = {key: optional_text(payload.get(key), label, 64)
+                    for key, label in (("site_code", "网点"), ("business_line", "业务线"))}
             cursor.execute(
                 "UPDATE finance_doc_posting_rules SET receivable_account=%s, freight_income_account=%s, transfer_income_account=%s,"
-                " party_mode=%s, fixed_party_id=%s, revision=revision+1, updated_by=%s WHERE payment_method=%s",
+                " party_mode=%s, fixed_party_id=%s, site_code=%s, business_line=%s, revision=revision+1, updated_by=%s"
+                " WHERE payment_method=%s",
                 (payload["receivable_account"], payload["freight_income_account"], payload["transfer_income_account"],
-                 payload["party_mode"], fixed, actor.label, payment_method),
+                 payload["party_mode"], fixed, dims["site_code"], dims["business_line"], actor.label, payment_method),
             )
             cursor.execute(f"SELECT {RULE_COLUMNS} FROM finance_doc_posting_rules WHERE payment_method=%s", (payment_method,))
             row = fetchone(cursor)

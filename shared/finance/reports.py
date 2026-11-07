@@ -32,6 +32,7 @@ BS_LIABILITY_LINES = (("payables", "应付账款"), ("advances_received", "预�
                       ("taxes_payable", "应交税费"), ("other_payables", "其他应付款"), ("other_liabilities", "其他负债"))
 BS_EQUITY_LINES = (("paid_in_capital", "实收资本"), ("retained_earnings", "未分配利润（含本年利润）"), ("other_equity", "其他权益"))
 MAX_MARGIN_ROWS = 2000
+SPLIT_DIMENSIONS = ("site_code", "business_line")
 
 
 def _text(value: Decimal) -> str:
@@ -71,17 +72,34 @@ class StatementsMixin:
         return {row["account_code"]: (Decimal(row["d"]), Decimal(row["c"])) for row in fetchall(cursor)}
 
     # ---------- profit and loss ----------
+    @staticmethod
+    def _add_pl(amounts: dict[str, Decimal], account: dict[str, Any], debit: Decimal, credit: Decimal) -> None:
+        line = account["top_line"] or "other_operating"
+        # Revenue-like lines show credit - debit; expense lines show debit - credit.
+        amounts[line] += (credit - debit) if line in ("revenue", "non_operating_income", "other_operating") else (debit - credit)
+
     def _profit_loss_amounts(self, cursor: Any, start: dt.date, end: dt.date, accounts: dict[str, dict[str, Any]]) -> dict[str, Decimal]:
         amounts = {key: ZERO for key, _, _ in (*PL_LINES, *PL_BELOW)}
         for code, (debit, credit) in self._movements(cursor, start, end, exclude_closing=True).items():
-            account = accounts[code]
-            if account["root_type"] != "profit_loss":
-                continue
-            line = account["top_line"] or "other_operating"
-            sign = 1 if line in ("revenue", "non_operating_income", "other_operating") else -1
-            # Revenue-like lines show credit - debit; expense lines show debit - credit.
-            amounts[line] += (credit - debit) if sign > 0 else (debit - credit)
+            if accounts[code]["root_type"] == "profit_loss":
+                self._add_pl(amounts, accounts[code], debit, credit)
         return amounts
+
+    def _profit_loss_by_dimension(self, cursor: Any, start: dt.date, end: dt.date, accounts: dict[str, dict[str, Any]],
+                                  dimension: str) -> dict[str, dict[str, Decimal]]:
+        """P&L line amounts per value of one GL dimension ('' = not specified)."""
+
+        cursor.execute(
+            f"SELECT g.account_code, COALESCE(g.{dimension}, '') AS dim, COALESCE(SUM(g.debit), 0) AS d, COALESCE(SUM(g.credit), 0) AS c"
+            " FROM finance_gl_entries g JOIN finance_vouchers v ON v.id=g.voucher_id JOIN finance_accounts a ON a.code=g.account_code"
+            " WHERE g.is_cancelled=0 AND v.voucher_type <> 'closing' AND a.root_type='profit_loss' AND g.posting_date BETWEEN %s AND %s"
+            f" GROUP BY g.account_code, COALESCE(g.{dimension}, '')", (start, end),
+        )
+        result: dict[str, dict[str, Decimal]] = {}
+        for row in fetchall(cursor):
+            amounts = result.setdefault(row["dim"], {key: ZERO for key, _, _ in (*PL_LINES, *PL_BELOW)})
+            self._add_pl(amounts, accounts[row["account_code"]], Decimal(row["d"]), Decimal(row["c"]))
+        return result
 
     @staticmethod
     def _profit_loss_lines(amounts: dict[str, Decimal]) -> tuple[list[dict[str, Any]], Decimal]:
@@ -109,9 +127,35 @@ class StatementsMixin:
                  "year_to_date": _text(y["amount"])} for m, y in zip(month_lines, year_lines)]
         return {"month": month, "rows": rows, "net_profit": _text(month_profit), "net_profit_ytd": _text(year_profit)}
 
-    def profit_loss(self, month: Any) -> dict[str, Any]:
+    def profit_loss(self, month: Any, *, split: Any = None, scope: Any = "month") -> dict[str, Any]:
+        """利润表; with ``split`` (site_code / business_line) one column per dimension value plus 合计."""
+
         month = parse_month(month)
-        return self._read(lambda cursor: self._profit_loss_in(cursor, month))
+        if split in (None, ""):
+            return self._read(lambda cursor: self._profit_loss_in(cursor, month))
+        if split not in SPLIT_DIMENSIONS or scope not in ("month", "year"):
+            raise FinanceValidationError("拆分维度或期间范围无效。")
+        start, end = month_bounds(month)
+        if scope == "year":
+            start = dt.date(start.year, 1, 1)
+
+        def work(cursor: Any) -> dict[str, Any]:
+            accounts = self._accounts_with_lines(cursor)
+            by_value = self._profit_loss_by_dimension(cursor, start, end, accounts, split)
+            values = sorted(v for v in by_value if v) + ([""] if "" in by_value else [])
+            columns = [{"key": value, "label": value or "未指定"} for value in values]
+            per_column = {value: self._profit_loss_lines(by_value[value])[0] for value in values}
+            total_amounts = {key: sum((by_value[v][key] for v in values), ZERO) for key, _, _ in (*PL_LINES, *PL_BELOW)}
+            total_lines, total_profit = self._profit_loss_lines(total_amounts)
+            rows = []
+            for index, line in enumerate(total_lines):
+                rows.append({"key": line["key"], "label": line["label"], "subtotal": bool(line.get("subtotal")),
+                             "values": {value: _text(per_column[value][index]["amount"]) for value in values},
+                             "total": _text(line["amount"])})
+            return {"month": month, "split": split, "scope": scope, "start_date": start.isoformat(), "end_date": end.isoformat(),
+                    "columns": columns, "rows": rows, "net_profit": _text(total_profit)}
+
+        return self._read(work)
 
     # ---------- balance sheet ----------
     def balance_sheet(self, month: Any) -> dict[str, Any]:

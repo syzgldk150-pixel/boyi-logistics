@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from console.app_support import *  # noqa: F403
 from shared.finance import FinanceActor, FinanceError, FinanceRepository, FinanceValidationError
+from shared.finance.exports import build_export
 
 FINANCE_JSON_MAX_BYTES = 512 * 1024
 FINANCE_FILE_MAX_BYTES = 20 * 1024 * 1024
@@ -106,7 +107,7 @@ class FinanceLedgerServiceMixin:
             "reviews": lambda: ledger.list_reviews(status=q("status", "open") or None),
             "anomalies": lambda: ledger.list_anomalies(status=q("status", "open") or None),
             "period_status": lambda: ledger.period_status(target),
-            "profit_loss": lambda: ledger.profit_loss(q("month")),
+            "profit_loss": lambda: ledger.profit_loss(q("month"), split=q("split") or None, scope=q("scope", "month")),
             "balance_sheet": lambda: ledger.balance_sheet(q("month")),
             "cash_flow": lambda: ledger.cash_flow(q("month")),
             "waybill_margin": lambda: ledger.waybill_margin(start_date=q("start"), end_date=q("end")),
@@ -180,3 +181,49 @@ class FinanceLedgerServiceMixin:
         actor = FinanceActor(str(user["id"]), str(user.get("display_name") or user.get("username") or ""))
         self._finance_run(handler, lambda: self._finance_ledger().upload_source_file(
             int(source_id), file_name=name, content_type=content_type, data=data, request_id=request_id, actor=actor))
+
+    def _handle_finance_export(self, handler: BaseHTTPRequestHandler, kind: str, query: dict[str, list[str]]) -> None:
+        """代账导出: one report as an xlsx download (read permission; no write)."""
+
+        params = {name: self._finance_query(query, name) for name in
+                  ("month", "include_zero", "account", "start", "end", "split", "scope", "as_of", "kind", "party_id")}
+        try:
+            filename, payload = build_export(self._finance_ledger(), kind, params)
+        except FinanceError as exc:
+            self._finance_error(handler, exc.http_status, exc.code, exc.message)
+            return
+        except Exception as exc:
+            LOGGER.exception("Finance export failed: %s", type(exc).__name__)
+            self._finance_error(handler, 500, "FINANCE_EXPORT_FAILED", "导出失败，请稍后重试。")
+            return
+        self._send_bytes(
+            handler, HTTPStatus.OK, payload, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            cache_control="no-store",
+            extra_headers={"Content-Disposition": f"attachment; filename=\"finance.xlsx\"; filename*=UTF-8''{quote(filename)}"},
+        )
+
+    def _handle_finance_review_suggest(self, handler: BaseHTTPRequestHandler, review_id: str) -> None:
+        """Ask the Agent's active model for advice on one review; the person still confirms."""
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        body = self._read_control_plane_json(handler)
+        if body is None:
+            return
+        request_id = self._normalize_browser_request_uuid(body.get("request_id"))
+        if not request_id or request_id != self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID")):
+            self._finance_error(handler, 400, "INVALID_REQUEST", "请求标识无效，请刷新页面后重试。")
+            return
+        result = self._agent_request(
+            "POST", f"/internal/v1/admin/finance/reviews/{int(review_id)}/suggest", payload={"request_id": request_id},
+            timeout=90, console_principal=context["_console_principal"],
+        )
+        if result.get("ok"):
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+            return
+        error = result.get("error")
+        code = result.get("error_code") or (error.get("code") if isinstance(error, dict) else None) or "FINANCE_AI_FAILED"
+        message = (error.get("message") if isinstance(error, dict) else error) or "AI 建议暂不可用。"
+        status = 409 if result.get("status") in (400, 404, 409, 422) else 503 if result.get("status") == 503 else 502
+        self._finance_error(handler, status, str(code), str(message))

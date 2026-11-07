@@ -366,8 +366,56 @@ updated: 2026-11-07
   - 12 月年末结转。
 - `agent/tests/test_business_query.py`：财务查询与回复格式。
 
-### 未实现、待后续
+## 后续补充：AI 科目建议、利润表拆分、xlsx 导出（迁移 `073_finance_review_ai_dimensions.sql`）
 
-- AI 科目建议（待审由人工处理）；
-- 利润表按网点、业务线拆分；
-- xlsx 格式导出（目前是 CSV）。
+迁移 073 改了三张表：
+- `finance_reviews` 增加 `suggestion_json`、`suggested_by_model`、`suggested_at`；
+- `finance_sources`、`finance_doc_posting_rules` 各增加默认网点 `site_code` 和业务线 `business_line`。
+
+三条都是普通 DDL，迁移器只执行一次，执行后刷新运行库视图。
+
+### AI 科目建议（只给建议，人工确认）
+
+- **依据：** `shared/finance/rules/review_ai.py` 的 `review_evidence` 为一个待审准备依据，包括：
+  - 提供方、原始项目、方向、笔数和金额；
+  - 最多 15 笔样例流水（日期、金额、对方摘要、是否带运单号）；
+  - 同一提供方已有的规则；
+  - 可选范围：已启用、未冻结的末级科目（排除暂记科目和本来源的资金科目），以及启用中的往来单位。
+
+  依据中不含凭据或原始流水内容。
+- **生成：** Agent 的 `agent/agent/finance_review_advisor.py` 用全系统当前启用的唯一模型，要求返回 JSON。
+- **校验：** 返回结果必须通过 `validate_review_suggestion`：
+  - 科目必须在候选范围内；
+  - 要求往来单位的科目必须用“固定往来单位”或“按运单号核销”，并给出已有的往来单位；
+  - 内部转账不填对方科目；
+  - 置信度在 0 到 1 之间，理由不超过 500 字。
+- **保存：** 通过校验后才保存到待审。没有启用模型、调用失败或返回不合格时，明确报错，不保存。
+- **页面：** “规则与待审”页每个待审都有“生成 AI 建议”按钮，并显示建议科目、往来单位、置信度和理由。点“处理”会预填建议，仍需人工确认后才保存规则并重记。AI 不会直接改账或保存规则。
+- **接口：** Console `POST /finance/reviews/{id}/suggest`（`finance.manage`），签名后转发到 Agent `POST /internal/v1/admin/finance/reviews/{id}/suggest`。
+
+### 利润表按网点、业务线拆分
+
+- **数据来源：** 总账分录本来就有 `site_code` 和 `business_line` 两列，现在由三处写入：
+  - 财务来源的默认网点和业务线，写入该来源的每日流水凭证（资金和对方两行）；
+  - 开单记账规则（按结算方式）的网点和业务线，写入博益开单凭证；
+  - 手工凭证分录可逐行填写。
+- **报表：** `profit_loss(month, split='site_code' | 'business_line', scope='month' | 'year')` 按维度的每个取值输出一列，再加“合计”列；没有填写维度的金额归入“未指定”。合计列与不拆分时的利润表一致（测试核对）。
+- **页面：** 报表页的利润表可选“拆分”和“期间（本月 / 本年累计）”。
+
+### xlsx 导出
+
+- **生成方式：** `shared/finance/xlsx.py` 只用 Python 标准库生成 xlsx：
+  - 金额写成数值，格式为 `#,##0.00`；
+  - 首行加粗并冻结；
+  - 不依赖 openpyxl，Console 依赖锁不变。
+- **数据整理：** `shared/finance/exports.py` 按报表类型把现有报表数据整理成表格，支持科目余额表、序时账、明细账、利润表（含拆分）、资产负债表、现金流量表、单票毛利、账龄和对账单。
+- **接口：** Console `GET /finance/exports/{kind}.xlsx?...`（`finance.read`），返回中文文件名附件。页面各报表旁都有“导出 Excel”，原有的“导出 CSV”保留。
+
+### 回归
+
+- `tests/test_finance_followups_mysql.py`：
+  - 三种维度来源的拆分利润表及合计一致；
+  - AI 建议的依据范围与保存、已处理后拒绝保存；
+  - 各类 xlsx 用 openpyxl 读回，金额为数值。
+- `tests/test_finance_review_advisor.py`：建议校验，以及模型未启用、返回非 JSON 或编造科目时都不保存。
+- `console/tests/test_finance_ledger_routes.py`：导出与建议接口的路由、权限和签名转发。

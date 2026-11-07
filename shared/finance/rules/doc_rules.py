@@ -71,7 +71,8 @@ def build_voucher(
 
     waybill_no = str(row["waybill_no"])
     summary = f"博益开单 {waybill_no} {amounts['payment_method']}{note}"[:255]
-    base = {"site_code": None, "source_id": None, "business_line": None, "fee_level": "waybill", "waybill_no": waybill_no}
+    base = {"site_code": rule.get("site_code"), "source_id": None, "business_line": rule.get("business_line"),
+            "fee_level": "waybill", "waybill_no": waybill_no}
     lines = [{**base, "account_code": rule["receivable_account"], "debit": amounts["total"], "credit": Decimal("0"),
               "summary": summary, "party_id": party_id}]
     for amount, account, label in ((amounts["freight"], rule["freight_income_account"], "运费"),

@@ -192,12 +192,16 @@
     }
     partySelect.value = line.party_id ? String(line.party_id) : "";
     const waybill = input("waybill_no", line.waybill_no, {maxLength: 128});
+    const site = input("site_code", line.site_code, {maxLength: 64});
+    site.setAttribute("aria-label", "网点");
+    const businessLine = input("business_line", line.business_line, {maxLength: 64});
+    businessLine.setAttribute("aria-label", "业务线");
     waybill.setAttribute("aria-label", "运单号");
     const debit = input("debit", units(line.debit) ? money(line.debit).replace(/,/g, "") : "", {inputMode: "decimal"});
     debit.setAttribute("aria-label", "借方金额");
     const credit = input("credit", units(line.credit) ? money(line.credit).replace(/,/g, "") : "", {inputMode: "decimal"});
     credit.setAttribute("aria-label", "贷方金额");
-    [summary, account, partySelect, waybill].forEach(field => cell(row, "").append(field));
+    [summary, account, partySelect, waybill, site, businessLine].forEach(field => cell(row, "").append(field));
     cell(row, "", "num").append(debit);
     cell(row, "", "num").append(credit);
     const remove = cell(row, "");
@@ -216,7 +220,8 @@
       const value = name => row.querySelector(`[name=${name}]`).value.trim();
       const party = value("party_id");
       return {summary: value("summary"), account_code: value("account_code"), party_id: party ? Number(party) : null,
-        waybill_no: value("waybill_no") || null, debit: value("debit"), credit: value("credit")};
+        waybill_no: value("waybill_no") || null, site_code: value("site_code") || null, business_line: value("business_line") || null,
+        debit: value("debit"), credit: value("credit")};
     });
   }
   function updateTotals() {
@@ -452,11 +457,21 @@
       const transfer = select("transfer_income_account", leafOptions(item => item.account_type === "income").map(item => [item.code, accountLabel(item)]), rule.transfer_income_account);
       const mode = select("party_mode", Object.entries(PARTY_MODE_TEXT), rule.party_mode);
       const fixed = select("fixed_party_id", [["", "—"], ...parties.filter(item => item.is_active).map(item => [String(item.id), partyLabel(item)])], rule.fixed_party_id ? String(rule.fixed_party_id) : "");
+      const textInput = (name, value) => {
+        const field = document.createElement("input");
+        field.className = "review-input"; field.name = name; field.maxLength = 64; field.value = value || ""; field.disabled = !superAdmin;
+        field.setAttribute("aria-label", `${rule.payment_method} ${name === "site_code" ? "网点" : "业务线"}`);
+        cell(row, "").append(field);
+        return field;
+      };
+      const siteInput = textInput("site_code", rule.site_code);
+      const lineInput = textInput("business_line", rule.business_line);
       if (superAdmin) {
         cell(row, "").append(button("保存", async () => {
           await send(`/finance/doc-rules/${RULE_KEYS[rule.payment_method]}`, {
             receivable_account: receivable.value, freight_income_account: freight.value, transfer_income_account: transfer.value,
             party_mode: mode.value, fixed_party_id: mode.value === "fixed" && fixed.value ? Number(fixed.value) : null,
+            site_code: siteInput.value.trim() || null, business_line: lineInput.value.trim() || null,
             expected_revision: rule.revision,
           });
           await loadDocRules();
@@ -989,13 +1004,15 @@
     if (item) {
       sourceForm.display_name.value = item.display_name; sourceForm.producer_instance_id.value = item.producer_instance_id || "";
       sourceForm.fund_account.value = item.fund_account || ""; sourceForm.remark.value = item.remark || "";
+      sourceForm.site_code.value = item.site_code || ""; sourceForm.business_line.value = item.business_line || "";
       sourceForm.is_enabled.checked = item.is_enabled;
     }
     const message = sourceDialog.querySelector("[data-source-message]");
     say("", message);
     sourceDialog.querySelector("[data-source-actions]").replaceChildren(button(item ? "保存" : "新建", async () => {
       const common = {display_name: sourceForm.display_name.value.trim(), producer_instance_id: sourceForm.producer_instance_id.value.trim(),
-        fund_account: sourceForm.fund_account.value || null, remark: sourceForm.remark.value.trim()};
+        fund_account: sourceForm.fund_account.value || null, remark: sourceForm.remark.value.trim(),
+        site_code: sourceForm.site_code.value.trim() || null, business_line: sourceForm.business_line.value.trim() || null};
       if (item) await send(`/finance/sources/${item.id}`, {...common, is_enabled: sourceForm.is_enabled.checked, expected_revision: item.revision});
       else await send("/finance/sources", {...common, source_key: sourceForm.source_key.value.trim(), kind: sourceForm.kind.value,
         provider: sourceForm.provider.value.trim()});
@@ -1028,9 +1045,10 @@
     ruleForm.counter_account.replaceChildren(...accounts.filter(entry => !entry.is_group && entry.is_active && !entry.frozen)
       .map(entry => new Option(accountLabel(entry), entry.code)));
     ruleForm.party_id.replaceChildren(new Option("—", ""), ...parties.filter(entry => entry.is_active).map(entry => new Option(partyLabel(entry), String(entry.id))));
-    ruleForm.party_action.value = rule?.party_action || "none";
-    if (rule?.counter_account) ruleForm.counter_account.value = rule.counter_account;
-    ruleForm.party_id.value = rule?.party_id ? String(rule.party_id) : "";
+    const preset = rule || review?.suggestion || null;
+    ruleForm.party_action.value = preset?.party_action || "none";
+    if (preset?.counter_account) ruleForm.counter_account.value = preset.counter_account;
+    ruleForm.party_id.value = preset?.party_id ? String(preset.party_id) : "";
     ruleForm.requires_waybill.checked = Boolean(rule?.requires_waybill);
     ruleForm.remark.value = rule?.remark || "";
     ruleDialog.querySelector("[data-edit-only]").hidden = !rule;
@@ -1061,12 +1079,31 @@
     await Promise.all([loadAccounts(), loadParties()]);
     const [reviews, rules, anomalies] = await Promise.all([get("/finance/reviews"), get("/finance/line-rules"), get("/finance/anomalies")]);
     const reviewRows = $("[data-review-rows]");
-    if (!reviews.length) empty(reviewRows, canManage ? 7 : 6, "没有待审流水。");
+    if (!reviews.length) empty(reviewRows, canManage ? 8 : 7, "没有待审流水。");
     else reviewRows.replaceChildren(...reviews.map(review => {
       const row = document.createElement("tr");
       cell(row, review.source_name); cell(row, review.item_l1 || "（空）"); cell(row, review.item_l2);
       cell(row, review.direction === "in" ? "流入" : "流出"); cell(row, String(review.line_count), "num"); cell(row, money(review.amount_total), "num");
-      if (canManage) cell(row, "").append(button("处理", async () => openRuleDialog({review}), "ghost-btn", status));
+      const advice = cell(row, "");
+      if (review.suggestion) {
+        const target = review.suggestion.party_action === "internal_transfer" ? "内部转账（资金在途）"
+          : (accounts.find(entry => entry.code === review.suggestion.counter_account) ? accountLabel(accounts.find(entry => entry.code === review.suggestion.counter_account)) : review.suggestion.counter_account);
+        const party = parties.find(entry => entry.id === review.suggestion.party_id)?.name;
+        advice.textContent = `${target}${party ? ` · ${party}` : ""}（置信度 ${review.suggestion.confidence}）`;
+        const why = document.createElement("div");
+        why.className = "section-note"; why.textContent = review.suggestion.reason;
+        advice.append(why);
+      } else advice.textContent = "—";
+      if (canManage) {
+        const actionsCell = cell(row, "");
+        actionsCell.append(button("处理", async () => openRuleDialog({review}), "ghost-btn", status));
+        actionsCell.append(button(review.suggestion ? "重新生成 AI 建议" : "生成 AI 建议", async () => {
+          say("正在请 AI 生成建议…");
+          await send(`/finance/reviews/${review.id}/suggest`, {});
+          await loaders.rules();
+          say("AI 建议已生成，请核对后点“处理”确认。");
+        }, "ghost-btn", status));
+      }
       return row;
     }));
     const ruleRows = $("[data-line-rule-rows]");
@@ -1123,7 +1160,10 @@
   $("[data-report-month]").value = thisMonth();
   $("[data-report-start]").value = `${thisMonth()}-01`;
   $("[data-report-end]").value = today();
+  $("[data-report-split]").addEventListener("change", () => loaders.statements().catch(error => say(error.message)));
+  $("[data-report-scope]").addEventListener("change", () => loaders.statements().catch(error => say(error.message)));
   statementKind.addEventListener("change", () => {
+    root.querySelectorAll("[data-statement-pl]").forEach(node => { node.hidden = statementKind.value !== "profit-loss"; });
     const range = statementKind.value === "waybill-margin";
     root.querySelectorAll("[data-statement-range]").forEach(node => { node.hidden = !range; });
     $("[data-statement-month-field]").hidden = range;
@@ -1154,7 +1194,22 @@
     $("[data-report-note]").textContent = "";
     empty(body, 4, "正在读取…");
     const month = $("[data-report-month]").value || thisMonth();
-    if (kind === "profit-loss") {
+    const split = $("[data-report-split]").value;
+    $("[data-statement-scope]").hidden = !(kind === "profit-loss" && split);
+    if (kind === "profit-loss" && split) {
+      const scope = $("[data-report-scope]").value;
+      const data = await get(`/finance/reports/profit-loss?month=${month}&split=${split}&scope=${scope}`);
+      head(["项目"], ...data.columns.map(column => [column.label, "num"]), ["合计", "num"]);
+      body.replaceChildren(...data.rows.map(item => {
+        const row = document.createElement("tr");
+        if (item.subtotal) row.className = "finance-row--group";
+        cell(row, item.label);
+        data.columns.forEach(column => cell(row, money(item.values[column.key]), "num"));
+        cell(row, money(item.total), "num");
+        return row;
+      }));
+      $("[data-report-note]").textContent = `${data.start_date} 至 ${data.end_date}，按${split === "site_code" ? "网点" : "业务线"}拆分；“未指定”是分录上没有填写该维度的金额。网点和业务线来自来源设置、开单记账规则或手工凭证。`;
+    } else if (kind === "profit-loss") {
       const data = await get(`/finance/reports/profit-loss?month=${month}`);
       head(["项目"], ["本月金额", "num"], ["本年累计", "num"]);
       body.replaceChildren(...data.rows.map(item => {
@@ -1285,6 +1340,47 @@
       say(`${month} 已反结账，期末结转凭证已冲销。`);
     } catch (error) { say(error.message); }
   });
+
+
+  // ---------- Excel export (server-side xlsx) ----------
+  function excelUrl(kind) {
+    const value = selector => root.querySelector(selector)?.value || "";
+    if (kind === "statements") {
+      const report = statementKind.value;
+      if (report === "waybill-margin") return `/finance/exports/waybill-margin.xlsx?${new URLSearchParams({start: value("[data-report-start]"), end: value("[data-report-end]")})}`;
+      const params = new URLSearchParams({month: value("[data-report-month]") || thisMonth()});
+      if (report === "profit-loss" && value("[data-report-split]")) { params.set("split", value("[data-report-split]")); params.set("scope", value("[data-report-scope]")); }
+      return `/finance/exports/${report}.xlsx?${params}`;
+    }
+    const builders = {
+      "trial-balance": () => ({month: value("[data-trial-month]") || thisMonth(), include_zero: root.querySelector("[data-trial-zero]")?.checked ? "1" : ""}),
+      journal: () => ({month: value("[data-journal-month]") || thisMonth()}),
+      ledger: () => ({account: value("[data-ledger-account]"), start: value("[data-ledger-start]"), end: value("[data-ledger-end]")}),
+      aging: () => ({as_of: value("[data-aging-as-of]") || today(), kind: value("[data-aging-kind]")}),
+      statement: () => ({party_id: value("[data-statement-party]"), start: value("[data-statement-start]"), end: value("[data-statement-end]")}),
+    };
+    return `/finance/exports/${kind}.xlsx?${new URLSearchParams(builders[kind]())}`;
+  }
+  root.querySelectorAll("[data-excel]").forEach(control => control.addEventListener("click", async () => {
+    const kind = control.dataset.excel;
+    if (kind === "ledger" && !root.querySelector("[data-ledger-account]")?.value) { say("请先选择科目并查询。"); return; }
+    if (kind === "statement" && !root.querySelector("[data-statement-party]")?.value) { say("请先选择往来单位。"); return; }
+    control.disabled = true;
+    try {
+      const response = await fetch(excelUrl(kind), {credentials: "same-origin", headers: {"X-Requested-With": "XMLHttpRequest"}});
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || "导出失败。");
+      }
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = /filename\*=UTF-8''([^;]+)/.exec(disposition);
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(await response.blob());
+      link.download = match ? decodeURIComponent(match[1]) : "财务导出.xlsx";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    } catch (error) { say(error.message); } finally { control.disabled = false; }
+  }));
 
   // ---------- accounts ----------
   const accountDialog = main.querySelector("[data-account-dialog]");

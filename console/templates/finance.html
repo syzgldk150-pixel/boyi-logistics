@@ -4,7 +4,7 @@
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-close">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-advice">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
@@ -70,6 +70,7 @@
       <label class="finance-check"><input type="checkbox" data-trial-zero> 显示无发生额科目</label>
       <button type="button" class="ghost-btn" data-trial-refresh>查询</button>
       <button type="button" class="ghost-btn" data-export-target="[data-trial-table]">导出 CSV</button>
+      <button type="button" class="ghost-btn" data-excel="trial-balance">导出 Excel</button>
       <span class="finance-badge" data-trial-balanced hidden></span>
     </div>
     <div class="table-wrap"><table class="finance-table finance-table--tree" data-trial-table>
@@ -88,6 +89,7 @@
       <label class="finance-field">开始 <input class="review-input" type="date" data-ledger-start></label>
       <label class="finance-field">结束 <input class="review-input" type="date" data-ledger-end></label>
       <button type="button" class="ghost-btn" data-ledger-refresh>查询</button>
+      <button type="button" class="ghost-btn" data-excel="ledger">导出 Excel</button>
     </div>
     <div class="table-wrap"><table class="finance-table">
       <thead><tr><th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">科目</th><th scope="col">摘要</th><th scope="col">运单号</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col">方向</th><th scope="col" class="num">余额</th></tr></thead>
@@ -100,6 +102,7 @@
       <label class="finance-field">月份 <input class="review-input" type="month" data-journal-month></label>
       <button type="button" class="ghost-btn" data-journal-refresh>查询</button>
       <button type="button" class="ghost-btn" data-export-target="[data-journal-table]">导出 CSV</button>
+      <button type="button" class="ghost-btn" data-excel="journal">导出 Excel</button>
     </div>
     <div class="table-wrap"><table class="finance-table" data-journal-table>
       <thead><tr><th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">摘要</th><th scope="col">科目</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col">状态</th></tr></thead>
@@ -147,6 +150,7 @@
       <label class="finance-field">类型 <select class="review-input" data-aging-kind><option value="receivable">应收</option><option value="payable">应付</option></select></label>
       <label class="finance-field">截止日期 <input class="review-input" type="date" data-aging-as-of></label>
       <button type="button" class="ghost-btn" data-aging-refresh>查询账龄</button>
+      <button type="button" class="ghost-btn" data-excel="aging">导出 Excel</button>
     </div>
     <div class="table-wrap"><table class="finance-table">
       <thead><tr><th scope="col">往来单位</th><th scope="col" class="num">0–30 天</th><th scope="col" class="num">31–60 天</th><th scope="col" class="num">61–90 天</th><th scope="col" class="num">90 天以上</th><th scope="col" class="num">未核销款</th><th scope="col" class="num">合计</th></tr></thead>
@@ -160,6 +164,7 @@
       <label class="finance-field">结束 <input class="review-input" type="date" data-statement-end></label>
       <button type="button" class="ghost-btn" data-statement-refresh>生成对账单</button>
       <button type="button" class="ghost-btn" data-statement-export disabled>导出 CSV</button>
+      <button type="button" class="ghost-btn" data-excel="statement">导出 Excel</button>
     </div>
     <p class="section-note" data-statement-summary></p>
     <div class="table-wrap"><table class="finance-table">
@@ -204,9 +209,9 @@
 
   <div class="finance-panel" role="tabpanel" id="finance-panel-rules" aria-labelledby="finance-tab-rules" data-panel="rules" hidden>
     <h3 class="finance-subhead">待审（未命中规则、已记入暂记科目的流水）</h3>
-    <p class="section-note">按“提供方 + 一级项目 + 二级项目 + 方向”精确归类，不做相似匹配。处理时选择对方科目并保存为规则，系统冲销暂记、按规则重记（仅开放期间）。暂记余额不为 0 的月份不能封账。</p>
+    <p class="section-note">按“提供方 + 一级项目 + 二级项目 + 方向”精确归类，不做相似匹配。处理时选择对方科目并保存为规则，系统冲销暂记、按规则重记（仅开放期间）。暂记余额不为 0 的月份不能封账。“AI 建议”用当前启用的模型只给出参考，必须人工确认后才保存规则。</p>
     <div class="table-wrap"><table class="finance-table">
-      <thead><tr><th scope="col">来源</th><th scope="col">一级项目</th><th scope="col">二级项目</th><th scope="col">方向</th><th scope="col" class="num">笔数</th><th scope="col" class="num">金额</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <thead><tr><th scope="col">来源</th><th scope="col">一级项目</th><th scope="col">二级项目</th><th scope="col">方向</th><th scope="col" class="num">笔数</th><th scope="col" class="num">金额</th><th scope="col">AI 建议</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
       <tbody data-review-rows></tbody>
     </table></div>
     <div class="finance-toolbar">
@@ -232,10 +237,17 @@
         </select>
       </label>
       <label class="finance-field" data-statement-month-field>月份 <input class="review-input" type="month" data-report-month></label>
+      <label class="finance-field" data-statement-pl>拆分
+        <select class="review-input" data-report-split><option value="">不拆分</option><option value="site_code">按网点</option><option value="business_line">按业务线</option></select>
+      </label>
+      <label class="finance-field" data-statement-pl data-statement-scope hidden>期间
+        <select class="review-input" data-report-scope><option value="month">本月</option><option value="year">本年累计</option></select>
+      </label>
       <label class="finance-field" data-statement-range hidden>开始 <input class="review-input" type="date" data-report-start></label>
       <label class="finance-field" data-statement-range hidden>结束 <input class="review-input" type="date" data-report-end></label>
       <button type="button" class="ghost-btn" data-report-refresh>查询</button>
       <button type="button" class="ghost-btn" data-export-target="[data-report-table]">导出 CSV</button>
+      <button type="button" class="ghost-btn" data-excel="statements">导出 Excel</button>
       <span class="finance-badge" data-report-badge hidden></span>
     </div>
     <p class="section-note" data-report-note></p>
@@ -286,7 +298,7 @@
     <h3 class="finance-subhead">开单记账规则</h3>
     <p class="section-note">按结算方式决定博益开单确认后记到哪个应收科目和收入科目，以及往来单位从哪里来。修改只影响之后的确认，已记账的凭证不变。</p>
     <div class="table-wrap"><table class="finance-table">
-      <thead><tr><th scope="col">结算方式</th><th scope="col">应收科目</th><th scope="col">运费收入</th><th scope="col">中转费收入</th><th scope="col">往来单位来源</th><th scope="col">固定往来单位</th>{% if is_super_admin %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <thead><tr><th scope="col">结算方式</th><th scope="col">应收科目</th><th scope="col">运费收入</th><th scope="col">中转费收入</th><th scope="col">往来单位来源</th><th scope="col">固定往来单位</th><th scope="col">网点</th><th scope="col">业务线</th>{% if is_super_admin %}<th scope="col">操作</th>{% endif %}</tr></thead>
       <tbody data-doc-rule-rows></tbody>
     </table></div>
   </div>
@@ -306,9 +318,9 @@
       <label class="finance-field finance-field--wide">摘要 <input class="review-input" name="summary" maxlength="255"></label>
     </div>
     <div class="table-wrap"><table class="finance-table finance-lines">
-      <thead><tr><th scope="col">摘要</th><th scope="col">科目</th><th scope="col">往来单位</th><th scope="col">运单号</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col"><span class="sr-only">删除</span></th></tr></thead>
+      <thead><tr><th scope="col">摘要</th><th scope="col">科目</th><th scope="col">往来单位</th><th scope="col">运单号</th><th scope="col">网点</th><th scope="col">业务线</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col"><span class="sr-only">删除</span></th></tr></thead>
       <tbody data-line-rows></tbody>
-      <tfoot><tr><td colspan="4"><button type="button" class="ghost-btn" data-line-add>添加分录</button></td><td class="num" data-line-debit>0.00</td><td class="num" data-line-credit>0.00</td><td></td></tr></tfoot>
+      <tfoot><tr><td colspan="6"><button type="button" class="ghost-btn" data-line-add>添加分录</button></td><td class="num" data-line-debit>0.00</td><td class="num" data-line-credit>0.00</td><td></td></tr></tfoot>
     </table></div>
     <p class="finance-status" role="status" aria-live="polite" data-voucher-message></p>
     <footer class="finance-dialog-actions" data-voucher-actions></footer>
@@ -349,6 +361,8 @@
     <label class="finance-field">负责的连接器实例编号 <input class="review-input" name="producer_instance_id" maxlength="64"></label>
     <p class="section-note">在“财务数据源”页安装连接器后，复制该实例的编号填入；只有这个实例能提交本来源的流水和读取本来源的账单。</p>
     <label class="finance-field">资金科目 <select class="review-input" name="fund_account"></select></label>
+    <label class="finance-field">默认网点（写入该来源流水凭证，用于利润表拆分） <input class="review-input" name="site_code" maxlength="64"></label>
+    <label class="finance-field">默认业务线 <input class="review-input" name="business_line" maxlength="64"></label>
     <label class="finance-field">备注 <input class="review-input" name="remark" maxlength="255"></label>
     <label class="finance-check" data-edit-only><input type="checkbox" name="is_enabled"> 启用</label>
     <p class="finance-status" role="status" aria-live="polite" data-source-message></p>
@@ -419,4 +433,4 @@
 </dialog>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance.js?v=20261107-close"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance.js?v=20261107-advice"></script>{% endblock %}

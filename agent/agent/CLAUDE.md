@@ -12,6 +12,8 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。直接 reader 继续校验角色与参数。`BusinessFinanceQueryService` 由组合根注入 `shared.finance.FinanceRepository`，只读取总账利润表口径（营业收入、营业成本、期间费用、利润、凭证数、已封账月份和提示）；读取失败返回 `BUSINESS_QUERY_UNAVAILABLE`，不输出金额。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
 
+- `finance_review_advisor.py` 为财务待审生成 AI 科目建议，由组合根注入 `FinanceRepository` 和当前启用的 LLM，经 `/internal/v1/admin/finance/reviews/{id}/suggest` 调用。模型只看 `shared.finance` 准备的汇总依据和候选范围；返回结果经 `validate_review_suggestion` 严格校验后，才保存为待审上的建议；不保存规则、不记账，模型缺失或返回不合格明确失败。
+
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
 - 扫描批次计划由已安装插件独立生成；Host 校验预览结构、候选集合及批次数量约束，原样绑定插件提交的批次数与计划摘要，不按宿主默认值重新分批。插件在首个写入前重读来源并校验完整计划，Host 仍核验实际写回执与独立读后证据。
 - 预览生成与确认的 UTC 时钟允许共享合同中的 3 秒短时回拨容差；超出该窗口的未来时间及真正到期的预览仍拒绝。隔离复现见 `../../tests/test_direct_preview_state.py`。

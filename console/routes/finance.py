@@ -50,6 +50,8 @@ _FILE_DISCARD = re.compile(r"/finance/source-files/(\d{1,18})/discard")
 _REVIEW_RESOLVE = re.compile(r"/finance/reviews/(\d{1,18})/resolve")
 _ANOMALY_ACK = re.compile(r"/finance/anomalies/(\d{1,18})/acknowledge")
 _PERIOD = re.compile(r"/finance/periods/(\d{4}-\d{2})")
+_EXPORT = re.compile(r"/finance/exports/([a-z-]{3,32})\.xlsx")
+_REVIEW_SUGGEST = re.compile(r"/finance/reviews/(\d{1,18})/suggest")
 _PERIOD_ACTION = re.compile(r"/finance/periods/(\d{4}-\d{2})/(close|reopen)")
 
 
@@ -77,6 +79,10 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if match:
         app._handle_finance_ledger_get(handler, "period_status", query, match.group(1))
         return True
+    match = _EXPORT.fullmatch(path)
+    if match:
+        app._handle_finance_export(handler, match.group(1), query)
+        return True
     return False
 
 
@@ -88,6 +94,10 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
               "/finance/line-rules": "line_rule_save"}
     if path in simple:
         app._handle_finance_ledger_post(handler, simple[path])
+        return True
+    match = _REVIEW_SUGGEST.fullmatch(path)
+    if match:
+        app._handle_finance_review_suggest(handler, match.group(1))
         return True
     match = _PERIOD_ACTION.fullmatch(path)
     if match:

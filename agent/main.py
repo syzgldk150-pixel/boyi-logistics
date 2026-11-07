@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 from shared.finance import FinanceRepository
+from agent.finance_review_advisor import FinanceReviewAdviceError, FinanceReviewAdvisor
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
 from shared.plugin_invocation_repository import PluginInvocationRepository
@@ -229,6 +230,7 @@ configure_feishu_operation(feishu_operation)
 
 
 agent_core: AgentCore | None = None
+finance_review_advisor: "FinanceReviewAdvisor | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
@@ -632,7 +634,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
-    global automation_plugin_runtime, automation_project_policy_service
+    global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -698,6 +700,7 @@ async def lifespan(app: FastAPI):
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
     business_finance_query = BusinessFinanceQueryService(FinanceRepository(runtime.memory.connection_factory))
+    finance_review_advisor = FinanceReviewAdvisor(FinanceRepository(runtime.memory.connection_factory), runtime.llm)
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
@@ -1760,6 +1763,27 @@ async def internal_llm_config_status():
 async def internal_llm_config_audit(limit: int = 200):
     rows = await asyncio.to_thread(_llm_settings_repository().audit_logs, limit=limit)
     return api_success({"items": rows})
+
+
+class FinanceReviewSuggestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: uuid.UUID
+
+
+@app.post("/internal/v1/admin/finance/reviews/{review_id}/suggest")
+async def internal_suggest_finance_review(review_id: int, req: FinanceReviewSuggestRequest, request: Request):
+    """AI counter-account advice for one suspense review; stored as advice, never posted."""
+
+    _require_console_admin_request(request)
+    if finance_review_advisor is None or review_id < 1:
+        return JSONResponse(status_code=503, content=api_failure("FINANCE_AI_UNAVAILABLE", "财务 AI 建议当前不可用"))
+    try:
+        result = await finance_review_advisor.suggest(review_id)
+    except FinanceReviewAdviceError as exc:
+        status_code = {"REVIEW_NOT_FOUND": 404, "FINANCE_AI_UNAVAILABLE": 503, "FINANCE_AI_FAILED": 502}.get(exc.code, 409)
+        return JSONResponse(status_code=status_code, content=api_failure(exc.code, redact_text(exc.message)))
+    return api_success(result)
 
 
 @app.post("/internal/v1/admin/llm/candidates")
