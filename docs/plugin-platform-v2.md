@@ -4,7 +4,7 @@ type: 开发手册
 tags: [ZIP 插件, service_v2, Host API, 独立插件]
 related: [identity_and_unified_chat.md, architecture_direct_invocation.md, ../agent/service_v2_plugins/README.md, ../agent/docs/service_v2_developer_tooling.md]
 status: active
-updated: 2026-10-30
+updated: 2026-11-07
 ---
 
 # 独立插件与宿主接口
@@ -70,6 +70,13 @@ Manifest Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。�
 每个服务操作声明精确 effect：`read`、`compute`、`internal_write`、`external_write` 或 `destructive`。预览按预览操作确定权限和读写类型，不因为同一包还有正式写操作而被视为写调用。
 
 `service.invoke` 只接受 Manifest 声明的服务和操作。插件不能任意访问宿主 Python、SQL 连接、文件、网络或第三方凭据。宿主 `production_connectors.py` 注册已实现的到货、扫描、问题件、寄件、签收、财务、客服和每日应签接口。融辉网点打卡复用已审核的 `browser.session` 动作；R7 等新网页业务通过包声明的 `http_requests` 使用通用账号请求，宿主不增加专用业务接口。测试用 tracking fixture 只供显式隔离测试使用，不是生产物流接口。
+
+财务来源连接器 `connector.boyi.finance_sources@1`（不绑账号）只提供三个操作：
+- `list_sources`：列出本实例负责的财务来源与待解析账单；
+- `read_file`：分块读取本实例负责来源的待解析文件，每次不超过 4 MiB，文件被批次使用后失效；
+- `submit_batch`：提交标准流水契约 v1 批次。在线来源的证据只认本次调用中只读 `http.request` 的宿主观测。
+
+记账规则全部在 `shared/finance/`，开发说明见 [财务连接器契约](finance_connector_contract.md)。
 
 Connector 在宿主解析当前账号和资源，验证输入和调用范围，并记录真实操作观测。敏感内部身份不进入模型或插件返回值。缺字段、分页不完整、范围不明、重复游标、空响应或权威回读失败必须给出具体失败结果；退出码或 `success=true` 不能替代业务成功。
 

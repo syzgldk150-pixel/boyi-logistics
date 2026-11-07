@@ -201,11 +201,12 @@ class VouchersMixin:
     def _insert_lines(cursor: Any, voucher_id: int, voucher: dict[str, Any]) -> None:
         cursor.executemany(
             "INSERT INTO finance_voucher_lines (voucher_id, line_no, account_code, debit, credit, summary, site_code,"
-            " source_id, business_line, fee_level, waybill_no, party_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " source_id, business_line, fee_level, waybill_no, party_id, source_line_id)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (voucher_id, line["line_no"], line["account_code"], format(line["debit"], "f"), format(line["credit"], "f"),
                  line["summary"], line["site_code"], line["source_id"], line["business_line"], line["fee_level"], line["waybill_no"],
-                 line["party_id"])
+                 line["party_id"], line.get("source_line_id"))
                 for line in voucher["lines"]
             ],
         )

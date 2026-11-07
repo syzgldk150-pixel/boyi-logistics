@@ -9,6 +9,7 @@ from agent.automation_plugins.delivery_connectors_v2 import build_delivery_conne
 from agent.automation_plugins.customer_connectors_v2 import build_customer_connectors
 from agent.automation_plugins.daily_sign_connectors_v2 import build_daily_sign_connectors
 from agent.automation_plugins.route_status_connectors_v2 import build_route_status_connectors
+from agent.automation_plugins.finance_source_connectors_v2 import build_finance_source_connectors
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 
 
@@ -17,4 +18,4 @@ def build_production_connector_registry(reviewed) -> ConnectorRegistry:
                               *build_scan_connectors(reviewed), *build_list_connectors(reviewed), *build_yunda_connectors(reviewed),
                               *build_daily_send_connectors(reviewed), *build_delivery_connectors(reviewed),
                               *build_customer_connectors(reviewed), *build_daily_sign_connectors(reviewed),
-                              *build_route_status_connectors(reviewed)))
+                              *build_route_status_connectors(reviewed), *build_finance_source_connectors(reviewed)))

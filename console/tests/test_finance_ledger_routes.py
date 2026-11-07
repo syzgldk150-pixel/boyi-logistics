@@ -68,6 +68,12 @@ def app():
     ("POST", "/finance/waybills/15/confirm", "finance.manage"),
     ("POST", "/finance/waybills/confirm-batch", "finance.manage"),
     ("POST", "/finance/doc-rules/prepaid", SUPER_ADMIN),
+    ("POST", "/finance/sources", SUPER_ADMIN),
+    ("POST", "/finance/sources/4", SUPER_ADMIN),
+    ("POST", "/finance/sources/4/files", "finance.manage"),
+    ("POST", "/finance/line-rules", "finance.manage"),
+    ("POST", "/finance/reviews/6/resolve", "finance.manage"),
+    ("GET", "/finance/sources/4/batches", "finance.read"),
 ])
 def test_route_permissions(method, path, permission):
     assert console_permission(method, path) == permission
@@ -100,6 +106,20 @@ def test_route_permissions(method, path, permission):
     ("POST", "/finance/waybills/15/confirm", ("_handle_finance_ledger_post", "waybill_confirm", "15")),
     ("POST", "/finance/waybills/confirm-batch", ("_handle_finance_ledger_post", "waybill_confirm_batch")),
     ("POST", "/finance/doc-rules/collect", ("_handle_finance_ledger_post", "doc_rule_update", "到付")),
+    ("GET", "/finance/sources", ("_handle_finance_ledger_get", "sources")),
+    ("GET", "/finance/sources/4/batches", ("_handle_finance_ledger_get", "source_batches", "4")),
+    ("GET", "/finance/sources/4/files", ("_handle_finance_ledger_get", "source_files", "4")),
+    ("GET", "/finance/source-batches/8/lines", ("_handle_finance_ledger_get", "batch_lines", "8")),
+    ("GET", "/finance/line-rules", ("_handle_finance_ledger_get", "line_rules")),
+    ("GET", "/finance/reviews", ("_handle_finance_ledger_get", "reviews")),
+    ("GET", "/finance/anomalies", ("_handle_finance_ledger_get", "anomalies")),
+    ("POST", "/finance/sources", ("_handle_finance_ledger_post", "source_create")),
+    ("POST", "/finance/sources/4", ("_handle_finance_ledger_post", "source_update", "4")),
+    ("POST", "/finance/source-files/5/discard", ("_handle_finance_ledger_post", "source_file_discard", "5")),
+    ("POST", "/finance/line-rules", ("_handle_finance_ledger_post", "line_rule_save")),
+    ("POST", "/finance/reviews/6/resolve", ("_handle_finance_ledger_post", "review_resolve", "6")),
+    ("POST", "/finance/anomalies/7/acknowledge", ("_handle_finance_ledger_post", "anomaly_acknowledge", "7")),
+    ("POST", "/finance/sources/4/files", ("_handle_finance_source_upload", "4")),
 ])
 def test_routes_dispatch(method, path, call):
     stub = Mock()
@@ -170,3 +190,22 @@ def test_party_id_query_is_validated_before_ledger(app):
     app._finance_ledger_repository.open_items.return_value = {"items": []}
     app._handle_finance_ledger_get(handler, "open_items", {"party_id": ["3"], "account": ["112201"]})
     app._finance_ledger_repository.open_items.assert_called_once_with(party_id=3, account_code="112201", as_of=None)
+
+
+def test_bill_upload_passes_raw_bytes_and_session_actor(app):
+    request_id = str(uuid4())
+    body = "交易时间,金额\n2026-10-07,9.90\n".encode("utf-8")
+    handler = JsonHandler()
+    handler.rfile = io.BytesIO(body)
+    handler.headers = {"Host": "console.test", "Origin": "http://console.test", "Content-Type": "text/csv",
+                       "Content-Length": str(len(body)), "X-Browser-Request-UUID": request_id, "X-File-Name": "%E8%B4%A6%E5%8D%95.csv"}
+    app._finance_ledger_repository.upload_source_file.return_value = {"id": 1}
+    app._handle_finance_source_upload(handler, "4")
+    assert handler.status == 200
+    args, kwargs = app._finance_ledger_repository.upload_source_file.call_args
+    assert args == (4,) and kwargs["data"] == body and kwargs["file_name"] == "账单.csv"
+    assert kwargs["request_id"] == request_id and kwargs["actor"] == FinanceActor("7", "测试会计")
+    refused = JsonHandler()
+    refused.headers = {**handler.headers, "Origin": "http://evil.test"}
+    app._handle_finance_source_upload(refused, "4")
+    assert refused.status == 403

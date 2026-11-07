@@ -21,6 +21,9 @@ from shared.finance.models import FinanceActor, parse_request_id
 from shared.finance.party.ledger import PartyLedgerMixin
 from shared.finance.party.parties import PartiesMixin
 from shared.finance.rules.waybill_posting import WaybillPostingMixin
+from shared.finance.rules.line_rules import LinePostingMixin
+from shared.finance.intake.sources import SourcesMixin
+from shared.finance.intake.batches import BatchIntakeMixin
 from shared.finance.settings import SettingsMixin
 
 ConnectionFactory = Callable[[], Any]
@@ -28,7 +31,7 @@ ConnectionFactory = Callable[[], Any]
 
 class FinanceRepository(
     SettingsMixin, AccountsMixin, VouchersMixin, PostingMixin, ReportsMixin, PartiesMixin, PartyLedgerMixin,
-    WaybillPostingMixin,
+    WaybillPostingMixin, LinePostingMixin, SourcesMixin, BatchIntakeMixin,
 ):
     """General-ledger persistence; the only code that writes ``finance_*`` tables."""
 

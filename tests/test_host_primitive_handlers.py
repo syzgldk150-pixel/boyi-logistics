@@ -238,6 +238,9 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
         ("projection.invoke", "waybill.ronghui.route_status.pending"),
         ("projection.invoke", "waybill.ronghui.route_status.update"),
         ("network.request", "feishu.bitable.delete_records"),
+        ("ledger.invoke", "finance.source.list"),
+        ("ledger.invoke", "finance.source_file.read"),
+        ("ledger.invoke", "finance.source_batch.submit"),
     }
     assert all(
         "run" not in action and "execute" not in action

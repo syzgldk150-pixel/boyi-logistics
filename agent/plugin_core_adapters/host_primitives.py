@@ -20,6 +20,7 @@ from agent.connector_namespaces import (
     DAILY_SEND_TOOL,
     DAILY_SIGN_TOOL,
     DELIVERY_STATUS_TOOL,
+    FINANCE_SOURCE_TOOL,
     ROUTE_STATUS_TOOL,
     SITE_SEND_TOOL,
 )
@@ -46,6 +47,7 @@ from plugin_core_adapters.capability_session import (
 )
 from plugin_core_adapters.daily_send import build_production_daily_send_handler_map
 from plugin_core_adapters.route_status import build_production_route_status_handler_map
+from plugin_core_adapters.finance_source import build_production_finance_source_handler_map
 from plugin_core_adapters.delivery_site import (
     build_production_delivery_site_handler_map,
     read_delivery_projection_identities,
@@ -2364,6 +2366,11 @@ def build_production_host_primitive_handler_map(
         (
             ROUTE_STATUS_TOOL,
             build_production_route_status_handler_map(cursor_secret=cursor_secret),
+            frozenset(),
+        ),
+        (
+            FINANCE_SOURCE_TOOL,
+            build_production_finance_source_handler_map(cursor_secret=cursor_secret),
             frozenset(),
         ),
         (

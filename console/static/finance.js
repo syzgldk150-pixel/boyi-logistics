@@ -846,6 +846,259 @@
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   });
 
+
+  // ---------- sources, files, batches ----------
+  const KIND_TEXT = {online: "在线抓取", file: "文件导入"};
+  const BATCH_STATUS = {accepted: "已接受", rejected: "已拒绝", superseded: "已被重提替换"};
+  const POSTING_TEXT = {posted: "已入账", suspense: "暂记待审", no_account: "未配置资金科目", closed_period: "封账期未改账", unposted: "未入账"};
+  const CHECK_TEXT = {schema: "结构", source_key_unique: "唯一键", balance_chain: "余额链", opening_closing: "期初期末", summary: "汇总", complete_period: "整月完整"};
+  let sources = [];
+  let currentSource = null;
+  let currentBatch = null;
+  let linePage = 1;
+  const sourceRows = $("[data-source-rows]");
+  loaders.sources = async () => {
+    await loadAccounts();
+    empty(sourceRows, 9, "正在读取…");
+    sources = await get("/finance/sources");
+    if (!sources.length) { empty(sourceRows, 9, "还没有财务来源。"); return; }
+    sourceRows.replaceChildren(...sources.map(item => {
+      const row = document.createElement("tr");
+      cell(row, `${item.display_name}（${item.source_key}）`); cell(row, KIND_TEXT[item.kind]); cell(row, item.provider);
+      cell(row, item.producer_instance_id || "未指定");
+      const fund = accounts.find(entry => entry.code === item.fund_account);
+      cell(row, fund ? accountLabel(fund) : "未配置（不入账）"); cell(row, item.covered_until || "—");
+      cell(row, item.kind === "file" ? String(item.pending_files) : "—", "num"); cell(row, item.is_enabled ? "启用" : "停用");
+      const actionsCell = cell(row, "");
+      actionsCell.append(button("查看", () => openSource(item), "ghost-btn", status));
+      if (superAdmin) actionsCell.append(button("编辑", async () => openSourceDialog(item), "ghost-btn", status));
+      return row;
+    }));
+  };
+  async function openSource(item) {
+    currentSource = item;
+    const detail = $("[data-source-detail]");
+    detail.hidden = false;
+    $("[data-source-detail-title]").textContent = `${item.display_name}（${KIND_TEXT[item.kind]}）`;
+    $("[data-file-toolbar]").hidden = item.kind !== "file";
+    $("[data-file-table]").hidden = item.kind !== "file";
+    $("[data-line-panel]").hidden = true;
+    const [batches, files] = await Promise.all([
+      get(`/finance/sources/${item.id}/batches`), item.kind === "file" ? get(`/finance/sources/${item.id}/files`) : Promise.resolve([]),
+    ]);
+    const fileRows = $("[data-file-rows]");
+    if (item.kind === "file") {
+      if (!files.length) empty(fileRows, canManage ? 6 : 5, "还没有上传账单。");
+      else fileRows.replaceChildren(...files.map(file => {
+        const row = document.createElement("tr");
+        cell(row, file.file_name); cell(row, `${(file.size_bytes / 1024).toFixed(1)} KB`, "num");
+        cell(row, {pending: "待解析", consumed: `已解析（批次 ${file.batch_id}）`, discarded: "已作废"}[file.status]);
+        cell(row, file.uploaded_by); cell(row, file.uploaded_at || "");
+        if (canManage) {
+          const actionsCell = cell(row, "");
+          if (file.status === "pending") actionsCell.append(button("作废", async () => {
+            if (!window.confirm(`作废文件 ${file.file_name}？`)) return;
+            await send(`/finance/source-files/${file.id}/discard`, {});
+            await openSource(item);
+          }, "ghost-btn ghost-btn--danger", status));
+        }
+        return row;
+      }));
+    }
+    const batchRows = $("[data-batch-rows]");
+    if (!batches.length) { empty(batchRows, 9, "还没有提交过批次。"); return; }
+    batchRows.replaceChildren(...batches.map(batch => {
+      const row = document.createElement("tr");
+      const link = document.createElement("button");
+      link.type = "button"; link.className = "finance-link"; link.textContent = `#${batch.id}`;
+      link.addEventListener("click", () => { linePage = 1; openBatch(batch).catch(error => say(error.message)); });
+      cell(row, "").append(link);
+      cell(row, `${batch.period_start} ~ ${batch.period_end}`);
+      const state = cell(row, BATCH_STATUS[batch.status], `finance-state finance-state--${batch.status}`);
+      if (batch.error_code) {
+        const note = document.createElement("div");
+        note.className = "finance-problem"; note.textContent = `${batch.error_code}：${batch.error_message || ""}`;
+        state.append(note);
+      }
+      cell(row, String(batch.row_count), "num"); cell(row, money(batch.inflow), "num"); cell(row, money(batch.outflow), "num");
+      cell(row, (batch.checks || []).map(check => `${CHECK_TEXT[check.check] || check.check}${check.ran ? (check.declared_only ? "（声明）" : "✓") : "（未校验）"}`).join(" "));
+      cell(row, batch.evidence_kind === "file" ? `文件 #${batch.file_id}` : "宿主观测的在线请求");
+      cell(row, batch.created_at);
+      return row;
+    }));
+  }
+  async function openBatch(batch) {
+    currentBatch = batch;
+    const data = await get(`/finance/source-batches/${batch.id}/lines?page=${linePage}`);
+    $("[data-line-panel]").hidden = false;
+    $("[data-line-title]").textContent = `批次 #${batch.id} 流水（共 ${data.total} 笔）`;
+    const body = $("[data-batch-line-rows]");
+    if (!data.rows.length) empty(body, 9, "没有流水。");
+    else body.replaceChildren(...data.rows.map(line => {
+      const row = document.createElement("tr");
+      if (!line.is_active) row.className = "finance-row--cancelled";
+      cell(row, line.source_key); cell(row, line.business_date); cell(row, money(line.amount), "num");
+      cell(row, line.item_l1); cell(row, line.item_l2); cell(row, line.counterparty); cell(row, line.waybill_no || "");
+      cell(row, POSTING_TEXT[line.posting_status] || line.posting_status, `finance-state finance-state--${line.posting_status}`);
+      const voucherCell = cell(row, "");
+      if (line.voucher_id) {
+        const link = document.createElement("button");
+        link.type = "button"; link.className = "finance-link"; link.textContent = line.voucher_no || `#${line.voucher_id}`;
+        link.addEventListener("click", () => openVoucher(line.voucher_id).catch(error => say(error.message)));
+        voucherCell.append(link);
+      }
+      return row;
+    }));
+    const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+    $("[data-line-page]").textContent = `第 ${data.page} / ${pages} 页`;
+    $("[data-line-prev]").disabled = data.page <= 1;
+    $("[data-line-next]").disabled = data.page >= pages;
+  }
+  $("[data-line-prev]").addEventListener("click", () => { linePage -= 1; openBatch(currentBatch).catch(error => say(error.message)); });
+  $("[data-line-next]").addEventListener("click", () => { linePage += 1; openBatch(currentBatch).catch(error => say(error.message)); });
+  $("[data-file-upload]")?.addEventListener("click", async () => {
+    const input = $("[data-file-input]");
+    const file = input.files?.[0];
+    if (!currentSource || !file) { say("请先选择账单文件。"); return; }
+    if (file.size > 20 * 1024 * 1024) { say("文件不能超过 20MB。"); return; }
+    const requestId = crypto.randomUUID();
+    try {
+      const response = await fetch(`/finance/sources/${currentSource.id}/files`, {
+        method: "POST", credentials: "same-origin", body: file,
+        headers: {"Content-Type": file.type || "application/octet-stream", "X-Requested-With": "XMLHttpRequest",
+          "X-Browser-Request-UUID": requestId, "X-File-Name": encodeURIComponent(file.name)},
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "上传失败。");
+      input.value = "";
+      await openSource(currentSource);
+      say(`已上传 ${file.name}，请到“财务数据源”页运行该来源的连接器解析。`);
+    } catch (error) { say(error.message); }
+  });
+  const sourceDialog = main.querySelector("[data-source-dialog]");
+  const sourceForm = sourceDialog.querySelector("[data-source-form]");
+  sourceDialog.querySelectorAll("[data-dialog-close]").forEach(item => item.addEventListener("click", () => sourceDialog.close()));
+  function openSourceDialog(item) {
+    sourceDialog.querySelector("[data-source-title]").textContent = item ? `编辑来源：${item.display_name}` : "新建来源";
+    sourceForm.reset();
+    sourceDialog.querySelectorAll("[data-create-only]").forEach(node => { node.hidden = Boolean(item); });
+    sourceDialog.querySelector("[data-edit-only]").hidden = !item;
+    sourceForm.fund_account.replaceChildren(new Option("不配置（只接收流水，不入账）", ""),
+      ...accounts.filter(entry => !entry.is_group && entry.is_active && ["cash", "bank", "fund"].includes(entry.account_type))
+        .map(entry => new Option(accountLabel(entry), entry.code)));
+    if (item) {
+      sourceForm.display_name.value = item.display_name; sourceForm.producer_instance_id.value = item.producer_instance_id || "";
+      sourceForm.fund_account.value = item.fund_account || ""; sourceForm.remark.value = item.remark || "";
+      sourceForm.is_enabled.checked = item.is_enabled;
+    }
+    const message = sourceDialog.querySelector("[data-source-message]");
+    say("", message);
+    sourceDialog.querySelector("[data-source-actions]").replaceChildren(button(item ? "保存" : "新建", async () => {
+      const common = {display_name: sourceForm.display_name.value.trim(), producer_instance_id: sourceForm.producer_instance_id.value.trim(),
+        fund_account: sourceForm.fund_account.value || null, remark: sourceForm.remark.value.trim()};
+      if (item) await send(`/finance/sources/${item.id}`, {...common, is_enabled: sourceForm.is_enabled.checked, expected_revision: item.revision});
+      else await send("/finance/sources", {...common, source_key: sourceForm.source_key.value.trim(), kind: sourceForm.kind.value,
+        provider: sourceForm.provider.value.trim()});
+      sourceDialog.close();
+      await loaders.sources();
+      say(item ? "来源已保存。" : "来源已建立。");
+    }, "primary-btn", message));
+    sourceDialog.showModal();
+  }
+  $("[data-source-new]")?.addEventListener("click", async () => { await loadAccounts(); openSourceDialog(null); });
+
+  // ---------- line rules, reviews, anomalies ----------
+  const ACTION_TEXT = {none: "无", party_fixed: "固定往来单位", settle_by_waybill: "按运单号核销", internal_transfer: "内部转账"};
+  const ruleDialog = main.querySelector("[data-line-rule-dialog]");
+  const ruleForm = ruleDialog.querySelector("[data-line-rule-form]");
+  ruleDialog.querySelectorAll("[data-dialog-close]").forEach(item => item.addEventListener("click", () => ruleDialog.close()));
+  function syncRuleFields() {
+    const action = ruleForm.party_action.value;
+    ruleDialog.querySelector("[data-rule-counter]").hidden = action === "internal_transfer";
+    ruleDialog.querySelector("[data-rule-party]").hidden = !["party_fixed", "settle_by_waybill"].includes(action);
+  }
+  ruleForm.party_action.addEventListener("change", syncRuleFields);
+  function openRuleDialog({rule = null, review = null} = {}) {
+    const base = rule || review || {};
+    ruleDialog.querySelector("[data-line-rule-title]").textContent = review ? `处理待审：${review.item_l1}${review.item_l2 ? "/" + review.item_l2 : ""}` : (rule ? "编辑规则" : "新增规则");
+    ruleForm.reset();
+    ruleForm.provider.value = base.provider || ""; ruleForm.item_l1.value = base.item_l1 || ""; ruleForm.item_l2.value = base.item_l2 || "";
+    ruleForm.direction.value = base.direction || "in";
+    [ruleForm.provider, ruleForm.item_l1, ruleForm.item_l2, ruleForm.direction].forEach(field => { field.disabled = Boolean(review || rule); });
+    ruleForm.counter_account.replaceChildren(...accounts.filter(entry => !entry.is_group && entry.is_active && !entry.frozen)
+      .map(entry => new Option(accountLabel(entry), entry.code)));
+    ruleForm.party_id.replaceChildren(new Option("—", ""), ...parties.filter(entry => entry.is_active).map(entry => new Option(partyLabel(entry), String(entry.id))));
+    ruleForm.party_action.value = rule?.party_action || "none";
+    if (rule?.counter_account) ruleForm.counter_account.value = rule.counter_account;
+    ruleForm.party_id.value = rule?.party_id ? String(rule.party_id) : "";
+    ruleForm.requires_waybill.checked = Boolean(rule?.requires_waybill);
+    ruleForm.remark.value = rule?.remark || "";
+    ruleDialog.querySelector("[data-edit-only]").hidden = !rule;
+    ruleForm.is_active.checked = rule ? rule.is_active : true;
+    syncRuleFields();
+    const message = ruleDialog.querySelector("[data-line-rule-message]");
+    say("", message);
+    ruleDialog.querySelector("[data-line-rule-actions]").replaceChildren(button(review ? "保存规则并重记" : "保存", async () => {
+      const action = ruleForm.party_action.value;
+      const body = {party_action: action, requires_waybill: ruleForm.requires_waybill.checked, remark: ruleForm.remark.value.trim()};
+      if (action !== "internal_transfer") body.counter_account = ruleForm.counter_account.value;
+      if (["party_fixed", "settle_by_waybill"].includes(action) && ruleForm.party_id.value) body.party_id = Number(ruleForm.party_id.value);
+      if (review) {
+        const result = await send(`/finance/reviews/${review.id}/resolve`, body);
+        say(`已保存规则，重记 ${result.reposted_days.length} 天${result.closed_period_days.length ? `；${result.closed_period_days.length} 天在已封账期间未改账` : ""}。`);
+      } else {
+        await send("/finance/line-rules", {...body, provider: ruleForm.provider.value.trim(), item_l1: ruleForm.item_l1.value.trim(),
+          item_l2: ruleForm.item_l2.value.trim(), direction: ruleForm.direction.value, is_active: ruleForm.is_active.checked});
+        say("规则已保存，之后提交或重记的流水按新规则入账。");
+      }
+      ruleDialog.close();
+      loaded.delete("trial"); loaded.delete("vouchers");
+      await loaders.rules();
+    }, "primary-btn", message));
+    ruleDialog.showModal();
+  }
+  loaders.rules = async () => {
+    await Promise.all([loadAccounts(), loadParties()]);
+    const [reviews, rules, anomalies] = await Promise.all([get("/finance/reviews"), get("/finance/line-rules"), get("/finance/anomalies")]);
+    const reviewRows = $("[data-review-rows]");
+    if (!reviews.length) empty(reviewRows, canManage ? 7 : 6, "没有待审流水。");
+    else reviewRows.replaceChildren(...reviews.map(review => {
+      const row = document.createElement("tr");
+      cell(row, review.source_name); cell(row, review.item_l1 || "（空）"); cell(row, review.item_l2);
+      cell(row, review.direction === "in" ? "流入" : "流出"); cell(row, String(review.line_count), "num"); cell(row, money(review.amount_total), "num");
+      if (canManage) cell(row, "").append(button("处理", async () => openRuleDialog({review}), "ghost-btn", status));
+      return row;
+    }));
+    const ruleRows = $("[data-line-rule-rows]");
+    if (!rules.length) empty(ruleRows, canManage ? 9 : 8, "还没有规则。");
+    else ruleRows.replaceChildren(...rules.map(rule => {
+      const row = document.createElement("tr");
+      if (!rule.is_active) row.className = "finance-row--cancelled";
+      cell(row, rule.provider); cell(row, rule.item_l1); cell(row, rule.item_l2); cell(row, rule.direction === "in" ? "流入" : "流出");
+      const account = accounts.find(entry => entry.code === rule.counter_account);
+      cell(row, rule.party_action === "internal_transfer" ? "资金在途（设置）" : (account ? accountLabel(account) : rule.counter_account));
+      cell(row, ACTION_TEXT[rule.party_action]); cell(row, parties.find(entry => entry.id === rule.party_id)?.name || "");
+      cell(row, rule.is_active ? "启用" : "停用");
+      if (canManage) cell(row, "").append(button("编辑", async () => openRuleDialog({rule}), "ghost-btn", status));
+      return row;
+    }));
+    const anomalyRows = $("[data-anomaly-rows]");
+    if (!anomalies.length) empty(anomalyRows, canManage ? 5 : 4, "没有未处理的异常。");
+    else anomalyRows.replaceChildren(...anomalies.map(item => {
+      const row = document.createElement("tr");
+      cell(row, item.created_at); cell(row, item.kind === "CLOSED_PERIOD_DRIFT" ? "封账期流水变化" : item.kind); cell(row, item.period_month || "");
+      cell(row, item.detail?.message ? `${item.detail.day || ""} ${item.detail.message}（原 ${item.detail.old_lines ?? "-"} 笔 → 新 ${item.detail.new_lines ?? "-"} 笔）` : JSON.stringify(item.detail));
+      if (canManage) cell(row, "").append(button("确认知悉", async () => {
+        const reason = window.prompt("确认原因（必填）：");
+        if (!reason || !reason.trim()) return;
+        await send(`/finance/anomalies/${item.id}/acknowledge`, {reason: reason.trim()});
+        await loaders.rules();
+      }, "ghost-btn", status));
+      return row;
+    }));
+  };
+  $("[data-line-rule-new]")?.addEventListener("click", async () => { await Promise.all([loadAccounts(), loadParties()]); openRuleDialog(); });
+
   // ---------- accounts ----------
   const accountDialog = main.querySelector("[data-account-dialog]");
   const accountForm = accountDialog.querySelector("[data-account-form]");

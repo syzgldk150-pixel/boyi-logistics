@@ -158,7 +158,7 @@ class PartyLedgerMixin:
 
     def _allocate(
         self, cursor: Any, *, party_id: int, account_code: str, allocation_date: dt.date, method: str, remark: str,
-        request_id: str, actor: FinanceActor, requested: list[tuple[int, Decimal]],
+        request_id: str, actor: FinanceActor, requested: list[tuple[int, Decimal]], origin_voucher_id: int | None = None,
     ) -> dict[str, Any]:
         settings = self._load_settings(cursor, lock="FOR SHARE")
         if not settings["start_month"] or month_of(allocation_date) < settings["start_month"]:
@@ -182,9 +182,9 @@ class PartyLedgerMixin:
         if not positives or not negatives or total_positive != sum((amount for _, amount in negatives), ZERO):
             raise FinanceError("ALLOCATION_UNBALANCED", "核销两边金额必须相等：应收（应付）与收款（付款）各至少选一笔。")
         cursor.execute(
-            "INSERT INTO finance_allocations (party_id, account_code, allocation_date, method, total_amount, remark, request_id, created_by)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (party_id, account_code, allocation_date, method, total_positive, remark, request_id, actor.label),
+            "INSERT INTO finance_allocations (party_id, account_code, allocation_date, method, origin_voucher_id, total_amount,"
+            " remark, request_id, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (party_id, account_code, allocation_date, method, origin_voucher_id, total_positive, remark, request_id, actor.label),
         )
         allocation_id = int(cursor.lastrowid)
         pairs = []

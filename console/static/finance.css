@@ -52,3 +52,6 @@
 .finance-problem { margin-top: 2px; color: var(--danger-ink); font-size: 0.8125rem; white-space: normal; }
 .finance-state--pending, .finance-state--changed, .finance-state--cancelled_posted { color: var(--warning-ink); font-weight: 600; }
 .finance-state--confirmed { color: var(--success-ink); }
+.finance-state--rejected, .finance-state--suspense, .finance-state--closed_period { color: var(--danger-ink); font-weight: 600; }
+.finance-state--superseded, .finance-state--no_account { color: var(--faint); }
+.finance-state--accepted, .finance-state--posted { color: var(--success-ink); }

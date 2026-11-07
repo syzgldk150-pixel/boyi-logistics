@@ -4,7 +4,7 @@
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-waybill">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-intake">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
@@ -18,6 +18,8 @@
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-journal" id="finance-tab-journal" data-tab="journal" tabindex="-1">序时账</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-parties" id="finance-tab-parties" data-tab="parties" tabindex="-1">往来核销</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-aging" id="finance-tab-aging" data-tab="aging" tabindex="-1">账龄与对账单</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-sources" id="finance-tab-sources" data-tab="sources" tabindex="-1">来源与流水</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-rules" id="finance-tab-rules" data-tab="rules" tabindex="-1">规则与待审</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-accounts" id="finance-tab-accounts" data-tab="accounts" tabindex="-1">科目</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-settings" id="finance-tab-settings" data-tab="settings" tabindex="-1">设置</button>
   </div>
@@ -162,6 +164,62 @@
     </table></div>
   </div>
 
+  <div class="finance-panel" role="tabpanel" id="finance-panel-sources" aria-labelledby="finance-tab-sources" data-panel="sources" hidden>
+    <div class="finance-toolbar">
+      <p class="section-note">每个来源由一个连接器实例负责：在线来源由连接器抓取后提交，文件来源先在这里上传账单，再在“财务数据源”页运行对应连接器解析。宿主只接受契约 v1 批次，并显示每个批次实际执行了哪些校验。没有资金科目的来源只接收流水、不入账。</p>
+      {% if is_super_admin %}<button type="button" class="primary-btn" data-source-new>新建来源</button>{% endif %}
+    </div>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">来源</th><th scope="col">接入方式</th><th scope="col">提供方</th><th scope="col">连接器实例</th><th scope="col">资金科目</th><th scope="col">已覆盖到</th><th scope="col">待解析文件</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
+      <tbody data-source-rows></tbody>
+    </table></div>
+    <div data-source-detail hidden>
+      <h3 class="finance-subhead" data-source-detail-title></h3>
+      <div class="finance-toolbar" data-file-toolbar hidden>
+        {% if can_manage %}<label class="finance-field">上传账单文件（不超过 20MB）<input type="file" class="review-input" data-file-input></label>
+        <button type="button" class="ghost-btn" data-file-upload>上传</button>{% endif %}
+      </div>
+      <div class="table-wrap" data-file-table hidden><table class="finance-table">
+        <thead><tr><th scope="col">文件</th><th scope="col" class="num">大小</th><th scope="col">状态</th><th scope="col">上传人</th><th scope="col">上传时间</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+        <tbody data-file-rows></tbody>
+      </table></div>
+      <div class="table-wrap"><table class="finance-table">
+        <thead><tr><th scope="col">批次</th><th scope="col">期间</th><th scope="col">状态</th><th scope="col" class="num">笔数</th><th scope="col" class="num">流入</th><th scope="col" class="num">流出</th><th scope="col">校验</th><th scope="col">证据</th><th scope="col">提交时间</th></tr></thead>
+        <tbody data-batch-rows></tbody>
+      </table></div>
+      <div data-line-panel hidden>
+        <h3 class="finance-subhead" data-line-title></h3>
+        <div class="table-wrap"><table class="finance-table">
+          <thead><tr><th scope="col">流水键</th><th scope="col">日期</th><th scope="col" class="num">金额</th><th scope="col">一级项目</th><th scope="col">二级项目</th><th scope="col">对方</th><th scope="col">运单号</th><th scope="col">入账</th><th scope="col">凭证</th></tr></thead>
+          <tbody data-batch-line-rows></tbody>
+        </table></div>
+        <div class="finance-toolbar"><button type="button" class="ghost-btn" data-line-prev>上一页</button><span class="section-note" data-line-page></span><button type="button" class="ghost-btn" data-line-next>下一页</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-rules" aria-labelledby="finance-tab-rules" data-panel="rules" hidden>
+    <h3 class="finance-subhead">待审（未命中规则、已记入暂记科目的流水）</h3>
+    <p class="section-note">按“提供方 + 一级项目 + 二级项目 + 方向”精确归类，不做相似匹配。处理时选择对方科目并保存为规则，系统冲销暂记、按规则重记（仅开放期间）。暂记余额不为 0 的月份不能封账。</p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">来源</th><th scope="col">一级项目</th><th scope="col">二级项目</th><th scope="col">方向</th><th scope="col" class="num">笔数</th><th scope="col" class="num">金额</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-review-rows></tbody>
+    </table></div>
+    <div class="finance-toolbar">
+      <h3 class="finance-subhead">流水记账规则</h3>
+      {% if can_manage %}<button type="button" class="ghost-btn" data-line-rule-new>新增规则</button>{% endif %}
+    </div>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">提供方</th><th scope="col">一级项目</th><th scope="col">二级项目</th><th scope="col">方向</th><th scope="col">对方科目</th><th scope="col">往来动作</th><th scope="col">往来单位</th><th scope="col">状态</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-line-rule-rows></tbody>
+    </table></div>
+    <h3 class="finance-subhead">异常</h3>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">时间</th><th scope="col">类型</th><th scope="col">期间</th><th scope="col">说明</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-anomaly-rows></tbody>
+    </table></div>
+  </div>
+
   <div class="finance-panel" role="tabpanel" id="finance-panel-accounts" aria-labelledby="finance-tab-accounts" data-panel="accounts" hidden>
     <div class="finance-toolbar">
       <p class="section-note">只有末级科目可以记账。已有凭证的科目只能停用或冻结，不能删除或改属性。{% if not is_super_admin %}修改科目结构需要超级管理员。{% endif %}</p>
@@ -238,6 +296,44 @@
     <footer class="finance-dialog-actions" data-account-actions></footer>
   </form>
 </dialog>
+<dialog class="finance-dialog finance-dialog--narrow" data-source-dialog aria-labelledby="finance-source-title">
+  <form method="dialog" class="finance-dialog-body" data-source-form>
+    <header class="finance-dialog-head"><h2 id="finance-source-title" data-source-title>新建来源</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <label class="finance-field" data-create-only>来源代码 <input class="review-input" name="source_key" maxlength="64" placeholder="例如 rh_main、wechat_shop"></label>
+    <label class="finance-field">来源名称 <input class="review-input" name="display_name" maxlength="128" required></label>
+    <label class="finance-field" data-create-only>接入方式 <select class="review-input" name="kind"><option value="online">在线抓取</option><option value="file">文件导入</option></select></label>
+    <label class="finance-field" data-create-only>提供方代码 <input class="review-input" name="provider" maxlength="32" placeholder="例如 ronghui、wechat、alipay、bank_icbc"></label>
+    <p class="section-note" data-create-only>来源代码、接入方式和提供方建立后不能修改；流水记账规则按提供方匹配。</p>
+    <label class="finance-field">负责的连接器实例编号 <input class="review-input" name="producer_instance_id" maxlength="64"></label>
+    <p class="section-note">在“财务数据源”页安装连接器后，复制该实例的编号填入；只有这个实例能提交本来源的流水和读取本来源的账单。</p>
+    <label class="finance-field">资金科目 <select class="review-input" name="fund_account"></select></label>
+    <label class="finance-field">备注 <input class="review-input" name="remark" maxlength="255"></label>
+    <label class="finance-check" data-edit-only><input type="checkbox" name="is_enabled"> 启用</label>
+    <p class="finance-status" role="status" aria-live="polite" data-source-message></p>
+    <footer class="finance-dialog-actions" data-source-actions></footer>
+  </form>
+</dialog>
+
+<dialog class="finance-dialog finance-dialog--narrow" data-line-rule-dialog aria-labelledby="finance-line-rule-title">
+  <form method="dialog" class="finance-dialog-body" data-line-rule-form>
+    <header class="finance-dialog-head"><h2 id="finance-line-rule-title" data-line-rule-title>流水记账规则</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <label class="finance-field">提供方代码 <input class="review-input" name="provider" maxlength="32"></label>
+    <label class="finance-field">一级项目（原文） <input class="review-input" name="item_l1" maxlength="128"></label>
+    <label class="finance-field">二级项目（原文，可空） <input class="review-input" name="item_l2" maxlength="128"></label>
+    <label class="finance-field">方向 <select class="review-input" name="direction"><option value="in">流入</option><option value="out">流出</option></select></label>
+    <label class="finance-field">往来动作
+      <select class="review-input" name="party_action"><option value="none">无</option><option value="party_fixed">固定往来单位</option><option value="settle_by_waybill">按运单号核销应收 / 应付</option><option value="internal_transfer">内部转账（记资金在途）</option></select>
+    </label>
+    <label class="finance-field" data-rule-counter>对方科目 <select class="review-input" name="counter_account"></select></label>
+    <label class="finance-field" data-rule-party>往来单位 <select class="review-input" name="party_id"></select></label>
+    <label class="finance-check"><input type="checkbox" name="requires_waybill"> 必须带运单号（缺运单号的流水仍进暂记）</label>
+    <label class="finance-check" data-edit-only><input type="checkbox" name="is_active"> 启用</label>
+    <label class="finance-field">备注 <input class="review-input" name="remark" maxlength="255"></label>
+    <p class="finance-status" role="status" aria-live="polite" data-line-rule-message></p>
+    <footer class="finance-dialog-actions" data-line-rule-actions></footer>
+  </form>
+</dialog>
+
 <dialog class="finance-dialog finance-dialog--narrow" data-amount-dialog aria-labelledby="finance-amount-title">
   <form method="dialog" class="finance-dialog-body" data-amount-form>
     <header class="finance-dialog-head"><h2 id="finance-amount-title" data-amount-title>补录金额</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
@@ -281,4 +377,4 @@
 </dialog>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance.js?v=20261107-waybill"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance.js?v=20261107-intake"></script>{% endblock %}

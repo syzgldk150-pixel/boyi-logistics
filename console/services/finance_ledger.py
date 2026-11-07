@@ -1,4 +1,4 @@
-"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties, P3 Boyi waybill posting).
+"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties, P3 Boyi waybills, P4 connector intake).
 
 Route permissions come from ``shared.identity_routes`` (read ``finance.read``,
 write ``finance.manage``, structure / start month / cancelling vouchers super
@@ -13,6 +13,7 @@ from console.app_support import *  # noqa: F403
 from shared.finance import FinanceActor, FinanceError, FinanceRepository, FinanceValidationError
 
 FINANCE_JSON_MAX_BYTES = 512 * 1024
+FINANCE_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 
 class FinanceLedgerServiceMixin:
@@ -97,6 +98,13 @@ class FinanceLedgerServiceMixin:
             "statement": lambda: ledger.party_statement(party_id=party(), start_date=q("start"), end_date=q("end")),
             "waybill_postings": lambda: ledger.list_waybill_postings(month=q("month"), status=q("status") or None),
             "doc_rules": ledger.list_doc_rules,
+            "sources": ledger.list_sources,
+            "source_files": lambda: ledger.list_source_files(int(target)),
+            "source_batches": lambda: ledger.list_source_batches(int(target)),
+            "batch_lines": lambda: ledger.list_source_lines(int(target), page=self._finance_id(q("page", "1"), "页码") or 1),
+            "line_rules": ledger.list_line_rules,
+            "reviews": lambda: ledger.list_reviews(status=q("status", "open") or None),
+            "anomalies": lambda: ledger.list_anomalies(status=q("status", "open") or None),
             "settings": ledger.get_settings,
             "accounts": ledger.list_accounts,
             "vouchers": lambda: ledger.list_vouchers(month=q("month"), status=q("status") or None),
@@ -133,5 +141,35 @@ class FinanceLedgerServiceMixin:
             "waybill_confirm": lambda: ledger.confirm_waybill(int(target), body, **common),
             "waybill_confirm_batch": lambda: ledger.confirm_waybills(body, **common),
             "doc_rule_update": lambda: ledger.update_doc_rule(target, body, **common),
+            "source_create": lambda: ledger.create_source(body, **common),
+            "source_update": lambda: ledger.update_source(int(target), body, **common),
+            "source_file_discard": lambda: ledger.discard_source_file(int(target), **common),
+            "line_rule_save": lambda: ledger.save_line_rule(body, **common),
+            "review_resolve": lambda: ledger.resolve_review(int(target), body, **common),
+            "anomaly_acknowledge": lambda: ledger.acknowledge_anomaly(int(target), body, **common),
         }
         self._finance_run(handler, work[action])
+
+    def _handle_finance_source_upload(self, handler: BaseHTTPRequestHandler, source_id: str) -> None:
+        """Store one bill file for a file source; the body is the raw file (not JSON)."""
+
+        user = getattr(handler, "current_admin_user", None) or current_admin_user()
+        if not isinstance(user, dict) or user.get("is_legacy_basic_auth") or int(user.get("id") or 0) <= 0:
+            self._finance_error(handler, 403, "MYSQL_ADMIN_SESSION_REQUIRED", "上传账单需要已登录的后台账号。")
+            return
+        if not self._require_same_origin_write(handler):
+            return
+        request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+        try:
+            length = int(handler.headers.get("Content-Length") or "0")
+        except (TypeError, ValueError):
+            length = -1
+        if not request_id or not 0 < length <= FINANCE_FILE_MAX_BYTES:
+            self._finance_error(handler, 400, "INVALID_REQUEST", "文件为空、超过 20MB，或请求标识无效。")
+            return
+        data = handler.rfile.read(length)
+        name = unquote(str(handler.headers.get("X-File-Name") or "")).strip()
+        content_type = str(handler.headers.get("Content-Type") or "application/octet-stream").partition(";")[0].strip()
+        actor = FinanceActor(str(user["id"]), str(user.get("display_name") or user.get("username") or ""))
+        self._finance_run(handler, lambda: self._finance_ledger().upload_source_file(
+            int(source_id), file_name=name, content_type=content_type, data=data, request_id=request_id, actor=actor))

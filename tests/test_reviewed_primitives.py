@@ -11,6 +11,7 @@ _CONNECTOR_MODULES = (
     "arrival_connectors_v2", "problem_connectors_v2", "scan_connectors_v2", "list_connectors_v2",
     "yunda_connectors_v2", "daily_send_connectors_v2", "delivery_connectors_v2",
     "customer_connectors_v2", "daily_sign_connectors_v2", "route_status_connectors_v2",
+    "finance_source_connectors_v2",
 )
 _CLOCK_PRIMITIVES = {("browser.invoke", f"ronghui.clock.{name}") for name in ("precheck", "submit", "verify")}
 

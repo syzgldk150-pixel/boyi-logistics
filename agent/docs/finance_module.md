@@ -7,7 +7,7 @@ status: active
 updated: 2026-11-07
 ---
 
-# 财务模块（总账重建中，P1–P3 已完成）
+# 财务模块（总账重建中，P1–P4 已完成）
 
 ## 当前状态
 
@@ -36,7 +36,7 @@ updated: 2026-11-07
 5. 期间层：封账前检查、余额快照、封账与反结账、漂移告警。
 6. 报表层：序时账、科目余额表、明细账、利润表、资产负债表、现金流量表、单票毛利、代账导出。
 
-分期：P0 清理（2026-11-06 完成）→ P1 总账内核（2026-11-07 完成）→ P2 往来（2026-11-07 完成）→ P3 博益单记账（2026-11-07 完成）→ P4 连接器接入 → P5 封账与报表。每期完成后在本文件补充对应章节、接口与表结构。连接器开发说明见 [标准流水契约 v1（草案）](../../docs/finance_connector_contract.md)。
+分期：P0 清理（2026-11-06 完成）→ P1 总账内核（2026-11-07 完成）→ P2 往来（2026-11-07 完成）→ P3 博益单记账（2026-11-07 完成）→ P4 连接器接入（2026-11-07 完成）→ P5 封账与报表。每期完成后在本文件补充对应章节、接口与表结构。连接器开发说明见 [标准流水契约 v1（草案）](../../docs/finance_connector_contract.md)。
 
 ## P1 总账内核
 
@@ -219,3 +219,78 @@ updated: 2026-11-07
 - 按日汇总核销保留差额；
 - 零金额与批量逐张结果；
 - 规则科目校验。
+
+## P4 连接器接入
+
+连接器开发说明见 [财务连接器契约](../../docs/finance_connector_contract.md)。
+
+### 与原方案的两处差异（受插件平台约束）
+
+1. **财务来源单独建表。** 来源存放在 `finance_sources`，不复用 `module_data_sources`。后者只支持融辉和韵达账号来源，并要求通过账号观测到组织身份，装不下微信、支付宝、银行这类文件来源。每个财务来源记录负责的连接器实例编号，宿主只接受该实例对该来源的提交。
+2. **文件授权方式不同。** 宿主调用上下文里没有调用编号，没法按“某一次调用”授权读文件。改为：只有负责该来源的连接器实例能读该来源下“待解析”的文件，每次不超过 4 MiB；被批次使用后文件状态变为“已使用”，不能再读。不开放目录访问或网络访问。
+
+### 表结构（迁移 `071_finance_intake.sql`，`finance_db`）
+
+| 表 | 内容 |
+|---|---|
+| `finance_sources` | 来源代码、名称、接入方式（在线 / 文件）、提供方代码、负责的连接器实例编号、资金科目、启用 |
+| `finance_source_files` / `finance_source_file_chunks` | 上传的账单（≤20MB，按 1MB 分块存库，Console 与 Agent 不共用文件系统）：哈希、大小、状态（待解析 / 已使用 / 已作废）、所属批次 |
+| `finance_source_batches` | 批次：期间、状态（已接受 / 已拒绝 / 已被替换）、声明、各项校验是否执行及结果、笔数、流入流出、期初期末、内容哈希、证据、连接器实例与版本、拒绝原因 |
+| `finance_source_lines` | 流水，只追加：原始字段、`raw`、行哈希、是否有效（被重提替换后置为无效）、入账状态（已入账 / 暂记待审 / 无资金科目 / 封账期未改账）、凭证、规则 |
+| `finance_line_rules` | 流水记账规则：提供方 + 一级项目 + 二级项目 + 方向 → 对方科目、往来动作（无 / 固定往来单位 / 按运单号核销 / 内部转账）、往来单位、是否必须带运单号 |
+| `finance_reviews` | 待审：按来源和规则键汇总暂记流水的笔数与金额 |
+| `finance_anomalies` | 异常，例如 `CLOSED_PERIOD_DRIFT`（已封账期间的流水发生变化）；需人工填写原因确认知悉 |
+
+迁移另给 `finance_allocations` 增加 `origin_voucher_id`，记录由流水凭证自动生成的核销。重记当天前，系统先撤销这些自动核销；人工核销仍会阻止重记。
+
+### 代码
+
+- **`shared/finance/intake/contract.py`：** 契约 v1 的纯函数校验，按批次声明执行，并记录每项检查是否执行。
+- **`shared/finance/intake/sources.py`：**
+  - 来源维护，只允许超级管理员；
+  - 账单上传和作废；
+  - 供连接器调用的列来源、分块读文件。
+- **`shared/finance/intake/batches.py`：** 在一个事务内依次执行：
+  1. 生产者校验；
+  2. 证据校验：在线来源只认本次调用中只读 HTTP 的宿主观测，文件来源只认本来源的待解析文件；
+  3. 期间重叠和同键冲突检查；
+  4. 写入不可变的批次和流水；
+  5. 替换同期间的旧批次；
+  6. 按天比对，变化的天重记或记异常。
+
+  契约不通过的批次单独记为“已拒绝”，并返回失败码。
+- **`shared/finance/rules/line_rules.py`：**
+  - 按天生成凭证，规则精确匹配，未命中的进暂记科目并汇总为待审；
+  - 处理待审时保存规则，并重记开放期间受影响的天；
+  - 规则为“按运单号核销”的流水，入账后与同一往来单位、同一运单号的未清项自动核销。
+- **Agent 侧：**
+  - `agent/agent/automation_plugins/finance_source_handlers.py`：宿主处理函数，只做上下文和参数校验、筛选证据、签发证据引用；
+  - `finance_source_connectors_v2.py`：Connector 定义；
+  - `agent/plugin_core_adapters/finance_source.py`：生产端口，经 `waybill_connection` 连接数据库；
+  - 已登记到 `reviewed_primitives.py`、`production_connectors.py` 和 `host_primitives.py`。
+- AI 科目建议暂未实现（`finance_brain` 已在 P0 删除），待审由人工处理。
+
+### Console 接口（追加）
+
+| 方法 | 路径 | 权限 |
+|---|---|---|
+| GET | `/finance/sources`、`/finance/sources/{id}/files`、`/finance/sources/{id}/batches`、`/finance/source-batches/{id}/lines?page=`、`/finance/line-rules`、`/finance/reviews`、`/finance/anomalies` | `finance.read` |
+| POST | `/finance/sources/{id}/files`（请求体是原始文件，`X-File-Name` 为 URL 编码后的文件名）、`/finance/source-files/{id}/discard`、`/finance/line-rules`、`/finance/reviews/{id}/resolve`、`/finance/anomalies/{id}/acknowledge` | `finance.manage` |
+| POST | `/finance/sources`、`/finance/sources/{id}` | 超级管理员 |
+
+页面新增“来源与流水”页签（来源、账单上传、批次及其校验、流水及凭证）和“规则与待审”页签（待审处理、规则、异常）。
+
+### 回归
+
+- `tests/test_finance_intake_contract.py`：各项校验和声明。
+- `tests/test_finance_intake_mysql.py`：
+  - 暂记与待审重记；
+  - 生产者和证据校验；
+  - 重复提交直接返回原批次，按天重记；
+  - 冲突和期间重叠；
+  - 封账期变化只记异常；
+  - 按运单号核销及重记后重新核销；
+  - 内部转账、无资金科目；
+  - 文件上传、读取、使用后失效。
+- `tests/test_finance_source_handlers.py`：宿主处理函数、证据筛选，以及 3000 行批次的格式校验。
+- `console/tests/test_finance_ledger_routes.py`：路由、权限和账单上传。

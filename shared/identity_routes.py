@@ -21,6 +21,7 @@ def console_permission(method: str, path: str) -> str:
         return SUPER_ADMIN
     # Ledger structure, the start month and cancelling posted vouchers.
     if not read and (_under(path, "/finance/settings") or _under(path, "/finance/accounts") or _under(path, "/finance/doc-rules")
+                     or path == "/finance/sources" or (path.startswith("/finance/sources/") and not path.endswith("/files"))
                      or (path.startswith("/finance/vouchers/") and path.endswith("/cancel"))):
         return SUPER_ADMIN
     if _under(path, "/finance") or _under(path, "/modules/finance") or path == "/module-data-sources/finance":

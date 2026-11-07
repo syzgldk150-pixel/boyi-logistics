@@ -43,6 +43,9 @@ LATER_FINANCE_TABLES = (
     "finance_parties", "finance_allocations", "finance_party_ledger",
     # 070: Boyi waybill posting rules and confirmations.
     "finance_doc_posting_rules", "finance_doc_postings",
+    # 071: connector intake.
+    "finance_sources", "finance_source_files", "finance_source_file_chunks", "finance_source_batches",
+    "finance_source_lines", "finance_line_rules", "finance_reviews", "finance_anomalies",
 )
 
 
