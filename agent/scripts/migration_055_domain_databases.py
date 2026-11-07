@@ -41,6 +41,8 @@ LATER_FINANCE_TABLES = (
     "finance_vouchers", "finance_voucher_lines", "finance_gl_entries", "finance_events",
     # 069: parties, open-item ledger and allocations.
     "finance_parties", "finance_allocations", "finance_party_ledger",
+    # 070: Boyi waybill posting rules and confirmations.
+    "finance_doc_posting_rules", "finance_doc_postings",
 )
 
 

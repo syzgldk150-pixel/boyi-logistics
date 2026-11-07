@@ -22,13 +22,19 @@ _GET = {
     "/finance/allocations": "allocations",
     "/finance/reports/aging": "aging",
     "/finance/reports/statement": "statement",
+    "/finance/waybills": "waybill_postings",
+    "/finance/doc-rules": "doc_rules",
 }
+# ASCII route keys for the Boyi payment methods (寄付 / 到付 / 月结).
+DOC_RULE_KEYS = {"prepaid": "寄付", "collect": "到付", "monthly": "月结"}
 _VOUCHER = re.compile(r"/finance/vouchers/(\d{1,18})")
 _VOUCHER_ACTION = re.compile(r"/finance/vouchers/(\d{1,18})/(delete|submit|cancel)")
 _ACCOUNT = re.compile(r"/finance/accounts/(\d{4,12})")
 _ACCOUNT_DELETE = re.compile(r"/finance/accounts/(\d{4,12})/delete")
 _PARTY = re.compile(r"/finance/parties/(\d{1,18})")
 _ALLOCATION_REVERSE = re.compile(r"/finance/allocations/(\d{1,18})/reverse")
+_WAYBILL_CONFIRM = re.compile(r"/finance/waybills/(\d{1,18})/confirm")
+_DOC_RULE = re.compile(r"/finance/doc-rules/(prepaid|collect|monthly)")
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
@@ -49,13 +55,19 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
     simple = {"/finance/settings": "settings", "/finance/accounts": "account_create", "/finance/vouchers": "voucher_create",
               "/finance/parties": "party_create", "/finance/allocations": "allocation_create",
-              "/finance/allocations/auto-waybill": "allocation_auto"}
+              "/finance/allocations/auto-waybill": "allocation_auto", "/finance/allocations/daily": "allocation_daily",
+              "/finance/waybills/confirm-batch": "waybill_confirm_batch"}
     if path in simple:
         app._handle_finance_ledger_post(handler, simple[path])
         return True
+    match = _DOC_RULE.fullmatch(path)
+    if match:
+        app._handle_finance_ledger_post(handler, "doc_rule_update", DOC_RULE_KEYS[match.group(1)])
+        return True
     for pattern, action in ((_VOUCHER_ACTION, None), (_VOUCHER, "voucher_update"),
                             (_ACCOUNT_DELETE, "account_delete"), (_ACCOUNT, "account_update"),
-                            (_PARTY, "party_update"), (_ALLOCATION_REVERSE, "allocation_reverse")):
+                            (_PARTY, "party_update"), (_ALLOCATION_REVERSE, "allocation_reverse"),
+                            (_WAYBILL_CONFIRM, "waybill_confirm")):
         match = pattern.fullmatch(path)
         if match:
             app._handle_finance_ledger_post(handler, action or f"voucher_{match.group(2)}", match.group(1))

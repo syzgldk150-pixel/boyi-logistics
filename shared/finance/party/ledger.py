@@ -289,6 +289,53 @@ class PartyLedgerMixin:
         return self._write(request_id=canonical_id, action="allocation.auto_waybill", target_type="party", target_id=party_id,
                            payload=payload, actor=actor, work=work)
 
+    def allocate_daily(self, payload: dict[str, Any], *, request_id: Any, actor: FinanceActor) -> dict[str, Any]:
+        """按日汇总核销: settle one day's receivables against that day's receipts (寄付现收).
+
+        The smaller side is fully settled oldest-first; the difference stays open
+        and is shown on the open-item list.
+        """
+
+        if not isinstance(payload, dict) or set(payload) - {"party_id", "account_code", "date"}:
+            raise FinanceValidationError("按日汇总核销内容包含不支持的字段。")
+        party_id = int(payload.get("party_id") or 0)
+        account_code = parse_account_code(payload.get("account_code"))
+        day = parse_date(payload.get("date"), "核销日期")
+        canonical_id = parse_request_id(request_id)
+
+        def work(cursor: Any) -> dict[str, Any]:
+            self._party_row(cursor, party_id)
+            cursor.execute(
+                _OUTSTANDING_SQL.format(extra="AND i.party_id=%s AND i.account_code=%s AND i.posting_date=%s")
+                + " HAVING outstanding <> 0 ORDER BY i.id",
+                (day, day, party_id, account_code, day),
+            )
+            rows = fetchall(cursor)
+            positive = sum((Decimal(r["outstanding"]) for r in rows if Decimal(r["outstanding"]) > 0), ZERO)
+            negative = -sum((Decimal(r["outstanding"]) for r in rows if Decimal(r["outstanding"]) < 0), ZERO)
+            matched = min(positive, negative)
+            if matched == 0:
+                return {"id": canonical_id, "allocation": None, "receivable": _text(positive), "received": _text(negative),
+                        "difference": _text(positive - negative)}
+            requested = []
+            for sign_positive in (True, False):
+                remaining = matched
+                for r in rows:
+                    value = Decimal(r["outstanding"])
+                    if remaining == 0 or (value > 0) != sign_positive:
+                        continue
+                    take = min(abs(value), remaining)
+                    requested.append((int(r["id"]), take))
+                    remaining -= take
+            allocation = self._allocate(cursor, party_id=party_id, account_code=account_code, allocation_date=day,
+                                        method="daily_aggregate", remark=f"{day.isoformat()} 按日汇总核销",
+                                        request_id=canonical_id, actor=actor, requested=requested)
+            return {"id": canonical_id, "allocation": allocation, "receivable": _text(positive), "received": _text(negative),
+                    "difference": _text(positive - negative)}
+
+        return self._write(request_id=canonical_id, action="allocation.daily", target_type="party", target_id=party_id,
+                           payload=payload, actor=actor, work=work)
+
     def reverse_allocation(self, allocation_id: Any, payload: dict[str, Any], *, request_id: Any, actor: FinanceActor) -> dict[str, Any]:
         allocation_id = int(allocation_id)
         reason = optional_text((payload or {}).get("reason"), "撤销原因", 255)

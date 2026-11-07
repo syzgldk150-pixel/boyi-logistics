@@ -1,4 +1,4 @@
-"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties and allocations).
+"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties, P3 Boyi waybill posting).
 
 Route permissions come from ``shared.identity_routes`` (read ``finance.read``,
 write ``finance.manage``, structure / start month / cancelling vouchers super
@@ -95,6 +95,8 @@ class FinanceLedgerServiceMixin:
             "allocations": lambda: ledger.list_allocations(party_id=party(optional=True), month=q("month") or None),
             "aging": lambda: ledger.aging(as_of=q("as_of"), kind=q("kind", "receivable"), party_id=party(optional=True)),
             "statement": lambda: ledger.party_statement(party_id=party(), start_date=q("start"), end_date=q("end")),
+            "waybill_postings": lambda: ledger.list_waybill_postings(month=q("month"), status=q("status") or None),
+            "doc_rules": ledger.list_doc_rules,
             "settings": ledger.get_settings,
             "accounts": ledger.list_accounts,
             "vouchers": lambda: ledger.list_vouchers(month=q("month"), status=q("status") or None),
@@ -127,5 +129,9 @@ class FinanceLedgerServiceMixin:
             "allocation_create": lambda: ledger.allocate(body, **common),
             "allocation_auto": lambda: ledger.auto_allocate_by_waybill(body, **common),
             "allocation_reverse": lambda: ledger.reverse_allocation(int(target), body, **common),
+            "allocation_daily": lambda: ledger.allocate_daily(body, **common),
+            "waybill_confirm": lambda: ledger.confirm_waybill(int(target), body, **common),
+            "waybill_confirm_batch": lambda: ledger.confirm_waybills(body, **common),
+            "doc_rule_update": lambda: ledger.update_doc_rule(target, body, **common),
         }
         self._finance_run(handler, work[action])

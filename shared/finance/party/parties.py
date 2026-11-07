@@ -15,13 +15,15 @@ from shared.finance.models import FinanceActor, expected_revision, optional_text
 
 PARTY_TYPES = ("customer", "platform", "sender", "supplier", "employee", "other")
 PARTY_COLUMNS = (
-    "id, party_type, name, phone, boyi_sender_name, boyi_sender_phone, remark, is_active, revision, created_by, created_at"
+    "id, party_type, name, phone, boyi_sender_name, boyi_sender_phone, platform_code, remark, is_active, revision,"
+    " created_by, created_at"
 )
 _EDITABLE = ("party_type", "name", "phone", "boyi_sender_name", "boyi_sender_phone", "remark", "is_active")
 
 
 def party_view(row: dict[str, Any]) -> dict[str, Any]:
-    view = {key: row[key] for key in ("party_type", "name", "phone", "boyi_sender_name", "boyi_sender_phone", "remark", "created_by")}
+    view = {key: row[key] for key in ("party_type", "name", "phone", "boyi_sender_name", "boyi_sender_phone", "platform_code",
+                                      "remark", "created_by")}
     view.update(id=int(row["id"]), is_active=bool(row["is_active"]), revision=int(row["revision"]))
     created = row.get("created_at")
     view["created_at"] = created.isoformat(sep=" ", timespec="seconds") if isinstance(created, dt.datetime) else None

@@ -210,6 +210,24 @@ class VouchersMixin:
             ],
         )
 
+    def _insert_draft(
+        self, cursor: Any, voucher: dict[str, Any], request_id: str, actor: FinanceActor,
+        *, ref_type: str | None = None, ref_id: str | None = None, reversal_of: int | None = None,
+    ) -> int:
+        """Insert a draft voucher with its lines; returns the new voucher id."""
+
+        total_debit, total_credit = self._totals(voucher)
+        cursor.execute(
+            "INSERT INTO finance_vouchers (voucher_type, status, posting_date, period_month, summary, total_debit,"
+            " total_credit, ref_type, ref_id, reversal_of, request_id, created_by)"
+            " VALUES (%s, 'draft', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (voucher["voucher_type"], voucher["posting_date"], voucher["period_month"], voucher["summary"],
+             total_debit, total_credit, ref_type, ref_id, reversal_of, request_id, actor.label),
+        )
+        voucher_id = int(cursor.lastrowid)
+        self._insert_lines(cursor, voucher_id, voucher)
+        return voucher_id
+
     @staticmethod
     def _totals(voucher: dict[str, Any]) -> tuple[str, str]:
         debit = sum((line["debit"] for line in voucher["lines"]), Decimal("0"))
@@ -252,16 +270,7 @@ class VouchersMixin:
         def work(cursor: Any) -> dict[str, Any]:
             self._require_not_before_start(cursor, voucher)
             self._require_known_accounts(cursor, voucher)
-            total_debit, total_credit = self._totals(voucher)
-            cursor.execute(
-                "INSERT INTO finance_vouchers (voucher_type, status, posting_date, period_month, summary, total_debit,"
-                " total_credit, request_id, created_by) VALUES (%s, 'draft', %s, %s, %s, %s, %s, %s, %s)",
-                (voucher["voucher_type"], voucher["posting_date"], voucher["period_month"], voucher["summary"],
-                 total_debit, total_credit, request_id_value, actor.label),
-            )
-            voucher_id = int(cursor.lastrowid)
-            self._insert_lines(cursor, voucher_id, voucher)
-            return self._full_voucher(cursor, voucher_id)
+            return self._full_voucher(cursor, self._insert_draft(cursor, voucher, request_id_value, actor))
 
         request_id_value = parse_request_id(request_id)
         return self._write(request_id=request_id_value, action="voucher.create", target_type="voucher", target_id="new",

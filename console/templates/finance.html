@@ -4,14 +4,15 @@
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-party">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-waybill">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
 {% block content %}
 <section class="finance-ledger" data-finance-ledger data-can-manage="{{ 'true' if can_manage else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}">
   <div class="finance-tabs" role="tablist" aria-label="财务功能">
-    <button type="button" role="tab" class="finance-tab" aria-selected="true" aria-controls="finance-panel-vouchers" id="finance-tab-vouchers" data-tab="vouchers">凭证</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="true" aria-controls="finance-panel-waybills" id="finance-tab-waybills" data-tab="waybills">开单确认</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-vouchers" id="finance-tab-vouchers" data-tab="vouchers" tabindex="-1">凭证</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-trial" id="finance-tab-trial" data-tab="trial" tabindex="-1">科目余额表</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-ledger" id="finance-tab-ledger" data-tab="ledger" tabindex="-1">明细账</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-journal" id="finance-tab-journal" data-tab="journal" tabindex="-1">序时账</button>
@@ -22,7 +23,27 @@
   </div>
   <p class="finance-status" role="status" aria-live="polite" data-finance-status></p>
 
-  <div class="finance-panel" role="tabpanel" id="finance-panel-vouchers" aria-labelledby="finance-tab-vouchers" data-panel="vouchers">
+  <div class="finance-panel" role="tabpanel" id="finance-panel-waybills" aria-labelledby="finance-tab-waybills" data-panel="waybills">
+    <div class="finance-toolbar">
+      <label class="finance-field">开单月份 <input class="review-input" type="month" data-waybill-month></label>
+      <label class="finance-field">状态
+        <select class="review-input" data-waybill-status>
+          <option value="pending">待确认</option><option value="changed">运单已改，待重新确认</option><option value="cancelled_posted">运单已作废，待冲销</option>
+          <option value="confirmed">已确认</option><option value="reversed">已冲销</option><option value="">全部</option>
+        </select>
+      </label>
+      <button type="button" class="ghost-btn" data-waybill-refresh>查询</button>
+      {% if can_manage %}<button type="button" class="primary-btn" data-waybill-confirm-selected>确认所选</button>{% endif %}
+      <span class="section-note" data-waybill-counts></span>
+    </div>
+    <p class="section-note">博益开单都要人工确认后才记账（应收 / 收入），记账日期为开单日。金额未填的单先点“改金额”补录，补录会写回运单并留修改记录（需要运单修改权限）。确认后运单再被修改或作废，会出现在“待重新确认 / 待冲销”中。</p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr>{% if can_manage %}<th scope="col"><span class="sr-only">选择</span></th>{% endif %}<th scope="col">开单日期</th><th scope="col">运单号</th><th scope="col">寄件人</th><th scope="col">结算方式</th><th scope="col" class="num">运费</th><th scope="col" class="num">中转费</th><th scope="col" class="num">合计</th><th scope="col">往来单位</th><th scope="col">状态</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-waybill-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-vouchers" aria-labelledby="finance-tab-vouchers" data-panel="vouchers" hidden>
     <div class="finance-toolbar">
       <label class="finance-field">月份 <input class="review-input" type="month" data-voucher-month></label>
       <label class="finance-field">状态
@@ -105,6 +126,7 @@
       <span class="finance-badge" data-allocation-balance>已选：0.00 / 0.00</span>
       <button type="button" class="primary-btn" data-allocation-submit>核销所选</button>
       <button type="button" class="ghost-btn" data-allocation-auto>按运单号自动核销</button>
+      <button type="button" class="ghost-btn" data-allocation-daily>按日汇总核销（核销日期当天）</button>
     </div>
     {% endif %}
     <h3 class="finance-subhead">核销记录</h3>
@@ -161,6 +183,12 @@
       <label class="finance-field">未分配利润科目 <select class="review-input" name="retained_earnings_account" data-account-type="equity"></select></label>
       {% if is_super_admin %}<div><button type="submit" class="primary-btn">保存设置</button></div>{% else %}<p class="section-note">修改财务设置需要超级管理员。</p>{% endif %}
     </form>
+    <h3 class="finance-subhead">开单记账规则</h3>
+    <p class="section-note">按结算方式决定博益开单确认后记到哪个应收科目和收入科目，以及往来单位从哪里来。修改只影响之后的确认，已记账的凭证不变。</p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">结算方式</th><th scope="col">应收科目</th><th scope="col">运费收入</th><th scope="col">中转费收入</th><th scope="col">往来单位来源</th><th scope="col">固定往来单位</th>{% if is_super_admin %}<th scope="col">操作</th>{% endif %}</tr></thead>
+      <tbody data-doc-rule-rows></tbody>
+    </table></div>
   </div>
 </section>
 
@@ -210,6 +238,18 @@
     <footer class="finance-dialog-actions" data-account-actions></footer>
   </form>
 </dialog>
+<dialog class="finance-dialog finance-dialog--narrow" data-amount-dialog aria-labelledby="finance-amount-title">
+  <form method="dialog" class="finance-dialog-body" data-amount-form>
+    <header class="finance-dialog-head"><h2 id="finance-amount-title" data-amount-title>补录金额</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <p class="section-note">保存后写回运单并记入运单修改记录；已打印的面单需要重新打印。</p>
+    <label class="finance-field">运费 <input class="review-input" name="freight_fee" inputmode="decimal" maxlength="32"></label>
+    <label class="finance-field">中转费 <input class="review-input" name="transfer_fee" inputmode="decimal" maxlength="32"></label>
+    <label class="finance-field">结算方式 <select class="review-input" name="payment_method"><option value="寄付">寄付</option><option value="到付">到付</option><option value="月结">月结</option></select></label>
+    <p class="finance-status" role="status" aria-live="polite" data-amount-message></p>
+    <footer class="finance-dialog-actions" data-amount-actions></footer>
+  </form>
+</dialog>
+
 <dialog class="finance-dialog finance-dialog--narrow" data-party-dialog aria-labelledby="finance-party-title">
   <form method="dialog" class="finance-dialog-body" data-party-form>
     <header class="finance-dialog-head"><h2 id="finance-party-title" data-party-title>新建往来单位</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
@@ -241,4 +281,4 @@
 </dialog>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance.js?v=20261107-party"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance.js?v=20261107-waybill"></script>{% endblock %}

@@ -302,6 +302,171 @@
     try { await Promise.all([loadAccounts(), loadParties()]); await showVoucher(null); } catch (error) { say(error.message); }
   });
 
+
+  // ---------- Boyi waybill confirmation ----------
+  const waybillMonth = $("[data-waybill-month]");
+  const waybillStatus = $("[data-waybill-status]");
+  const waybillRows = $("[data-waybill-rows]");
+  waybillMonth.value = thisMonth();
+  const WAYBILL_COLUMNS = canManage ? 11 : 9;
+  const feeText = value => (String(value ?? "").trim() === "" ? "未填" : money(String(value).trim()));
+  async function confirmItems(items) {
+    const result = await send("/finance/waybills/confirm-batch", {items});
+    const failed = result.results.filter(item => !item.ok);
+    loaded.delete("vouchers"); loaded.delete("trial"); loaded.delete("journal"); loaded.delete("parties");
+    await loaders.waybills();
+    say(failed.length
+      ? `确认成功 ${result.succeeded} 张，失败 ${failed.length} 张：${failed.slice(0, 5).map(item => `${item.waybill_id} ${item.message}`).join("；")}`
+      : `确认成功 ${result.succeeded} 张。`);
+  }
+  loaders.waybills = async () => {
+    await loadParties();
+    empty(waybillRows, WAYBILL_COLUMNS, "正在读取…");
+    const params = new URLSearchParams({month: waybillMonth.value || thisMonth()});
+    if (waybillStatus.value) params.set("status", waybillStatus.value);
+    const data = await get(`/finance/waybills?${params}`);
+    const counts = data.counts;
+    $("[data-waybill-counts]").textContent = `待确认 ${counts.pending} · 待重新确认 ${counts.changed} · 待冲销 ${counts.cancelled_posted} · 已确认 ${counts.confirmed}`;
+    if (!data.rows.length) { empty(waybillRows, WAYBILL_COLUMNS, "没有符合条件的博益开单。"); return; }
+    waybillRows.replaceChildren(...data.rows.map(item => {
+      const row = document.createElement("tr");
+      row.dataset.waybillId = item.waybill_id;
+      row.dataset.fingerprint = item.fingerprint;
+      const actionable = ["pending", "changed", "cancelled_posted"].includes(item.status);
+      if (canManage) {
+        const pick = document.createElement("input");
+        pick.type = "checkbox"; pick.dataset.pick = ""; pick.disabled = !actionable || item.problems.length > 0;
+        pick.setAttribute("aria-label", `选择 ${item.waybill_no}`);
+        cell(row, "").append(pick);
+      }
+      cell(row, item.open_date); cell(row, item.waybill_no); cell(row, item.sender_name || "");
+      cell(row, item.payment_method || "未填");
+      cell(row, feeText(item.freight_fee), "num"); cell(row, feeText(item.transfer_fee), "num"); cell(row, money(item.total), "num");
+      const partyCell = cell(row, "");
+      if (canManage && actionable && item.status !== "cancelled_posted") {
+        const select = document.createElement("select");
+        select.className = "review-input"; select.dataset.party = "";
+        select.setAttribute("aria-label", `${item.waybill_no} 的往来单位`);
+        select.add(new Option(item.suggested_party_name ? `按规则：${item.suggested_party_name}` : "请选择", ""));
+        parties.filter(entry => entry.is_active).forEach(entry => select.add(new Option(partyLabel(entry), String(entry.id))));
+        partyCell.append(select);
+      } else {
+        partyCell.textContent = item.posting?.party_id ? (parties.find(entry => entry.id === item.posting.party_id)?.name || "") : (item.suggested_party_name || "");
+      }
+      const state = cell(row, item.status_text, `finance-state finance-state--${item.status}`);
+      if (item.problems.length) {
+        const note = document.createElement("div");
+        note.className = "finance-problem"; note.textContent = item.problems.join("；");
+        state.append(note);
+      }
+      if (item.posting?.voucher_no) {
+        const link = document.createElement("button");
+        link.type = "button"; link.className = "finance-link"; link.textContent = item.posting.voucher_no;
+        link.addEventListener("click", () => openVoucher(item.posting.voucher_id).catch(error => say(error.message)));
+        state.append(document.createElement("br"), link);
+      }
+      if (canManage) {
+        const actionsCell = cell(row, "");
+        const itemPayload = () => {
+          const chosen = row.querySelector("[data-party]")?.value;
+          return {waybill_id: item.waybill_id, expected_fingerprint: item.fingerprint, ...(chosen ? {party_id: Number(chosen)} : {})};
+        };
+        if (actionable && !item.problems.length) {
+          actionsCell.append(button(item.status === "cancelled_posted" ? "冲销" : "确认", () => confirmItems([itemPayload()]),
+            item.status === "cancelled_posted" ? "ghost-btn ghost-btn--danger" : "ghost-btn", status));
+        }
+        if (item.source === "manual" && item.status !== "cancelled_posted" && item.status !== "reversed") {
+          actionsCell.append(button("改金额", () => openAmount(item), "ghost-btn", status));
+        }
+      }
+      return row;
+    }));
+  };
+  $("[data-waybill-refresh]").addEventListener("click", () => loaders.waybills().catch(error => say(error.message)));
+  waybillStatus.addEventListener("change", () => loaders.waybills().catch(error => say(error.message)));
+  $("[data-waybill-confirm-selected]")?.addEventListener("click", async () => {
+    const picked = [...waybillRows.querySelectorAll("tr[data-waybill-id]")].filter(row => row.querySelector("[data-pick]")?.checked);
+    if (!picked.length) { say("请勾选要确认的运单。"); return; }
+    if (picked.length > 200) { say("一次最多确认 200 张。"); return; }
+    try {
+      await confirmItems(picked.map(row => {
+        const chosen = row.querySelector("[data-party]")?.value;
+        return {waybill_id: Number(row.dataset.waybillId), expected_fingerprint: row.dataset.fingerprint, ...(chosen ? {party_id: Number(chosen)} : {})};
+      }));
+    } catch (error) { say(error.message); }
+  });
+  const amountDialog = main.querySelector("[data-amount-dialog]");
+  const amountForm = amountDialog.querySelector("[data-amount-form]");
+  amountDialog.querySelectorAll("[data-dialog-close]").forEach(item => item.addEventListener("click", () => amountDialog.close()));
+  async function openAmount(item) {
+    const response = await fetch(`/waybills/${item.waybill_id}/edit-data?source=manual`, {credentials: "same-origin", headers: {"X-Requested-With": "XMLHttpRequest"}});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.message || "运单读取失败。");
+    if (!data.editable) throw new Error(data.reason || "运单不能修改。");
+    amountDialog.querySelector("[data-amount-title]").textContent = `补录金额：${data.waybill_no}`;
+    amountForm.freight_fee.value = data.values.field_freight_fee || "";
+    amountForm.transfer_fee.value = data.values.field_transfer_fee || "";
+    amountForm.payment_method.value = data.values.field_payment_method || "寄付";
+    const message = amountDialog.querySelector("[data-amount-message]");
+    say("", message);
+    amountDialog.querySelector("[data-amount-actions]").replaceChildren(button("保存到运单", async () => {
+      const fields = {...data.values, field_freight_fee: amountForm.freight_fee.value.trim(),
+        field_transfer_fee: amountForm.transfer_fee.value.trim(), field_payment_method: amountForm.payment_method.value};
+      const requestId = crypto.randomUUID();
+      const saved = await fetch(`/waybills/${item.waybill_id}/manual-update`, {
+        method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest", "X-Browser-Request-UUID": requestId},
+        body: JSON.stringify({request_id: requestId, fingerprint: data.fingerprint, fields}),
+      });
+      const result = await saved.json().catch(() => ({}));
+      if (!saved.ok || !result.ok) throw new Error(result.message || "运单保存失败。");
+      amountDialog.close();
+      await loaders.waybills();
+      say(`${data.waybill_no}：${result.message || "金额已写回运单。"}请核对后确认记账。`);
+    }, "primary-btn", message));
+    amountDialog.showModal();
+  }
+
+  // ---------- doc posting rules (settings tab) ----------
+  const RULE_KEYS = {"寄付": "prepaid", "到付": "collect", "月结": "monthly"};
+  const PARTY_MODE_TEXT = {fixed: "固定往来单位", sender_customer: "按寄件人匹配月结客户", linked_platform: "按运单绑定的平台", choose: "确认时手选"};
+  async function loadDocRules() {
+    const body = $("[data-doc-rule-rows]");
+    const rules = await get("/finance/doc-rules");
+    await loadParties();
+    const leafOptions = predicate => accounts.filter(item => !item.is_group && item.is_active && predicate(item));
+    body.replaceChildren(...rules.map(rule => {
+      const row = document.createElement("tr");
+      cell(row, rule.payment_method);
+      const select = (name, options, value) => {
+        const field = document.createElement("select");
+        field.className = "review-input"; field.name = name; field.disabled = !superAdmin;
+        field.setAttribute("aria-label", `${rule.payment_method} ${name}`);
+        options.forEach(([key, label]) => field.add(new Option(label, key)));
+        field.value = value ?? "";
+        cell(row, "").append(field);
+        return field;
+      };
+      const receivable = select("receivable_account", leafOptions(item => item.account_type === "receivable" && item.requires_party).map(item => [item.code, accountLabel(item)]), rule.receivable_account);
+      const freight = select("freight_income_account", leafOptions(item => item.account_type === "income").map(item => [item.code, accountLabel(item)]), rule.freight_income_account);
+      const transfer = select("transfer_income_account", leafOptions(item => item.account_type === "income").map(item => [item.code, accountLabel(item)]), rule.transfer_income_account);
+      const mode = select("party_mode", Object.entries(PARTY_MODE_TEXT), rule.party_mode);
+      const fixed = select("fixed_party_id", [["", "—"], ...parties.filter(item => item.is_active).map(item => [String(item.id), partyLabel(item)])], rule.fixed_party_id ? String(rule.fixed_party_id) : "");
+      if (superAdmin) {
+        cell(row, "").append(button("保存", async () => {
+          await send(`/finance/doc-rules/${RULE_KEYS[rule.payment_method]}`, {
+            receivable_account: receivable.value, freight_income_account: freight.value, transfer_income_account: transfer.value,
+            party_mode: mode.value, fixed_party_id: mode.value === "fixed" && fixed.value ? Number(fixed.value) : null,
+            expected_revision: rule.revision,
+          });
+          await loadDocRules();
+          say(`“${rule.payment_method}”记账规则已保存。`);
+        }, "ghost-btn", status));
+      }
+      return row;
+    }));
+  }
+
   // ---------- trial balance ----------
   const trialMonth = $("[data-trial-month]");
   trialMonth.value = thisMonth();
@@ -535,6 +700,18 @@
       say(`已核销 ${money(result.total_amount)}。`);
     } catch (error) { say(error.message); }
   });
+  $("[data-allocation-daily]")?.addEventListener("click", async () => {
+    if (!partySelect.value || !partyAccount.value) { say("请先选择往来单位和具体科目（例如寄付散客 · 112203 寄付待收）。"); return; }
+    try {
+      const result = await send("/finance/allocations/daily", {
+        party_id: Number(partySelect.value), account_code: partyAccount.value, date: allocationDate.value,
+      });
+      await loaders.parties();
+      say(result.allocation
+        ? `${allocationDate.value} 应收 ${money(result.receivable)}，收款 ${money(result.received)}，已核销 ${money(result.allocation.total_amount)}，差额 ${money(result.difference)} 保留在未清项。`
+        : `${allocationDate.value} 没有可配对的应收和收款（应收 ${money(result.receivable)}，收款 ${money(result.received)}）。`);
+    } catch (error) { say(error.message); }
+  });
   $("[data-allocation-auto]")?.addEventListener("click", async () => {
     if (!partySelect.value || !partyAccount.value) { say("请先选择往来单位和具体科目。"); return; }
     try {
@@ -765,6 +942,7 @@
       select.value = settings[select.name];
       select.disabled = !superAdmin;
     });
+    await loadDocRules();
   };
   settingsForm.addEventListener("submit", async event => {
     event.preventDefault();

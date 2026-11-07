@@ -15,7 +15,7 @@ updated: 2026-11-07
 |---|---|
 | `agent_db` | Agent/Console 账号权限、会话、插件、调度、调用日志、来源配置及其他运行数据 |
 | `waybill_db` | 韵达 `yunda_waybills`、融辉 `ronghui_waybills`、博益 `boyi_waybills`；韵达 `yunda_receipts`、融辉 `ronghui_receipts`、博益 `boyi_receipts` |
-| `finance_db` | 财务总账：迁移 068 的科目、设置、期间、凭证编号、凭证与分录、总账分录、操作事件共 8 张表，迁移 069 的往来单位、往来台账、核销记录 3 张表（055 迁入及 062/063 的旧账户收支账本 23 张表已由迁移 067 退役） |
+| `finance_db` | 财务总账：迁移 068 的科目、设置、期间、凭证编号、凭证与分录、总账分录、操作事件共 8 张表，迁移 069 的往来单位、往来台账、核销记录 3 张表，迁移 070 的博益开单记账规则与确认记录 2 张表（055 迁入及 062/063 的旧账户收支账本 23 张表已由迁移 067 退役） |
 
 博益运单表也保存本地 OCR 录入，`source=manual/ocr` 保持可区分；平台同步只写对应平台表。
 博益回单表预留结构，目前没有启用采集或自动把“需要回单”转换成回单记录。
@@ -46,7 +46,7 @@ updated: 2026-11-07
 迁移 `059_boyi_waybill_platform_link.sql` 给 `waybill_db.boyi_waybills` 增加可空的绑定平台与平台运单号两列，执行后重建视图；运行库 `boyi_waybills` 视图随之投影，`waybills` 联合视图不含这两列。
 迁移 `060_platform_waybill_fields.sql` 给融辉、韵达实体表增加 `recorded_cost`、`to_pay_amount`、`sender_address`、`receipt_required`、`receipt_number`，重建运行视图并使旧平台覆盖证明失效。费用只由原页重新采集填入；Boyi 行的新平台专用费用与回单编号在联合视图中为 NULL，Boyi 已有地址和回单标记仍用原列。原始运费、代收货款、到付款和录单成本独立保存，字段来源见[寄件字段与金额](direct_waybill_query.md#寄件字段与金额2026-10-14)。
 
-迁移 `062_finance_period_close.sql`、`063_finance_platform_captures.sql` 曾在 `finance_db` 增加封账与统计查询抓取表；迁移 `067_retire_finance_statement_ledger.sql` 已退役 `finance_db` 中全部旧财务表及其运行库视图（删除前逐行导出），总账重建的新表由后续迁移加入，并在 `scripts/migration_055_domain_databases.py` 的 `LATER_FINANCE_TABLES` 登记以投影视图。迁移 `068_finance_gl_core.sql` 建立总账内核 8 张表并预置《小企业会计准则》科目，迁移 `069_finance_party.sql` 增加往来 3 张表，表结构见[财务模块说明](../agent/docs/finance_module.md#p1-总账内核)；发布前须分别核验 Console 账号对这些视图与 `finance_db` 实体表的 SELECT、INSERT、UPDATE、DELETE 权限（Console 直接读写总账）。
+迁移 `062_finance_period_close.sql`、`063_finance_platform_captures.sql` 曾在 `finance_db` 增加封账与统计查询抓取表；迁移 `067_retire_finance_statement_ledger.sql` 已退役 `finance_db` 中全部旧财务表及其运行库视图（删除前逐行导出），总账重建的新表由后续迁移加入，并在 `scripts/migration_055_domain_databases.py` 的 `LATER_FINANCE_TABLES` 登记以投影视图。迁移 `068_finance_gl_core.sql` 建立总账内核 8 张表并预置《小企业会计准则》科目，迁移 `069_finance_party.sql` 增加往来 3 张表，迁移 `070_finance_doc_posting.sql` 增加博益开单记账 2 张表（确认时以 `FOR UPDATE` 锁 `waybill_db.boyi_waybills` 的对应行，Console 账号须保留该库的 UPDATE 权限），表结构见[财务模块说明](../agent/docs/finance_module.md#p1-总账内核)；发布前须分别核验 Console 账号对这些视图与 `finance_db` 实体表的 SELECT、INSERT、UPDATE、DELETE 权限（Console 直接读写总账）。
 
 同实例迁移或灾备必须覆盖三个库、跨库外键和视图，单独导出 `agent_db` 不再包含业务实体数据。
 

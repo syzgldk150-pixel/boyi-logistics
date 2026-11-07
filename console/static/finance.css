@@ -49,3 +49,6 @@
 }
 .finance-subhead { margin: 8px 0 0; font-size: 0.9375rem; color: var(--text-strong); }
 .finance-table td.num .review-input { min-width: 110px; text-align: right; }
+.finance-problem { margin-top: 2px; color: var(--danger-ink); font-size: 0.8125rem; white-space: normal; }
+.finance-state--pending, .finance-state--changed, .finance-state--cancelled_posted { color: var(--warning-ink); font-weight: 600; }
+.finance-state--confirmed { color: var(--success-ink); }

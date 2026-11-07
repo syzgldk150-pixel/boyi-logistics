@@ -98,66 +98,69 @@ class PostingMixin:
         voucher_id = int(voucher_id)
         revision = expected_revision((payload or {}).get("expected_revision"))
 
-        def work(cursor: Any) -> dict[str, Any]:
-            settings = self._load_settings(cursor, lock="FOR SHARE")
-            start_month = settings["start_month"]
-            if not start_month:
-                raise FinanceError("START_MONTH_REQUIRED", "请先在财务设置中设定总账启用月。")
-            voucher = self._voucher_row(cursor, voucher_id, lock="FOR UPDATE")
-            if voucher["status"] != "draft":
-                raise FinanceError("VOUCHER_NOT_DRAFT", "凭证已提交或已冲销。")
-            if int(voucher["revision"]) != revision:
-                raise FinanceError("FINANCE_REVISION_CONFLICT", "凭证已被他人修改，请刷新后重试。")
-            period = voucher["period_month"]
-            if period < start_month:
-                raise FinanceError("BEFORE_START_MONTH", f"记账日期早于总账启用月 {start_month}。")
-            if voucher["voucher_type"] == "opening" and period != start_month:
-                raise FinanceError("OPENING_OUTSIDE_START_MONTH", f"期初凭证只能记在启用月 {start_month}。")
-            cursor.execute(
-                f"SELECT id, line_no, {_GL_COPY_COLUMNS} FROM finance_voucher_lines WHERE voucher_id=%s ORDER BY line_no FOR SHARE",
-                (voucher_id,),
-            )
-            lines = fetchall(cursor)
-            if len(lines) < 2:
-                raise FinanceError("VOUCHER_TOO_FEW_LINES", "凭证至少需要两行分录。")
-            debit = sum((Decimal(line["debit"]) for line in lines), Decimal("0"))
-            credit = sum((Decimal(line["credit"]) for line in lines), Decimal("0"))
-            if debit != credit:
-                raise FinanceError("VOUCHER_UNBALANCED", f"借贷不平：借方 {debit:.2f}，贷方 {credit:.2f}。",
-                                   details={"total_debit": format(debit, "f"), "total_credit": format(credit, "f")})
-            if debit <= 0:
-                raise FinanceError("VOUCHER_ZERO", "凭证金额不能为 0。")
-            self._lock_open_period(cursor, period)
-            self._check_postable_accounts(cursor, lines)
-            voucher_no = self._next_voucher_no(cursor, period)
-            cursor.executemany(
-                "INSERT INTO finance_gl_entries (voucher_id, voucher_line_id, entry_kind, posting_date, period_month,"
-                f" {_GL_COPY_COLUMNS}, created_by) VALUES (%s, %s, 'original', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                [
-                    (voucher_id, line["id"], voucher["posting_date"], period, line["account_code"], line["debit"],
-                     line["credit"], line["summary"], line["site_code"], line["source_id"], line["business_line"],
-                     line["fee_level"], line["waybill_no"], line["party_id"], line["source_line_id"], actor.label)
-                    for line in lines
-                ],
-            )
-            cursor.execute(
-                "UPDATE finance_vouchers SET status='submitted', voucher_no=%s, total_debit=%s, total_credit=%s,"
-                " submitted_by=%s, submitted_at=CURRENT_TIMESTAMP(6), revision=revision+1 WHERE id=%s",
-                (voucher_no, debit, credit, actor.label, voucher_id),
-            )
-            self._verify_posted(cursor, voucher_id, count=len(lines), debit=debit, credit=credit)
-            recorded = self._record_open_items(cursor, voucher_id)
-            cursor.execute(
-                "SELECT COUNT(*) AS n FROM finance_gl_entries g JOIN finance_accounts a ON a.code=g.account_code"
-                " WHERE g.voucher_id=%s AND g.entry_kind='original' AND a.requires_party=1",
-                (voucher_id,),
-            )
-            if recorded != int(fetchone(cursor)["n"]):
-                raise FinanceError("GL_READBACK_MISMATCH", "往来未清项与总账分录数量不一致，本次提交已撤销。", http_status=500)
-            return self._full_voucher(cursor, voucher_id)
-
         return self._write(request_id=request_id, action="voucher.submit", target_type="voucher", target_id=voucher_id,
-                           payload={"expected_revision": revision}, actor=actor, work=work)
+                           payload={"expected_revision": revision}, actor=actor,
+                           work=lambda cursor: self._submit_in_tx(cursor, voucher_id, actor, revision=revision))
+
+    def _submit_in_tx(self, cursor: Any, voucher_id: int, actor: FinanceActor, *, revision: int | None = None) -> dict[str, Any]:
+        """Post a draft inside the caller's transaction (the single GL write path)."""
+
+        settings = self._load_settings(cursor, lock="FOR SHARE")
+        start_month = settings["start_month"]
+        if not start_month:
+            raise FinanceError("START_MONTH_REQUIRED", "请先在财务设置中设定总账启用月。")
+        voucher = self._voucher_row(cursor, voucher_id, lock="FOR UPDATE")
+        if voucher["status"] != "draft":
+            raise FinanceError("VOUCHER_NOT_DRAFT", "凭证已提交或已冲销。")
+        if revision is not None and int(voucher["revision"]) != revision:
+            raise FinanceError("FINANCE_REVISION_CONFLICT", "凭证已被他人修改，请刷新后重试。")
+        period = voucher["period_month"]
+        if period < start_month:
+            raise FinanceError("BEFORE_START_MONTH", f"记账日期早于总账启用月 {start_month}。")
+        if voucher["voucher_type"] == "opening" and period != start_month:
+            raise FinanceError("OPENING_OUTSIDE_START_MONTH", f"期初凭证只能记在启用月 {start_month}。")
+        cursor.execute(
+            f"SELECT id, line_no, {_GL_COPY_COLUMNS} FROM finance_voucher_lines WHERE voucher_id=%s ORDER BY line_no FOR SHARE",
+            (voucher_id,),
+        )
+        lines = fetchall(cursor)
+        if len(lines) < 2:
+            raise FinanceError("VOUCHER_TOO_FEW_LINES", "凭证至少需要两行分录。")
+        debit = sum((Decimal(line["debit"]) for line in lines), Decimal("0"))
+        credit = sum((Decimal(line["credit"]) for line in lines), Decimal("0"))
+        if debit != credit:
+            raise FinanceError("VOUCHER_UNBALANCED", f"借贷不平：借方 {debit:.2f}，贷方 {credit:.2f}。",
+                               details={"total_debit": format(debit, "f"), "total_credit": format(credit, "f")})
+        if debit <= 0:
+            raise FinanceError("VOUCHER_ZERO", "凭证金额不能为 0。")
+        self._lock_open_period(cursor, period)
+        self._check_postable_accounts(cursor, lines)
+        voucher_no = self._next_voucher_no(cursor, period)
+        cursor.executemany(
+            "INSERT INTO finance_gl_entries (voucher_id, voucher_line_id, entry_kind, posting_date, period_month,"
+            f" {_GL_COPY_COLUMNS}, created_by) VALUES (%s, %s, 'original', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            [
+                (voucher_id, line["id"], voucher["posting_date"], period, line["account_code"], line["debit"],
+                 line["credit"], line["summary"], line["site_code"], line["source_id"], line["business_line"],
+                 line["fee_level"], line["waybill_no"], line["party_id"], line["source_line_id"], actor.label)
+                for line in lines
+            ],
+        )
+        cursor.execute(
+            "UPDATE finance_vouchers SET status='submitted', voucher_no=%s, total_debit=%s, total_credit=%s,"
+            " submitted_by=%s, submitted_at=CURRENT_TIMESTAMP(6), revision=revision+1 WHERE id=%s",
+            (voucher_no, debit, credit, actor.label, voucher_id),
+        )
+        self._verify_posted(cursor, voucher_id, count=len(lines), debit=debit, credit=credit)
+        recorded = self._record_open_items(cursor, voucher_id)
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM finance_gl_entries g JOIN finance_accounts a ON a.code=g.account_code"
+            " WHERE g.voucher_id=%s AND g.entry_kind='original' AND a.requires_party=1",
+            (voucher_id,),
+        )
+        if recorded != int(fetchone(cursor)["n"]):
+            raise FinanceError("GL_READBACK_MISMATCH", "往来未清项与总账分录数量不一致，本次提交已撤销。", http_status=500)
+        return self._full_voucher(cursor, voucher_id)
 
     @staticmethod
     def _verify_posted(cursor: Any, voucher_id: int, *, count: int, debit: Decimal, credit: Decimal) -> None:
@@ -180,49 +183,54 @@ class PostingMixin:
         if not reason:
             raise FinanceValidationError("请填写冲销原因。", code="CANCEL_REASON_REQUIRED")
 
-        def work(cursor: Any) -> dict[str, Any]:
-            voucher = self._voucher_row(cursor, voucher_id, lock="FOR UPDATE")
-            if voucher["status"] != "submitted":
-                raise FinanceError("VOUCHER_NOT_SUBMITTED", "只有已提交的凭证可以冲销。")
-            if int(voucher["revision"]) != revision:
-                raise FinanceError("FINANCE_REVISION_CONFLICT", "凭证已被他人修改，请刷新后重试。")
-            self._lock_open_period(cursor, voucher["period_month"])
-            self._release_open_items(cursor, voucher_id)
-            cursor.execute(
-                f"SELECT id, voucher_line_id, posting_date, period_month, {_GL_COPY_COLUMNS} FROM finance_gl_entries"
-                " WHERE voucher_id=%s AND entry_kind='original' AND is_cancelled=0 ORDER BY id FOR UPDATE",
-                (voucher_id,),
-            )
-            originals = fetchall(cursor)
-            if not originals:
-                raise FinanceError("GL_READBACK_MISMATCH", "该凭证没有有效分录，无法冲销。", http_status=500)
-            cursor.executemany(
-                "INSERT INTO finance_gl_entries (voucher_id, voucher_line_id, entry_kind, posting_date, period_month,"
-                f" {_GL_COPY_COLUMNS}, is_cancelled, created_by) VALUES (%s, %s, 'reversal', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
-                [
-                    (voucher_id, row["voucher_line_id"], row["posting_date"], row["period_month"], row["account_code"],
-                     row["credit"], row["debit"], f"冲销：{row['summary']}"[:255], row["site_code"], row["source_id"],
-                     row["business_line"], row["fee_level"], row["waybill_no"], row["party_id"], row["source_line_id"],
-                     actor.label)
-                    for row in originals
-                ],
-            )
-            cursor.execute(
-                "UPDATE finance_gl_entries SET is_cancelled=1 WHERE voucher_id=%s AND entry_kind='original'", (voucher_id,)
-            )
-            cursor.execute(
-                "UPDATE finance_vouchers SET status='cancelled', cancelled_by=%s, cancelled_at=CURRENT_TIMESTAMP(6),"
-                " cancel_reason=%s, revision=revision+1 WHERE id=%s",
-                (actor.label, reason, voucher_id),
-            )
-            cursor.execute(
-                "SELECT account_code, SUM(debit) - SUM(credit) AS net, SUM(is_cancelled=0) AS active"
-                " FROM finance_gl_entries WHERE voucher_id=%s GROUP BY account_code",
-                (voucher_id,),
-            )
-            if any(Decimal(row["net"]) != 0 or int(row["active"]) for row in fetchall(cursor)):
-                raise FinanceError("GL_READBACK_MISMATCH", "冲销回读不为零，本次冲销已撤销。", http_status=500)
-            return self._full_voucher(cursor, voucher_id)
-
         return self._write(request_id=request_id, action="voucher.cancel", target_type="voucher", target_id=voucher_id,
-                           payload={"expected_revision": revision, "reason": reason}, actor=actor, work=work)
+                           payload={"expected_revision": revision, "reason": reason}, actor=actor,
+                           work=lambda cursor: self._cancel_in_tx(cursor, voucher_id, reason, actor, revision=revision))
+
+    def _cancel_in_tx(
+        self, cursor: Any, voucher_id: int, reason: str, actor: FinanceActor, *, revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Reverse a submitted voucher inside the caller's transaction."""
+
+        voucher = self._voucher_row(cursor, voucher_id, lock="FOR UPDATE")
+        if voucher["status"] != "submitted":
+            raise FinanceError("VOUCHER_NOT_SUBMITTED", "只有已提交的凭证可以冲销。")
+        if revision is not None and int(voucher["revision"]) != revision:
+            raise FinanceError("FINANCE_REVISION_CONFLICT", "凭证已被他人修改，请刷新后重试。")
+        self._lock_open_period(cursor, voucher["period_month"])
+        self._release_open_items(cursor, voucher_id)
+        cursor.execute(
+            f"SELECT id, voucher_line_id, posting_date, period_month, {_GL_COPY_COLUMNS} FROM finance_gl_entries"
+            " WHERE voucher_id=%s AND entry_kind='original' AND is_cancelled=0 ORDER BY id FOR UPDATE",
+            (voucher_id,),
+        )
+        originals = fetchall(cursor)
+        if not originals:
+            raise FinanceError("GL_READBACK_MISMATCH", "该凭证没有有效分录，无法冲销。", http_status=500)
+        cursor.executemany(
+            "INSERT INTO finance_gl_entries (voucher_id, voucher_line_id, entry_kind, posting_date, period_month,"
+            f" {_GL_COPY_COLUMNS}, is_cancelled, created_by) VALUES (%s, %s, 'reversal', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)",
+            [
+                (voucher_id, row["voucher_line_id"], row["posting_date"], row["period_month"], row["account_code"],
+                 row["credit"], row["debit"], f"冲销：{row['summary']}"[:255], row["site_code"], row["source_id"],
+                 row["business_line"], row["fee_level"], row["waybill_no"], row["party_id"], row["source_line_id"],
+                 actor.label)
+                for row in originals
+            ],
+        )
+        cursor.execute(
+            "UPDATE finance_gl_entries SET is_cancelled=1 WHERE voucher_id=%s AND entry_kind='original'", (voucher_id,)
+        )
+        cursor.execute(
+            "UPDATE finance_vouchers SET status='cancelled', cancelled_by=%s, cancelled_at=CURRENT_TIMESTAMP(6),"
+            " cancel_reason=%s, revision=revision+1 WHERE id=%s",
+            (actor.label, reason, voucher_id),
+        )
+        cursor.execute(
+            "SELECT account_code, SUM(debit) - SUM(credit) AS net, SUM(is_cancelled=0) AS active"
+            " FROM finance_gl_entries WHERE voucher_id=%s GROUP BY account_code",
+            (voucher_id,),
+        )
+        if any(Decimal(row["net"]) != 0 or int(row["active"]) for row in fetchall(cursor)):
+            raise FinanceError("GL_READBACK_MISMATCH", "冲销回读不为零，本次冲销已撤销。", http_status=500)
+        return self._full_voucher(cursor, voucher_id)

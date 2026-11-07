@@ -185,11 +185,12 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `app.py`
   - `database.py`
   - 页面入口 `/receipts` 使用本地 `receipt_records/receipt_attachments/receipt_audit_logs`。查询走普通 receipts-query，审核走 receipts-audit 直接业务动作；独立读回核验成功后才更新本地审核状态，未知结果不得伪造成功。不创建旧 Command/Run 或隐式写 iframe。
-- 改财务模块（总账重建中，P1 总账内核与 P2 往来已完成）：
+- 改财务模块（总账重建中，P1–P3 已完成）：
   - `templates/finance.html`、`static/finance.js`、`static/finance.css`
   - `routes/finance.py`、`services/finance_ledger.py`（总账接口）、`services/monitoring_finance.py`（`_render_finance`）
   - 规则全部在 `../shared/finance/`：Console 只经 `FinanceRepository(self.repository.connect)` 读写，不在页面或服务里写总账 SQL。
-  - 页签：凭证、科目余额表、明细账、序时账、往来核销、账龄与对账单、科目、设置。凭证分录行可选往来单位。
+  - 页签：开单确认、凭证、科目余额表、明细账、序时账、往来核销、账龄与对账单、科目、设置。凭证分录行可选往来单位。
+  - 博益开单全部人工确认后才记账。“改金额”只调用现有 `/waybills/{id}/edit-data` 与 `/waybills/{id}/manual-update`，写回运单并留修改记录，财务页不另存金额。开单记账规则的修改只允许超级管理员。
   - 权限由 `shared/identity_routes.py` 投影：
     - 查看 `finance.read`；
     - 制单和提交 `finance.manage`；

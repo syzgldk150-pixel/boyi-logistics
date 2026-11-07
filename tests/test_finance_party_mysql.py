@@ -40,7 +40,7 @@ def test_migration_marks_party_accounts_and_party_crud(repo):  # noqa: F811
         party(repo, name="半填", boyi_sender_name="只有姓名")
     renamed = repo.update_party(customer["id"], {"name": "改名客户", "expected_revision": customer["revision"]}, request_id=rid(), actor=ACTOR)
     assert renamed["name"] == "改名客户" and renamed["revision"] == 2
-    assert [p["name"] for p in repo.list_parties(party_type="customer")] == ["改名客户"]
+    assert [p["name"] for p in repo.list_parties(party_type="customer")] == ["寄付散客", "改名客户"]
 
 
 def test_party_account_requires_party_and_posts_open_items(repo):  # noqa: F811

@@ -64,6 +64,10 @@ def app():
     ("POST", "/finance/parties", "finance.manage"),
     ("POST", "/finance/allocations", "finance.manage"),
     ("POST", "/finance/allocations/9/reverse", "finance.manage"),
+    ("GET", "/finance/waybills", "finance.read"),
+    ("POST", "/finance/waybills/15/confirm", "finance.manage"),
+    ("POST", "/finance/waybills/confirm-batch", "finance.manage"),
+    ("POST", "/finance/doc-rules/prepaid", SUPER_ADMIN),
 ])
 def test_route_permissions(method, path, permission):
     assert console_permission(method, path) == permission
@@ -90,6 +94,12 @@ def test_route_permissions(method, path, permission):
     ("POST", "/finance/allocations", ("_handle_finance_ledger_post", "allocation_create")),
     ("POST", "/finance/allocations/auto-waybill", ("_handle_finance_ledger_post", "allocation_auto")),
     ("POST", "/finance/allocations/9/reverse", ("_handle_finance_ledger_post", "allocation_reverse", "9")),
+    ("POST", "/finance/allocations/daily", ("_handle_finance_ledger_post", "allocation_daily")),
+    ("GET", "/finance/waybills", ("_handle_finance_ledger_get", "waybill_postings")),
+    ("GET", "/finance/doc-rules", ("_handle_finance_ledger_get", "doc_rules")),
+    ("POST", "/finance/waybills/15/confirm", ("_handle_finance_ledger_post", "waybill_confirm", "15")),
+    ("POST", "/finance/waybills/confirm-batch", ("_handle_finance_ledger_post", "waybill_confirm_batch")),
+    ("POST", "/finance/doc-rules/collect", ("_handle_finance_ledger_post", "doc_rule_update", "到付")),
 ])
 def test_routes_dispatch(method, path, call):
     stub = Mock()
@@ -108,6 +118,7 @@ def test_unknown_finance_paths_are_not_routed():
     stub = Mock()
     assert not finance.handle_get(stub, "h", "/finance/summary", "", {})
     assert not finance.handle_post(stub, "h", "/finance/vouchers/abc/submit", "", {})
+    assert not finance.handle_post(stub, "h", "/finance/doc-rules/cash", "", {})
 
 
 def test_write_passes_session_actor_and_matching_request_id(app):
