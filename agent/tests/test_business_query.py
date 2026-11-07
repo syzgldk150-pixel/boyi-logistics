@@ -57,26 +57,32 @@ class _OperationsRepository:
         return deepcopy(self.result)
 
 
+class _Ledger:
+    def __init__(self, result=None, error: Exception | None = None) -> None:
+        self.result = result if result is not None else {
+            "start_date": "2026-08-01", "end_date": "2026-08-25", "voucher_count": 3, "revenue": "300.0000",
+            "cost": "120.0000", "expense": "30.0050", "other_income": "0.0000", "profit": "149.9950",
+            "closed_through": "2026-07", "warnings": ["所查期间尚未全部封账，金额可能变动"],
+        }
+        self.error = error
+        self.queries = []
+
+    def ledger_summary(self, *, start_date, end_date):
+        self.queries.append((start_date, end_date))
+        if self.error is not None:
+            raise self.error
+        return deepcopy(self.result)
+
+
 def _finance_payload(**overrides):
     payload = {
-        "query_type": "finance_summary",
+        "query_type": "ledger_summary",
         "availability": "DATA",
         "period": {"start_date": "2026-08-01", "end_date": "2026-08-25"},
-        "summary": {
-            "total_income": "10.01",
-            "total_expense": "3.00",
-            "net_change": "7.01",
-            "pending_fee_items": 1,
-        },
-        "source": {
-            "name": "shared_finance_ledger",
-            "platform": "all_enabled",
-            "validation_status": "passed",
-            "data_through_date": "2026-08-25",
-            "latest_success_at": "2026-08-25 00:10:00",
-        },
-        "record_count": 2,
-        "warnings": ["存在未分类费用项目。"],
+        "summary": {"revenue": "300.00", "cost": "120.00", "expense": "30.01", "other_income": "0.00", "profit": "149.99"},
+        "voucher_count": 3,
+        "closed_through": "2026-07",
+        "warnings": ["所查期间尚未全部封账，金额可能变动"],
     }
     payload.update(overrides)
     return payload
@@ -199,42 +205,49 @@ class AutomationOperationsQueryTests(unittest.TestCase):
 
 
 class BusinessFinanceQueryTests(unittest.TestCase):
-    def test_well_formed_request_fails_closed_while_the_ledger_is_rebuilt(self):
-        service = BusinessFinanceQueryService()
-        for arguments in (
-            {"start_date": "2026-01-01", "end_date": "2026-01-31"},
-            {"start_date": "2026-01-01", "end_date": "2026-01-31", "platform": "ronghui"},
-        ):
-            with self.subTest(arguments=arguments), self.assertRaises(BusinessQueryError) as caught:
-                service.run(arguments)
-            self.assertEqual(caught.exception.code, "BUSINESS_QUERY_FINANCE_REBUILDING")
+    def test_reads_the_ledger_summary_and_rounds_to_cents(self):
+        ledger = _Ledger()
+        result = BusinessFinanceQueryService(ledger).run({"start_date": "2026-08-01", "end_date": "2026-08-25"})
+        self.assertEqual(ledger.queries, [(dt.date(2026, 8, 1), dt.date(2026, 8, 25))])
+        self.assertEqual(result, _finance_payload(summary={"revenue": "300.00", "cost": "120.00", "expense": "30.01",
+                                                           "other_income": "0.00", "profit": "150.00"}))
+
+    def test_no_vouchers_is_no_data_without_amounts(self):
+        ledger = _Ledger(_Ledger().result | {"voucher_count": 0})
+        result = BusinessFinanceQueryService(ledger).run({"start_date": "2026-08-01", "end_date": "2026-08-25"})
+        self.assertEqual((result["availability"], result["summary"]), ("NO_DATA", {}))
+
+    def test_missing_reader_or_read_failure_fails_closed(self):
+        with self.assertRaises(BusinessQueryError) as missing:
+            BusinessFinanceQueryService().run({"start_date": "2026-01-01", "end_date": "2026-01-31"})
+        self.assertEqual(missing.exception.code, "BUSINESS_QUERY_UNAVAILABLE")
+        with self.assertRaises(BusinessQueryError) as failed:
+            BusinessFinanceQueryService(_Ledger(error=RuntimeError("db down 9.99"))).run(
+                {"start_date": "2026-01-01", "end_date": "2026-01-31"})
+        self.assertEqual(failed.exception.code, "BUSINESS_QUERY_UNAVAILABLE")
+        with self.assertRaises(BusinessQueryError) as malformed:
+            BusinessFinanceQueryService(_Ledger(_Ledger().result | {"revenue": "abc"})).run(
+                {"start_date": "2026-01-01", "end_date": "2026-01-31"})
+        self.assertEqual(malformed.exception.code, "BUSINESS_QUERY_CONTRACT_INVALID")
 
     def test_query_boundary_allows_366_calendar_days_and_rejects_367(self):
-        service = BusinessFinanceQueryService()
-        with self.assertRaises(BusinessQueryError) as caught:
-            service.run({"start_date": "2024-01-01", "end_date": "2024-12-31"})
-        self.assertEqual(caught.exception.code, "BUSINESS_QUERY_FINANCE_REBUILDING")
+        service = BusinessFinanceQueryService(_Ledger())
+        service.run({"start_date": "2024-01-01", "end_date": "2024-12-31"})
         with self.assertRaises(BusinessQueryError) as caught:
             service.run({"start_date": "2024-01-01", "end_date": "2025-01-01"})
         self.assertEqual(caught.exception.code, "BUSINESS_QUERY_INVALID")
 
-    def test_rejects_unknown_fields_and_non_string_platform(self):
-        service = BusinessFinanceQueryService()
+    def test_rejects_unknown_fields_and_platform(self):
+        service = BusinessFinanceQueryService(_Ledger())
         for arguments in (
             {"start_date": "2026-01-01", "end_date": "2026-01-31", "sql": "SELECT 1"},
-            {"start_date": "2026-01-01", "end_date": "2026-01-31", "platform": 1},
+            {"start_date": "2026-01-01", "end_date": "2026-01-31", "platform": "ronghui"},
             {"start_date": "2026-01-31", "end_date": "2026-01-01"},
             "not-an-object",
         ):
             with self.subTest(arguments=arguments), self.assertRaises(BusinessQueryError) as caught:
                 service.run(arguments)
             self.assertEqual(caught.exception.code, "BUSINESS_QUERY_INVALID")
-
-    def test_rebuild_failure_has_a_fixed_reply_without_amounts(self):
-        reply = format_business_finance_reply(
-            {"success": False, "error_code": "BUSINESS_QUERY_FINANCE_REBUILDING"}
-        )
-        self.assertEqual(reply, "财务模块正在重建为总账体系，暂不提供金额。")
 
     @staticmethod
     def _plan_step(*, account_id=None) -> PlanStep:
@@ -280,14 +293,8 @@ class BusinessFinanceQueryTests(unittest.TestCase):
             ("查本月收支", {"start_date": "2026-08-01", "end_date": "2026-08-25"}),
             ("上个月财务汇总", {"start_date": "2026-07-01", "end_date": "2026-07-31"}),
             ("近7天账本", {"start_date": "2026-08-19", "end_date": "2026-08-25"}),
-            (
-                "查询融辉 2026-08-01 到 2026-08-20 财务",
-                {
-                    "start_date": "2026-08-01",
-                    "end_date": "2026-08-20",
-                    "platform": "ronghui",
-                },
-            ),
+            ("查询今天财务利润", {"start_date": "2026-08-25", "end_date": "2026-08-25"}),
+            ("2026-08-01 到 2026-08-20 财务", {"start_date": "2026-08-01", "end_date": "2026-08-20"}),
         )
         for text, expected in cases:
             with self.subTest(text=text):
@@ -311,7 +318,7 @@ class BusinessFinanceQueryTests(unittest.TestCase):
             "截至今天财务",
             "近367天财务",
             "同步昨天财务",
-            "查询今天财务利润",
+            "查询融辉 2026-08-01 到 2026-08-20 财务",
             "查韵达财务今天收入",
             "查融辉和韵达今天财务",
             "中通今天财务",
@@ -343,45 +350,30 @@ class BusinessFinanceQueryTests(unittest.TestCase):
         )
 
     def test_finance_formatter_uses_only_validated_tool_owned_values(self):
-        reply = format_business_finance_reply(
-            {"success": True, "data": _finance_payload()}
-        )
+        reply = format_business_finance_reply({"success": True, "data": _finance_payload()})
+        self.assertIn("财务汇总（2026-08-01 至 2026-08-25，总账口径）", reply)
+        self.assertIn("营业收入：¥300.00", reply)
+        self.assertIn("营业成本：¥120.00", reply)
+        self.assertIn("期间费用：¥30.01", reply)
+        self.assertIn("利润：¥149.99", reply)
+        self.assertNotIn("其他损益", reply)
+        self.assertIn("已封账至：2026-07", reply)
+        self.assertIn("提示：所查期间尚未全部封账，金额可能变动", reply)
 
-        self.assertIn("财务汇总（2026-08-01 至 2026-08-25）", reply)
-        self.assertIn("总收入：¥10.01", reply)
-        self.assertIn("总支出：¥3.00", reply)
-        self.assertIn("净变动：¥7.01", reply)
-        self.assertIn("净变动不能解释为利润", reply)
-
-    def test_finance_formatter_distinguishes_verified_no_data_without_zero_amounts(self):
-        payload = _finance_payload(
-            availability="NO_DATA",
-            summary={},
-            record_count=0,
-            warnings=["所选期间没有交易记录。"],
-        )
-
+    def test_finance_formatter_distinguishes_no_vouchers_without_zero_amounts(self):
+        payload = _finance_payload(availability="NO_DATA", summary={}, voucher_count=0, closed_through=None, warnings=[])
         reply = format_business_finance_reply({"success": True, "data": payload})
-
-        self.assertIn("已验证财务账本在该期间没有交易记录", reply)
+        self.assertIn("该期间总账没有凭证", reply)
+        self.assertIn("已封账至：尚未封账", reply)
         self.assertNotIn("¥", reply)
-        self.assertNotIn("0.00", reply)
 
     def test_finance_formatter_never_leaks_failures_or_malformed_amounts(self):
         failures = (
-            {"success": False, "error_code": "BUSINESS_QUERY_DATA_INCOMPLETE", "error": "secret 9.99"},
+            {"success": False, "error_code": "BUSINESS_QUERY_CONTRACT_INVALID", "error": "secret 9.99"},
             {"success": False, "error_code": "UNKNOWN", "error": "secret 8.88"},
-            {
-                "success": True,
-                "data": _finance_payload(
-                    summary={
-                        "total_income": "synthetic 7.77",
-                        "total_expense": "3.00",
-                        "net_change": "4.77",
-                        "pending_fee_items": 0,
-                    }
-                ),
-            },
+            {"success": True, "data": _finance_payload(summary={"revenue": "synthetic 7.77", "cost": "1.00", "expense": "0.00",
+                                                                "other_income": "0.00", "profit": "6.77"})},
+            {"success": True, "data": _finance_payload(closed_through="'; DROP")},
         )
         for result in failures:
             with self.subTest(result=result):
@@ -401,7 +393,7 @@ class BusinessFinanceQueryTests(unittest.TestCase):
         actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",), authenticated_by="feishu_admin_binding")
         result = asyncio.run(core.handle_message("查本月财务", conversation_id="finance-test", actor=actor, source="feishu", request_id="event-finance-1"))
         self.assertEqual(calls[0]["params"], {"start_date": "2026-08-01", "end_date": "2026-08-25"})
-        self.assertIn("总收入：¥10.01", result["reply"])
+        self.assertIn("营业收入：¥300.00", result["reply"])
         core.execute_tool.assert_awaited_once()
         core.llm.chat.assert_not_awaited()
 
@@ -425,8 +417,9 @@ class BusinessFinanceQueryTests(unittest.TestCase):
 
     def test_operating_summary_is_fixed_route_with_finance_dates_and_bound_feishu_admin(self):
         from tests.chat_runtime_support import configure_chat
-        request = business_operations_request_from_text("查融辉本月经营情况", today=dt.date(2026, 8, 25))
-        self.assertEqual(request, {"params": {"start_date": "2026-08-01", "end_date": "2026-08-25", "platform": "ronghui"}})
+        request = business_operations_request_from_text("查本月经营情况", today=dt.date(2026, 8, 25))
+        self.assertEqual(request, {"params": {"start_date": "2026-08-01", "end_date": "2026-08-25"}})
+        self.assertIn("reply", business_operations_request_from_text("查融辉本月经营情况", today=dt.date(2026, 8, 25)))
         core = AgentCore(today_provider=lambda: dt.date(2026, 8, 25))
         core.execute_tool = AsyncMock(side_effect=[
             {"success": True, "data": _finance_payload()},
@@ -434,13 +427,13 @@ class BusinessFinanceQueryTests(unittest.TestCase):
         ])
         _, calls = configure_chat(core)
         actor = Actor(ActorType.FEISHU_USER, "bound-admin", roles=("admin",), authenticated_by="feishu_admin_binding")
-        result = asyncio.run(core.handle_message("查融辉本月经营摘要", conversation_id="finance-test", actor=actor, source="feishu", request_id="event-operations-1"))
+        result = asyncio.run(core.handle_message("查本月经营摘要", conversation_id="finance-test", actor=actor, source="feishu", request_id="event-operations-1"))
         self.assertEqual([item["tool_name"] for item in calls], ["query_business_finance", "query_automation_operations"])
-        self.assertEqual(calls[0]["params"]["platform"], "ronghui")
+        self.assertNotIn("platform", calls[0]["params"])
         self.assertEqual(calls[1]["params"], {"start_date": "2026-08-01", "end_date": "2026-08-25"})
         self.assertIn("客户收入维度：当前没有可信口径，无法提供。", result["reply"])
         self.assertIn("异常历史：当前没有可信历史数据，无法提供。", result["reply"])
-        self.assertIn("净变动不能解释为利润", result["reply"])
+        self.assertIn("利润：¥149.99", result["reply"])
 
     def test_operating_summary_keeps_finance_amounts_closed_when_finance_is_incomplete(self):
         reply = format_business_operations_summary_reply(

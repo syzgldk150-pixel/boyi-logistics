@@ -229,7 +229,7 @@ tools:
         - observed_at
     postconditions:
       - authoritative_result_returned
-    description: "查询已验证共享财务账本的期间收入、支出和净变动；不接受 SQL 或任意数据源"
+    description: "查询总账（全公司口径）的期间营业收入、营业成本、期间费用和利润；不接受 SQL 或任意数据源"
     input_schema:
       type: object
       additionalProperties: false
@@ -246,10 +246,6 @@ tools:
           maxLength: 10
           pattern: '^\d{4}-\d{2}-\d{2}$'
           description: "查询结束日期，格式 YYYY-MM-DD"
-        platform:
-          type: string
-          enum: [ronghui]
-          description: "可选，仅查询已启用的财务来源"
       required: [start_date, end_date]
     output_schema:
       type: object

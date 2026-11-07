@@ -407,10 +407,8 @@ class ToolRegistryValidationTests(unittest.TestCase):
             {"mode": "none", "allow_implicit_default": False},
         )
         self.assertEqual(capability["input_schema"]["required"], ["start_date", "end_date"])
-        self.assertEqual(
-            capability["input_schema"]["properties"]["platform"]["enum"],
-            ["ronghui"],
-        )
+        # The general ledger is company-wide; there is no per-platform source filter.
+        self.assertEqual(set(capability["input_schema"]["properties"]), {"start_date", "end_date"})
         self.assertNotIn("sql", capability["input_schema"]["properties"])
         self.assertNotIn(
             "query_business_finance",

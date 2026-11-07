@@ -8,7 +8,7 @@
 - 普通业务直接接口、独立插件调用与结果核验
 - 飞书消息接入
 - 后台 AI 助手与飞书共用的对话服务、权限与已注册能力
-- 财务总账重建中（见 `docs/finance_module.md`）；三平台报价由 `service_v2_plugins/quote_prices_v2/` 插件承担
+- 财务为复式记账总账（见 `docs/finance_module.md`）；三平台报价由 `service_v2_plugins/quote_prices_v2/` 插件承担
 
 ## 不在这里改什么
 

@@ -149,59 +149,58 @@ class WaybillPostingMixin:
         month = parse_month(month)
         if status not in (None, "", *STATUS_TEXT):
             raise FinanceValidationError("状态筛选无效。")
+        return self._read(lambda cursor: self._waybill_queue(cursor, month, status))
+
+    def _waybill_queue(self, cursor: Any, month: str, status: Any = None) -> dict[str, Any]:
         start, end = month_bounds(month)
-
-        def work(cursor: Any) -> dict[str, Any]:
+        cursor.execute(
+            f"SELECT {WAYBILL_COLUMNS} FROM boyi_waybills WHERE open_date BETWEEN %s AND %s ORDER BY open_date, id LIMIT %s",
+            (start.isoformat(), end.isoformat(), MAX_LIST_ROWS + 1),
+        )
+        waybills = fetchall(cursor)
+        if len(waybills) > MAX_LIST_ROWS:
+            raise FinanceError("WAYBILL_LIST_TOO_LARGE", f"本月博益开单超过 {MAX_LIST_ROWS} 张，请联系管理员。", http_status=422)
+        postings: dict[int, dict[str, Any]] = {}
+        if waybills:
+            ids = [int(w["id"]) for w in waybills]
             cursor.execute(
-                f"SELECT {WAYBILL_COLUMNS} FROM boyi_waybills WHERE open_date BETWEEN %s AND %s ORDER BY open_date, id LIMIT %s",
-                (start.isoformat(), end.isoformat(), MAX_LIST_ROWS + 1),
+                "SELECT p.*, v.voucher_no FROM finance_doc_postings p LEFT JOIN finance_vouchers v ON v.id=p.voucher_id"
+                f" WHERE p.doc_type='boyi_waybill' AND p.doc_id IN ({', '.join(['%s'] * len(ids))})",
+                tuple(ids),
             )
-            waybills = fetchall(cursor)
-            if len(waybills) > MAX_LIST_ROWS:
-                raise FinanceError("WAYBILL_LIST_TOO_LARGE", f"本月博益开单超过 {MAX_LIST_ROWS} 张，请联系管理员。", http_status=422)
-            postings: dict[int, dict[str, Any]] = {}
-            if waybills:
-                ids = [int(w["id"]) for w in waybills]
-                cursor.execute(
-                    "SELECT p.*, v.voucher_no FROM finance_doc_postings p LEFT JOIN finance_vouchers v ON v.id=p.voucher_id"
-                    f" WHERE p.doc_type='boyi_waybill' AND p.doc_id IN ({', '.join(['%s'] * len(ids))})",
-                    tuple(ids),
-                )
-                postings = {int(p["doc_id"]): p for p in fetchall(cursor)}
-            cursor.execute(f"SELECT {RULE_COLUMNS} FROM finance_doc_posting_rules")
-            rules = {r["payment_method"]: r for r in fetchall(cursor)}
-            senders, platforms, parties = self._party_lookups(cursor)
-            rows, counts = [], {key: 0 for key in STATUS_TEXT}
-            for waybill in waybills:
-                fingerprint = waybill_fingerprint(waybill)
-                posting = postings.get(int(waybill["id"]))
-                state = self._queue_status(waybill, posting, fingerprint)
-                counts[state] += 1
-                if status and state != status:
-                    continue
-                amounts = waybill_amounts(waybill)
-                suggested = self._suggest_party(rules.get(amounts["payment_method"]), waybill, senders, platforms)
-                rows.append({
-                    "waybill_id": int(waybill["id"]), "waybill_no": waybill["waybill_no"], "source": waybill["source"],
-                    "open_date": str(waybill["open_date"] or ""), "sender_name": waybill["sender_name"],
-                    "sender_phone": waybill["sender_phone"], "receiver_name": waybill["receiver_name"],
-                    "payment_method": amounts["payment_method"], "freight_fee": waybill["freight_fee"],
-                    "transfer_fee": waybill["transfer_fee"], "cod_amount": waybill["cod_amount"],
-                    "linked_platform": waybill["linked_platform"], "total": _text(amounts["total"]),
-                    "problems": amounts["problems"], "fingerprint": fingerprint, "status": state,
-                    "status_text": STATUS_TEXT[state],
-                    "suggested_party_id": suggested,
-                    "suggested_party_name": parties[suggested]["name"] if suggested in parties else None,
-                    "posting": None if posting is None else {
-                        "status": posting["status"], "voucher_id": posting["voucher_id"], "voucher_no": posting["voucher_no"],
-                        "total_amount": _text(Decimal(posting["total_amount"])), "party_id": posting["party_id"],
-                        "confirmed_by": posting["confirmed_by"],
-                        "confirmed_at": posting["confirmed_at"].isoformat(sep=" ", timespec="seconds"),
-                    },
-                })
-            return {"month": month, "rows": rows, "counts": counts}
-
-        return self._read(work)
+            postings = {int(p["doc_id"]): p for p in fetchall(cursor)}
+        cursor.execute(f"SELECT {RULE_COLUMNS} FROM finance_doc_posting_rules")
+        rules = {r["payment_method"]: r for r in fetchall(cursor)}
+        senders, platforms, parties = self._party_lookups(cursor)
+        rows, counts = [], {key: 0 for key in STATUS_TEXT}
+        for waybill in waybills:
+            fingerprint = waybill_fingerprint(waybill)
+            posting = postings.get(int(waybill["id"]))
+            state = self._queue_status(waybill, posting, fingerprint)
+            counts[state] += 1
+            if status and state != status:
+                continue
+            amounts = waybill_amounts(waybill)
+            suggested = self._suggest_party(rules.get(amounts["payment_method"]), waybill, senders, platforms)
+            rows.append({
+                "waybill_id": int(waybill["id"]), "waybill_no": waybill["waybill_no"], "source": waybill["source"],
+                "open_date": str(waybill["open_date"] or ""), "sender_name": waybill["sender_name"],
+                "sender_phone": waybill["sender_phone"], "receiver_name": waybill["receiver_name"],
+                "payment_method": amounts["payment_method"], "freight_fee": waybill["freight_fee"],
+                "transfer_fee": waybill["transfer_fee"], "cod_amount": waybill["cod_amount"],
+                "linked_platform": waybill["linked_platform"], "total": _text(amounts["total"]),
+                "problems": amounts["problems"], "fingerprint": fingerprint, "status": state,
+                "status_text": STATUS_TEXT[state],
+                "suggested_party_id": suggested,
+                "suggested_party_name": parties[suggested]["name"] if suggested in parties else None,
+                "posting": None if posting is None else {
+                    "status": posting["status"], "voucher_id": posting["voucher_id"], "voucher_no": posting["voucher_no"],
+                    "total_amount": _text(Decimal(posting["total_amount"])), "party_id": posting["party_id"],
+                    "confirmed_by": posting["confirmed_by"],
+                    "confirmed_at": posting["confirmed_at"].isoformat(sep=" ", timespec="seconds"),
+                },
+            })
+        return {"month": month, "rows": rows, "counts": counts}
 
     # ---------- confirm ----------
     def _period_is_closed(self, cursor: Any, period_month: str) -> bool:

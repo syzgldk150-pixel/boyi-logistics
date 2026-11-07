@@ -46,6 +46,8 @@ LATER_FINANCE_TABLES = (
     # 071: connector intake.
     "finance_sources", "finance_source_files", "finance_source_file_chunks", "finance_source_batches",
     "finance_source_lines", "finance_line_rules", "finance_reviews", "finance_anomalies",
+    # 072: period close and statement lines.
+    "finance_period_closes", "finance_account_balances", "finance_report_lines",
 )
 
 

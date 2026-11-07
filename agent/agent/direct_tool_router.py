@@ -334,14 +334,8 @@ def business_finance_request_from_text(
         raise RuntimeError("today must be a date")
     if BUSINESS_FINANCE_WRITE_RE.search(normalized):
         return {"reply": "自然语言入口只支持只读财务查询，不能同步、导入或修改财务数据。"}
-    if "利润" in normalized:
-        return {"reply": "当前只读财务账本只能查询收入、支出和净变动，不能把净变动解释为利润。"}
-    if "韵达" in normalized and "融辉" in normalized:
-        return {"reply": "一次只能查询一个已启用的财务来源；当前仅支持融辉。"}
-    if "韵达" in normalized:
-        return {"reply": "韵达财务来源尚未启用，当前不能查询。"}
-    if BUSINESS_FINANCE_UNSUPPORTED_SOURCE_RE.search(normalized):
-        return {"reply": "该财务来源尚未启用，当前不能查询。"}
+    if "融辉" in normalized or "韵达" in normalized or BUSINESS_FINANCE_UNSUPPORTED_SOURCE_RE.search(normalized):
+        return {"reply": "财务查询按全公司总账汇总，暂不按平台拆分。"}
     if BUSINESS_FINANCE_UNSUPPORTED_PERIOD_RE.search(normalized):
         return _finance_period_reply()
 
@@ -406,13 +400,7 @@ def business_finance_request_from_text(
     start_date, end_date = periods[0]
     if start_date > end_date or (end_date - start_date).days + 1 > 366:
         return _finance_period_reply()
-    params = {
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-    }
-    if "融辉" in normalized:
-        params["platform"] = "ronghui"
-    return {"params": params}
+    return {"params": {"start_date": start_date.isoformat(), "end_date": end_date.isoformat()}}
 
 
 def business_operations_request_from_text(
@@ -1931,7 +1919,6 @@ _BUSINESS_FINANCE_FAILURE_REPLIES = MappingProxyType(
         "BUSINESS_QUERY_RECONCILIATION_FAILED": "财务数据对账未通过，暂不提供金额。",
         "BUSINESS_QUERY_CONTRACT_INVALID": "财务查询结果校验失败，暂不提供金额。",
         "BUSINESS_QUERY_UNAVAILABLE": "财务查询服务当前不可用，请稍后重试。",
-        "BUSINESS_QUERY_FINANCE_REBUILDING": "财务模块正在重建为总账体系，暂不提供金额。",
         "CONTROL_PLANE_UNAVAILABLE": "财务查询服务当前不可用，请稍后重试。",
     }
 )
@@ -1951,67 +1938,42 @@ def _business_finance_error_code(result: dict[str, Any]) -> str:
 
 def _validated_business_finance_payload(result: dict[str, Any]) -> dict[str, Any] | None:
     payload = result.get("data")
-    if not isinstance(payload, dict) or payload.get("query_type") != "finance_summary":
+    if not isinstance(payload, dict) or payload.get("query_type") != "ledger_summary":
         return None
-    availability = payload.get("availability")
     period = payload.get("period")
-    source = payload.get("source")
-    record_count = payload.get("record_count")
     summary = payload.get("summary")
+    count = payload.get("voucher_count")
     warnings = payload.get("warnings")
+    closed = payload.get("closed_through")
     if (
-        availability not in {"DATA", "NO_DATA"}
+        payload.get("availability") not in {"DATA", "NO_DATA"}
         or not isinstance(period, dict)
-        or not isinstance(source, dict)
-        or isinstance(record_count, bool)
-        or not isinstance(record_count, int)
-        or record_count < 0
         or not isinstance(summary, dict)
+        or type(count) is not int
+        or count < 0
         or not isinstance(warnings, list)
         or any(not isinstance(item, str) for item in warnings)
-        or source.get("validation_status") != "passed"
+        or (closed is not None and not (isinstance(closed, str) and re.fullmatch(r"\d{4}-\d{2}", closed)))
     ):
         return None
-    start_date = period.get("start_date")
-    end_date = period.get("end_date")
-    data_through_date = source.get("data_through_date")
     try:
-        parsed_start = dt.date.fromisoformat(start_date)
-        parsed_end = dt.date.fromisoformat(end_date)
-        parsed_through = dt.date.fromisoformat(data_through_date)
+        start = dt.date.fromisoformat(period.get("start_date"))
+        end = dt.date.fromisoformat(period.get("end_date"))
     except (TypeError, ValueError):
         return None
-    if (
-        start_date != parsed_start.isoformat()
-        or end_date != parsed_end.isoformat()
-        or parsed_start > parsed_end
-        or parsed_through < parsed_end
-    ):
+    if start > end or period["start_date"] != start.isoformat() or period["end_date"] != end.isoformat():
         return None
-    if availability == "NO_DATA":
-        if summary or record_count != 0:
-            return None
-        return payload
-    required_summary = {"total_income", "total_expense", "net_change", "pending_fee_items"}
-    pending_fee_items = summary.get("pending_fee_items")
-    if (
-        set(summary) != required_summary
-        or record_count == 0
-        or isinstance(pending_fee_items, bool)
-        or not isinstance(pending_fee_items, int)
-        or pending_fee_items < 0
-        or any(
-            not isinstance(summary.get(field), str)
-            or not _BUSINESS_FINANCE_AMOUNT_RE.fullmatch(summary[field])
-            for field in ("total_income", "total_expense", "net_change")
-        )
-    ):
+    if payload["availability"] == "NO_DATA":
+        return payload if not summary and count == 0 else None
+    fields = {"revenue", "cost", "expense", "other_income", "profit"}
+    if (set(summary) != fields or count == 0
+            or any(not isinstance(summary[f], str) or not _BUSINESS_FINANCE_AMOUNT_RE.fullmatch(summary[f]) for f in fields)):
         return None
     return payload
 
 
 def format_business_finance_reply(result: dict[str, Any]) -> str:
-    """Render only validated tool-owned amounts; never echo model or exception text."""
+    """Render only validated ledger amounts; never echo model or exception text."""
 
     if not isinstance(result, dict) or not result.get("success", False):
         code = _business_finance_error_code(result if isinstance(result, dict) else {})
@@ -2028,23 +1990,23 @@ def format_business_finance_reply(result: dict[str, Any]) -> str:
     title_period = period["start_date"]
     if period["end_date"] != period["start_date"]:
         title_period = f"{period['start_date']} 至 {period['end_date']}"
-    lines = [f"财务汇总（{title_period}）"]
+    lines = [f"财务汇总（{title_period}，总账口径）"]
     if payload["availability"] == "NO_DATA":
-        lines.append("已验证财务账本在该期间没有交易记录。")
+        lines.append("该期间总账没有凭证。")
     else:
         summary = payload["summary"]
-        lines.extend(
-            (
-                f"总收入：¥{summary['total_income']}",
-                f"总支出：¥{summary['total_expense']}",
-                f"净变动：¥{summary['net_change']}",
-                f"账本记录：{payload['record_count']} 条",
-                f"待分类费用：{summary['pending_fee_items']} 项",
-            )
-        )
-        if summary["pending_fee_items"]:
-            lines.append("提示：存在待分类费用，净变动不能解释为利润。")
-    lines.append(f"数据覆盖至：{payload['source']['data_through_date']}")
+        lines.extend((
+            f"营业收入：¥{summary['revenue']}",
+            f"营业成本：¥{summary['cost']}",
+            f"期间费用：¥{summary['expense']}",
+        ))
+        if summary["other_income"] != "0.00":
+            lines.append(f"其他损益：¥{summary['other_income']}")
+        lines.append(f"利润：¥{summary['profit']}")
+        lines.append(f"凭证：{payload['voucher_count']} 张")
+    lines.append(f"已封账至：{payload['closed_through'] or '尚未封账'}")
+    for warning in payload["warnings"]:
+        lines.append(f"提示：{warning}")
     return "\n".join(lines)
 
 

@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-06
+updated: 2026-11-07
 source_of_truth: console/AGENTS.md
 ---
 
@@ -99,7 +99,7 @@ ECS 的 Console 使用独立 `console@%` 账号，由 `/home/boyce/console/.env`
 - `/tracking`：单票物流跟踪
 - `/receipts`：回单管理
 - `/modules/customer-service`：客服问题件
-- `/modules/finance`：财务模块（总账重建中）
+- `/modules/finance`：财务模块（复式记账总账：开单确认、凭证、账簿、往来、来源流水、报表、封账）
 - `/dispatch`：map-only 路线、距离与运输方案比价，不包含车辆档案或真实派单
 - `/line-haul-contacts`：专线分流资料
 - `/extensions` 与旧详情 GET：重定向到自动化或对应插件筛选；旧生命周期 POST 返回 410

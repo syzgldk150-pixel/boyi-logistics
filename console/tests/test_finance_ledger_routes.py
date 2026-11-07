@@ -74,6 +74,10 @@ def app():
     ("POST", "/finance/line-rules", "finance.manage"),
     ("POST", "/finance/reviews/6/resolve", "finance.manage"),
     ("GET", "/finance/sources/4/batches", "finance.read"),
+    ("GET", "/finance/periods/2026-10", "finance.read"),
+    ("POST", "/finance/periods/2026-10/close", SUPER_ADMIN),
+    ("POST", "/finance/periods/2026-10/reopen", SUPER_ADMIN),
+    ("GET", "/finance/reports/balance-sheet", "finance.read"),
 ])
 def test_route_permissions(method, path, permission):
     assert console_permission(method, path) == permission
@@ -120,6 +124,13 @@ def test_route_permissions(method, path, permission):
     ("POST", "/finance/reviews/6/resolve", ("_handle_finance_ledger_post", "review_resolve", "6")),
     ("POST", "/finance/anomalies/7/acknowledge", ("_handle_finance_ledger_post", "anomaly_acknowledge", "7")),
     ("POST", "/finance/sources/4/files", ("_handle_finance_source_upload", "4")),
+    ("GET", "/finance/periods/2026-10", ("_handle_finance_ledger_get", "period_status", "2026-10")),
+    ("POST", "/finance/periods/2026-10/close", ("_handle_finance_ledger_post", "period_close", "2026-10")),
+    ("POST", "/finance/periods/2026-10/reopen", ("_handle_finance_ledger_post", "period_reopen", "2026-10")),
+    ("GET", "/finance/reports/profit-loss", ("_handle_finance_ledger_get", "profit_loss")),
+    ("GET", "/finance/reports/balance-sheet", ("_handle_finance_ledger_get", "balance_sheet")),
+    ("GET", "/finance/reports/cash-flow", ("_handle_finance_ledger_get", "cash_flow")),
+    ("GET", "/finance/reports/waybill-margin", ("_handle_finance_ledger_get", "waybill_margin")),
 ])
 def test_routes_dispatch(method, path, call):
     stub = Mock()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,6 @@ from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES, TERM
 
 
 MAX_QUERY_DAYS = 366
-FINANCE_REBUILDING_CODE = "BUSINESS_QUERY_FINANCE_REBUILDING"
 _CHINA_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -42,19 +41,38 @@ def _iso_date(value: object, field_name: str) -> date:
         ) from exc
 
 
-class BusinessFinanceQueryService:
-    """Validate finance read requests while the general ledger is being rebuilt.
+class FinanceLedgerReader(Protocol):
+    def ledger_summary(self, *, start_date: date, end_date: date) -> dict[str, Any]: ...
 
-    The previous platform-statement ledger was retired with migration 067.
-    Until the double-entry ledger reports are wired in, every well-formed
-    request fails closed with ``BUSINESS_QUERY_FINANCE_REBUILDING`` so no
-    caller can mistake missing data for a zero amount.
+
+_FINANCE_AMOUNT_FIELDS = ("revenue", "cost", "expense", "other_income", "profit")
+
+
+def _cents(value: object) -> str:
+    try:
+        amount = Decimal(str(value))
+    except Exception as exc:  # noqa: BLE001 - any malformed amount fails closed
+        raise BusinessQueryError("BUSINESS_QUERY_CONTRACT_INVALID", "ledger amount is invalid") from exc
+    if not amount.is_finite():
+        raise BusinessQueryError("BUSINESS_QUERY_CONTRACT_INVALID", "ledger amount is invalid")
+    return f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
+
+
+class BusinessFinanceQueryService:
+    """Read-only revenue, cost, expense and profit of a closed date range from the general ledger.
+
+    The ledger is the whole company (no per-platform split). Amounts come only
+    from ``shared.finance`` reports; a missing reader or any read failure fails
+    closed without amounts.
     """
+
+    def __init__(self, ledger: FinanceLedgerReader | None = None) -> None:
+        self._ledger = ledger
 
     def run(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, Mapping):
             raise BusinessQueryError("BUSINESS_QUERY_INVALID", "arguments must be an object")
-        unknown = set(arguments) - {"start_date", "end_date", "platform"}
+        unknown = set(arguments) - {"start_date", "end_date"}
         if unknown:
             raise BusinessQueryError(
                 "BUSINESS_QUERY_INVALID",
@@ -67,16 +85,37 @@ class BusinessFinanceQueryService:
                 "BUSINESS_QUERY_INVALID",
                 f"finance query period must be ordered and at most {MAX_QUERY_DAYS} days",
             )
-        platform_value = arguments.get("platform")
-        if platform_value is not None and not isinstance(platform_value, str):
-            raise BusinessQueryError(
-                "BUSINESS_QUERY_INVALID",
-                "platform must be a string",
-            )
-        raise BusinessQueryError(
-            FINANCE_REBUILDING_CODE,
-            "finance ledger is being rebuilt; no amounts are available",
-        )
+        if self._ledger is None:
+            raise BusinessQueryError("BUSINESS_QUERY_UNAVAILABLE", "finance ledger reader is not configured")
+        try:
+            raw = self._ledger.ledger_summary(start_date=start_date, end_date=end_date)
+        except BusinessQueryError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never surface ledger internals
+            raise BusinessQueryError("BUSINESS_QUERY_UNAVAILABLE", "finance ledger read failed") from exc
+        return self.validated_result(raw, start_date=start_date, end_date=end_date)
+
+    @staticmethod
+    def validated_result(raw: Mapping[str, Any], *, start_date: date, end_date: date) -> dict[str, Any]:
+        if not isinstance(raw, Mapping):
+            raise BusinessQueryError("BUSINESS_QUERY_CONTRACT_INVALID", "ledger summary is invalid")
+        count = raw.get("voucher_count")
+        warnings = raw.get("warnings")
+        closed = raw.get("closed_through")
+        if (type(count) is not int or count < 0 or not isinstance(warnings, list)
+                or any(not isinstance(item, str) for item in warnings)
+                or (closed is not None and not isinstance(closed, str))):
+            raise BusinessQueryError("BUSINESS_QUERY_CONTRACT_INVALID", "ledger summary is invalid")
+        summary = {} if count == 0 else {field: _cents(raw.get(field)) for field in _FINANCE_AMOUNT_FIELDS}
+        return {
+            "query_type": "ledger_summary",
+            "availability": "DATA" if count else "NO_DATA",
+            "period": {"start_date": start_date.isoformat(), "end_date": end_date.isoformat()},
+            "summary": summary,
+            "voucher_count": count,
+            "closed_through": closed,
+            "warnings": list(warnings),
+        }
 
 
 class MySQLAutomationOperationsRepository:

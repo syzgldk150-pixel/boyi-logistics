@@ -28,6 +28,10 @@ _GET = {
     "/finance/line-rules": "line_rules",
     "/finance/reviews": "reviews",
     "/finance/anomalies": "anomalies",
+    "/finance/reports/profit-loss": "profit_loss",
+    "/finance/reports/balance-sheet": "balance_sheet",
+    "/finance/reports/cash-flow": "cash_flow",
+    "/finance/reports/waybill-margin": "waybill_margin",
 }
 # ASCII route keys for the Boyi payment methods (寄付 / 到付 / 月结).
 DOC_RULE_KEYS = {"prepaid": "寄付", "collect": "到付", "monthly": "月结"}
@@ -45,6 +49,8 @@ _BATCH_LINES = re.compile(r"/finance/source-batches/(\d{1,18})/lines")
 _FILE_DISCARD = re.compile(r"/finance/source-files/(\d{1,18})/discard")
 _REVIEW_RESOLVE = re.compile(r"/finance/reviews/(\d{1,18})/resolve")
 _ANOMALY_ACK = re.compile(r"/finance/anomalies/(\d{1,18})/acknowledge")
+_PERIOD = re.compile(r"/finance/periods/(\d{4}-\d{2})")
+_PERIOD_ACTION = re.compile(r"/finance/periods/(\d{4}-\d{2})/(close|reopen)")
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
@@ -67,6 +73,10 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if match:
         app._handle_finance_ledger_get(handler, "batch_lines", query, match.group(1))
         return True
+    match = _PERIOD.fullmatch(path)
+    if match:
+        app._handle_finance_ledger_get(handler, "period_status", query, match.group(1))
+        return True
     return False
 
 
@@ -78,6 +88,10 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
               "/finance/line-rules": "line_rule_save"}
     if path in simple:
         app._handle_finance_ledger_post(handler, simple[path])
+        return True
+    match = _PERIOD_ACTION.fullmatch(path)
+    if match:
+        app._handle_finance_ledger_post(handler, f"period_{match.group(2)}", match.group(1))
         return True
     match = _SOURCE_SUB.fullmatch(path)
     if match and match.group(2) == "files":

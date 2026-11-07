@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 物流 Agent 项目总览
@@ -82,7 +82,7 @@ updated: 2026-11-06
 1. 运单录入内完成 OCR/人工校核：博益保存本地；韵达、融辉等原页保存各自平台。
 2. 每日寄件采集插件按实际平台范围存数据库；后台寄件查询先读数据库并补查明确缺口。
 3. 跟踪、回单、客服查询复用平台适配器与登录态；人工业务操作直接返回核验结果。
-4. 财务模块正在重建为总账（见 `finance_module.md`），重建期间财务查询只返回重建提示。
+4. 财务模块为复式记账总账（见 `finance_module.md`），财务查询读取总账利润表口径。
 5. 货拉拉调度当前为高德地图规划和本地试算，真实货拉拉业务接口尚未接入。
 6. Agent 只使用已注册接口和开放插件的真实结果；来源缺失、范围不足或核验失败必须明确返回。
 

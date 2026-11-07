@@ -4,7 +4,7 @@
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-intake">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-close">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
@@ -20,6 +20,8 @@
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-aging" id="finance-tab-aging" data-tab="aging" tabindex="-1">账龄与对账单</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-sources" id="finance-tab-sources" data-tab="sources" tabindex="-1">来源与流水</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-rules" id="finance-tab-rules" data-tab="rules" tabindex="-1">规则与待审</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-statements" id="finance-tab-statements" data-tab="statements" tabindex="-1">报表</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-periods" id="finance-tab-periods" data-tab="periods" tabindex="-1">月度封账</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-accounts" id="finance-tab-accounts" data-tab="accounts" tabindex="-1">科目</button>
     <button type="button" role="tab" class="finance-tab" aria-selected="false" aria-controls="finance-panel-settings" id="finance-tab-settings" data-tab="settings" tabindex="-1">设置</button>
   </div>
@@ -67,9 +69,10 @@
       <label class="finance-field">月份 <input class="review-input" type="month" data-trial-month></label>
       <label class="finance-check"><input type="checkbox" data-trial-zero> 显示无发生额科目</label>
       <button type="button" class="ghost-btn" data-trial-refresh>查询</button>
+      <button type="button" class="ghost-btn" data-export-target="[data-trial-table]">导出 CSV</button>
       <span class="finance-badge" data-trial-balanced hidden></span>
     </div>
-    <div class="table-wrap"><table class="finance-table finance-table--tree">
+    <div class="table-wrap"><table class="finance-table finance-table--tree" data-trial-table>
       <thead>
         <tr><th scope="col" rowspan="2">科目</th><th scope="colgroup" colspan="2">期初余额</th><th scope="colgroup" colspan="2">本期发生额</th><th scope="colgroup" colspan="2">期末余额</th></tr>
         <tr><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th></tr>
@@ -96,8 +99,9 @@
     <div class="finance-toolbar">
       <label class="finance-field">月份 <input class="review-input" type="month" data-journal-month></label>
       <button type="button" class="ghost-btn" data-journal-refresh>查询</button>
+      <button type="button" class="ghost-btn" data-export-target="[data-journal-table]">导出 CSV</button>
     </div>
-    <div class="table-wrap"><table class="finance-table">
+    <div class="table-wrap"><table class="finance-table" data-journal-table>
       <thead><tr><th scope="col">日期</th><th scope="col">凭证号</th><th scope="col">摘要</th><th scope="col">科目</th><th scope="col" class="num">借方</th><th scope="col" class="num">贷方</th><th scope="col">状态</th></tr></thead>
       <tbody data-journal-rows></tbody>
     </table></div>
@@ -217,6 +221,44 @@
     <div class="table-wrap"><table class="finance-table">
       <thead><tr><th scope="col">时间</th><th scope="col">类型</th><th scope="col">期间</th><th scope="col">说明</th>{% if can_manage %}<th scope="col">操作</th>{% endif %}</tr></thead>
       <tbody data-anomaly-rows></tbody>
+    </table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-statements" aria-labelledby="finance-tab-statements" data-panel="statements" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">报表
+        <select class="review-input" data-statement-kind>
+          <option value="profit-loss">利润表</option><option value="balance-sheet">资产负债表</option><option value="cash-flow">现金流量表（直接法）</option><option value="waybill-margin">单票毛利</option>
+        </select>
+      </label>
+      <label class="finance-field" data-statement-month-field>月份 <input class="review-input" type="month" data-report-month></label>
+      <label class="finance-field" data-statement-range hidden>开始 <input class="review-input" type="date" data-report-start></label>
+      <label class="finance-field" data-statement-range hidden>结束 <input class="review-input" type="date" data-report-end></label>
+      <button type="button" class="ghost-btn" data-report-refresh>查询</button>
+      <button type="button" class="ghost-btn" data-export-target="[data-report-table]">导出 CSV</button>
+      <span class="finance-badge" data-report-badge hidden></span>
+    </div>
+    <p class="section-note" data-report-note></p>
+    <div class="table-wrap"><table class="finance-table" data-report-table><thead data-report-head></thead><tbody data-report-rows></tbody><tfoot data-report-foot></tfoot></table></div>
+  </div>
+
+  <div class="finance-panel" role="tabpanel" id="finance-panel-periods" aria-labelledby="finance-tab-periods" data-panel="periods" hidden>
+    <div class="finance-toolbar">
+      <label class="finance-field">月份 <input class="review-input" type="month" data-period-month></label>
+      <button type="button" class="ghost-btn" data-period-refresh>检查</button>
+      {% if is_super_admin %}<button type="button" class="primary-btn" data-period-close>封账</button>
+      <button type="button" class="ghost-btn ghost-btn--danger" data-period-reopen>反结账</button>{% endif %}
+      <span class="finance-badge" data-period-badge></span>
+    </div>
+    <p class="section-note">封账由服务端重算全部检查；通过后自动生成期末结转凭证（12 月另结转本年利润到未分配利润）、写入余额快照并锁定当月，之后任何凭证、核销和流水都不能再改动该月。反结账只能从最近封账的月份开始，必须填写原因，原快照保留。{% if not is_super_admin %}封账和反结账需要超级管理员。{% endif %}</p>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">检查项</th><th scope="col">结果</th><th scope="col">说明</th></tr></thead>
+      <tbody data-period-checks></tbody>
+    </table></div>
+    <h3 class="finance-subhead">封账记录</h3>
+    <div class="table-wrap"><table class="finance-table">
+      <thead><tr><th scope="col">版本</th><th scope="col">状态</th><th scope="col" class="num">本月净利润</th><th scope="col">封账人</th><th scope="col">封账时间</th><th scope="col">反结账</th></tr></thead>
+      <tbody data-period-history></tbody>
     </table></div>
   </div>
 
@@ -377,4 +419,4 @@
 </dialog>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance.js?v=20261107-intake"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance.js?v=20261107-close"></script>{% endblock %}

@@ -1,4 +1,4 @@
-"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties, P3 Boyi waybills, P4 connector intake).
+"""Finance general-ledger HTTP handlers (P1 ledger, P2 parties, P3 Boyi waybills, P4 connector intake, P5 close and statements).
 
 Route permissions come from ``shared.identity_routes`` (read ``finance.read``,
 write ``finance.manage``, structure / start month / cancelling vouchers super
@@ -105,6 +105,11 @@ class FinanceLedgerServiceMixin:
             "line_rules": ledger.list_line_rules,
             "reviews": lambda: ledger.list_reviews(status=q("status", "open") or None),
             "anomalies": lambda: ledger.list_anomalies(status=q("status", "open") or None),
+            "period_status": lambda: ledger.period_status(target),
+            "profit_loss": lambda: ledger.profit_loss(q("month")),
+            "balance_sheet": lambda: ledger.balance_sheet(q("month")),
+            "cash_flow": lambda: ledger.cash_flow(q("month")),
+            "waybill_margin": lambda: ledger.waybill_margin(start_date=q("start"), end_date=q("end")),
             "settings": ledger.get_settings,
             "accounts": ledger.list_accounts,
             "vouchers": lambda: ledger.list_vouchers(month=q("month"), status=q("status") or None),
@@ -147,6 +152,8 @@ class FinanceLedgerServiceMixin:
             "line_rule_save": lambda: ledger.save_line_rule(body, **common),
             "review_resolve": lambda: ledger.resolve_review(int(target), body, **common),
             "anomaly_acknowledge": lambda: ledger.acknowledge_anomaly(int(target), body, **common),
+            "period_close": lambda: ledger.close_period(target, body, **common),
+            "period_reopen": lambda: ledger.reopen_period(target, body, **common),
         }
         self._finance_run(handler, work[action])
 

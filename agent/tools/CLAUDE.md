@@ -28,7 +28,7 @@
   - `internal_http.py`（工具访问底层 TMS target 的能力请求头；缺少当前工具短期执行能力时显式失败，不读取或回退到 `AGENT_INTERNAL_API_TOKEN`）
   - `governed_tms_adapter.py`（回单与客服问题件工具共用的闭合 CLI 传输）
 - 财务：
-  - `business_finance_query_tool.py` 是组合根 reader 的失败关闭占位；总账重建期间财务查询只返回重建提示。财务 AI 费用分析工具已随迁移 067 删除。
+  - `business_finance_query_tool.py` 是组合根 reader 的失败关闭占位；实际财务查询由组合根把 `agent/business_query.py` 绑定到总账报表。财务 AI 费用分析工具已随迁移 067 删除。
 - 飞书 CLI：
   - `feishu_knowledge.py`、`feishu_knowledge_pdf.py`：限定授权 Wiki 空间的只读 CLI；支持在线正文与 PDF 文字层，PDF 子进程有界解析、按命中页及邻页摘录并标注页码，不把图表或整书误报为已读。不切换共享身份，权限不足和解析不完整明确失败。维护边界见 `../../docs/shipment_knowledge_queries.md`。
   - `feishu_cli_tool.py`

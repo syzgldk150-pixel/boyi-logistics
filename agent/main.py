@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+from shared.finance import FinanceRepository
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
 from shared.plugin_invocation_repository import PluginInvocationRepository
@@ -696,7 +697,7 @@ async def lifespan(app: FastAPI):
     automation_plugin_runtime = plugin_runtime
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
-    business_finance_query = BusinessFinanceQueryService()
+    business_finance_query = BusinessFinanceQueryService(FinanceRepository(runtime.memory.connection_factory))
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )

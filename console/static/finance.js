@@ -1099,6 +1099,193 @@
   };
   $("[data-line-rule-new]")?.addEventListener("click", async () => { await Promise.all([loadAccounts(), loadParties()]); openRuleDialog(); });
 
+
+  // ---------- CSV export of any rendered table (代账导出) ----------
+  root.querySelectorAll("[data-export-target]").forEach(control => control.addEventListener("click", () => {
+    const table = root.querySelector(control.dataset.exportTarget);
+    if (!table || !table.querySelector("tbody tr")) { say("请先查询出数据再导出。"); return; }
+    const quote = value => `"${String(value ?? "").replace(/\s+/g, " ").trim().replace(/"/g, '""')}"`;
+    const lines = [...table.querySelectorAll("tr")].map(row => [...row.children].map(item => {
+      const span = Number(item.colSpan || 1);
+      return [quote(item.textContent), ...Array(Math.max(0, span - 1)).fill('""')].join(",");
+    }).join(","));
+    const tab = root.querySelector("[role=tab][aria-selected=true]")?.textContent.trim() || "财务";
+    const blob = new Blob(["﻿" + lines.join("\r\n")], {type: "text/csv;charset=utf-8"});
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${tab}-${today()}.csv`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }));
+
+  // ---------- statements ----------
+  const statementKind = $("[data-statement-kind]");
+  $("[data-report-month]").value = thisMonth();
+  $("[data-report-start]").value = `${thisMonth()}-01`;
+  $("[data-report-end]").value = today();
+  statementKind.addEventListener("change", () => {
+    const range = statementKind.value === "waybill-margin";
+    root.querySelectorAll("[data-statement-range]").forEach(node => { node.hidden = !range; });
+    $("[data-statement-month-field]").hidden = range;
+    loaders.statements().catch(error => say(error.message));
+  });
+  function head(...labels) {
+    const row = document.createElement("tr");
+    labels.forEach(([label, className]) => {
+      const item = document.createElement("th");
+      item.scope = "col"; item.textContent = label;
+      if (className) item.className = className;
+      row.append(item);
+    });
+    $("[data-report-head]").replaceChildren(row);
+  }
+  function badge(ok, good, bad) {
+    const element = $("[data-report-badge]");
+    element.hidden = false;
+    element.textContent = ok ? good : bad;
+    element.className = `finance-badge ${ok ? "finance-badge--ok" : "finance-badge--bad"}`;
+  }
+  loaders.statements = async () => {
+    const kind = statementKind.value;
+    const body = $("[data-report-rows]");
+    const foot = $("[data-report-foot]");
+    foot.replaceChildren();
+    $("[data-report-badge]").hidden = true;
+    $("[data-report-note]").textContent = "";
+    empty(body, 4, "正在读取…");
+    const month = $("[data-report-month]").value || thisMonth();
+    if (kind === "profit-loss") {
+      const data = await get(`/finance/reports/profit-loss?month=${month}`);
+      head(["项目"], ["本月金额", "num"], ["本年累计", "num"]);
+      body.replaceChildren(...data.rows.map(item => {
+        const row = document.createElement("tr");
+        if (item.subtotal) row.className = "finance-row--group";
+        cell(row, item.label); cell(row, money(item.month), "num"); cell(row, money(item.year_to_date), "num");
+        return row;
+      }));
+      $("[data-report-note]").textContent = "小企业会计准则格式；不含期末结转凭证。所得税由代账公司计提，本表为 0。";
+    } else if (kind === "balance-sheet") {
+      const data = await get(`/finance/reports/balance-sheet?month=${month}`);
+      head(["项目"], ["期末余额", "num"]);
+      const rows = [];
+      const section = (title, items, total, totalLabel) => {
+        const titleRow = document.createElement("tr");
+        titleRow.className = "finance-row--group"; cell(titleRow, title); cell(titleRow, "");
+        rows.push(titleRow);
+        items.forEach(item => { const row = document.createElement("tr"); cell(row, `　${item.label}`); cell(row, money(item.amount), "num"); rows.push(row); });
+        const totalRow = document.createElement("tr");
+        totalRow.className = "finance-row--group"; cell(totalRow, totalLabel); cell(totalRow, money(total), "num");
+        rows.push(totalRow);
+      };
+      section("资产", data.assets, data.total_assets, "资产合计");
+      section("负债", data.liabilities, data.total_liabilities, "负债合计");
+      section("所有者权益", data.equity, data.total_equity, "所有者权益合计");
+      const sum = document.createElement("tr");
+      sum.className = "finance-row--group"; cell(sum, "负债和所有者权益总计"); cell(sum, money(data.total_liabilities_and_equity), "num");
+      rows.push(sum);
+      body.replaceChildren(...rows);
+      badge(data.balanced, "资产 = 负债 + 所有者权益", "资产负债表不平衡");
+      $("[data-report-note]").textContent = `截至 ${data.as_of}。未结转的本年损益 ${money(data.unclosed_profit)} 已计入未分配利润。`;
+    } else if (kind === "cash-flow") {
+      const data = await get(`/finance/reports/cash-flow?month=${month}`);
+      head(["项目"], ["流入", "num"], ["流出", "num"], ["净额", "num"]);
+      const rows = [];
+      data.rows.forEach(item => {
+        const row = document.createElement("tr");
+        row.className = "finance-row--group";
+        cell(row, `${item.label}现金流量`); cell(row, money(item.inflow), "num"); cell(row, money(item.outflow), "num"); cell(row, money(item.net), "num");
+        rows.push(row);
+        item.details.forEach(detail => {
+          const sub = document.createElement("tr");
+          cell(sub, `　${detail.account}`); cell(sub, "", "num"); cell(sub, "", "num"); cell(sub, money(detail.amount), "num");
+          rows.push(sub);
+        });
+      });
+      body.replaceChildren(...rows);
+      const total = document.createElement("tr");
+      cell(total, "现金净增加额"); cell(total, ""); cell(total, ""); cell(total, money(data.net_change), "num");
+      foot.replaceChildren(total);
+      badge(data.balanced, "与资金科目变动一致", "与资金科目变动不一致");
+      $("[data-report-note]").textContent = "按资金科目对方科目的现金流分类归集；资金科目之间的划转（含资金在途）不计入。";
+    } else {
+      const params = new URLSearchParams({start: $("[data-report-start]").value, end: $("[data-report-end]").value});
+      const data = await get(`/finance/reports/waybill-margin?${params}`);
+      head(["运单号"], ["收入", "num"], ["运单级成本", "num"], ["毛利", "num"]);
+      if (!data.rows.length) empty(body, 4, "期间内没有带运单号的收入或成本。");
+      else body.replaceChildren(...data.rows.map(item => {
+        const row = document.createElement("tr");
+        cell(row, item.waybill_no); cell(row, money(item.revenue), "num"); cell(row, money(item.cost), "num"); cell(row, money(item.margin), "num");
+        return row;
+      }));
+      const total = document.createElement("tr");
+      cell(total, "合计"); cell(total, money(data.totals.revenue), "num"); cell(total, money(data.totals.cost), "num"); cell(total, money(data.totals.margin), "num");
+      foot.replaceChildren(total);
+      $("[data-report-note]").textContent = "按总账分录上的运单号汇总：收入类科目减成本类科目。";
+    }
+  };
+  $("[data-report-refresh]").addEventListener("click", () => loaders.statements().catch(error => say(error.message)));
+
+  // ---------- period close ----------
+  const periodMonth = $("[data-period-month]");
+  periodMonth.value = thisMonth();
+  let periodState = null;
+  loaders.periods = async () => {
+    const body = $("[data-period-checks]");
+    empty(body, 3, "正在检查…");
+    periodState = await get(`/finance/periods/${periodMonth.value || thisMonth()}`);
+    const badgeEl = $("[data-period-badge]");
+    badgeEl.textContent = periodState.status === "closed"
+      ? `已封账（第 ${periodState.closes[0]?.version ?? periodState.version} 版${periodState.snapshot_matches === false ? "，快照与总账不一致！" : ""}）`
+      : (periodState.can_close ? "检查通过，可以封账" : "未通过检查");
+    badgeEl.className = `finance-badge ${periodState.status === "closed" ? (periodState.snapshot_matches === false ? "finance-badge--bad" : "finance-badge--ok") : (periodState.can_close ? "finance-badge--ok" : "finance-badge--bad")}`;
+    const closeButton = $("[data-period-close]");
+    if (closeButton) closeButton.disabled = !periodState.can_close;
+    const reopenButton = $("[data-period-reopen]");
+    if (reopenButton) reopenButton.disabled = periodState.status !== "closed";
+    if (periodState.status === "closed") empty(body, 3, "本月已封账；如需修改，请先反结账。");
+    else body.replaceChildren(...periodState.checks.map(check => {
+      const row = document.createElement("tr");
+      cell(row, check.label);
+      cell(row, check.ok ? "通过" : (check.blocking ? "未通过" : "提示"), check.ok ? "finance-state finance-state--confirmed" : (check.blocking ? "finance-state finance-state--rejected" : "finance-state finance-state--pending"));
+      cell(row, check.detail);
+      return row;
+    }));
+    const history = $("[data-period-history]");
+    if (!periodState.closes.length) empty(history, 6, "本月还没有封账记录。");
+    else history.replaceChildren(...periodState.closes.map(item => {
+      const row = document.createElement("tr");
+      cell(row, String(item.version)); cell(row, item.status === "closed" ? "已封账" : "已反结账");
+      cell(row, money(item.net_profit), "num"); cell(row, item.closed_by); cell(row, item.closed_at);
+      cell(row, item.reopened_by ? `${item.reopened_by}：${item.reopen_reason}` : "");
+      return row;
+    }));
+  };
+  $("[data-period-refresh]").addEventListener("click", () => loaders.periods().catch(error => say(error.message)));
+  periodMonth.addEventListener("change", () => loaders.periods().catch(error => say(error.message)));
+  $("[data-period-close]")?.addEventListener("click", async () => {
+    const month = periodMonth.value;
+    if (!window.confirm(`确定封账 ${month}？封账后该月不能再记账。`)) return;
+    try {
+      const result = await send(`/finance/periods/${month}/close`, {});
+      loaded.clear();
+      loaded.add("periods");
+      await loaders.periods();
+      say(`${month} 已封账，本月净利润 ${money(result.net_profit)}。`);
+    } catch (error) { say(error.message); await loaders.periods().catch(() => {}); }
+  });
+  $("[data-period-reopen]")?.addEventListener("click", async () => {
+    const month = periodMonth.value;
+    const reason = window.prompt(`反结账 ${month} 的原因（必填）：`);
+    if (!reason || !reason.trim()) return;
+    try {
+      await send(`/finance/periods/${month}/reopen`, {reason: reason.trim()});
+      loaded.clear();
+      loaded.add("periods");
+      await loaders.periods();
+      say(`${month} 已反结账，期末结转凭证已冲销。`);
+    } catch (error) { say(error.message); }
+  });
+
   // ---------- accounts ----------
   const accountDialog = main.querySelector("[data-account-dialog]");
   const accountForm = accountDialog.querySelector("[data-account-form]");

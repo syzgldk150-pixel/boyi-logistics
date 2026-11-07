@@ -142,7 +142,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 |------|----------|----------|------|
 | 控制台工作区 | `console/` | `docs/project_overview.md` | 与 agent 并列部署 |
 | 三平台报价 | `service_v2_plugins/quote_prices_v2/` | `docs/three_platform_quote.md` | 独立 V2 包承载三平台真实报价；飞书与 Console 复用同一实例，线上状态以已安装版本与当前代次为准 |
-| 财务模块 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`../console/routes/finance.py` | `docs/finance_module.md` | 按《小企业会计准则》重建为权责发生制总账（分期进行；P1 总账内核（迁移 068、`shared/finance/gl/`、Console 凭证与账表）、P2 往来（迁移 069、`shared/finance/party/`、核销、账龄、对账单）、P3 博益开单人工确认记账（迁移 070、`shared/finance/rules/`）与 P4 连接器接入（迁移 071、`shared/finance/intake/`、`automation_plugins/finance_source_*.py`）已完成）；旧融辉账户收支账本、统计查询抓取插件与封账已由迁移 067 退役。重建期间财务查询与经营摘要的财务部分固定返回重建提示，不输出金额 |
+| 财务模块 | `../shared/finance/`、`agent/business_query.py`、`agent/direct_tool_router.py`、`automation_plugins/finance_source_*.py`、`../console/routes/finance.py` | `docs/finance_module.md` | 按《小企业会计准则》建立权责发生制复式记账总账（内部管理账），迁移 068–072 共五期：P1 总账内核、P2 往来与核销、P3 博益开单人工确认记账、P4 连接器接入（契约 v1）、P5 封账、报表、代账导出。旧融辉账户收支账本已由迁移 067 退役。AI 与飞书财务查询读取总账利润表口径，不按平台拆分 |
 | OCR识别 | `console/` | `docs/ocr/` | Qwen-OCR、人工复核与 MySQL 入库已运行；自学习/Paddle 方案未实施 |
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直接插件/reader / 预览确认 / 账号登录） |
@@ -158,7 +158,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 docs/
 ├── code_navigation_index.md             # 修改入口索引：按需求类型定位到具体文件
 ├── project_overview.md               # 项目级架构：模块关系/本地控制台/路由
-├── finance_module.md                 # 财务模块：总账重建状态、目标架构与分期
+├── finance_module.md                 # 财务模块：总账、往来、开单记账、连接器接入、封账与报表
 ├── database_migrations.md            # 部署期顺序迁移与运行时只校验结构
 ├── plugin_maintenance.md             # V2 插件局部测试、打包与升级
 ├── service_v2_developer_tooling.md   # Service V2 离线开发 CLI 与 Manifest Schema

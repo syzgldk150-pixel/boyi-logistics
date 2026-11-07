@@ -14,7 +14,7 @@
 
 签收插件只更新已有后台运单，缺失单号明确报告未入库，完整资料由寄件同步补齐；不得生成残缺运单或把数据库错误当作缺失。规则与测试见 `docs/identity_and_unified_chat.md`。
 
-系统只运行 Service V2 插件：V1 运行时、迁移配对、签名发行、Windows Worker 和旧逐日财务采集已于 2026-10 删除；迁移 064 删除了数据库中的旧插件行和只被旧代码使用的表，并把插件版本与代次约束为 `SERVICE_V2` 与 `super_admin_upload/builtin_bundle`。详见 `docs/plugin-platform-v2.md`。迁移 067（2026-11）退役融辉账户收支账本、统计查询抓取插件与财务数据源，财务模块按 `agent/docs/finance_module.md` 重建为总账。
+系统只运行 Service V2 插件：V1 运行时、迁移配对、签名发行、Windows Worker 和旧逐日财务采集已于 2026-10 删除；迁移 064 删除了数据库中的旧插件行和只被旧代码使用的表，并把插件版本与代次约束为 `SERVICE_V2` 与 `super_admin_upload/builtin_bundle`。详见 `docs/plugin-platform-v2.md`。迁移 067（2026-11）退役融辉账户收支账本、统计查询抓取插件与财务数据源，财务模块已按 `agent/docs/finance_module.md` 重建为复式记账总账（迁移 068–072）。
 
 发布服务身份由 `shared/release_identity.py` 定义，仅在内部 Token 和 Console 签名校验后开放精确健康检查及发布激活；不得作为后台账号或取得业务权限。
 
@@ -144,7 +144,7 @@ V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 
 ## 业务模块与经营只读入口
 
 - `shared/business_modules.py` 是 15 个 Console 固定模块身份的唯一不可变目录，其中 Harness 为不可停用核心模块；固定模块只由代码路由、登录和既有用户权限控制，不得读取旧生命周期状态决定菜单、页面、API 或调用可用性。`027_business_module_lifecycle.sql`、历史表和 Lite 审计继续保留；Agent `/internal/v1/admin/modules` GET 保持既有签名管理员读取权限，Console 旧 data/audit 代理路径仅供真实 `super_admin` 只读兼容，生命周期写入口已退役。`/settings/modules` 只重定向到系统管理 `/settings/accounts`；原“系统状态”页已于 2026-10-20 删除，Agent 鉴权 `/internal/v1/health` 继续供发布健康检查使用。
-- `query_automation_operations` 只读聚合 `automation_plugin_invocations` 固定日期区间的状态与新鲜度，未知写不计为成功；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，金额不完整不输出金额（总账重建期间财务部分只显示重建提示），也不推断客户收入或异常历史。
+- `query_automation_operations` 只读聚合 `automation_plugin_invocations` 固定日期区间的状态与新鲜度，未知写不计为成功；已绑定飞书管理员的“经营摘要/经营情况”复用闭合财务日期，财务部分读取总账利润表口径并附带未封账、暂记余额和未确认开单等提示，也不推断客户收入或异常历史。
 
 ## 阶段一最终收尾合同
 
