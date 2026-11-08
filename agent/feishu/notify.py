@@ -183,6 +183,12 @@ def build_tms_session_disconnected_message(
             title,
             f"\u72b6\u6001\uff1a{_status_text(normalized_status)}",
         ]
+    elif context.get("consecutive_server_errors"):
+        lines = [
+            f"【Agent 自动化】{system_label} 登录态校验连续 {context['consecutive_server_errors']} 次失败，"
+            "平台接口返回服务端错误，登录态可能仍有效，需要关注。",
+            f"\u72b6\u6001\uff1a{_status_text(normalized_status)}",
+        ]
     else:
         lines = [
             f"\u3010Agent \u81ea\u52a8\u5316\u3011{system_label} \u767b\u5f55\u6001\u5df2\u65ad\u5f00\uff0c\u81ea\u52a8\u767b\u5f55\u672a\u5b8c\u6210\uff0c\u9700\u8981\u5904\u7406\u3002",

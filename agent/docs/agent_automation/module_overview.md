@@ -4,7 +4,7 @@ type: 模块文档
 tags: [Agent自动化, 飞书触发器, 直达指令, pending状态机, 登录恢复, TMS自动化]
 related: [../project_overview.md, ../code_navigation_index.md, ../ai_service/module_overview.md]
 status: active
-updated: 2026-10-30
+updated: 2026-11-08
 ---
 
 ## 当前执行边界
@@ -97,6 +97,8 @@ R7 旧到达/发车打卡工具已于 2026-10 删除，日志表仅为追溯保�
 账号管理对融辉、韵达、R7、R13 和大祥报价统一提供“保存凭据、立即登录、退出登录、自动登录、停用/恢复、状态校验”六类操作；页面不再显示 R7/R13“不支持”。协议差异只存在于后端 provider：融辉/韵达使用共享 SessionBroker，R7/R13 持久化各自 SSO Token/Cookie；每个真实账号始终按 `account_id` 隔离会话。三平台报价源码从项目 `ronghui_quote`、`yunda_quote`、`best_quote` 角色取得精确账号并复用其后台登录态，不以 `price_default` 或 `price` 身份回落；公共账号用途保持原约定。凭据状态接口不返回已保存密码，只报告 `has_saved_credentials`、`credential_source` 等非敏感字段，Console 密码输入只写不读。账号备注使用账号 `name`，经 `/admin/accounts/{account_id}/name` 单独保存，不改凭据、登录态、启停或自动登录设置。
 
 运行异常恢复由 `tms_runtime/errors.py` 统一分类，依据异常类型、错误码及显式原因链，不输出浏览器异常中的输入值或会话 URL。`LOGIN_TIMEOUT`、`LOGIN_PAGE_UNAVAILABLE`、`LOGIN_WORKER_UNAVAILABLE`、网络连接/请求超时和上游 HTTP 429/5xx 不计入账号失败次数，也不清除先前真实认证失败的计数；缺少依赖的 `AUTH_UNAVAILABLE` 同样不应锁定账号，页面明确提示检查运行环境。失败登录进程及其残留子进程、临时目录和锁在本轮退出时清理，运行异常及无效 worker 回包不提交部分登录状态。每轮最多一次登录调用，仍受默认 120 秒总期限约束；下一轮监控才重试，监控默认在整轮结束后等待 60 秒，不添加请求内无限重试或立即重试循环。持续原站故障、缺失依赖及页面协议变化仍需修复相应原因，不能把再次尝试报告为已登录。
+
+校验已保存登录态时平台返回 HTTP 5xx/429（如 R13 `aurora/auth` 的 `500 Server Error`）只说明平台接口异常，不代表登录态失效：监控按账号累计连续轮次，未满 5 轮只记日志，第 5 轮发送一次“登录态校验连续 N 次失败、登录态可能仍有效”的提醒，同一次故障不再重复；任一轮结果不再是服务端错误即清零。R7/R13 的“最近校验时间”取自登录态文件 `sso_session.json` 的本次在线校验时间，凭据文件中保存密码时的旧时间不得覆盖它。
 
 等待恢复的状态投影为“登录环境异常，等待重试”，并携带 `auto_login_retryable=true` 和非敏感 `last_error_code`，后台共享快照使用本次结果；不会把运行异常作为账号密码失败推送飞书。日志只记录账号标识与错误码。明确认证失败、人工验证码状态以及 `BLOCKED_LOGIN` 并发跳过规则保持原语义；自动或手动登录成功清零失败，R7/R13 与融辉/韵达一致。已有历史暂停缺少可靠失败原因，不自动批量解除；用户手动登录成功或重新开启自动登录后恢复。回归入口为 `tests/test_login_runtime_recovery.py`、`tests/test_session_process_isolation.py`、`tests/test_automation_account_manager.py` 和 `tests/test_feishu_handlers.py`。
 

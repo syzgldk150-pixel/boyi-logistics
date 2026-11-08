@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import socket
 import sys
@@ -257,6 +258,10 @@ TRANSIENT_TMS_SESSION_ERROR_MARKERS = (
     "temporarily unavailable",
     "temporary failure",
 )
+# A platform-side HTTP 5xx/429 while checking a saved session says nothing about
+# whether the login itself expired; only alert once it persists for several rounds.
+TMS_SESSION_SERVER_ERROR_PATTERN = re.compile(r"\b(?:5\d\d server error|429 client error)\b")
+TMS_SESSION_SERVER_ERROR_ALERT_ROUNDS = 5
 
 
 def _runtime() -> AgentCore:
@@ -413,6 +418,13 @@ def _is_transient_tms_session_status(status_payload: dict) -> bool:
     return _is_transient_tms_session_error_text(reason)
 
 
+def _is_upstream_server_error_status(status_payload: dict) -> bool:
+    if str(status_payload.get("status") or "").strip() != "error":
+        return False
+    reason = str(status_payload.get("last_error_summary") or "").strip().lower()
+    return bool(TMS_SESSION_SERVER_ERROR_PATTERN.search(reason))
+
+
 def _should_alert_tms_session_status(status_payload: dict) -> bool:
     if status_payload.get("auto_login_retryable"):
         return False
@@ -563,6 +575,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
     """Poll enabled automation accounts and alert Feishu only when login needs attention."""
     last_alert_key_by_account: dict[str, str] = {}
     last_alert_state_key_by_account: dict[str, str] = {}
+    server_error_rounds_by_account: dict[str, int] = {}
     interval_sec = _tms_session_monitor_interval_sec()
 
     while not stop_event.is_set():
@@ -592,12 +605,30 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
                 status = str(status_payload.get("status") or "").strip()
                 identity = _account_alert_identity(status_payload)
 
+                if not _is_upstream_server_error_status(status_payload):
+                    server_error_rounds_by_account.pop(identity, None)
                 if status == "authenticated":
                     last_alert_key_by_account.pop(identity, None)
                     last_alert_state_key_by_account.pop(identity, None)
                     continue
                 if not check_result.get("should_alert"):
                     continue
+                if _is_upstream_server_error_status(status_payload):
+                    rounds = server_error_rounds_by_account.get(identity, 0) + 1
+                    server_error_rounds_by_account[identity] = rounds
+                    if rounds < TMS_SESSION_SERVER_ERROR_ALERT_ROUNDS:
+                        logger.info(
+                            "TMS session server error deferred: account=%s rounds=%d/%d",
+                            status_payload.get("account_id") or "-",
+                            rounds,
+                            TMS_SESSION_SERVER_ERROR_ALERT_ROUNDS,
+                        )
+                        continue
+                    if rounds > TMS_SESSION_SERVER_ERROR_ALERT_ROUNDS:
+                        # Already alerted for this outage; the saved session still
+                        # reads as authenticated, so transition checks would repeat it.
+                        continue
+                    status_payload = {**status_payload, "consecutive_server_errors": rounds}
 
                 alert_key = _tms_session_alert_key(status_payload)
                 alert_state_key = _tms_session_alert_state_key(status_payload)

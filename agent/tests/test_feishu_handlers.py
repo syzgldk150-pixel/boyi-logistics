@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from fastapi import HTTPException
 from agent.direct_tool_router import format_price_reply, format_price_reply_messages, parse_price_request
 from agent.tms_runtime.errors import TMSAuthStateError
 from feishu import message_handler, notify
+from feishu.notify import build_tms_session_disconnected_message
 from feishu.reply_formatter import format_reply
 import main
 from main import _check_tms_account_session, _feishu_event_type, _tms_session_alert_key, _verify_feishu_event_token
@@ -1104,6 +1106,90 @@ class TmsAccountMonitorTests(unittest.TestCase):
         self.assertFalse(result["should_alert"])
         self.assertEqual("error", result["status_payload"]["status"])
 
+
+class TmsSessionServerErrorAlertTests(unittest.TestCase):
+    ACCOUNT = {
+        "account_id": "R13",
+        "name": "自提部账号",
+        "system": "r13",
+        "system_label": "R13",
+        "session_profile": "R13",
+        "session_capable": True,
+        "is_active": True,
+        "auto_login_enabled": True,
+    }
+    SERVER_ERROR = (
+        "500 Server Error: Internal Server Error for url: "
+        "https://r13.example.invalid/gateway/public/aurora/auth"
+    )
+
+    def _run_monitor(self, outcomes):
+        """Run one monitor round per outcome; return the payloads that were alerted."""
+        outcomes = list(outcomes)
+        stop_event = asyncio.Event()
+        alerts = []
+        account = self.ACCOUNT
+        server_error = self.SERVER_ERROR
+
+        class FakeManager:
+            def list_accounts(self, **_kwargs):
+                return [dict(account)]
+
+            def describe_status(self, account_id, *, validate=True, force=False):
+                return {"account_id": account_id, "status": "authenticated"}
+
+            def check_status_with_auto_login(self, account_id, *, force=False):
+                outcome = outcomes.pop(0)
+                if not outcomes:
+                    stop_event.set()
+                if outcome == "error":
+                    raise RuntimeError(server_error)
+                return {"account_id": account_id, "status": "authenticated"}
+
+        def record_alert(payload):
+            alerts.append(dict(payload))
+            return True
+
+        with (
+            patch.object(main, "get_account_manager", return_value=FakeManager()),
+            patch.object(main, "send_tms_session_disconnected_alert", side_effect=record_alert),
+            patch.object(main, "update_account_list_cache_status"),
+            patch.object(main, "ensure_account_list_cache"),
+            patch.object(main, "_tms_session_monitor_interval_sec", return_value=0),
+        ):
+            asyncio.run(main._monitor_tms_session_alerts(stop_event))
+        return alerts
+
+    def test_single_platform_server_error_does_not_alert(self):
+        alerts = self._run_monitor(["error", "ok"])
+        self.assertEqual([], alerts)
+
+    def test_recovery_resets_server_error_rounds(self):
+        rounds = main.TMS_SESSION_SERVER_ERROR_ALERT_ROUNDS
+        outcomes = ["error"] * (rounds - 1) + ["ok"] + ["error"] * (rounds - 1)
+        self.assertEqual([], self._run_monitor(outcomes))
+
+    def test_persistent_server_error_alerts_once_with_round_count(self):
+        rounds = main.TMS_SESSION_SERVER_ERROR_ALERT_ROUNDS
+        alerts = self._run_monitor(["error"] * (rounds + 2))
+        self.assertEqual(1, len(alerts))
+        self.assertEqual(rounds, alerts[0]["consecutive_server_errors"])
+        message = build_tms_session_disconnected_message(
+            alerts[0]["status"], alerts[0]["last_error_summary"], alerts[0]
+        )
+        self.assertIn(f"连续 {rounds} 次失败", message)
+        self.assertNotIn("自动登录未完成", message)
+
+    def test_non_server_errors_still_alert_immediately(self):
+        self.assertFalse(main._is_upstream_server_error_status(
+            {"status": "error", "last_error_summary": "R13 登录失败，已停止重试"}
+        ))
+        self.assertTrue(main._is_upstream_server_error_status(
+            {"status": "error", "last_error_summary": self.SERVER_ERROR}
+        ))
+        self.assertFalse(main._is_upstream_server_error_status(
+            {"status": "expired", "last_error_summary": self.SERVER_ERROR}
+        ))
 
 if __name__ == "__main__":
     unittest.main()

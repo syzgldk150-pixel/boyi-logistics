@@ -253,3 +253,53 @@ def test_fee_sum_matches_page_signed_adjustment_and_six_discounts():
 def test_invalid_or_changed_fee_shape_fails(row):
     with pytest.raises(QuoteError):
         _sum_fees(row)
+
+
+def _second_level(client, **flags):
+    row = {"DESTINATION_NAME": "测试目的网点", "DESTINATION_CODE": "D-TEST", "TYPE": "二级网点",
+           "SUPERIOR_SITE_CODE": "D-UP"}
+    row.update(flags)
+    client.responses["ronghui_destination_name"] = [{k: v for k, v in row.items() if v is not _OMIT}]
+    client.responses["ronghui_destination"][0]["DESTINATION_CODE"] = "D-UP"
+
+
+_OMIT = object()
+
+
+@pytest.mark.parametrize("enabled,purpose", [(_OMIT, _OMIT), (None, None), (1, 1), (0, None), (None, 0), ("x", "0")])
+def test_second_level_site_without_page_condition_keeps_its_own_code(enabled, purpose):
+    # The live page compares these flags with JS ``==``: an omitted/null field
+    # matches neither 0 nor 1, so the site's own destination code is kept.
+    client = FakeClient()
+    _second_level(client, ENABLE_ACCOUNT_PURPOSE=enabled, BL_PURPOSE_SITE=purpose)
+    client.responses["ronghui_destination"][0]["DESTINATION_CODE"] = "D-TEST"
+    result = quote(client, INPUT)
+    assert result["quotes"]
+    assert ("ronghui_destination", {"DESTINATION_CODE": "D-TEST"}) in client.calls
+
+
+@pytest.mark.parametrize("enabled,purpose", [(1, 0), ("1", "0"), (1.0, ""), (True, "  ")])
+def test_second_level_account_purpose_site_uses_superior_code(enabled, purpose):
+    client = FakeClient()
+    _second_level(client, ENABLE_ACCOUNT_PURPOSE=enabled, BL_PURPOSE_SITE=purpose)
+    result = quote(client, INPUT)
+    assert result["quotes"]
+    assert ("ronghui_destination", {"DESTINATION_CODE": "D-UP"}) in client.calls
+
+
+@pytest.mark.parametrize("enabled,purpose,reason", [
+    (0, 1, "网点暂停派送"), ("0", "1", "网点暂停派送"), (0, 0, "无此网点"), ("", "0", "无此网点"),
+])
+def test_second_level_closed_site_fails_with_page_message(enabled, purpose, reason):
+    client = FakeClient()
+    _second_level(client, ENABLE_ACCOUNT_PURPOSE=enabled, BL_PURPOSE_SITE=purpose)
+    with pytest.raises(QuoteError, match=f"测试目的网点】{reason}"):
+        quote(client, INPUT)
+    assert not [name for name, _ in client.calls if name == "ronghui_destination"]
+
+
+def test_unexpected_flag_type_fails_closed():
+    client = FakeClient()
+    _second_level(client, ENABLE_ACCOUNT_PURPOSE=[1], BL_PURPOSE_SITE=0)
+    with pytest.raises(QuoteError, match="网点标识字段格式无效"):
+        quote(client, INPUT)

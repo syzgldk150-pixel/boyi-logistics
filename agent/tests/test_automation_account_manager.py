@@ -430,6 +430,48 @@ class AutomationAccountManagerTests(unittest.TestCase):
                 self.assertTrue(auth.login_calls[0]["exchange"])
                 self.assertTrue(auth.login_calls[0]["verify"])
 
+    def test_sso_status_keeps_session_validation_time_over_credential_file_time(self):
+        class ValidatedSSOAuth:
+            def _verify_authenticated(self):
+                return True
+
+            def persisted_status(self, *, validate, validator, attach_bearer=True):
+                return {
+                    "status": "authenticated",
+                    "label": "已登录",
+                    "status_tone": "success",
+                    "authenticated": True,
+                    "pending_code": False,
+                    "last_validation_at": "2026-11-08 15:21:11",
+                    "last_error_summary": "",
+                    "authenticated_at": "2026-11-03 18:16:26",
+                    "pending_since": "",
+                    "expires_at": "",
+                    "challenge_type": "",
+                    "challenge_label": "",
+                }
+
+        for account_id in ("r7_default", "r13_default"):
+            with self.subTest(account_id=account_id):
+                self.manager.save_credentials(account_id, username="user", password="pass")
+                path = account_manager_module._local_credential_path(account_id)
+                stored = json.loads(path.read_text(encoding="utf-8"))
+                stored["last_validation_at"] = "2026-08-11 19:47:16"
+                path.write_text(json.dumps(stored), encoding="utf-8")
+                self.manager.set_auto_login(account_id, True)
+                with patch.object(self.manager, "_sso_auth", return_value=ValidatedSSOAuth()):
+                    described = self.manager.describe_status(account_id, validate=True, force=True)
+                    checked = self.manager.check_status_with_auto_login(account_id, force=True)
+                    listed = {
+                        row["account_id"]: row
+                        for row in self.manager.list_accounts(include_status=True, validate=False)
+                    }[account_id]
+
+                self.assertEqual("2026-11-08 15:21:11", described["last_validation_at"])
+                self.assertEqual("2026-11-08 15:21:11", checked["last_validation_at"])
+                self.assertEqual("2026-11-08 15:21:11", listed["status"]["last_validation_at"])
+                self.assertEqual("user", checked["username"])
+
     def test_sso_manual_login_failure_stops_after_one_attempt_and_returns_account_error(self):
         class FailingSSOAuth:
             def __init__(self):

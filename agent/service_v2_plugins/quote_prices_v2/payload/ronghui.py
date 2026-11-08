@@ -48,6 +48,30 @@ def _text(row, key):
     return str(value).strip()
 
 
+def _js_equals(value, number):
+    """JavaScript ``value == number`` for the flag fields compared on the live page.
+
+    The page reads these flags with loose equality, so a field the platform
+    omits (``undefined``) or returns as null matches neither 0 nor 1, while a
+    blank string coerces to 0. Any other JSON type is not expected here.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return int(value) == number
+    if isinstance(value, (int, float)):
+        return value == number
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return number == 0
+        try:
+            return float(text) == number
+        except ValueError:
+            return False
+    raise QuoteError("融辉网点标识字段格式无效")
+
+
 def _rows(value, label):
     if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
         raise QuoteError(f"融辉{label}返回格式无效")
@@ -118,12 +142,16 @@ def _destination(client, request, context):
     found = _query(client, "ronghui_destination_name", {"DESTINATION_NAME": name}, "目的网点")
     code = _text(found, "DESTINATION_CODE")
     if found.get("TYPE") == "二级网点":
-        enabled = _text(found, "ENABLE_ACCOUNT_PURPOSE")
-        purpose = _text(found, "BL_PURPOSE_SITE")
-        if enabled == "1" and purpose == "0":
+        # Same three checks as the live 运单录入 page (GET_FIRST_MATCH_SITE_ZB
+        # branch, verified 2026-11-08); any other combination keeps the site.
+        enabled = found.get("ENABLE_ACCOUNT_PURPOSE")
+        purpose = found.get("BL_PURPOSE_SITE")
+        if _js_equals(enabled, 1) and _js_equals(purpose, 0):
             code = _text(found, "SUPERIOR_SITE_CODE")
-        elif enabled == "0":
-            raise QuoteError("融辉目的网点未开放派送")
+        if _js_equals(enabled, 0) and _js_equals(purpose, 1):
+            raise QuoteError(f"融辉【{name}】网点暂停派送")
+        if _js_equals(enabled, 0) and _js_equals(purpose, 0):
+            raise QuoteError(f"融辉【{name}】无此网点")
     destination = _query(client, "ronghui_destination", {"DESTINATION_CODE": code}, "目的网点详情")
     if _text(destination, "DESTINATION_CODE") != code:
         raise QuoteError("融辉目的网点详情与匹配结果不一致")
@@ -147,8 +175,8 @@ def _dispatch(destination):
             "DISPATCH_FINANCE_CENTER_CODE": _text(destination, "FINANCE_CENTER_CODE"),
             "DISPATCH_FINANCE_CENTER": _text(destination, "FINANCE_CENTER"),
         })
-        if str(destination.get("ENABLE_ACCOUNT_PURPOSE")) == "1" and (
-            str(destination.get("BL_PURPOSE_SITE")) == "1" or str(destination.get("BL_OPEN")) == "1"
+        if _js_equals(destination.get("ENABLE_ACCOUNT_PURPOSE"), 1) and (
+            _js_equals(destination.get("BL_PURPOSE_SITE"), 1) or _js_equals(destination.get("BL_OPEN"), 1)
         ):
             result["DISPATCH_UNDERLING_SITE_CODE"] = _text(destination, "SUPERIOR_SITE_CODE")
             result["DISPATCH_UNDERLING_SITE"] = _text(destination, "SUPERIOR_SITE")

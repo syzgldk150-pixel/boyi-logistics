@@ -2,12 +2,12 @@
 module: 三平台报价
 type: 维护手册
 status: active
-updated: 2026-10-29
+updated: 2026-11-08
 ---
 
 # 三平台报价
 
-`quote_prices_v2` 1.0.4 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不提供报价工具，旧报价脚本已删除。
+`quote_prices_v2` 1.0.5 是独立 Service V2 插件。融辉、韵达、百世的地址解析、产品选择与金额计算全部在 ZIP 内；Host 仅提供账号绑定、已保存登录态、受声明约束的只读 HTTP、最小业务上下文及执行记录。系统工具目录不提供报价工具，旧报价脚本已删除。
 
 ## 输入与结果
 
@@ -22,6 +22,8 @@ updated: 2026-10-29
 | 百世 | 从当前账号读取发站，选择平台唯一默认且有效产品；分别解析派送、站点自提地址与服务权限，按现付、普通保价及平台当次最低保价测算，合计响应中实际有金额的费用项。 |
 
 1.0.4 的韵达自提、派送分别注明本次“韵重货＋一口价”或“仅一口价（韵重货不适用）”。是否能选韵重货以当前页 `$BubbleRatio`、`$HeavyMinWeight` 为准：比率不为零，且重量严格大于 `体积 × 1000000 / 比率` 和最低重量；等于阈值时不选。计重和报价请求使用相同选项并取消大票货；若平台计重结果要求大票货、使一口价无法使用，则明确失败，不改报其他产品。
+
+1.0.5 修正融辉二级网点判断：按 2026-11-08 读取的原页“运单录入”脚本，`ENABLE_ACCOUNT_PURPOSE`、`BL_PURPOSE_SITE` 以 JavaScript 宽松相等比较——`1/0` 改用上级网点，`0/1` 提示“网点暂停派送”，`0/0` 提示“无此网点”，其他组合（含平台省略或返回 null 的字段）保留匹配网点自身编码；此前插件把字段缺失当作必要字段错误，导致部分地址无法报价。派送下属网点的 `BL_PURPOSE_SITE`/`BL_OPEN` 判断使用同一比较规则。
 
 特殊区域、需要人工指定网点/线路、额外派送加价等未闭合场景明确失败，同时保留本次已查到的网点和限制资料。融辉补查本次匹配派件网点的资料，单独资料查询失败时保留已成功价格并明确资料缺失；韵达 `SpecialArea` 集合按原页作为带相似度的“特殊区域参考”展示，不当作地址已命中；百世按当前模式的区域匹配结果展示收费标准、适用服务、说明与有效期。百世结果会注明当次最低保价，上楼、进仓等附加服务须另行核实。当前输入只有地址、重量、体积，不代表已覆盖全部特殊货物与附加服务。
 
@@ -49,9 +51,9 @@ updated: 2026-10-29
 
 ```bash
 PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 python -m pytest -q tests/test_quote_prices_v2.py tests/test_quote_ronghui_v2.py tests/test_quote_yunda_v2.py tests/test_quote_best_v2.py tests/test_quote_prices_v2_packaged.py tests/test_quote_runtime_inputs.py tests/test_quote_system_retirement.py
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/quote_prices_v2 .task_tmp/quote_prices_v2-1.0.4.zip
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/quote_prices_v2-1.0.4.zip
-PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/quote_prices_v2-1.0.4.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin package agent/service_v2_plugins/quote_prices_v2 .task_tmp/quote_prices_v2-1.0.5.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin inspect .task_tmp/quote_prices_v2-1.0.5.zip
+PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin permissions .task_tmp/quote_prices_v2-1.0.5.zip
 ```
 
 打包前确保源码目录只有 manifest、Python 源码与声明的静态文件，不含浏览器试价生成的缓存或业务资料。ZIP 不可覆盖，重复构建使用新的输出路径。

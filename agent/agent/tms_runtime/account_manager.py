@@ -835,11 +835,23 @@ class AutomationAccountManager:
         }
         return result
 
+    def _credentials_overlay(self, row: dict[str, Any], credentials: dict[str, Any]) -> dict[str, Any]:
+        """Credential fields merged into a session status without replacing its timestamps.
+
+        SSO accounts record each online check in their session state. The
+        credential file's ``last_validation_at`` only reflects when the password
+        was saved, so it must not overwrite the session's real validation time.
+        """
+        overlay = dict(credentials)
+        if self._uses_sso_session(row):
+            overlay.pop("last_validation_at", None)
+        return overlay
+
     def _with_account_context(self, row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         config = SYSTEMS[row["system"]]
         purpose = str(row.get("account_purpose") or "general").strip().lower() or "general"
         result = dict(payload or {})
-        result.update(self._manual_credentials_for_row(row))
+        result.update(self._credentials_overlay(row, self._manual_credentials_for_row(row)))
         result.update(
             {
                 "account_id": row["account_id"],
@@ -1008,7 +1020,7 @@ class AutomationAccountManager:
             status.update(credentials)
         elif self._uses_sso_session(row):
             status = self._describe_sso_status(row, validate=validate)
-            status.update(credentials)
+            status.update(self._credentials_overlay(row, credentials))
         else:
             has_credentials = bool(credentials.get("has_saved_credentials"))
             status = {
