@@ -361,6 +361,17 @@
     </div>
   </div>
   <p class="monitor-sync" data-monitoring-updated>等待同步</p>
+  <section class="overview-pending" data-overview-pending hidden aria-labelledby="overview-pending-title">
+    <div class="overview-pending__head">
+      <h2 id="overview-pending-title"><i data-feather="inbox"></i>待我确认 <span class="overview-pending__count" data-overview-pending-count>0</span></h2>
+      <span class="overview-pending__note">客户服务中等待回复的问题件，按等待时间排序；点“处理”打开对应处理框</span>
+    </div>
+    <div class="overview-pending__list" data-overview-pending-list role="list"></div>
+    <div class="overview-pending__foot">
+      <span data-overview-pending-status>正在读取……</span>
+      <a href="/modules/customer-service" data-console-navigate>在客户服务中查看全部</a>
+    </div>
+  </section>
   <div class="monitor-metrics">
     <button class="monitor-metric" type="button" data-monitoring-metric="ronghui-work">
       <span>融辉收到工单</span>
@@ -412,4 +423,5 @@
 
 {% block scripts %}
 <script src="/static/monitoring.js?v=20261015b"></script>
+<script src="/static/overview_pending.js?v=20261109-cs-ai"></script>
 {% endblock %}

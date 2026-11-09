@@ -83,7 +83,15 @@ updated: 2026-11-09
 - 场景分档：案例少于 3 个的场景为“新问题”（L0），AI 只整理依据、不代写回复（草稿保留在记录里）；满 3 个后为“AI 建议”（L1），回复框预先填好草稿，只在回复框为空时填入。破损、丢件/赔付为锁定场景，AI 只给参考，永远不会进入自动处理。
 - 回复仍由人点“回复处理”经原有直接业务接口发出，回复链路和写后核验不变。回复成功后，Console 再调 `/internal/v1/admin/customer-service/ai/cases` 把这次回复存为案例（`cs_cases`，按浏览器请求 UUID 幂等），并记下 AI 建议是被采纳、修改还是没用上；存案例失败只提示，不撤销已发出的回复。
 - 列表“AI 处理”列经 `/customer-service/problems/ai-status` 读取每条问题件最近一次建议的场景与分档；读取失败只显示“—”，列表照常使用。实时查询（原平台查询）得到的行没有本地记录，不生成 AI 建议。
-- 数据表由迁移 `074_ai_task_runs.sql`、`075_customer_service_ai.sql` 建立。相似案例检索、概览“待我确认”、模板提炼与授权自动处理属于后续阶段，尚未实现。
+- 数据表由迁移 `074_ai_task_runs.sql`、`075_customer_service_ai.sql` 建立。
+
+### 阶段 2：相似案例、学习进展、概览“待我确认”
+
+- **相似案例**：生成建议前，从 `cs_cases` 取同平台、同问题类型或问题内容含相同关键词的最近 60 个案例，按问题内容的字符二元组重合度（同类型加分）排序，取最相似的最多 3 个（`shared/customer_service_ai.py` 的 `rank_similar_cases`，不调用模型、不用向量）。案例以“问题 + 当时回复”交给模型参考处理方式和措辞；提示和校验都要求回复中的时间、单号只能来自本件依据，不能搬用别的件的事实。处理框显示“AI 参考了 N 个相似案例”，并标出被参考的案例。提示词版本为 2。
+- **学习进展**：“AI 是怎么学习的”弹窗经 `/customer-service/problems/ai-stats` 读取 Agent `/internal/v1/admin/customer-service/ai/stats`，按场景显示当前分档、累计案例，以及近 30 天草稿被直接采纳、修改后使用、未使用的次数与直接采纳率（只在草稿展示过时计算）。
+- **概览“待我确认”**：首页（`templates/portal.html` + `static/overview_pending.js`）在指标卡上方显示等待回复的客服问题件，按等待时间从早到晚最多 8 条，并显示 AI 分档。数据来自 Console `/customer-service/pending-summary`：读取本地已发布的“发布给我的”最近 500 条，按 `problem_needs_reply`（与页面 `problemNeedsAttention` 同一口径，两处须同步修改）筛选，再向 Agent 取 AI 分档；分档取不到时照常显示“待 AI 判断”。没有 `customer_service` 权限时区块不显示。只读展示，不建队列。
+- 点“处理”经控制台页签打开 `/modules/customer-service?open=<来源|问题件|方向>&q=<单号>`：客服页预填单号并自动查询，再打开这条问题件的处理框；页签已打开时由 `console:querychange` 事件完成同样动作。当前结果里找不到时只提示，不猜测。
+- 插件的待确认预览（扫描、自提、分批）暂未汇总进“待我确认”：现有接口只能按单个插件实例读取预览，跨插件汇总需要新的核心查询，列为后续事项。
 
 ## 代码入口
 

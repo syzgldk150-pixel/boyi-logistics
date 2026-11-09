@@ -1893,6 +1893,16 @@ async def internal_customer_service_ai_record_case(req: CustomerServiceAICaseReq
     return api_success(result)
 
 
+@app.get("/internal/v1/admin/customer-service/ai/stats")
+async def internal_customer_service_ai_stats(request: Request):
+    """Learning progress per scenario: maturity and how advice was used in the last 30 days."""
+
+    _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    return api_success(await customer_service_ai.stats())
+
+
 @app.post("/internal/v1/admin/customer-service/ai/status")
 async def internal_customer_service_ai_status(req: CustomerServiceAIStatusRequest, request: Request):
     """Latest AI scenario per listed problem, for the list's AI column."""

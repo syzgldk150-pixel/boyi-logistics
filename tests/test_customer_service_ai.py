@@ -15,6 +15,8 @@ from shared.customer_service_ai import (
     mask_address,
     mask_phones,
     problem_key,
+    problem_needs_reply,
+    rank_similar_cases,
     validate_suggestion,
 )
 from shared.identity_routes import agent_permission
@@ -80,8 +82,18 @@ PROBLEM = {"source_id": "s1", "external_id": "e1", "source_direction": "received
 
 
 class FakeRepo:
-    def __init__(self):
+    def __init__(self, candidates=()):
         self.saved, self.cases, self.suggestions = [], [], {}
+        self.candidates = list(candidates)
+
+    def similar_case_candidates(self, problem):
+        return [dict(item) for item in self.candidates]
+
+    def scenario_stats(self):
+        return [{"scenario_id": "urge", "name": "催件", "tier": "L1", "locked": False, "case_count": 5, "recent_cases": 4,
+                 "adopted": 3, "edited": 1, "unused": 0, "adoption_rate": 0.75},
+                {"scenario_id": "damage", "name": "破损", "tier": "L0", "locked": True, "case_count": 0, "recent_cases": 0,
+                 "adopted": 0, "edited": 0, "unused": 0, "adoption_rate": None}]
 
     def load_problem(self, key):
         if key != ("s1", "e1", "received"):
@@ -275,3 +287,79 @@ def test_repository_replays_the_same_request_and_refuses_reuse():
     with pytest.raises(CustomerServiceAIError) as reused:
         CustomerServiceAIRepository(lambda: _Connection(cursor)).record_case(CASE)
     assert reused.value.code == "REQUEST_ID_REUSED"
+
+
+# ---- Phase 2: similar cases, learning stats, pending rule ----
+
+CANDIDATES = [
+    {"case_id": 1, "source_id": "s9", "external_id": "x1", "source_direction": "received", "problem_type": "物流停滞",
+     "problem_text": "两天没更新了，件是不是丢了", "reply_text": "您好，已联系分拨核实，今天内答复。", "suggestion_use": "edited",
+     "scenario_name": "未派送 / 滞留", "created_at": "2026-11-08 10:00:00"},
+    {"case_id": 2, "source_id": "s9", "external_id": "x2", "source_direction": "received", "problem_type": "改址",
+     "problem_text": "客户要求改地址到另一个小区", "reply_text": "您好，已登记改址。", "suggestion_use": "none",
+     "scenario_name": "改址", "created_at": "2026-11-07 10:00:00"},
+    {"case_id": 3, "source_id": "s1", "external_id": "e1", "source_direction": "received", "problem_type": "物流停滞",
+     "problem_text": "两天没更新", "reply_text": "同一件的旧回复", "suggestion_use": "none", "created_at": "2026-11-06"},
+]
+
+
+def test_similar_cases_rank_by_text_and_type_and_skip_the_same_problem():
+    ranked = rank_similar_cases(PROBLEM, CANDIDATES)
+    assert [case["case_id"] for case in ranked] == [1]
+    assert ranked[0]["similarity"] >= 0.3
+
+
+def test_validation_accepts_only_given_case_refs():
+    assert validate_suggestion(_answer(case_refs=["C1"]), **{**KW, "case_ids": ["C1"]})["case_refs"] == ["C1"]
+    with pytest.raises(ValueError):
+        validate_suggestion(_answer(case_refs=["C2"]), **{**KW, "case_ids": ["C1"]})
+
+
+def test_advice_shows_the_similar_cases_the_model_used_without_their_facts():
+    answer = _answer(scenario="urge", case_refs=["C1"])
+    service, _, _ = _service(answer, repo=FakeRepo(CANDIDATES))
+    result = asyncio.run(service.suggest("s1", "e1", "received"))
+    assert [(case["id"], case["cited"]) for case in result["cases"]] == [("C1", True)]
+    sent = json.loads(service._gateway._llm.calls[0][1]["content"])
+    assert sent["cases"][0]["reply"].startswith("您好，已联系分拨")
+    assert "case_id" not in sent["cases"][0] and "别的件" in service._gateway._llm.calls[0][0]["content"]
+
+
+def test_learning_stats_total_the_adoption_rate():
+    service, _, _ = _service(_answer())
+    stats = asyncio.run(service.stats())
+    assert stats["totals"] == {"cases": 4, "adopted": 3, "edited": 1, "adoption_rate": 0.75}
+
+
+@pytest.mark.parametrize(("row", "expected"), [
+    ({"status": "待处理", "reply_text": "", "resolved": False}, True),
+    ({"status": "未回复", "reply_text": "暂无回复", "resolved": False}, True),
+    ({"status": "待处理", "reply_text": "已安排派送", "resolved": False}, False),
+    ({"status": "已处理", "reply_text": "", "resolved": False}, False),
+    ({"status": "待处理", "reply_text": "", "resolved": True}, False),
+    ({"status": "", "reply_text": "", "resolved": False}, False),
+])
+def test_pending_rule_matches_the_page(row, expected):
+    assert problem_needs_reply(row) is expected
+
+
+class _StatsCursor(_Cursor):
+    def __init__(self, rows):
+        super().__init__(fetch_rows=rows)
+        self.description = [(name,) for name in ("scenario_id", "name", "tier", "locked", "case_count", "adopted",
+                                                 "edited", "unused", "recent_cases")]
+
+
+def test_repository_stats_compute_rates_only_when_advice_was_shown():
+    cursor = _StatsCursor([("urge", "催件", "L1", 0, 7, 3, 1, 2, 6), ("damage", "破损", "L0", 1, 0, 0, 0, 0, 0)])
+    stats = CustomerServiceAIRepository(lambda: _Connection(cursor)).scenario_stats()
+    assert stats[0]["adoption_rate"] == 0.75 and stats[1]["adoption_rate"] is None and stats[1]["locked"] is True
+    assert "INTERVAL %s DAY" in cursor.executed[0][0] and cursor.executed[0][1] == (30,)
+
+
+def test_repository_candidate_query_is_bounded_to_the_platform():
+    cursor = _Cursor()
+    cursor.description = [("case_id",)]
+    CustomerServiceAIRepository(lambda: _Connection(cursor)).similar_case_candidates(PROBLEM)
+    sql, params = cursor.executed[0]
+    assert "c.platform=%s" in sql and params[0] == "yunda" and params[-1] == 60

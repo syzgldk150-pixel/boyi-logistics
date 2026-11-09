@@ -162,6 +162,8 @@ class CustomerServiceMixin:
             settings=settings,
             account_warning=warning,
             module_sources=module_sources,
+            open_problem=str((query.get("open") or [""])[0] or "")[:340],
+            prefill_q=str((query.get("q") or [""])[0] or "")[:100],
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )
@@ -595,6 +597,50 @@ class CustomerServiceMixin:
             self._customer_service_ai_failure(handler, result, "AI 处理状态暂不可用。")
             return
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
+    def _handle_customer_service_ai_stats(self, handler: BaseHTTPRequestHandler) -> None:
+        context = self._control_plane_read_context(handler)
+        if context is None:
+            return
+        result = self._agent_request("GET", "/internal/v1/admin/customer-service/ai/stats", timeout=20,
+            console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            self._customer_service_ai_failure(handler, result, "学习进展暂不可用。")
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
+    def _handle_customer_service_pending_summary(self, handler: BaseHTTPRequestHandler) -> None:
+        """Problems waiting for a reply, oldest first, for the overview's “待我确认” block. Read-only."""
+
+        from shared.customer_service_ai import problem_needs_reply
+        from shared.customer_service_repository import CustomerServiceRepository
+
+        context = self._control_plane_read_context(handler)
+        if context is None:
+            return
+        try:
+            with self.repository.connect() as connection:
+                result = CustomerServiceRepository(connection).query(direction="published_to_me", limit=500)
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "message": "客服数据暂不可用。", "error_code": "CUSTOMER_LOCAL_DATA_UNAVAILABLE"})
+            return
+        pending = [row for row in result.get("rows") or [] if problem_needs_reply(row)]
+        pending.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""))
+        items = [{key: row.get(key) for key in ("source_id", "external_id", "source_direction", "platform",
+                  "waybill_no", "problem_type", "problem_text", "status", "updated_at", "created_at", "account_label")}
+                 for row in pending[:8]]
+        refs = [ref for ref in (self._customer_service_ai_ref(item) for item in items) if ref is not None]
+        if refs:
+            status = self._agent_request("POST", "/internal/v1/admin/customer-service/ai/status",
+                payload={"problems": refs}, timeout=10, console_principal=context["_console_principal"])
+            if status.get("ok"):
+                tiers = {(row["source_id"], row["external_id"], row["source_direction"]): row.get("scenario")
+                         for row in (status.get("data") or {}).get("problems") or []}
+                for item in items:
+                    item["ai_scenario"] = tiers.get((item["source_id"], item["external_id"], item["source_direction"]))
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "total": len(pending), "items": items,
+            "errors": len(result.get("errors") or [])})
 
     def _record_customer_service_ai_case(self, handler: BaseHTTPRequestHandler, context: dict[str, Any],
                                          body: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:

@@ -105,5 +105,72 @@ class CustomerServiceAIConsoleTests(unittest.TestCase):
         self.assertIn("!nodes.reply.value.trim()", script)
 
 
+    def _pending_app(self, rows, status_rows=()):
+        from contextlib import contextmanager
+        from unittest import mock
+
+        app, calls = self._app(lambda endpoint: {"ok": True, "data": {"problems": list(status_rows)}})
+
+        @contextmanager
+        def connect():
+            yield object()
+
+        app.repository.connect = connect
+        fake = mock.Mock()
+        fake.return_value.query.return_value = {"rows": rows, "errors": []}
+        return app, calls, mock.patch("shared.customer_service_repository.CustomerServiceRepository", fake)
+
+    def test_pending_summary_lists_unanswered_problems_oldest_first_with_ai_tier(self):
+        rows = [
+            {**ITEM, "external_id": "new", "status": "待处理", "reply_text": "", "resolved": False, "updated_at": "2026-11-09 10:00"},
+            {**ITEM, "external_id": "old", "status": "未回复", "reply_text": "", "resolved": False, "updated_at": "2026-11-08 09:00"},
+            {**ITEM, "external_id": "done", "status": "已处理", "reply_text": "好的", "resolved": False, "updated_at": "2026-11-07"},
+        ]
+        scenario = {"id": "urge", "name": "催件", "tier": "L1", "locked": False}
+        app, calls, patched = self._pending_app(rows, [{**{k: ITEM[k] for k in ("source_id", "source_direction")},
+                                                         "external_id": "old", "scenario": scenario}])
+        with patched:
+            app._handle_customer_service_pending_summary(_Handler())
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual(2, app.sent_payload["total"])
+        self.assertEqual(["old", "new"], [item["external_id"] for item in app.sent_payload["items"]])
+        self.assertEqual(scenario, app.sent_payload["items"][0]["ai_scenario"])
+        self.assertIsNone(app.sent_payload["items"][1].get("ai_scenario"))
+        self.assertEqual("/internal/v1/admin/customer-service/ai/status", calls[0]["endpoint"])
+
+    def test_pending_summary_survives_an_unavailable_ai_status(self):
+        rows = [{**ITEM, "status": "待处理", "reply_text": "", "resolved": False, "updated_at": "2026-11-09"}]
+        app, calls, patched = self._pending_app(rows)
+        app._agent_request = lambda *args, **kwargs: {"ok": False, "status": 503}
+        with patched:
+            app._handle_customer_service_pending_summary(_Handler())
+        self.assertEqual(1, app.sent_payload["total"])
+        self.assertNotIn("ai_scenario", app.sent_payload["items"][0])
+
+    def test_stats_proxy_reads_the_agent(self):
+        app, calls = self._app(lambda endpoint: {"ok": True, "data": {"scenarios": [], "totals": {}}})
+        app._handle_customer_service_ai_stats(_Handler())
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual("/internal/v1/admin/customer-service/ai/stats", calls[0]["endpoint"])
+
+    def test_deep_link_prefills_the_page_and_names_the_problem(self):
+        app = base_module.CustomerServiceModuleTests()._build_app()
+        key = "|".join(ITEM[k] for k in ("source_id", "external_id", "source_direction"))
+        app._render_customer_service(_Handler(), {"open": [key], "q": ["YD4312891203"]})
+        self.assertIn(f'data-open-problem="{key}"', app.sent_html)
+        self.assertIn('value="YD4312891203"', app.sent_html)
+        script = (CONSOLE_DIR / "static" / "customer_service.js").read_text(encoding="utf-8")
+        self.assertIn("runQuery().then(openRequestedProblem)", script)
+        self.assertIn("console:querychange", script)
+
+    def test_overview_block_is_wired_and_hidden_without_permission(self):
+        portal = (CONSOLE_DIR / "templates" / "portal.html").read_text(encoding="utf-8")
+        script = (CONSOLE_DIR / "static" / "overview_pending.js").read_text(encoding="utf-8")
+        self.assertIn("data-overview-pending hidden", portal)
+        self.assertIn("/static/overview_pending.js", portal)
+        self.assertIn("/customer-service/pending-summary", script)
+        self.assertIn("response.status === 403", script)
+        self.assertIn("data-console-navigate", script)
+
 if __name__ == "__main__":
     unittest.main()

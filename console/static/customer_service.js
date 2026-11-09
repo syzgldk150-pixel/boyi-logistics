@@ -470,6 +470,12 @@
       if (nodes.tier) { nodes.tier.innerHTML = aiBadgeHtml(scenario, { long: true }); nodes.tier.hidden = false; }
       const evidence = (data.evidence || []).map((item) => `<li class="${item.cited ? "is-cited" : ""}"><span>${escapeHtml(item.source)}${item.cited ? " · 已引用" : ""}</span><span>${escapeHtml(item.text)}</span></li>`).join("");
       const knowledge = (data.knowledge || []).map((item) => `<li class="${item.cited ? "is-cited" : ""}"><span>知识库${item.cited ? " · 已引用" : ""}</span><span>${escapeHtml(item.source)}\n${escapeHtml(item.text)}</span></li>`).join("");
+      const cases = data.cases || [];
+      const casesHtml = cases.length ? `
+        <details class="customer-service-ai-cases" ${cases.some((item) => item.cited) ? "open" : ""}>
+          <summary>AI 参考了 ${cases.length} 个相似案例</summary>
+          <ul class="customer-service-ai-evidence">${cases.map((item) => `<li class="${item.cited ? "is-cited" : ""}"><span>${escapeHtml(item.created_at || "")}${item.cited ? " · 已参考" : ""}</span><span>${escapeHtml(item.scenario)}｜${escapeHtml(item.problem)}\n回复：${escapeHtml(item.reply)}</span></li>`).join("")}</ul>
+        </details>` : "";
       const notes = [];
       if (scenario.locked) notes.push(aiNote("", "lock", "这类问题涉及赔付或责任认定，AI 只给参考，必须由你确认后提交。"));
       if (scenario.tier === "L0") notes.push(aiNote("warn", "alert-circle", `这类问题 AI 还在学习（已有 ${scenario.case_count || 0} 个案例，满 3 个后开始代写回复），请你填写回复，提交后会存为案例。`));
@@ -477,6 +483,7 @@
       nodes.body.innerHTML = `
         <p class="customer-service-ai-meta">判断为「${escapeHtml(scenario.name || "")}」，把握 ${Math.round(Number(data.confidence || 0) * 100)}%。${escapeHtml(data.reason || "")}</p>
         <ul class="customer-service-ai-evidence">${evidence}${knowledge}</ul>
+        ${casesHtml}
         ${notes.join("")}`;
       if (nodes.hint) {
         if (data.reply) {
@@ -519,6 +526,45 @@
         nodes.body.innerHTML = aiNote("error", "alert-triangle", `${error.message || "AI 建议暂不可用"}。不影响你直接处理。`);
         if (nodes.run) { nodes.run.hidden = false; nodes.run.textContent = "重试"; }
         if (window.feather) window.feather.replace();
+      }
+    }
+
+    async function loadAiProgress() {
+      const node = $("[data-cs-ai-progress]");
+      if (!node) return;
+      node.innerHTML = '<p class="customer-service-ai-meta" aria-busy="true">正在读取……</p>';
+      try {
+        const response = await fetch("/customer-service/problems/ai-stats", { headers: { Accept: "application/json" } });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.message || "学习进展暂不可用");
+        const stats = data.data || {};
+        const rate = (value) => (value === null || value === undefined ? "—" : `${Math.round(value * 100)}%`);
+        const rows = (stats.scenarios || []).map((row) => `
+          <tr><td>${escapeHtml(row.name)}</td><td>${aiBadgeHtml({ name: row.name, tier: row.tier, locked: row.locked })}</td>
+            <td class="num">${row.case_count}</td><td class="num">${row.adopted} / ${row.edited} / ${row.unused}</td>
+            <td class="num">${rate(row.adoption_rate)}</td></tr>`).join("");
+        const totals = stats.totals || {};
+        node.innerHTML = `
+          <p class="customer-service-ai-meta">近 30 天共 ${totals.cases || 0} 个案例；AI 草稿被直接采纳的比例 ${rate(totals.adoption_rate)}。</p>
+          <div class="customer-service-ai-progress-table"><table>
+            <thead><tr><th>问题类型</th><th>现在</th><th>累计案例</th><th>直接采纳 / 修改后用 / 未用</th><th>直接采纳率</th></tr></thead>
+            <tbody>${rows}</tbody></table></div>`;
+        if (window.feather) window.feather.replace();
+      } catch (error) {
+        node.innerHTML = aiNote("", "info", error.message || "学习进展暂不可用");
+        if (window.feather) window.feather.replace();
+      }
+    }
+
+    async function openRequestedProblem() {
+      const wanted = root.dataset.openProblem || "";
+      if (!wanted) return;
+      root.dataset.openProblem = "";
+      const index = state.rows.findIndex((row) => aiKey(row) === wanted);
+      if (index >= 0) {
+        openRow(index);
+      } else {
+        setStatus("没有在当前结果中找到这条问题件，可能已被处理或不在所选账号中。", "warning");
       }
     }
 
@@ -1283,7 +1329,7 @@
       }
       if (target.closest("[data-cs-ai-help-open]")) {
         const help = $("[data-cs-ai-help]");
-        if (help && !help.open) { help.showModal(); if (window.feather) window.feather.replace(); }
+        if (help && !help.open) { help.showModal(); if (window.feather) window.feather.replace(); loadAiProgress(); }
         return;
       }
       if (target.closest("[data-cs-publish-open]")) {
@@ -1351,6 +1397,19 @@
     });
     updateAccountSummary();
     updatePublishAccounts();
+    // Opened from the overview's “待我确认”: query, then open that problem's dialog.
+    if (root.dataset.openProblem) runQuery().then(openRequestedProblem);
+    // The tab shell reuses an open customer-service tab and only reports the new query string.
+    root.closest(".main-content")?.addEventListener("console:querychange", (event) => {
+      let url;
+      try { url = new URL(event.detail?.url || "", window.location.href); } catch (_error) { return; }
+      const wanted = url.searchParams.get("open");
+      if (!wanted) return;
+      const keyword = $("[data-cs-q]");
+      if (keyword) keyword.value = url.searchParams.get("q") || "";
+      root.dataset.openProblem = wanted;
+      runQuery().then(openRequestedProblem);
+    });
   }
 
   if (document.readyState === "loading") {

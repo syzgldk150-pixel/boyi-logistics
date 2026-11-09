@@ -26,6 +26,7 @@
   data-query-url="/customer-service/problems/query"
   data-settings="{{ settings | tojson | forceescape }}"
   data-accounts="{{ accounts | tojson | forceescape }}"
+  data-open-problem="{{ open_problem }}"
 >
   {% if account_warning %}
   <div class="customer-service-banner customer-service-banner--warning">
@@ -39,7 +40,7 @@
       <label class="customer-service-field"><span>来源</span><select data-cs-source data-source-selector="customer_service"><option value="">全部来源</option></select></label>
       <label class="customer-service-field customer-service-field--wide">
         <span>关键词</span>
-        <input type="search" name="q" placeholder="单号 / 问题内容" autocomplete="off" data-cs-q>
+        <input type="search" name="q" placeholder="单号 / 问题内容" autocomplete="off" data-cs-q value="{{ prefill_q }}">
       </label>
       <label class="customer-service-field">
         <span>平台</span>
@@ -301,8 +302,12 @@
         <ol>
           <li><strong>新问题：你来写。</strong>某类问题的案例还不到 3 个时，AI 只整理信息，不代写回复。</li>
           <li><strong>AI 建议：你改后提交。</strong>案例够了以后，AI 会预先填好回复，你可以直接修改。</li>
-          <li><strong>每次提交都会存为案例。</strong>你采纳或修改了哪些内容都会被记录，用来让后面的建议更准确。</li>
+          <li><strong>每次提交都会存为案例。</strong>你采纳或修改了哪些内容都会被记录；AI 起草时会参考最相似的几条案例的处理方式（不会照搬别的件的时间和单号）。</li>
         </ol>
+        <section class="customer-service-ai-progress" aria-labelledby="customer-service-ai-progress-title">
+          <h4 id="customer-service-ai-progress-title">各类问题的学习进展（近 30 天）</h4>
+          <div data-cs-ai-progress><p class="customer-service-ai-meta">打开后读取……</p></div>
+        </section>
         <p class="customer-service-ai-help-note"><i data-feather="lock"></i><span>破损、丢件和赔付类问题永远由人处理，AI 只给参考。回复里的时间、网点等事实必须来自查到的信息，否则不会生成。</span></p>
       </div>
     </section>

@@ -23,6 +23,12 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/customer-service/problem-settings":
         app._handle_customer_service_problem_settings_get(handler)
         return True
+    if path == "/customer-service/problems/ai-stats":
+        app._handle_customer_service_ai_stats(handler)
+        return True
+    if path == "/customer-service/pending-summary":
+        app._handle_customer_service_pending_summary(handler)
+        return True
     return False
 
 

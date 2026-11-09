@@ -66,6 +66,7 @@ def validate_suggestion(
     evidence_ids: Sequence[str],
     knowledge_ids: Sequence[str],
     evidence_text: str,
+    case_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Accept only a closed answer; facts in the reply must come from the evidence."""
     if not isinstance(answer, Mapping):
@@ -88,6 +89,7 @@ def validate_suggestion(
 
     evidence_refs = refs("evidence_refs", evidence_ids)
     knowledge_refs = refs("knowledge_refs", knowledge_ids)
+    case_refs = refs("case_refs", case_ids)
     reason = answer.get("reason")
     if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 200:
         raise ValueError("reason must be 1 to 200 characters")
@@ -111,9 +113,54 @@ def validate_suggestion(
         "confidence": str(confidence.quantize(Decimal("0.01"))),
         "evidence_refs": evidence_refs,
         "knowledge_refs": knowledge_refs,
+        "case_refs": case_refs,
         "reply": reply,
         "reason": reason.strip(),
     }
+
+
+_DONE_STATUS = re.compile(r"(已完结|已结束|已关闭|已处理|处理完毕|正常回复|已回复|已签收|无需回复|不用回复)")
+_PENDING_STATUS = re.compile(r"(未回复|未处理|待处理|待回复|需回复|需要回复|未查看)")
+_NO_REPLY = re.compile(r"^(0|-|无|暂无)$|(未回复|未回|待回复|暂无回复|无回复)")
+
+
+def problem_needs_reply(row: Mapping[str, Any]) -> bool:
+    """Published-row twin of ``problemNeedsAttention`` in console/static/customer_service.js; keep both in step."""
+    if row.get("resolved") is True:
+        return False
+    reply = str(row.get("reply_text") or "").strip()
+    if reply and not _NO_REPLY.search(reply):
+        return False
+    status = str(row.get("status") or "")
+    return not _DONE_STATUS.search(status) and bool(_PENDING_STATUS.search(status))
+
+
+def _bigrams(text: str) -> set[str]:
+    compact = re.sub(r"[\s\d\W_]+", "", str(text or ""))
+    return {compact[index:index + 2] for index in range(len(compact) - 1)}
+
+
+def rank_similar_cases(problem: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]], *,
+                       limit: int = 3, min_score: float = 0.2) -> list[dict[str, Any]]:
+    """Order past cases by how alike their problem is to this one (no model, no embeddings).
+
+    Score = character-bigram Jaccard of the problem texts, plus 0.3 when the
+    platform's problem type is the same. Cases of the same problem are skipped.
+    """
+    target = _bigrams(problem.get("problem_text"))
+    target_type = str(problem.get("problem_type") or "").strip()
+    scored = []
+    for case in candidates:
+        if (case.get("source_id"), case.get("external_id"), case.get("source_direction")) == (
+                problem.get("source_id"), problem.get("external_id"), problem.get("source_direction")):
+            continue
+        other = _bigrams(case.get("problem_text"))
+        overlap = len(target & other) / len(target | other) if target and other else 0.0
+        score = overlap + (0.3 if target_type and target_type == str(case.get("problem_type") or "").strip() else 0.0)
+        if score >= min_score:
+            scored.append((score, str(case.get("created_at") or ""), dict(case)))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [{**case, "similarity": round(score, 2)} for score, _, case in scored[:limit]]
 
 
 def _json(value: Any) -> Any:
@@ -220,6 +267,51 @@ class CustomerServiceAIRepository:
             latest.setdefault((row["source_id"], row["external_id"], row["source_direction"]), row)
         return latest
 
+    def similar_case_candidates(self, problem: Mapping[str, Any], *, limit: int = 60) -> list[dict[str, Any]]:
+        """Recent cases of the same platform that share the problem type or a keyword, newest first."""
+        words = [word for word in re.findall(r"[\u4e00-\u9fff]{2,4}", str(problem.get("problem_text") or ""))][:3]
+        clauses, params = ["c.problem_type=%s"], [str(problem.get("problem_type") or "")]
+        for word in words:
+            clauses.append("c.problem_text LIKE %s")
+            params.append("%" + word + "%")
+        with self._cursor() as cursor:
+            cursor.execute(
+                "SELECT c.case_id, c.source_id, c.external_id, c.source_direction, c.problem_type, c.problem_text,"
+                " c.reply_text, c.suggestion_use, c.scenario_id, c.created_at, s.name AS scenario_name"
+                " FROM cs_cases c LEFT JOIN cs_scenarios s ON s.scenario_id=c.scenario_id"
+                " WHERE c.platform=%s AND (" + " OR ".join(clauses) + ") ORDER BY c.created_at DESC LIMIT %s",
+                [str(problem.get("platform") or ""), *params, int(limit)],
+            )
+            return _rows(cursor)
+
+    def scenario_stats(self, *, days: int = 30) -> list[dict[str, Any]]:
+        """Per scenario: maturity plus how recent advice was used (adopted / edited / not used)."""
+        with self._cursor() as cursor:
+            cursor.execute(
+                "SELECT s.scenario_id, s.name, s.tier, s.locked, s.case_count,"
+                " COALESCE(SUM(c.suggestion_use='adopted'),0) AS adopted,"
+                " COALESCE(SUM(c.suggestion_use='edited'),0) AS edited,"
+                " COALESCE(SUM(c.suggestion_use='none'),0) AS unused,"
+                " COUNT(c.case_id) AS recent_cases"
+                " FROM cs_scenarios s LEFT JOIN cs_cases c ON c.scenario_id=s.scenario_id"
+                " AND c.created_at >= UTC_TIMESTAMP(6) - INTERVAL %s DAY"
+                " GROUP BY s.scenario_id, s.name, s.tier, s.locked, s.case_count, s.sort_order ORDER BY s.sort_order",
+                (int(days),),
+            )
+            rows = _rows(cursor)
+        result = []
+        for row in rows:
+            adopted, edited = int(row["adopted"]), int(row["edited"])
+            shown = adopted + edited
+            result.append({
+                "scenario_id": row["scenario_id"], "name": row["name"], "tier": row["tier"],
+                "locked": bool(row["locked"]), "case_count": int(row["case_count"]),
+                "recent_cases": int(row["recent_cases"]), "adopted": adopted, "edited": edited,
+                "unused": int(row["unused"]),
+                "adoption_rate": None if not shown else round(adopted / shown, 2),
+            })
+        return result
+
     def record_case(self, case: Mapping[str, Any]) -> dict[str, Any]:
         """Store one sent reply once per request id and count it for its scenario."""
         with self._cursor() as cursor:
@@ -257,5 +349,6 @@ class CustomerServiceAIRepository:
 
 __all__ = [
     "ADVICE_CASE_THRESHOLD", "CustomerServiceAIError", "CustomerServiceAIRepository", "REPLY_MAX_CHARS",
-    "SUGGESTION_USES", "TIER_ADVICE", "TIER_NEW", "mask_address", "mask_phones", "problem_key", "validate_suggestion",
+    "SUGGESTION_USES", "TIER_ADVICE", "TIER_NEW", "mask_address", "mask_phones", "problem_key", "problem_needs_reply",
+    "rank_similar_cases", "validate_suggestion",
 ]
