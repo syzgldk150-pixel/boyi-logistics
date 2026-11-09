@@ -17,6 +17,7 @@ from typing import Any, Collection, Mapping, NoReturn, Sequence
 from zoneinfo import ZoneInfo
 
 from agent.connector_namespaces import (
+    CUSTOMER_AUTO_REPLY_TOOL,
     DAILY_SEND_TOOL,
     DAILY_SIGN_TOOL,
     DELIVERY_STATUS_TOOL,
@@ -53,6 +54,7 @@ from plugin_core_adapters.delivery_site import (
     read_delivery_projection_identities,
 )
 from plugin_core_adapters.problem_actions import build_production_problem_handler_map
+from plugin_core_adapters.customer_auto_reply import build_production_customer_auto_reply_handler_map
 from plugin_core_adapters.scan_snapshot import replace_scan_snapshot_verified
 
 
@@ -2371,6 +2373,15 @@ def build_production_host_primitive_handler_map(
         (
             FINANCE_SOURCE_TOOL,
             build_production_finance_source_handler_map(cursor_secret=cursor_secret),
+            frozenset(),
+        ),
+        (
+            CUSTOMER_AUTO_REPLY_TOOL,
+            build_production_customer_auto_reply_handler_map(
+                cursor_secret=cursor_secret,
+                describe_account=lambda account_id: _describe_active_account(manager, account_id),
+                customer_action=lambda arguments: _customer_action(arguments, account_manager=manager),
+            ),
             frozenset(),
         ),
         (

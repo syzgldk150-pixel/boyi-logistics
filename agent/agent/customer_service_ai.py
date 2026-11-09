@@ -15,13 +15,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from decimal import Decimal
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from agent.ai_tasks import AITaskGateway
 from shared.ai_tasks import AITaskError, AITaskSpec
 from shared.customer_service_ai import (
+    AUTO_MIN_ADOPTION,
+    AUTO_MIN_CONFIDENCE,
+    AUTO_MIN_SHOWN,
     DISTILL_SAMPLE,
+    TIER_AUTO,
+    problem_needs_reply,
     TIER_ADVICE,
     TIER_NEW,
     TIER_TEMPLATE,
@@ -200,8 +206,9 @@ class CustomerServiceAIService:
         if scenario["tier"] == TIER_NEW:
             tier = TIER_NEW
         else:
-            # L2 only when an approved template exists and this reply actually follows it.
-            tier = TIER_TEMPLATE if applied else TIER_ADVICE
+            # L2 only when an approved template exists and this reply actually follows it;
+            # L3 when that template is also authorized to reply automatically.
+            tier = (TIER_AUTO if template.get("auto_enabled") else TIER_TEMPLATE) if applied else TIER_ADVICE
         await asyncio.to_thread(self._repository.save_suggestion, {
             "suggestion_id": outcome.run_id, "source_id": key[0], "external_id": key[1], "source_direction": key[2],
             "waybill_no": problem["waybill_no"], "scenario_id": scenario["scenario_id"], "tier": tier,
@@ -328,12 +335,40 @@ class CustomerServiceAIService:
 
     async def templates(self) -> dict[str, Any]:
         rows = await asyncio.to_thread(self._repository.templates, ("draft", "active", "review"))
+        stats = {row["scenario_id"]: row for row in await asyncio.to_thread(self._repository.scenario_stats)}
         for row in rows:
             row["source_cases"] = await asyncio.to_thread(self._repository.cases_by_ids, row["source_case_ids"])
-        return {"templates": rows}
+            row["auto_block_reason"] = self._auto_block_reason(row, stats.get(row["scenario_id"]))
+        auto = await asyncio.to_thread(self._repository.auto_replies, limit=50)
+        return {"templates": rows, "auto_replies": auto,
+                "auto_rule": {"min_shown": AUTO_MIN_SHOWN, "min_adoption": AUTO_MIN_ADOPTION}}
+
+    @staticmethod
+    def _auto_block_reason(template: Mapping[str, Any], stat: Mapping[str, Any] | None) -> str:
+        """Empty when a person may authorize automatic replies for this template."""
+        if template.get("status") != "active":
+            return "模板需处于使用中"
+        if template.get("locked") or (stat and stat.get("locked")):
+            return "涉及赔付或责任认定的问题不能自动处理"
+        shown = int((stat or {}).get("adopted", 0)) + int((stat or {}).get("edited", 0))
+        if shown < AUTO_MIN_SHOWN:
+            return f"近 30 天 AI 草稿需至少使用 {AUTO_MIN_SHOWN} 次，当前 {shown} 次"
+        rate = (stat or {}).get("adoption_rate")
+        if rate is None or rate < AUTO_MIN_ADOPTION:
+            current = "—" if rate is None else f"{round(rate * 100)}%"
+            return f"近 30 天直接采纳率需达到 {round(AUTO_MIN_ADOPTION * 100)}%，当前 {current}"
+        return ""
 
     async def review_template(self, template_id: str, *, action: str, actor_id: str, reply_template: str | None = None,
                               conditions: Sequence[str] | None = None, reason: str = "") -> dict[str, Any]:
+        if action == "authorize":
+            template = await asyncio.to_thread(self._repository.get_template, template_id)
+            if template is None:
+                raise CustomerServiceAIError("TEMPLATE_NOT_FOUND", "没有找到这个模板。")
+            scenarios = {row["scenario_id"]: row for row in await asyncio.to_thread(self._repository.scenario_stats)}
+            blocked = self._auto_block_reason(template, scenarios.get(template["scenario_id"]))
+            if blocked:
+                raise CustomerServiceAIError("AUTO_NOT_ELIGIBLE", f"暂不能授权自动处理：{blocked}。")
         if reply_template is not None:
             try:
                 reply_template, _ = validate_reply_template(reply_template)
@@ -346,6 +381,79 @@ class CustomerServiceAIService:
         return await asyncio.to_thread(self._repository.review_template, template_id, action=action, actor_id=actor_id,
                                        reply_template=reply_template, conditions=conditions, reason=reason)
 
+    # ---- Automatic replies (phase 4). The platform write itself lives in the reviewed Host primitive. ----
+
+    async def auto_candidates(self, *, limit: int) -> list[dict[str, Any]]:
+        await asyncio.to_thread(self._repository.detect_reasks)
+        return await asyncio.to_thread(self._repository.auto_candidates, limit=limit)
+
+    async def auto_draft(self, source_id: str, external_id: str, source_direction: str) -> dict[str, Any]:
+        """Advice for one problem plus whether an automatic reply is allowed. Never writes to a platform."""
+        advice = await self.suggest(source_id, external_id, source_direction, actor_id="automation")
+        scenario = advice["scenario"]
+        reason = ""
+        if scenario["locked"]:
+            reason = "涉及赔付或责任认定，必须人工处理"
+        elif scenario["tier"] != TIER_AUTO or advice.get("template") is None:
+            reason = "这类问题没有已授权自动处理且被采用的模板"
+        elif not advice.get("reply"):
+            reason = "AI 没有起草回复"
+        elif Decimal(advice["confidence"]) < AUTO_MIN_CONFIDENCE:
+            reason = f"AI 把握 {advice['confidence']} 低于 {AUTO_MIN_CONFIDENCE}"
+        return {"suggestion_id": advice["suggestion_id"], "eligible": not reason, "reason": reason,
+                "scenario_id": scenario["id"], "tier": scenario["tier"],
+                "template_id": (advice.get("template") or {}).get("id")}
+
+    async def auto_reply_plan(self, suggestion_id: str) -> dict[str, Any]:
+        """Re-derive everything an automatic reply needs from stored, authorized state; the caller supplies nothing else."""
+        suggestion = await asyncio.to_thread(self._repository.get_suggestion, suggestion_id)
+        if suggestion is None:
+            raise CustomerServiceAIError("SUGGESTION_NOT_FOUND", "没有找到这条 AI 建议。")
+        if suggestion["tier"] != TIER_AUTO or not suggestion.get("reply_text"):
+            raise CustomerServiceAIError("AUTO_NOT_ALLOWED", "这条建议不是已授权的自动处理。")
+        if Decimal(str(suggestion["confidence"])) < AUTO_MIN_CONFIDENCE:
+            raise CustomerServiceAIError("AUTO_NOT_ALLOWED", "AI 把握不足，不能自动回复。")
+        key = (suggestion["source_id"], suggestion["external_id"], suggestion["source_direction"])
+        templates = [row for row in await asyncio.to_thread(self._repository.templates, ("active",))
+                     if row["scenario_id"] == suggestion["scenario_id"] and row.get("auto_enabled")]
+        if len(templates) != 1 or not template_applied(suggestion["reply_text"], templates[0]["reply_template"]):
+            raise CustomerServiceAIError("AUTO_NOT_ALLOWED", "模板已不在自动处理状态，或回复未按模板生成。")
+        problem = await asyncio.to_thread(self._repository.load_problem, key)
+        if not problem_needs_reply({"status": problem["status"], "reply_text": problem["reply_text"],
+                                    "resolved": problem["resolved"]}):
+            raise CustomerServiceAIError("AUTO_NOT_NEEDED", "这条问题件已不需要回复。")
+        account_id = await asyncio.to_thread(self._repository.source_account, key[0])
+        return {"key": key, "suggestion_id": suggestion["suggestion_id"], "template_id": templates[0]["template_id"],
+                "account_id": account_id, "platform": problem["platform"], "waybill_no": problem["waybill_no"],
+                "status": problem["status"], "reply_text": str(suggestion["reply_text"]).strip(),
+                "scenario_id": suggestion["scenario_id"], "problem_type": problem["problem_type"],
+                "problem_text": problem["problem_text"], "evidence": _json_value(suggestion["evidence_json"])}
+
+    async def auto_reply_begin(self, plan: Mapping[str, Any], *, status: str = "started") -> None:
+        key = plan["key"]
+        await asyncio.to_thread(self._repository.begin_auto_reply, {
+            "source_id": key[0], "external_id": key[1], "source_direction": key[2],
+            "suggestion_id": plan["suggestion_id"], "template_id": plan["template_id"], "platform": plan["platform"],
+            "waybill_no": plan["waybill_no"], "reply_text": plan["reply_text"], "status": status})
+
+    async def auto_reply_finish(self, plan: Mapping[str, Any], status: str) -> None:
+        await asyncio.to_thread(self._repository.finish_auto_reply, plan["key"], status)
+        if status != "confirmed":
+            return
+        key = plan["key"]
+        await asyncio.to_thread(self._repository.record_case, {
+            "request_id": plan["suggestion_id"], "source_id": key[0], "external_id": key[1], "source_direction": key[2],
+            "platform": plan["platform"], "waybill_no": plan["waybill_no"], "problem_type": plan["problem_type"],
+            "problem_text": mask_phones(plan["problem_text"]), "scenario_id": plan["scenario_id"],
+            "suggestion_id": plan["suggestion_id"], "suggestion_use": "auto", "reply_text": plan["reply_text"],
+            "prob_status": "已处理", "evidence": plan["evidence"], "actor_id": "automation",
+        })
+
+    async def flag_auto_reply(self, source_id: str, external_id: str, source_direction: str, *,
+                              actor_id: str, reason: str) -> dict[str, Any]:
+        key = problem_key(source_id, external_id, source_direction)
+        return await asyncio.to_thread(self._repository.flag_auto_reply, key, actor_id=actor_id, reason=reason)
+
     async def stats(self) -> dict[str, Any]:
         scenarios = await asyncio.to_thread(self._repository.scenario_stats)
         adopted = sum(row["adopted"] for row in scenarios)
@@ -357,11 +465,12 @@ class CustomerServiceAIService:
     async def status(self, keys: Sequence[Sequence[str]]) -> list[dict[str, Any]]:
         normalized = [problem_key(*item) for item in keys]
         latest = await asyncio.to_thread(self._repository.latest_suggestions, normalized)
+        auto = await asyncio.to_thread(self._repository.auto_status, normalized)
         rows = []
         for key, row in latest.items():
             rows.append({"source_id": key[0], "external_id": key[1], "source_direction": key[2],
                          "scenario": {"id": row["scenario_id"], "name": row["name"], "tier": row["scenario_tier"],
-                                      "locked": bool(row["locked"])}})
+                                      "locked": bool(row["locked"])}, "auto_reply": auto.get(key)})
         return rows
 
 

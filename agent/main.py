@@ -29,6 +29,7 @@ from agent.ai_tasks import AITaskGateway
 from agent.finance_review_advisor import FinanceReviewAdviceError, FinanceReviewAdvisor
 from agent.customer_service_ai import CustomerServiceAIService
 from customer_service_ai_composition import build_customer_service_ai
+from plugin_core_adapters.customer_auto_reply import bind_customer_service_ai
 from shared.customer_service_ai import CustomerServiceAIError
 from shared.ai_tasks.audit import AITaskAuditRepository
 from shared.redaction import redact_text
@@ -742,6 +743,7 @@ async def lifespan(app: FastAPI):
         FinanceRepository(runtime.memory.connection_factory), runtime.llm, ai_task_gateway
     )
     customer_service_ai = build_customer_service_ai(runtime, ai_task_gateway)
+    bind_customer_service_ai(customer_service_ai)
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
@@ -1852,7 +1854,8 @@ class CustomerServiceAIStatusRequest(BaseModel):
     problems: list[CustomerServiceProblemRef] = Field(max_length=200)
 
 
-_CUSTOMER_SERVICE_AI_STATUS = {"PROBLEM_NOT_FOUND": 404, "TEMPLATE_NOT_FOUND": 404, "CS_AI_UNAVAILABLE": 503,
+_CUSTOMER_SERVICE_AI_STATUS = {"PROBLEM_NOT_FOUND": 404, "TEMPLATE_NOT_FOUND": 404, "AUTO_REPLY_NOT_FOUND": 404,
+                               "CS_AI_UNAVAILABLE": 503,
                                "CS_AI_FAILED": 502}
 
 
@@ -1898,7 +1901,7 @@ class CustomerServiceTemplateReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: uuid.UUID
-    action: str = Field(pattern="^(approve|reject|retire|confirm)$")
+    action: str = Field(pattern="^(approve|reject|retire|confirm|authorize|revoke)$")
     reply_template: str | None = Field(default=None, max_length=300)
     conditions: list[str] | None = Field(default=None, max_length=6)
     reason: str = Field(default="", max_length=500)
@@ -1928,6 +1931,26 @@ async def internal_customer_service_ai_review_template(template_id: uuid.UUID, r
             str(template_id), action=req.action, actor_id=principal.actor_id,
             reply_template=req.reply_template if edits else None, conditions=req.conditions if edits else None,
             reason=req.reason)
+    except CustomerServiceAIError as exc:
+        return _customer_service_ai_failure(exc)
+    return api_success(result)
+
+
+class CustomerServiceAutoReplyFlagRequest(CustomerServiceProblemRef):
+    request_id: uuid.UUID
+    reason: str = Field(default="", max_length=500)
+
+
+@app.post("/internal/v1/admin/customer-service/ai/auto-replies/flag")
+async def internal_customer_service_ai_flag_auto_reply(req: CustomerServiceAutoReplyFlagRequest, request: Request):
+    """A person marks an automatic reply wrong; its template stops replying automatically at once."""
+
+    principal = _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    try:
+        result = await customer_service_ai.flag_auto_reply(req.source_id, req.external_id, req.source_direction,
+                                                           actor_id=principal.actor_id, reason=req.reason)
     except CustomerServiceAIError as exc:
         return _customer_service_ai_failure(exc)
     return api_success(result)

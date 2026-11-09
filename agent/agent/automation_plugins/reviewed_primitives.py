@@ -13,6 +13,7 @@ from agent.automation_plugins.route_status_connectors_v2 import route_status_bro
 
 
 _DIRECT_PRIMITIVES = frozenset({
+    ("browser.invoke", "customer_auto_reply.reply"),
     ("browser.invoke", "customer_problem.detail"),
     ("browser.invoke", "customer_problem.list_page"),
     ("browser.invoke", "ronghui.arrive_list.read_page"),
@@ -52,6 +53,8 @@ _DIRECT_PRIMITIVES = frozenset({
     ("network.request", "feishu.sheet.replace_rows"),
     ("network.request", "feishu.sheet.replace_yunda_send_waybills"),
     ("projection.invoke", "arrival.forecast_snapshot.replace"),
+    ("projection.invoke", "customer_auto_reply.candidates"),
+    ("projection.invoke", "customer_auto_reply.draft"),
     ("projection.invoke", "arrival.report.publication.read"),
     ("projection.invoke", "arrival.snapshot.completed_before"),
     ("projection.invoke", "arrival.snapshot.replace"),

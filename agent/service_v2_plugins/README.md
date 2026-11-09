@@ -4,7 +4,7 @@ type: 维护入口
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-06
+updated: 2026-11-09
 ---
 
 # 当前插件维护入口
@@ -55,6 +55,7 @@ updated: 2026-11-06
 | `r7_vehicle_checkin_v2` | R7车线每日打卡 | 后台“自动化” | [R7 车线打卡](../docs/r7_vehicle_checkin.md) |
 | `quote_prices_v2` | 三平台价格查询 | 后台“自动化”（飞书与录单页共用实例） | [三平台报价](../docs/three_platform_quote.md) |
 | `sync_customer_service_problems_v2` | 客服问题件采集 | 客户服务“数据源管理” | [客服系统](../docs/customer_service/module_overview.md) |
+| `customer_problem_auto_reply_v2` | 客服问题件自动回复 | 后台“自动化”（默认停用） | [客服系统](../docs/customer_service/module_overview.md#阶段-4授权自动处理l3) |
 
 ## 源码归属
 

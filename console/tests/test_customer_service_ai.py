@@ -216,5 +216,29 @@ class CustomerServiceAIConsoleTests(unittest.TestCase):
         for marker in ("/customer-service/ai-templates", "data-cs-tpl-action", "已按模板", "template_not_followed"):
             self.assertIn(marker, script)
 
+    def test_authorize_and_revoke_are_forwarded_without_edits(self):
+        app, calls = self._app(lambda endpoint: {"ok": True, "data": {}})
+        for action in ("authorize", "revoke"):
+            app._handle_customer_service_ai_template_review(_handler({"action": action, "reply_template": "x"}), self.TEMPLATE_ID)
+            self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual(["authorize", "revoke"], [call["payload"]["action"] for call in calls])
+        self.assertTrue(all("reply_template" not in call["payload"] for call in calls))
+
+    def test_flagging_an_automatic_reply_forwards_the_problem_identity(self):
+        app, calls = self._app(lambda endpoint: {"ok": True, "data": {"auto_revoked": True}})
+        app._handle_customer_service_ai_flag_auto_reply(_handler({"item": {**ITEM, "raw": 1}, "reason": "网点错了"}))
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual("/internal/v1/admin/customer-service/ai/auto-replies/flag", calls[0]["endpoint"])
+        self.assertEqual({"request_id", "source_id", "external_id", "source_direction", "reason"}, set(calls[0]["payload"]))
+        app._handle_customer_service_ai_flag_auto_reply(_handler({"item": {"external_id": "x"}}))
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
+        import routes.customer_service as customer_routes
+        seen = []
+        stub = types.SimpleNamespace(_handle_customer_service_ai_flag_auto_reply=lambda handler: seen.append(True))
+        self.assertTrue(customer_routes.handle_post(stub, None, "/customer-service/ai-auto-replies/flag", "", {}))
+        script = (CONSOLE_DIR / "static" / "customer_service.js").read_text(encoding="utf-8")
+        for marker in ('data-cs-tpl-action="authorize"', "data-cs-auto-flag", "AI 已自动回复"):
+            self.assertIn(marker, script)
+
 if __name__ == "__main__":
     unittest.main()

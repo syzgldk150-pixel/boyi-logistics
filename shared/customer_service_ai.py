@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 ConnectionFactory = Callable[[], Any]
 
-TIER_NEW, TIER_ADVICE, TIER_TEMPLATE = "L0", "L1", "L2"
+TIER_NEW, TIER_ADVICE, TIER_TEMPLATE, TIER_AUTO = "L0", "L1", "L2", "L3"
 ADVICE_CASE_THRESHOLD = 3
 """A scenario starts showing drafted replies once it has this many recorded cases."""
 REPLY_MAX_CHARS = 300
@@ -25,8 +25,13 @@ DISTILL_SAMPLE = 12
 REDRAFT_AFTER_NEW_CASES = 5
 """After a draft is rejected, wait for this many new cases before drafting again."""
 TEMPLATE_STATUSES = ("draft", "active", "review", "rejected", "retired")
+AUTO_MIN_SHOWN = 20
+"""Authorizing automatic replies needs at least this many shown drafts in the last 30 days..."""
+AUTO_MIN_ADOPTION = 0.95
+"""...of which at least this share were sent unchanged."""
+AUTO_MIN_CONFIDENCE = Decimal("0.85")
 _SLOT = re.compile(r"\{([^{}]{1,12})\}")
-SUGGESTION_USES = ("none", "adopted", "edited")
+SUGGESTION_USES = ("none", "adopted", "edited", "auto")
 _BANNED_PHRASES = ("保证", "一定", "绝对", "全额赔", "承诺赔", "包赔")
 # Times and identifiers a reply states must be copied from the evidence.
 _FACT_PATTERNS = (
@@ -405,7 +410,8 @@ class CustomerServiceAIRepository:
 
     # ---- Templates (phase 3) ----
 
-    _TEMPLATE_COLUMNS = ("template_id, scenario_id, version, status, name, conditions_json, evidence_needed_json,"
+    _TEMPLATE_COLUMNS = ("template_id, scenario_id, version, status, auto_enabled, auto_changed_by, auto_changed_at,"
+                         " auto_reason, name, conditions_json, evidence_needed_json,"
                          " reply_template, action_text, note, source_case_ids_json, cases_total, cases_consistent,"
                          " knowledge_json, run_id, review_reason, rejected_case_count, reviewed_by, reviewed_at,"
                          " created_at, updated_at")
@@ -415,9 +421,10 @@ class CustomerServiceAIRepository:
         result = dict(row)
         for key in ("conditions_json", "evidence_needed_json", "source_case_ids_json", "knowledge_json"):
             result[key.removesuffix("_json")] = _json(result.pop(key)) or []
-        for key in ("reviewed_at", "created_at", "updated_at"):
+        for key in ("reviewed_at", "created_at", "updated_at", "auto_changed_at"):
             if result.get(key) is not None:
                 result[key] = str(result[key])[:19]
+        result["auto_enabled"] = bool(result.get("auto_enabled"))
         return result
 
     def templates(self, statuses: Sequence[str] = ()) -> list[dict[str, Any]]:
@@ -492,7 +499,8 @@ class CustomerServiceAIRepository:
     def review_template(self, template_id: str, *, action: str, actor_id: str, reply_template: str | None = None,
                         conditions: Sequence[str] | None = None, reason: str = "") -> dict[str, Any]:
         """approve (draft->active) | reject (draft->rejected) | retire (active/review->retired) | confirm (review->active)."""
-        allowed_from = {"approve": ("draft",), "reject": ("draft",), "retire": ("active", "review"), "confirm": ("review",)}
+        allowed_from = {"approve": ("draft",), "reject": ("draft",), "retire": ("active", "review"), "confirm": ("review",),
+                        "authorize": ("active",), "revoke": ("active", "review")}
         if action not in allowed_from:
             raise CustomerServiceAIError("TEMPLATE_ACTION_INVALID", "不支持的模板操作。")
         with self._cursor() as cursor:
@@ -513,8 +521,8 @@ class CustomerServiceAIRepository:
                 if conditions is not None:
                     updates.append("conditions_json=%s")
                     params.append(json.dumps(list(conditions), ensure_ascii=False))
-                cursor.execute("UPDATE cs_templates SET status='retired' WHERE scenario_id=%s AND status IN ('active','review')",
-                               (scenario_id,))
+                cursor.execute("UPDATE cs_templates SET status='retired', auto_enabled=0 WHERE scenario_id=%s"
+                               " AND status IN ('active','review')", (scenario_id,))
                 cursor.execute("UPDATE cs_templates SET " + ", ".join(updates) + ", reviewed_by=%s,"
                                " reviewed_at=UTC_TIMESTAMP(6) WHERE template_id=%s", (*params, actor, row["template_id"]))
                 cursor.execute("UPDATE cs_scenarios SET tier=%s WHERE scenario_id=%s", (TIER_TEMPLATE, scenario_id))
@@ -524,11 +532,18 @@ class CustomerServiceAIRepository:
                                " t.reviewed_by=%s, t.reviewed_at=UTC_TIMESTAMP(6) WHERE t.template_id=%s",
                                (reason[:500] or None, actor, row["template_id"]))
             elif action == "retire":
-                cursor.execute("UPDATE cs_templates SET status='retired', review_reason=%s, reviewed_by=%s,"
+                cursor.execute("UPDATE cs_templates SET status='retired', auto_enabled=0, review_reason=%s, reviewed_by=%s,"
                                " reviewed_at=UTC_TIMESTAMP(6) WHERE template_id=%s",
                                (reason[:500] or None, actor, row["template_id"]))
                 cursor.execute("UPDATE cs_scenarios SET tier=%s WHERE scenario_id=%s AND tier=%s",
                                (TIER_ADVICE, scenario_id, TIER_TEMPLATE))
+            elif action in ("authorize", "revoke"):
+                enabled = action == "authorize"
+                cursor.execute("UPDATE cs_templates SET auto_enabled=%s, auto_changed_by=%s, auto_changed_at=UTC_TIMESTAMP(6),"
+                               " auto_reason=%s WHERE template_id=%s",
+                               (int(enabled), actor, reason[:500] or None, row["template_id"]))
+                cursor.execute("UPDATE cs_scenarios SET tier=%s WHERE scenario_id=%s",
+                               (TIER_AUTO if enabled else TIER_TEMPLATE, scenario_id))
             else:
                 knowledge = _json(row["knowledge_json"]) or []
                 for item in knowledge:
@@ -557,12 +572,131 @@ class CustomerServiceAIRepository:
                         item["changed_to"] = now
                         changed.append(str(item.get("title") or doc))
                 if changed:
-                    cursor.execute("UPDATE cs_templates SET status='review', knowledge_json=%s, review_reason=%s"
+                    cursor.execute("UPDATE cs_templates SET status='review', auto_enabled=0, knowledge_json=%s, review_reason=%s"
                                    " WHERE template_id=%s",
                                    (json.dumps(knowledge, ensure_ascii=False),
                                     ("引用的知识库文档已更新：" + "、".join(changed))[:500], row["template_id"]))
                     flagged.append(row["template_id"])
         return flagged
+
+    # ---- Automatic replies (phase 4) ----
+
+    def auto_candidates(self, *, limit: int) -> list[dict[str, Any]]:
+        """Problems that still need a reply and never had an automatic one, oldest first."""
+        with self._cursor() as cursor:
+            cursor.execute(
+                "SELECT r.source_id, r.external_id, r.source_direction, r.waybill_no, r.resolved, r.source_json, s.provider"
+                " FROM customer_problem_records r JOIN module_data_sources s ON s.source_id=r.source_id"
+                " LEFT JOIN cs_auto_replies a ON a.source_id=r.source_id AND a.external_id=r.external_id"
+                " AND a.source_direction=r.source_direction"
+                " WHERE s.module='customer_service' AND r.resolved=0 AND a.source_id IS NULL"
+                " AND r.source_direction IN ('received','query') ORDER BY r.source_updated_at ASC LIMIT 500")
+            rows = _rows(cursor)
+        result = []
+        for row in rows:
+            data = _json(row["source_json"]) or {}
+            if not problem_needs_reply({**data, "resolved": bool(row["resolved"])}):
+                continue
+            result.append({"source_id": row["source_id"], "external_id": row["external_id"],
+                           "source_direction": row["source_direction"], "platform": row["provider"],
+                           "waybill_no": row["waybill_no"]})
+            if len(result) >= int(limit):
+                break
+        return result
+
+    def source_account(self, source_id: str) -> str:
+        """The one business account behind a customer-service source; anything else is refused."""
+        with self._cursor() as cursor:
+            cursor.execute("SELECT account_id FROM module_data_source_accounts WHERE module='customer_service'"
+                           " AND source_id=%s", (source_id,))
+            rows = _rows(cursor)
+        if len(rows) != 1:
+            raise CustomerServiceAIError("SOURCE_ACCOUNT_AMBIGUOUS", "问题件来源没有唯一的业务账号，不能自动回复。")
+        return str(rows[0]["account_id"])
+
+    def begin_auto_reply(self, row: Mapping[str, Any]) -> None:
+        """Claim the one automatic reply this problem may ever get; a second claim is refused."""
+        try:
+            with self._cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO cs_auto_replies (source_id, external_id, source_direction, suggestion_id, template_id,"
+                    " platform, waybill_no, reply_text, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (row["source_id"], row["external_id"], row["source_direction"], row["suggestion_id"],
+                     row["template_id"], row["platform"], str(row["waybill_no"])[:100], row["reply_text"],
+                     row.get("status", "started")))
+        except Exception as exc:
+            if "Duplicate" in str(exc) or getattr(exc, "args", (None,))[0] == 1062:
+                raise CustomerServiceAIError("AUTO_REPLY_EXISTS", "这条问题件已经自动回复过，不再重复回复。") from exc
+            raise
+
+    def finish_auto_reply(self, key: tuple[str, str, str], status: str) -> None:
+        if status not in ("confirmed", "unknown", "skipped"):
+            raise ValueError("unknown auto reply status")
+        with self._cursor() as cursor:
+            cursor.execute("UPDATE cs_auto_replies SET status=%s WHERE source_id=%s AND external_id=%s"
+                           " AND source_direction=%s AND status='started'", (status, *key))
+
+    def auto_replies(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self._cursor() as cursor:
+            cursor.execute("SELECT a.source_id, a.external_id, a.source_direction, a.platform, a.waybill_no, a.reply_text,"
+                           " a.status, a.flagged, a.flagged_reason, a.created_at, t.name AS template_name, t.template_id"
+                           " FROM cs_auto_replies a LEFT JOIN cs_templates t ON t.template_id=a.template_id"
+                           " ORDER BY a.created_at DESC LIMIT %s", (int(limit),))
+            rows = _rows(cursor)
+        return [{**row, "flagged": bool(row["flagged"]), "created_at": str(row["created_at"])[:16]} for row in rows]
+
+    def auto_status(self, keys: Sequence[tuple[str, str, str]]) -> dict[tuple[str, str, str], str]:
+        if not keys:
+            return {}
+        where = " OR ".join(["(source_id=%s AND external_id=%s AND source_direction=%s)"] * len(keys))
+        with self._cursor() as cursor:
+            cursor.execute("SELECT source_id, external_id, source_direction, status FROM cs_auto_replies WHERE " + where,
+                           [part for key in keys for part in key])
+            rows = _rows(cursor)
+        return {(row["source_id"], row["external_id"], row["source_direction"]): row["status"] for row in rows}
+
+    def flag_auto_reply(self, key: tuple[str, str, str], *, actor_id: str, reason: str) -> dict[str, Any]:
+        """A person says an automatic reply was wrong: its template stops replying automatically at once."""
+        with self._cursor() as cursor:
+            cursor.execute("SELECT template_id FROM cs_auto_replies WHERE source_id=%s AND external_id=%s"
+                           " AND source_direction=%s FOR UPDATE", key)
+            rows = _rows(cursor)
+            if not rows:
+                raise CustomerServiceAIError("AUTO_REPLY_NOT_FOUND", "没有找到这条自动回复。")
+            template_id = rows[0]["template_id"]
+            cursor.execute("UPDATE cs_auto_replies SET flagged=1, flagged_by=%s, flagged_reason=%s WHERE source_id=%s"
+                           " AND external_id=%s AND source_direction=%s", (str(actor_id)[:128], reason[:500] or None, *key))
+            cursor.execute("UPDATE cs_templates t JOIN cs_scenarios s ON s.scenario_id=t.scenario_id"
+                           " SET t.auto_enabled=0, t.auto_changed_by=%s, t.auto_changed_at=UTC_TIMESTAMP(6), t.auto_reason=%s,"
+                           " s.tier=CASE WHEN s.tier=%s THEN %s ELSE s.tier END WHERE t.template_id=%s",
+                           (str(actor_id)[:128], ("自动回复被标记为不正确：" + reason)[:500], TIER_AUTO, TIER_TEMPLATE,
+                            template_id))
+        return {"template_id": template_id, "auto_revoked": True}
+
+    def detect_reasks(self) -> list[str]:
+        """Customers asking again after a confirmed automatic reply revoke that template's authorization."""
+        with self._cursor() as cursor:
+            cursor.execute(
+                "SELECT a.source_id, a.external_id, a.source_direction, a.template_id, r.resolved, r.source_json"
+                " FROM cs_auto_replies a JOIN customer_problem_records r ON r.source_id=a.source_id"
+                " AND r.external_id=a.external_id AND r.source_direction=a.source_direction"
+                " WHERE a.status='confirmed' AND a.flagged=0 AND r.last_published_at > a.updated_at")
+            rows = _rows(cursor)
+            revoked = []
+            for row in rows:
+                data = _json(row["source_json"]) or {}
+                if not problem_needs_reply({**data, "resolved": bool(row["resolved"])}):
+                    continue
+                cursor.execute("UPDATE cs_auto_replies SET flagged=1, flagged_by='system', flagged_reason=%s"
+                               " WHERE source_id=%s AND external_id=%s AND source_direction=%s",
+                               ("客户在自动回复后再次追问", row["source_id"], row["external_id"], row["source_direction"]))
+                cursor.execute("UPDATE cs_templates t JOIN cs_scenarios s ON s.scenario_id=t.scenario_id"
+                               " SET t.auto_enabled=0, t.auto_changed_by='system', t.auto_changed_at=UTC_TIMESTAMP(6),"
+                               " t.auto_reason='客户在自动回复后再次追问',"
+                               " s.tier=CASE WHEN s.tier=%s THEN %s ELSE s.tier END WHERE t.template_id=%s AND t.auto_enabled=1",
+                               (TIER_AUTO, TIER_TEMPLATE, row["template_id"]))
+                revoked.append(row["template_id"])
+        return revoked
 
     def record_case(self, case: Mapping[str, Any]) -> dict[str, Any]:
         """Store one sent reply once per request id and count it for its scenario."""
@@ -601,7 +735,7 @@ class CustomerServiceAIRepository:
 
 __all__ = [
     "ADVICE_CASE_THRESHOLD", "CustomerServiceAIError", "CustomerServiceAIRepository", "REPLY_MAX_CHARS",
-    "DISTILL_MIN_CASES", "SUGGESTION_USES", "TIER_ADVICE", "TIER_NEW", "TIER_TEMPLATE", "template_applied",
+    "AUTO_MIN_ADOPTION", "AUTO_MIN_CONFIDENCE", "AUTO_MIN_SHOWN", "DISTILL_MIN_CASES", "TIER_AUTO", "SUGGESTION_USES", "TIER_ADVICE", "TIER_NEW", "TIER_TEMPLATE", "template_applied",
     "validate_reply_template", "validate_template_draft", "mask_address", "mask_phones", "problem_key", "problem_needs_reply",
     "rank_similar_cases", "validate_suggestion",
 ]

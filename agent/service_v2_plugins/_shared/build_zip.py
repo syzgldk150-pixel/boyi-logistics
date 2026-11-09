@@ -44,6 +44,7 @@ _CONNECTOR_PLUGINS = frozenset({
     "sync_daily_send_orders_v2",
     "sync_delivery_status_v2",
     "sync_customer_service_problems_v2",
+    "customer_problem_auto_reply_v2",
 })
 _SOURCE_FILES = {
     "manifest.json": "manifest.json",

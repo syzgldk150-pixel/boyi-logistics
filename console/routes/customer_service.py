@@ -58,6 +58,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/customer-service/problems/ai-status":
         app._handle_customer_service_ai_status(handler)
         return True
+    if path == "/customer-service/ai-auto-replies/flag":
+        app._handle_customer_service_ai_flag_auto_reply(handler)
+        return True
     match = _TEMPLATE_REVIEW.fullmatch(path)
     if match:
         app._handle_customer_service_ai_template_review(handler, match.group(1))

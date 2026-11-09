@@ -663,7 +663,7 @@ class CustomerServiceMixin:
         request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
         normalized_id = self._normalize_browser_request_uuid(template_id)
         action = str(body.get("action") or "")
-        if not request_id or not normalized_id or action not in {"approve", "reject", "retire", "confirm"}:
+        if not request_id or not normalized_id or action not in {"approve", "reject", "retire", "confirm", "authorize", "revoke"}:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "模板操作请求无效，请刷新后重试。"})
             return
         payload: dict[str, Any] = {"request_id": request_id, "action": action, "reason": str(body.get("reason") or "")[:500]}
@@ -680,6 +680,26 @@ class CustomerServiceMixin:
             message = (error.get("message") if isinstance(error, dict) else error) or "模板操作失败。"
             status = 404 if result.get("status") == 404 else 409 if result.get("status") in (400, 409, 422) else 502
             self._send_json(handler, status, {"ok": False, "error_code": str(code), "message": str(message)})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
+    def _handle_customer_service_ai_flag_auto_reply(self, handler: BaseHTTPRequestHandler) -> None:
+        """Mark one automatic reply wrong; the Agent revokes that template's automatic replies."""
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        body = self._parse_json_body(handler)
+        request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+        ref = self._customer_service_ai_ref(body.get("item"))
+        if not request_id or ref is None:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请求无效，请刷新后重试。"})
+            return
+        result = self._agent_request("POST", "/internal/v1/admin/customer-service/ai/auto-replies/flag",
+            payload={"request_id": request_id, **ref, "reason": str(body.get("reason") or "")[:500]},
+            timeout=20, console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            self._customer_service_ai_failure(handler, result, "标记失败，请稍后重试。")
             return
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
 

@@ -100,7 +100,17 @@ updated: 2026-11-09
 - **使用**：生成建议时把使用中的模板交给模型；回复的固定措辞按顺序全部出现在回复里（`template_applied`，确定性检查）才算按模板，处理框显示“已按模板「…」第 n 版生成”和适用条件。所选场景有模板但这次没按模板写时，标为“AI 建议”并提示核对。L2 仍需人点“回复处理”才会发出；授权自动处理属于阶段 4。
 - **知识库变更复核**：知识库依据记录文档 ID 和编辑时间。之后生成建议时如发现被模板引用的文档编辑时间变化，该模板改为“需复核”并停止使用，弹窗显示哪份文档更新了；人点“确认仍然适用”后恢复使用并记下新的编辑时间，也可以停用。只有在建议检索中再次读到该文档时才能发现变化，没有定时巡检。
 
+### 阶段 4：授权自动处理（L3）
+
+- **授权**：“处理模板”中使用中的模板，只有近 30 天 AI 草稿至少使用 20 次、其中至少 95% 被直接采纳，且不是锁定场景时，才能由人点“授权自动处理”（确认提示说明后果）。授权后场景为“自动处理”（L3）。人可随时“取消自动处理”。以下情况系统自动取消授权：抽查时有人标记某条自动回复不正确；自动回复后客户再次追问（问题件重新变为待回复）；模板引用的知识库文档更新（模板转为需复核）；模板被停用或被新版本替换。
+- **执行**：新插件 `customer_problem_auto_reply_v2`（安装后默认停用，定时入口默认关闭）只负责逐条请求宿主。宿主连接器 `connector.boyi.customer_auto_reply@1` 提供三个操作：`candidates`（读：待回复且从未自动回复过的问题件）、`draft`（读：生成 AI 建议并判断是否可自动回复——必须是已授权模板、回复按模板生成、AI 把握不低于 0.85）、`reply`（外部写：只接受 `suggestion_id`）。
+- **写入保护**（`agent/agent/automation_plugins/customer_auto_reply_handlers.py`）：宿主按建议重新核对授权与按模板情况；问题件必须仍需回复；来源必须只绑定一个业务账号且属于本次调用的账号集合；先读原平台，已有回复则只记录“平台已有回复”不写入；写入前在 `cs_auto_replies` 占位，同一问题件第二次自动回复直接拒绝；调用平台回复后再读原平台，读到这条回复才算成功，否则记为“结果未知”并以 `WRITE_OUTCOME_UNKNOWN` 结束本次调用，绝不重试。成功后存为案例（`suggestion_use=auto`）。
+- **抽查**：“处理模板”弹窗列出最近 50 条自动回复，可标记“这条处理得不对”；问题件列表“AI 处理”列显示“AI 已自动回复”等状态，打开处理框也可标记。被标记后对应模板立即停止自动回复，需要人到原平台补发正确回复。
+- **上线前**：自动回复会真实写入融辉、韵达。第一次在生产启用该插件前，须单独确认，并先用手动入口小批量运行核对。
+
 ## 代码入口
+
+- 客服自动回复：`agent/service_v2_plugins/customer_problem_auto_reply_v2/`（插件包）、`agent/agent/automation_plugins/customer_auto_reply_handlers.py`（宿主写入原语）、`agent/plugin_core_adapters/customer_auto_reply.py`（生产端口与延迟绑定）、`agent/agent/automation_plugins/customer_connectors_v2.py`（连接器契约）；回归见 `tests/test_customer_auto_reply.py`、`tests/test_customer_auto_reply_v2_packaged.py`。
 
 - 客服 AI：`agent/agent/customer_service_ai.py`（服务）、`agent/customer_service_ai_composition.py`（依据来源接线）、`shared/customer_service_ai.py`（场景规则、建议校验、案例仓储）、`console/services/customer_service.py` 的 `_handle_customer_service_ai_*` 与 `_record_customer_service_ai_case`；回归见 `tests/test_customer_service_ai.py`、`console/tests/test_customer_service_ai.py`。
 

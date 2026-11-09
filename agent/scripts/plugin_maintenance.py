@@ -59,6 +59,10 @@ PLUGIN_TESTS = {
         "tests/test_delivery_site_production_adapter.py",
     ),
     "sync_customer_service_problems_v2": ("tests/test_customer_v2_packaged_protocol.py",),
+    "customer_problem_auto_reply_v2": (
+        "tests/test_customer_auto_reply.py",
+        "tests/test_customer_auto_reply_v2_packaged.py",
+    ),
     "sync_daily_should_sign_v2": (
         "tests/test_daily_sign_bitable_delta.py",
         "tests/test_daily_sign_conditional_format.py",

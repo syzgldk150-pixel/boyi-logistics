@@ -1,0 +1,111 @@
+{
+  "schema_version": 2,
+  "runtime_model": "service_v2",
+  "plugin_id": "customer_problem_auto_reply_v2",
+  "name": "客服问题件自动回复",
+  "version": "1.0.0",
+  "description": "只对人工授权自动处理的模板：AI 起草且按模板生成、把握足够的回复，由宿主回读核对后发出；每条问题件最多自动回复一次。",
+  "host_api": {
+    "minimum": "2.0.0",
+    "maximum_exclusive": "3.0.0"
+  },
+  "runtime": {
+    "kind": "python_subprocess",
+    "python": "3.10",
+    "mode": "on_demand",
+    "entrypoint": "payload/main.py",
+    "requirements_lock": null,
+    "wheelhouse": []
+  },
+  "settings_ui": {
+    "entry": "settings/index.html",
+    "bridge_api": "1.0.0"
+  },
+  "provides": [
+    {
+      "service": "plugin.customer_problem_auto_reply_v2.auto_reply@1",
+      "operations": [
+        {
+          "name": "run",
+          "effect": "external_write"
+        }
+      ]
+    }
+  ],
+  "requires": [
+    {
+      "service": "connector.boyi.customer_auto_reply@1",
+      "binding_kind": "host_internal"
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "service.invoke",
+      "operations": [
+        "candidates",
+        "draft",
+        "reply"
+      ],
+      "action_call_limits": {
+        "candidates": 1,
+        "draft": 20,
+        "reply": 20
+      },
+      "account_role": null,
+      "resource_role": null
+    }
+  ],
+  "account_roles": [
+    {
+      "role": "customer_service_source",
+      "allowed_systems": [
+        "ronghui",
+        "yunda"
+      ],
+      "required": true,
+      "collection": true
+    }
+  ],
+  "resource_roles": [],
+  "contributes": {
+    "console": [
+      {
+        "id": "manual_run",
+        "title": "处理一轮客服自动回复",
+        "service": "plugin.customer_problem_auto_reply_v2.auto_reply@1",
+        "operation": "run",
+        "default_enabled": true
+      }
+    ],
+    "scheduler": [
+      {
+        "id": "scheduled_run",
+        "title": "客服自动回复",
+        "service": "plugin.customer_problem_auto_reply_v2.auto_reply@1",
+        "operation": "run",
+        "default_enabled": false
+      }
+    ],
+    "webhook": [],
+    "feishu": [],
+    "events": [],
+    "harness": []
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "max_per_run": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "description": "每轮最多尝试的问题件数（每件都要经 AI 起草和平台回读，数量大时一轮耗时较长）"
+      }
+    },
+    "required": []
+  },
+  "storage": {
+    "kv": false,
+    "collections": []
+  }
+}

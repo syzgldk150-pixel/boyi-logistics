@@ -401,6 +401,7 @@
 
     // ---- Customer-service AI: advice only; the reply is still sent by the person. ----
     const AI_TIER_TEXT = { L0: "新问题", L1: "AI 建议", L2: "按模板", L3: "自动处理" };
+    const AUTO_REPLY_TEXT = { confirmed: "AI 已自动回复", unknown: "自动回复结果未知", skipped: "平台已有回复", started: "自动回复中" };
 
     function aiKey(row) {
       return row && row.source_id && row.external_id && row.source_direction
@@ -419,6 +420,10 @@
 
     function aiCellHtml(row) {
       const status = state.ai.status.get(aiKey(row));
+      if (status?.auto_reply) {
+        const tone = status.auto_reply === "confirmed" ? "advice" : "new";
+        return `<span class="customer-service-ai-badge customer-service-ai-badge--${tone}"><i data-feather="zap"></i>${escapeHtml(AUTO_REPLY_TEXT[status.auto_reply] || status.auto_reply)}</span>`;
+      }
       return status ? aiBadgeHtml(status.scenario) : '<span class="customer-service-ai-meta">—</span>';
     }
 
@@ -575,11 +580,16 @@
         : item.status === "review"
           ? `<button class="primary-btn" type="button" data-cs-tpl-action="confirm" data-id="${escapeHtml(item.template_id)}">确认仍然适用</button>
              <button class="ghost-btn" type="button" data-cs-tpl-action="retire" data-id="${escapeHtml(item.template_id)}">停用模板</button>`
-          : `<button class="ghost-btn" type="button" data-cs-tpl-action="retire" data-id="${escapeHtml(item.template_id)}">停用模板</button>`;
+          : `${item.auto_enabled
+              ? `<button class="ghost-btn" type="button" data-cs-tpl-action="revoke" data-id="${escapeHtml(item.template_id)}">取消自动处理</button>`
+              : `<button class="${item.auto_block_reason ? "ghost-btn" : "primary-btn"}" type="button" data-cs-tpl-action="authorize" data-id="${escapeHtml(item.template_id)}" ${item.auto_block_reason ? `disabled title="${escapeHtml(item.auto_block_reason)}"` : ""}>授权自动处理</button>`}
+             <button class="ghost-btn" type="button" data-cs-tpl-action="retire" data-id="${escapeHtml(item.template_id)}">停用模板</button>`;
       return `<article class="customer-service-tpl-card is-${escapeHtml(item.status)}" data-cs-tpl-card="${escapeHtml(item.template_id)}">
         <div class="customer-service-tpl-card__head"><strong>${escapeHtml(item.name)}</strong>
           ${aiBadgeHtml({ name: item.scenario_name, tier: item.status === "draft" ? "L1" : "L2", locked: false })}
-          <span class="customer-service-ai-meta">${escapeHtml(item.scenario_name)} · 第 ${item.version} 版 · ${TEMPLATE_STATUS_TEXT[item.status] || item.status}</span></div>
+          <span class="customer-service-ai-meta">${escapeHtml(item.scenario_name)} · 第 ${item.version} 版 · ${TEMPLATE_STATUS_TEXT[item.status] || item.status}${item.auto_enabled ? " · 已授权自动处理" : ""}</span></div>
+        ${item.status === "active" && !item.auto_enabled && item.auto_block_reason ? `<p class="customer-service-ai-meta">授权自动处理的条件：${escapeHtml(item.auto_block_reason)}</p>` : ""}
+        ${item.auto_reason ? aiNote("", "info", `自动处理记录：${item.auto_reason}`) : ""}
         ${item.review_reason ? aiNote(item.status === "review" ? "warn" : "", "alert-circle", item.review_reason) : ""}
         <dl class="customer-service-tpl-dl">
           <dt>什么时候用</dt><dd><ul>${(item.conditions || []).map((row) => `<li>${escapeHtml(row)}</li>`).join("")}</ul></dd>
@@ -612,9 +622,15 @@
         if (!body) return;
         const drafts = rows.filter((row) => row.status === "draft");
         const inUse = rows.filter((row) => row.status !== "draft");
-        body.innerHTML = rows.length ? `
+        const autoRows = data.data?.auto_replies || [];
+        const autoHtml = autoRows.length ? `<h4>最近的自动回复（抽查）</h4><ul class="customer-service-ai-evidence">${autoRows.map((item) => `
+          <li><span>${escapeHtml(item.created_at)}<br>${escapeHtml(AUTO_REPLY_TEXT[item.status] || item.status)}${item.flagged ? "<br>已标记不正确" : ""}</span>
+            <span>${escapeHtml(item.waybill_no)}｜${escapeHtml(item.template_name || "")}\n${escapeHtml(item.reply_text)}
+            ${item.flagged ? "" : `\n<button class="customer-service-auto-flag" type="button" data-cs-auto-flag-row="${escapeHtml([item.source_id, item.external_id, item.source_direction].join("|"))}">这条处理得不对</button>`}</span></li>`).join("")}</ul>` : "";
+        body.innerHTML = (rows.length || autoRows.length) ? `
           ${drafts.length ? `<h4>待审核的模板草案（${drafts.length}）</h4>${drafts.map(templateCardHtml).join("")}` : ""}
-          ${inUse.length ? `<h4>正在使用的模板（${inUse.length}）</h4>${inUse.map(templateCardHtml).join("")}` : ""}`
+          ${inUse.length ? `<h4>正在使用的模板（${inUse.length}）</h4>${inUse.map(templateCardHtml).join("")}` : ""}
+          ${autoHtml}`
           : aiNote("", "info", "还没有模板。某类问题积累到 5 个案例且处理方式一致后，AI 会自动总结草案，出现在这里等你审核。");
         if (window.feather) window.feather.replace();
       } catch (error) {
@@ -637,10 +653,12 @@
         payload.reason = reason;
       }
       if (action === "retire" && !window.confirm("停用后这类问题不再按模板生成回复，确定停用？")) return;
+      if (action === "authorize" && !window.confirm("授权后，符合这个模板的问题件会由 AI 直接回复，不再经过人工确认（需另外启用“客服问题件自动回复”插件才会运行）。\n\n客户再次追问、有人标记回复不正确或知识库依据更新时，系统会自动取消授权。\n\n确定授权？")) return;
       button.disabled = true;
       try {
         await postJson(`/customer-service/ai-templates/${encodeURIComponent(button.dataset.id)}/review`, payload, { command: true });
-        setStatus({ approve: "模板已开始使用", reject: "已不采用这个草案", retire: "模板已停用", confirm: "模板复核完成，继续使用" }[action] || "已保存", "success");
+        setStatus({ approve: "模板已开始使用", reject: "已不采用这个草案", retire: "模板已停用", confirm: "模板复核完成，继续使用",
+          authorize: "已授权自动处理", revoke: "已取消自动处理" }[action] || "已保存", "success");
         await loadTemplates();
       } catch (error) {
         button.disabled = false;
@@ -648,6 +666,21 @@
         const body = $("[data-cs-templates-body]");
         if (body) body.insertAdjacentHTML("afterbegin", aiNote("error", "alert-triangle", error.message || "模板操作失败"));
         if (window.feather) window.feather.replace();
+      }
+    }
+
+    async function flagAutoReply(keyText) {
+      const [sourceId, externalId, sourceDirection] = String(keyText || "").split("|");
+      if (!sourceId || !externalId || !sourceDirection) return;
+      const reason = window.prompt("哪里不对？（会立即停止这个模板的自动回复）", "");
+      if (reason === null) return;
+      try {
+        await postJson("/customer-service/ai-auto-replies/flag", { item: { source_id: sourceId, external_id: externalId,
+          source_direction: sourceDirection }, reason }, { command: true });
+        setStatus("已标记，这个模板已停止自动回复；请到原平台补发正确回复。", "success");
+        await loadTemplates();
+      } catch (error) {
+        setStatus(error.message || "标记失败", "error");
       }
     }
 
@@ -1217,7 +1250,19 @@
       setReplySubmitting(false);
       resetAi();
       renderProblemModal(row, [], { loading: true });
-      if (problemNeedsAttention(row)) {
+      const autoStatus = state.ai.status.get(aiKey(row))?.auto_reply;
+      if (autoStatus) {
+        const nodes = aiNodes();
+        nodes.block.hidden = false;
+        nodes.body.innerHTML = `${aiNote(autoStatus === "confirmed" ? "" : "warn", "zap", autoStatus === "confirmed"
+          ? "这条问题件已由 AI 按已授权的模板自动回复，并在原平台核对过。处理得不对可以标记，这个模板会立即停止自动回复。"
+          : `自动回复状态：${AUTO_REPLY_TEXT[autoStatus] || autoStatus}。请到原平台核对是否已有回复，系统不会重复发送。`)}
+          <div class="customer-service-tpl-actions"><button class="ghost-btn" type="button" data-cs-auto-flag>这条自动回复不正确</button></div>`;
+        if (window.feather) window.feather.replace();
+      }
+      if (autoStatus) {
+        // An automatic reply already went out; no new advice is drafted for this problem.
+      } else if (problemNeedsAttention(row)) {
         runAiSuggestion(row);
       } else {
         const nodes = aiNodes();
@@ -1398,6 +1443,9 @@
       if (event.target.closest("[data-cs-templates-close]") || event.target.matches?.("[data-cs-templates]")) $("[data-cs-templates]")?.close();
       const tplAction = event.target.closest("[data-cs-tpl-action]");
       if (tplAction) reviewTemplate(tplAction);
+      if (event.target.closest("[data-cs-auto-flag]") && state.selected) flagAutoReply(aiKey(state.selected));
+      const autoFlagRow = event.target.closest("[data-cs-auto-flag-row]");
+      if (autoFlagRow) flagAutoReply(autoFlagRow.dataset.csAutoFlagRow);
       const tplEdit = event.target.closest("[data-cs-tpl-edit]");
       if (tplEdit) {
         const editor = tplEdit.closest("[data-cs-tpl-card]")?.querySelector("[data-cs-tpl-editor]");

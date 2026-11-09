@@ -26,6 +26,7 @@ STANDALONE_SERVICE_V2_PLUGIN_IDS = frozenset({
 # Packages built by ``_shared/build_zip.py`` from ``payload/plugin.py`` and a settings page.
 SHARED_BUILDER_SERVICE_V2_PLUGIN_IDS = frozenset({
     "clockin_daxiang_s_v2",
+    "customer_problem_auto_reply_v2",
     "clockin_daxiang_v2",
     "self_pickup_problem_upload_v2",
     "split_pending_problem_upload_v2",
