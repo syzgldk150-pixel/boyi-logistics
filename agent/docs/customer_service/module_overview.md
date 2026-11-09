@@ -108,9 +108,13 @@ updated: 2026-11-09
 - **抽查**：“处理模板”弹窗列出最近 50 条自动回复，可标记“这条处理得不对”；问题件列表“AI 处理”列显示“AI 已自动回复”等状态，打开处理框也可标记。被标记后对应模板立即停止自动回复，需要人到原平台补发正确回复。
 - **上线前**：自动回复会真实写入融辉、韵达。第一次在生产启用该插件前，须单独确认，并先用手动入口小批量运行核对。
 
+### 阶段 5：处理流程可调整（试点）
+
+自动回复插件 1.1.0 起把处理过程拆成四块积木：取待回复问题件（可设每轮最多几件）→ 筛选（可选，可多次，按平台、场景、AI 把握）→ AI 起草并判断（锁定）→ 回复原平台并回读核对（锁定，必须最后）。在“自动化”卡片点“处理流程”，可用一句话让 AI 在这些积木内调整（如“只处理韵达的问题件”），先看前后对比、用最近的 AI 建议记录试运行，确认后保存为新配置版本，可在“设置”页修改记录中恢复。筛选只会让插件少处理，不会绕过授权、按模板和把握度这些宿主检查。规则见 [插件平台](../../../docs/plugin-platform-v2.md#可调整处理流程积木--流程配置)。
+
 ## 代码入口
 
-- 客服自动回复：`agent/service_v2_plugins/customer_problem_auto_reply_v2/`（插件包）、`agent/agent/automation_plugins/customer_auto_reply_handlers.py`（宿主写入原语）、`agent/plugin_core_adapters/customer_auto_reply.py`（生产端口与延迟绑定）、`agent/agent/automation_plugins/customer_connectors_v2.py`（连接器契约）；回归见 `tests/test_customer_auto_reply.py`、`tests/test_customer_auto_reply_v2_packaged.py`。
+- 客服自动回复：`agent/service_v2_plugins/customer_problem_auto_reply_v2/`（插件包）、`agent/agent/automation_plugins/customer_auto_reply_handlers.py`（宿主写入原语）、`agent/plugin_core_adapters/customer_auto_reply.py`（生产端口与延迟绑定）、`agent/agent/automation_plugins/customer_connectors_v2.py`（连接器契约）；回归见 `tests/test_customer_auto_reply.py`、`tests/test_customer_auto_reply_v2_packaged.py`；处理流程见 `shared/plugin_flow.py`、`agent/agent/plugin_flow_editor.py`、`console/services/automation_plugin_flow.py`，回归见 `tests/test_plugin_flow.py`、`console/tests/test_automation_plugin_flow.py`。
 
 - 客服 AI：`agent/agent/customer_service_ai.py`（服务）、`agent/customer_service_ai_composition.py`（依据来源接线）、`shared/customer_service_ai.py`（场景规则、建议校验、案例仓储）、`console/services/customer_service.py` 的 `_handle_customer_service_ai_*` 与 `_record_customer_service_ai_case`；回归见 `tests/test_customer_service_ai.py`、`console/tests/test_customer_service_ai.py`。
 

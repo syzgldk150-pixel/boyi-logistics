@@ -755,6 +755,13 @@ def _plugin_config_value(config: dict[str, Any], path: list[str]) -> tuple[bool,
     return True, current
 
 
+def plugin_flow_declared(schema: Any) -> bool:
+    """True when the plugin declares adjustable blocks (``config_schema.properties.flow["x-flow"]``)."""
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    flow = properties.get("flow") if isinstance(properties, dict) else None
+    return isinstance(flow, dict) and flow.get("type") == "object" and "x-flow" in flow
+
+
 def _normalize_plugin_config_schema(
     schema: Any,
     config: Any,
@@ -921,6 +928,9 @@ def _normalize_plugin_config_schema(
 
     for key, node in properties.items():
         if str(key) in code_owned_fields:
+            continue
+        if plugin_flow_declared(schema) and str(key) == "flow":
+            # The declared flow is edited on its own page (/automations/{id}/flow) and validated by the Agent.
             continue
         if (
             not AUTOMATION_PLUGIN_CONFIG_KEY_RE.fullmatch(str(key))
@@ -1869,6 +1879,7 @@ def normalize_automation_plugin_catalog(
                 "settings_ui": dict(settings_ui) if settings_ui else None,
                 "management": management,
                 "settings_mode": raw.get("settings_mode", "custom" if settings_ui else "unavailable"),
+                "flow_editable": plugin_flow_declared(raw.get("config_schema")),
             }
         )
 

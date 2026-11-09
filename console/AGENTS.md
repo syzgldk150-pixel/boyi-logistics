@@ -124,6 +124,9 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `routes/automation.py`
   - `services/automation_plugin_management.py`
   - `static/style.css`
+- 改插件处理流程页（阶段 5，声明了 `flow` 的插件在卡片上显示“处理流程”）：
+  - `templates/automation_plugin_flow.html`、`static/plugin_flow.js`、`services/automation_plugin_flow.py`、`routes/automation.py`
+  - 仅超级管理员；Console 不判断流程是否合规，查看、AI 调整、试运行都转发 Agent `/internal/v1/automation/instances/{id}/flow*`，保存读取设置上下文后只替换 `config.flow`，经 `plugin-settings` 带配置版本保存。宿主简单设置的表单跳过 `flow` 字段（`automation_catalog_projection.plugin_flow_declared`）。回归见 `tests/test_automation_plugin_flow.py`。
 - 改博益手工录单固定扩展槽、保存前校验或 Host 动作：
   - `templates/document.html`
   - `services/documents.py`

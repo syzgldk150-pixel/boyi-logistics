@@ -23,6 +23,7 @@ from agent.automation_plugins.ports import (
     ProjectBindingResolverPort,
 )
 from agent.tool_registry import validate_schema_instance
+from shared.plugin_flow import FlowError, flow_declaration, validate_flow
 
 
 def _closed_bindings(
@@ -251,6 +252,13 @@ class AutomationProjectConfigurationService:
             normalized_config,
             entry.config_schema,
         )
+        declaration = flow_declaration(entry.config_schema)
+        if declaration is not None and "flow" in normalized_config:
+            # Flows are checked against the plugin's block declaration before any version is written.
+            try:
+                normalized_config["flow"] = validate_flow(normalized_config["flow"], declaration)
+            except FlowError as exc:
+                raise PluginConflictError(f"处理流程不符合规则：{exc}") from exc
         accounts = _closed_bindings(
             account_bindings,
             entry.account_roles,

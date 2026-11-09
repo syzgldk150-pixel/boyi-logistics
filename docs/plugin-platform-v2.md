@@ -4,7 +4,7 @@ type: 开发手册
 tags: [ZIP 插件, service_v2, Host API, 独立插件]
 related: [identity_and_unified_chat.md, architecture_direct_invocation.md, ../agent/service_v2_plugins/README.md, ../agent/docs/service_v2_developer_tooling.md]
 status: active
-updated: 2026-11-07
+updated: 2026-11-09
 ---
 
 # 独立插件与宿主接口
@@ -62,6 +62,19 @@ V2 由超级管理员上传无签名 ZIP，按内容摘要确认传输及已安�
 Manifest Schema 位于 `agent/extension_sdk/schemas/manifest-v2.schema.json`。通用本地开发命令见 [Service V2 开发工具](../agent/docs/service_v2_developer_tooling.md)；现有业务优先使用 `agent/scripts/plugin_maintenance.py` 选择对应插件进行测试和打包。
 
 设置页运行于独立 sandbox iframe，没有主页面同源权限或任意网络权限；通过会话绑定桥读取和保存自身配置。账号和表格只使用宿主返回的不透明引用。设置保存与定时保存分别校验版本并相互保留。“每天指定时间”的时间点属于主系统定时器，只改时间点时以目录提供的定时摘要 `schedule_sha256`（保存参数 `expected_schedule_sha256`）和配置版本 CAS 改写当前已提交代次的定时行并只同步该插件的定时任务，不新建代次；定时方式与开关仍是代次内容。
+
+### 可调整处理流程（积木 + 流程配置）
+
+插件可在 `config_schema.properties.flow` 下以 `x-flow` 声明自己的积木（`blocks`）、条件可用字段（`fields`）和默认流程（`default`）。积木的能力仍写在包内代码里、随插件测试和升级；后台只能调整用哪些积木、顺序、参数和筛选条件。未声明 `flow` 的插件行为完全不变。规则全部由 `shared/plugin_flow.py` 在代码里检查，不靠提示词：
+
+- 安装时检查声明（`manifest_v2.py`）：积木效果只能是 read/compute/internal_write/external_write，带条件的积木必须是 compute；必须积木、锁定积木和默认流程本身要合规。
+- 保存时检查流程（`configuration.py`，设置页、宿主简单设置和流程页都走这里）：只能用声明的积木；必需积木不能删；锁定积木保持原先后顺序；`requires_before` 要排在前面；外部写入积木必须是最后一步；条件只能用前面步骤已取得的字段，运算只有 eq/ne/in/not_in/gte/lte 与 all/any 组合；参数按积木的闭合参数 Schema 校验；最多 10 步。
+- 流程保存在实例配置的 `flow` 字段，复用配置 CAS、修改记录与恢复；包内解释器（随包携带 `payload/plugin_flow.py`）运行前再校验一次。
+- “一句话改流程”：Agent `plugin_flow_editor.py` 经共用 AI 任务网关（任务 `plugin.edit_flow`）让模型在积木范围内给出新流程，必须通过上述校验且最多改动 3 步，不合格带错误重试；需要插件没有的积木时返回 `out_of_scope` 和开发需求文字。AI 只给方案，不保存。
+- 试运行用最近的历史记录只计算每一步筛选后的剩余数量，不执行任何积木。
+- 接口：Agent `GET /internal/v1/automation/instances/{id}/flow`、`POST .../flow/ai-edit`、`POST .../flow/dry-run`（签名管理员）；Console `/automations/{id}/flow` 页面（仅超级管理员），保存经插件设置接口。
+
+当前试点为 `customer_problem_auto_reply_v2`（1.1.0）。
 
 ## 运行与宿主接口
 

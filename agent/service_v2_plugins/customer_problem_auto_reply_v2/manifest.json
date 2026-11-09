@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "customer_problem_auto_reply_v2",
   "name": "客服问题件自动回复",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "只对人工授权自动处理的模板：AI 起草且按模板生成、把握足够的回复，由宿主回读核对后发出；每条问题件最多自动回复一次。",
   "host_api": {
     "minimum": "2.0.0",
@@ -100,6 +100,115 @@
         "minimum": 1,
         "maximum": 20,
         "description": "每轮最多尝试的问题件数（每件都要经 AI 起草和平台回读，数量大时一轮耗时较长）"
+      },
+      "flow": {
+        "type": "object",
+        "description": "处理流程：由哪些步骤组成、按什么条件筛选。只能用插件声明的积木，由宿主按规则校验后保存。",
+        "x-flow": {
+          "fields": {
+            "platform": {
+              "title": "平台",
+              "type": "string",
+              "enum": [
+                "ronghui",
+                "yunda"
+              ]
+            },
+            "scenario": {
+              "title": "问题类型",
+              "type": "string",
+              "enum": [
+                "urge",
+                "undelivered",
+                "sign_dispute",
+                "address",
+                "reroute",
+                "modify_info",
+                "other"
+              ]
+            },
+            "confidence": {
+              "title": "AI 把握",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "blocks": [
+            {
+              "id": "candidates",
+              "title": "找出待回复的问题件",
+              "description": "从已发布数据中取出仍需回复、从未自动回复过的问题件",
+              "effect": "read",
+              "required": true,
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "max_items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20
+                  }
+                },
+                "required": []
+              },
+              "provides_fields": [
+                "platform"
+              ]
+            },
+            {
+              "id": "filter",
+              "title": "按条件筛选",
+              "description": "只让符合条件的问题件进入下一步",
+              "effect": "compute",
+              "repeatable": true,
+              "condition": true
+            },
+            {
+              "id": "draft",
+              "title": "AI 起草并判断能否自动回复",
+              "description": "必须是已授权自动处理的模板、回复按模板生成、AI 把握足够",
+              "effect": "read",
+              "required": true,
+              "locked": true,
+              "requires_before": [
+                "candidates"
+              ],
+              "provides_fields": [
+                "scenario",
+                "confidence"
+              ]
+            },
+            {
+              "id": "reply",
+              "title": "回复原平台并回读核对",
+              "description": "宿主写前读平台防重复，写后回读确认",
+              "effect": "external_write",
+              "required": true,
+              "locked": true,
+              "requires_before": [
+                "draft"
+              ]
+            }
+          ],
+          "default": {
+            "steps": [
+              {
+                "block": "candidates",
+                "params": {
+                  "max_items": 5
+                }
+              },
+              {
+                "block": "draft"
+              },
+              {
+                "block": "reply"
+              }
+            ]
+          }
+        }
       }
     },
     "required": []

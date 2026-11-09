@@ -129,7 +129,8 @@ class _Handlers:
                 return {"eligible": False, "reason": code[:64], "suggestion_id": "",
                         "evidence_ref": self._evidence(context, "draft", {"failed": code[:64]})}
             public = {"eligible": bool(result["eligible"]), "reason": str(result["reason"])[:200],
-                      "suggestion_id": str(result["suggestion_id"])}
+                      "suggestion_id": str(result["suggestion_id"]), "scenario_id": str(result.get("scenario_id") or ""),
+                      "confidence": str(result.get("confidence") or "")}
             return {**public, "evidence_ref": self._evidence(context, "draft", public)}
         return run()
 

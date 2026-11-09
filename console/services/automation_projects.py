@@ -7,6 +7,7 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 from collections.abc import Mapping
 from console.app_support import *  # noqa: F403
+from console.services.automation_plugin_flow import AutomationPluginFlowServiceMixin
 from console.services.automation_plugin_management import AutomationPluginManagementServiceMixin
 from console.services.module_data_sources import ModuleDataSourcesServiceMixin
 from console.services.automation_project_contributions import (
@@ -99,7 +100,8 @@ AUTOMATION_CATALOG_FRESH_SECONDS = 60.0
 AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS = 12 * 3600.0
 
 
-class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, ModuleDataSourcesServiceMixin):
+class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, AutomationPluginFlowServiceMixin,
+                                     ModuleDataSourcesServiceMixin):
     _automation_plugin_max_package_bytes = AUTOMATION_PLUGIN_MAX_PACKAGE_BYTES
     _automation_plugin_version_re = AUTOMATION_PLUGIN_VERSION_RE
 

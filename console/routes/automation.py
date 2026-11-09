@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+_FLOW_ROUTE = re.compile(r"/automations/([^/]+)/flow(|/data|/ai-edit|/dry-run|/save)")
 
 
 def _automation_open_task_id(app: Any, query: dict[str, list[str]]) -> str | None:
@@ -92,6 +96,14 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
             settings_asset_route[1],
         )
         return True
+    flow_match = _FLOW_ROUTE.fullmatch(path)
+    if flow_match:
+        if flow_match.group(2) == "":
+            app._render_automation_plugin_flow(handler, flow_match.group(1))
+            return True
+        if flow_match.group(2) == "/data":
+            app._handle_automation_plugin_flow_data(handler, flow_match.group(1))
+            return True
     if path.startswith("/automations/") and path.endswith("/settings"):
         automation_id = path[len("/automations/") : -len("/settings")].strip("/")
         if automation_id and "/" not in automation_id:
@@ -105,6 +117,10 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 
 
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+    flow_match = _FLOW_ROUTE.fullmatch(path)
+    if flow_match and flow_match.group(2) in {"/ai-edit", "/dry-run", "/save"}:
+        app._handle_automation_plugin_flow_action(handler, flow_match.group(1), flow_match.group(2)[1:])
+        return True
     if path.startswith("/module-data-sources/") and path.endswith("/producer"):
         source_id = path[len("/module-data-sources/"):-len("/producer")]
         if source_id and "/" not in source_id:

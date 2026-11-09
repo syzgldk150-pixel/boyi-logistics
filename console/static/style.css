@@ -2178,6 +2178,44 @@ body.dispatch-page .notice { display: none; }
   .overview-pending__src, .overview-pending__no, .overview-pending__wait { display: none; }
 }
 
+/* Plugin flow page (blocks + flow configuration). */
+.plugin-flow { display: grid; gap: 16px; max-width: 1100px; }
+.plugin-flow__lead, .plugin-flow__meta { margin: 0; color: var(--muted); font-size: 0.875rem; line-height: 1.7; }
+.plugin-flow__lead b { color: var(--text-strong); }
+.plugin-flow__status:empty { display: none; }
+.plugin-flow__status { padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); font-size: 0.875rem; }
+.plugin-flow__status[data-tone="success"] { border-color: var(--success-line); background: var(--success-soft); color: var(--success-ink); }
+.plugin-flow__status[data-tone="warning"] { border-color: var(--warning-line); background: var(--warning-soft); color: var(--warning-ink); }
+.plugin-flow__status[data-tone="error"] { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
+.plugin-flow__panel { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--canvas); }
+.plugin-flow__panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.plugin-flow__panel-head h2 { margin: 0; font-size: 1.125rem; color: var(--text-strong); }
+.plugin-flow__steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.plugin-flow__step { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.plugin-flow__step.is-locked { background: var(--surface); border-style: dashed; }
+.plugin-flow__step.is-changed { border-color: var(--warning-line); background: var(--warning-soft); }
+.plugin-flow__step p { margin: 4px 0 0; color: var(--muted); font-size: 0.8125rem; }
+.plugin-flow__index { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong); font-weight: 600; font-variant-numeric: tabular-nums; }
+.plugin-flow__step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.plugin-flow__step-head strong { color: var(--text-strong); }
+.plugin-flow__badge { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); font-size: 0.75rem; }
+.plugin-flow__badge svg { width: 12px; height: 12px; }
+.plugin-flow__badge.is-write { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
+.plugin-flow__badge.is-changed { border-color: var(--warning-line); color: var(--warning-ink); }
+.plugin-flow__condition { color: var(--info-ink) !important; }
+.plugin-flow__field { display: grid; gap: 6px; font-size: 0.875rem; color: var(--text-strong); }
+.plugin-flow__field textarea, .plugin-flow__callout textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; line-height: 1.6; }
+.plugin-flow__examples, .plugin-flow__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.plugin-flow__example { min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--canvas); font-size: 0.8125rem; cursor: pointer; }
+.plugin-flow__callout { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--info-line); border-radius: var(--radius-md); background: var(--info-soft); font-size: 0.875rem; line-height: 1.6; }
+.plugin-flow__callout.is-warn { border-color: var(--warning-line); background: var(--warning-soft); }
+.plugin-flow__callout p, .plugin-flow__callout ul { margin: 0; }
+.plugin-flow__table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+.plugin-flow__table th, .plugin-flow__table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.plugin-flow__table .num { font-variant-numeric: tabular-nums; }
+[data-plugin-flow-proposal] { display: grid; gap: 12px; }
+[data-plugin-flow-proposal][hidden] { display: none; }
+
 /* Customer-service AI (advice only; the person sends the reply). */
 .customer-service-ai-block {
   display: grid;

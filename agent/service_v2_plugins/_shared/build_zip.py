@@ -100,6 +100,9 @@ def build_plugin_zip(source_directory: Path | str, output_path: Path | str) -> P
         entries["payload/boyi_plugin_result.py"] = (shared / "result.py").read_bytes()
         if manifest["plugin_id"] == "sync_yunda_send_waybills_v2":
             entries["payload/yunda_send_fields.py"] = (source / "payload/yunda_send_fields.py").read_bytes()
+        if manifest["plugin_id"] == "customer_problem_auto_reply_v2":
+            # Same flow rules as the Host (shared/plugin_flow.py), shipped verbatim.
+            entries["payload/plugin_flow.py"] = (source.parents[2] / "shared/plugin_flow.py").read_bytes()
         if manifest["plugin_id"] == "sync_customer_service_problems_v2":
             entries["payload/customer_problem_fields.py"] = (source.parents[2] / "shared/ronghui_customer_problem_fields.py").read_bytes()
             entries["payload/customer_queue_policy.py"] = (source.parents[2] / "shared/customer_problem_policy.py").read_bytes()

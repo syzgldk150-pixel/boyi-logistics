@@ -401,7 +401,7 @@ class CustomerServiceAIService:
         elif Decimal(advice["confidence"]) < AUTO_MIN_CONFIDENCE:
             reason = f"AI 把握 {advice['confidence']} 低于 {AUTO_MIN_CONFIDENCE}"
         return {"suggestion_id": advice["suggestion_id"], "eligible": not reason, "reason": reason,
-                "scenario_id": scenario["id"], "tier": scenario["tier"],
+                "scenario_id": scenario["id"], "tier": scenario["tier"], "confidence": advice["confidence"],
                 "template_id": (advice.get("template") or {}).get("id")}
 
     async def auto_reply_plan(self, suggestion_id: str) -> dict[str, Any]:

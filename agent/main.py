@@ -28,6 +28,8 @@ from shared.finance import FinanceRepository
 from agent.ai_tasks import AITaskGateway
 from agent.finance_review_advisor import FinanceReviewAdviceError, FinanceReviewAdvisor
 from agent.customer_service_ai import CustomerServiceAIService
+from agent.plugin_flow_editor import PluginFlowEditor, PluginFlowEditorError
+from shared.customer_service_ai import CustomerServiceAIRepository
 from customer_service_ai_composition import build_customer_service_ai
 from plugin_core_adapters.customer_auto_reply import bind_customer_service_ai
 from shared.customer_service_ai import CustomerServiceAIError
@@ -239,6 +241,7 @@ configure_feishu_operation(feishu_operation)
 agent_core: AgentCore | None = None
 finance_review_advisor: "FinanceReviewAdvisor | None" = None
 customer_service_ai: "CustomerServiceAIService | None" = None
+plugin_flow_editor: "PluginFlowEditor | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
@@ -673,6 +676,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
+    global plugin_flow_editor
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -744,6 +748,10 @@ async def lifespan(app: FastAPI):
     )
     customer_service_ai = build_customer_service_ai(runtime, ai_task_gateway)
     bind_customer_service_ai(customer_service_ai)
+    customer_service_ai_repository = CustomerServiceAIRepository(runtime.memory.connection_factory)
+    plugin_flow_editor = PluginFlowEditor(ai_task_gateway, sample_providers={
+        "customer_problem_auto_reply_v2": lambda: customer_service_ai_repository.flow_samples(limit=200),
+    })
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
@@ -1979,6 +1987,72 @@ async def internal_customer_service_ai_status(req: CustomerServiceAIStatusReques
     except CustomerServiceAIError as exc:
         return _customer_service_ai_failure(exc)
     return api_success({"problems": rows})
+
+
+class PluginFlowEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: uuid.UUID
+    instruction: str = Field(min_length=1, max_length=300)
+
+
+class PluginFlowDryRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    flow: dict[str, Any]
+
+
+def _plugin_flow_entry(automation_id: str):
+    try:
+        return _automation_plugins().catalog.require(automation_id)
+    except Exception as exc:  # noqa: BLE001 - unknown or unreadable instance
+        raise PluginFlowEditorError("PLUGIN_INSTANCE_NOT_FOUND", "没有找到这个插件实例。") from exc
+
+
+def _plugin_flow_failure(exc: PluginFlowEditorError) -> JSONResponse:
+    status = {"PLUGIN_INSTANCE_NOT_FOUND": 404, "FLOW_NOT_SUPPORTED": 409, "FLOW_AI_UNAVAILABLE": 503}.get(exc.code, 422)
+    return JSONResponse(status_code=status, content=api_failure(exc.code, redact_text(exc.message)))
+
+
+@app.get("/internal/v1/automation/instances/{automation_id}/flow")
+async def internal_plugin_flow(automation_id: str, request: Request):
+    """The instance's flow, its declared blocks and a plain-language description."""
+
+    _require_console_admin_request(request)
+    if plugin_flow_editor is None:
+        return JSONResponse(status_code=503, content=api_failure("FLOW_UNAVAILABLE", "流程调整当前不可用"))
+    try:
+        return api_success(plugin_flow_editor.describe(await asyncio.to_thread(_plugin_flow_entry, automation_id)))
+    except PluginFlowEditorError as exc:
+        return _plugin_flow_failure(exc)
+
+
+@app.post("/internal/v1/automation/instances/{automation_id}/flow/ai-edit")
+async def internal_plugin_flow_ai_edit(automation_id: str, req: PluginFlowEditRequest, request: Request):
+    """AI proposes a flow from the plugin's own blocks; nothing is saved."""
+
+    principal = _require_console_admin_request(request)
+    if plugin_flow_editor is None:
+        return JSONResponse(status_code=503, content=api_failure("FLOW_UNAVAILABLE", "流程调整当前不可用"))
+    try:
+        entry = await asyncio.to_thread(_plugin_flow_entry, automation_id)
+        return api_success(await plugin_flow_editor.propose(entry, req.instruction, actor_id=principal.actor_id))
+    except PluginFlowEditorError as exc:
+        return _plugin_flow_failure(exc)
+
+
+@app.post("/internal/v1/automation/instances/{automation_id}/flow/dry-run")
+async def internal_plugin_flow_dry_run(automation_id: str, req: PluginFlowDryRunRequest, request: Request):
+    """Replay recent history through a flow's conditions; no block runs and nothing is written."""
+
+    _require_console_admin_request(request)
+    if plugin_flow_editor is None:
+        return JSONResponse(status_code=503, content=api_failure("FLOW_UNAVAILABLE", "流程调整当前不可用"))
+    try:
+        entry = await asyncio.to_thread(_plugin_flow_entry, automation_id)
+        return api_success(await plugin_flow_editor.dry_run(entry, req.flow))
+    except PluginFlowEditorError as exc:
+        return _plugin_flow_failure(exc)
 
 
 @app.post("/internal/v1/admin/llm/candidates")

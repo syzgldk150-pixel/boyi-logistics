@@ -149,6 +149,8 @@ def _load_action():
         result_module = importlib.util.module_from_spec(result_spec)
         result_spec.loader.exec_module(result_module)
         sys.modules["boyi_plugin_result"] = result_module
+    import shared.plugin_flow
+    sys.modules.setdefault("plugin_flow", shared.plugin_flow)
     spec = importlib.util.spec_from_file_location("auto_reply_action", root / "customer_problem_auto_reply_v2/payload/action.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -579,6 +579,16 @@ class CustomerServiceAIRepository:
                     flagged.append(row["template_id"])
         return flagged
 
+    def flow_samples(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Recent advice as flow-condition records (platform, scenario, confidence) for dry runs."""
+        with self._cursor() as cursor:
+            cursor.execute("SELECT s.provider, g.scenario_id, g.confidence FROM cs_suggestions g"
+                           " JOIN module_data_sources s ON s.source_id=g.source_id ORDER BY g.created_at DESC LIMIT %s",
+                           (int(limit),))
+            rows = _rows(cursor)
+        return [{"platform": row["provider"], "scenario": row["scenario_id"], "confidence": float(row["confidence"])}
+                for row in rows]
+
     # ---- Automatic replies (phase 4) ----
 
     def auto_candidates(self, *, limit: int) -> list[dict[str, Any]]:

@@ -300,6 +300,7 @@
             {% if can_manage_plugins %}
             <div class="extension-instance__actions">
               {% if plugin.settings_mode in ["custom", "accounts", "none"] or plugin.settings_ui %}<a class="ghost-btn" data-console-navigate href="/automations/{{ task.task_id | urlencode }}/settings"><i data-feather="settings"></i>设置</a>{% endif %}
+              {% if plugin.flow_editable %}<a class="ghost-btn" data-console-navigate href="/automations/{{ task.task_id | urlencode }}/flow"><i data-feather="git-branch"></i>处理流程</a>{% endif %}
               <label class="ghost-btn extension-upgrade"><span>选择更新包</span><input type="file" accept=".zip,application/zip" data-extension-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}></label>
               <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
               {% if plugin.enabled %}<button class="ghost-btn" type="button" data-extension-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>暂停</button>{% else %}<button class="ghost-btn" type="button" data-extension-action="enable" {% if not plugin.enable_allowed %}disabled{% endif %}>启用</button>{% endif %}

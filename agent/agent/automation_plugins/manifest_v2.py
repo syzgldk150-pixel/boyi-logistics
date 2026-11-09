@@ -414,6 +414,13 @@ def _validate_config_schema(value: Any) -> dict[str, Any]:
     }
     canonical_json_bytes(normalized)
     _validate_config_property_names(normalized, "config_schema")
+    from shared.plugin_flow import FlowError, flow_declaration
+
+    try:
+        # A declared flow (config property ``flow`` with ``x-flow``) must be valid at install time.
+        flow_declaration(normalized)
+    except FlowError as exc:
+        raise PluginManifestError(f"config_schema.properties.flow: {exc}") from exc
     return normalized
 
 

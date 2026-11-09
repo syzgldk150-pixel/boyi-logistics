@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}处理流程 · {{ app_title }}{% endblock %}
+{% block breadcrumb %}处理流程{% endblock %}
+{% block subtitle %}自动化 / 插件处理流程{% endblock %}
+{% block body_class %}automation-plugin-flow-page{% endblock %}
+
+{% block page_actions %}
+<a class="ghost-btn" data-console-navigate href="/automations/{{ automation_id | urlencode }}/settings"><i data-feather="clock"></i>修改记录与恢复</a>
+<a class="ghost-btn" data-console-navigate href="/automations"><i data-feather="arrow-left"></i>返回自动化</a>
+{% endblock %}
+
+{% block content %}
+<section class="plugin-flow" data-plugin-flow data-automation-id="{{ automation_id }}" aria-labelledby="plugin-flow-title">
+  <p class="plugin-flow__lead">插件由一组<b>积木</b>组成：每块积木的能力在插件里写好并测试过，这里只能调整用哪些积木、按什么顺序、用什么条件筛选。<b>灰色带锁的步骤由系统保护</b>，不能删除或调换顺序。保存时系统会按规则检查，修改记录和恢复在插件“设置”页。</p>
+  <div class="plugin-flow__status" data-plugin-flow-status role="status" aria-live="polite"></div>
+
+  <section class="plugin-flow__panel" aria-labelledby="plugin-flow-title">
+    <div class="plugin-flow__panel-head">
+      <h2 id="plugin-flow-title">现在的流程</h2>
+      <span class="plugin-flow__meta" data-plugin-flow-version></span>
+    </div>
+    <ol class="plugin-flow__steps" data-plugin-flow-current></ol>
+  </section>
+
+  <section class="plugin-flow__panel" aria-labelledby="plugin-flow-ai-title">
+    <div class="plugin-flow__panel-head"><h2 id="plugin-flow-ai-title">一句话调整</h2></div>
+    <p class="plugin-flow__meta">描述你想怎么改，AI 只会在现有积木范围内重新组合，并说明改了什么；不会自动保存。需要插件没有的能力时，会整理成开发需求。</p>
+    <label class="plugin-flow__field"><span>想怎么调整？</span>
+      <textarea data-plugin-flow-instruction maxlength="300" rows="3" placeholder="例如：只处理韵达的问题件，并且 AI 把握低于 0.9 的不自动回复"></textarea>
+    </label>
+    <div class="plugin-flow__examples" data-plugin-flow-examples>
+      <button class="plugin-flow__example" type="button">只处理韵达的问题件</button>
+      <button class="plugin-flow__example" type="button">AI 把握低于 0.9 的不自动回复</button>
+      <button class="plugin-flow__example" type="button">每轮最多处理 3 件</button>
+    </div>
+    <div class="plugin-flow__actions">
+      <button class="primary-btn" type="button" data-plugin-flow-ask><i data-feather="cpu"></i><span>交给 AI 调整</span></button>
+    </div>
+    <div data-plugin-flow-proposal hidden></div>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/plugin_flow.js?v=20261109-flow"></script>
+{% endblock %}
