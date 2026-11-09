@@ -5,7 +5,7 @@ tags: [documentation, navigation, authority, lifecycle]
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-02
+updated: 2026-11-09
 ---
 
 # 仓库文档索引
@@ -62,7 +62,9 @@ updated: 2026-11-02
 - [财务模块](../agent/docs/finance_module.md)
 - [运单录入内的 OCR](../agent/docs/ocr/module_overview.md)
 - [车辆调度](../agent/docs/dispatch/module_overview.md)
-- [AI 客服规划](../agent/docs/ai_service/module_overview.md)
+- [客服 AI 辅助](../agent/docs/customer_service/module_overview.md#ai-辅助处理阶段-1ai-建议与案例库)：问题件建议、案例库、处理模板与授权自动回复（内部使用）。
+- [插件处理流程](plugin-platform-v2.md#可调整处理流程积木--流程配置)：插件积木、流程规则与一句话调整。
+- [AI 客服规划](../agent/docs/ai_service/module_overview.md)：面向外部客户的对话，仍未开发。
 
 ## 历史、规划与快照
 

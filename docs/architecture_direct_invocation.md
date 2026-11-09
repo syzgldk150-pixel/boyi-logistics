@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-07
+updated: 2026-11-09
 ---
 
 # 业务接口与独立插件调用
@@ -114,7 +114,7 @@ Service V2 调用中的同步 manifest 读取（同一调用 lease 只读一次�
 财务模块已按 `agent/docs/finance_module.md` 重建为总账；数据来源由连接器按标准流水契约提交。
 
 插件运行输出按需读取本项目的真实 Invocation 列表，包含手动、飞书和定时触发。刷新页面后可重新选中和查看原执行；查询与取消使用精确执行标识，不重提执行请求。输出是当前结果快照，每次替换显示，避免将旧状态当作追加日志保留。
-目前 Agent 不新增模型框架、自动修复、通用节点编辑器或新的后台长任务系统。
+目前 Agent 不新增模型框架、自动修复、通用节点编辑器或新的后台长任务系统。业务 AI 任务只经 `agent/agent/ai_tasks/gateway.py`（脱敏、校验、审计）；插件“处理流程”只是插件声明积木内的受限配置，由 `shared/plugin_flow.py` 校验，保存走既有插件设置 CAS，执行仍是原插件的 Direct Invocation。
 
 ## 寄件数据的完整性
 

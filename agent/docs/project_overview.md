@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-11-07
+updated: 2026-11-09
 ---
 
 # 物流 Agent 项目总览
@@ -33,7 +33,8 @@ updated: 2026-11-07
 - 寄件默认查数据库，明确单号或日期覆盖不足时按真实平台来源范围补查；局部补查不删除
   其他数据、不冒充整日完整。夜间插件仅在来源范围和分页闭合时发布完整覆盖。
 - 财务/客服采集由所属模块插件负责。财务采集完成不自动分析；AI 助手和飞书自然对话共用
-  当前 Agent，能力仅包括已注册接口、已开放插件和显式数据分析，不新增通用流程编辑器。
+  当前 Agent，能力仅包括已注册接口、已开放插件和显式数据分析，不新增通用流程编辑器。业务 AI 任务（财务科目建议、客服问题件建议与模板、插件流程调整）另经共用 AI 任务网关，
+  只给建议或方案，由人确认；插件流程只能在插件自己声明的积木内调整，不是通用节点编辑器。
 - 发布 hold 期间暂停 Scheduler 与 Direct 新调用；健康、身份、迁移和依赖检查通过后才激活。
   财务没有启动自动补拉。
 

@@ -147,6 +147,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 | 车辆调度 | `console/` | `docs/dispatch/` | `map_only`：仅地图路线规划与本地试算，无真实派单/车辆/平台接口 |
 | Agent 自动化能力 | `agent/ + feishu/ + tools/` | `docs/agent_automation/` | 飞书机器人承载的全部能力都在此（直接插件/reader / 预览确认 / 账号登录） |
 | 自动化插件平台 | `agent/automation_plugins/`、`service_v2_plugins/`、`plugin_core_adapters/` | `../docs/plugin-platform-v2.md`、`service_v2_plugins/README.md` | 生产只运行 Service V2 ZIP、Host API 与 Direct Invocation；R7 车线每日打卡独立 V2 包见 `docs/r7_vehicle_checkin.md` |
+| 客服 AI 辅助与插件处理流程（内部，AI 阶段 0–5） | `agent/ai_tasks/`、`agent/customer_service_ai.py`、`agent/plugin_flow_editor.py`、`../shared/ai_tasks/`、`../shared/customer_service_ai.py`、`../shared/plugin_flow.py`、`service_v2_plugins/customer_problem_auto_reply_v2/` | `docs/customer_service/module_overview.md`、`../docs/plugin-platform-v2.md` | 已发布（迁移 074–077）：共用 AI 任务网关；客服建议、案例库、模板、授权自动回复；插件积木流程与一句话调整。自动回复插件尚未在生产启用 |
 | AI客服 | `agent/ + feishu/`（规划中） | `docs/ai_service/` | 暂未开发；待启动后从 Agent 自动化能力剥离客户对话能力 |
 | 通用规范 | — | `docs/common/` | 活跃 |
 
