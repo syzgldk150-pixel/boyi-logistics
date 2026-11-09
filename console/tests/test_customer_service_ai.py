@@ -172,5 +172,49 @@ class CustomerServiceAIConsoleTests(unittest.TestCase):
         self.assertIn("response.status === 403", script)
         self.assertIn("data-console-navigate", script)
 
+    TEMPLATE_ID = "33333333-4444-4555-8666-777777777777"
+
+    def test_template_review_forwards_edits_only_on_approve(self):
+        app, calls = self._app(lambda endpoint: {"ok": True, "data": {"template_id": self.TEMPLATE_ID}})
+        app._handle_customer_service_ai_template_review(_handler({
+            "action": "approve", "reply_template": "您好，{网点}已安排。", "conditions": ["已到站"], "extra": 1}), self.TEMPLATE_ID)
+        self.assertEqual(HTTPStatus.OK, app.sent_status)
+        self.assertEqual(f"/internal/v1/admin/customer-service/ai/templates/{self.TEMPLATE_ID}/review", calls[0]["endpoint"])
+        self.assertEqual({"request_id", "action", "reason", "reply_template", "conditions"}, set(calls[0]["payload"]))
+        app._handle_customer_service_ai_template_review(_handler({"action": "retire", "reply_template": "x"}), self.TEMPLATE_ID)
+        self.assertNotIn("reply_template", calls[1]["payload"])
+
+    def test_template_review_refuses_unknown_actions_and_ids(self):
+        app, calls = self._app(lambda endpoint: self.fail("must not call the Agent"))
+        app._handle_customer_service_ai_template_review(_handler({"action": "delete"}), self.TEMPLATE_ID)
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
+        app._handle_customer_service_ai_template_review(_handler({"action": "approve"}), "not-an-id")
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
+
+    def test_template_review_maps_state_conflicts(self):
+        app, _ = self._app(lambda endpoint: {"ok": False, "status": 409,
+                                             "error": {"code": "TEMPLATE_STATE_CHANGED", "message": "模板状态已变化"}})
+        app._handle_customer_service_ai_template_review(_handler({"action": "approve"}), self.TEMPLATE_ID)
+        self.assertEqual(409, app.sent_status)
+        self.assertEqual("TEMPLATE_STATE_CHANGED", app.sent_payload["error_code"])
+
+    def test_template_routes_and_page_wiring(self):
+        import routes.customer_service as customer_routes
+
+        seen = []
+        app = types.SimpleNamespace(
+            _handle_customer_service_ai_templates=lambda handler: seen.append("list"),
+            _handle_customer_service_ai_template_review=lambda handler, template_id: seen.append(template_id))
+        self.assertTrue(customer_routes.handle_get(app, None, "/customer-service/ai-templates", "", {}))
+        self.assertTrue(customer_routes.handle_post(app, None, f"/customer-service/ai-templates/{self.TEMPLATE_ID}/review", "", {}))
+        self.assertFalse(customer_routes.handle_post(app, None, "/customer-service/ai-templates/x/review", "", {}))
+        self.assertEqual(["list", self.TEMPLATE_ID], seen)
+        template = (CONSOLE_DIR / "templates" / "customer_service.html").read_text(encoding="utf-8")
+        script = (CONSOLE_DIR / "static" / "customer_service.js").read_text(encoding="utf-8")
+        for marker in ("data-cs-templates-open", "data-cs-templates-body", "data-cs-tpl-count"):
+            self.assertIn(marker, template)
+        for marker in ("/customer-service/ai-templates", "data-cs-tpl-action", "已按模板", "template_not_followed"):
+            self.assertIn(marker, script)
+
 if __name__ == "__main__":
     unittest.main()

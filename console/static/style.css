@@ -2243,6 +2243,25 @@ body.dispatch-page .notice { display: none; }
 .customer-service-ai-hint { display: block; margin: 4px 0 6px; color: var(--info-ink); font-size: 0.8125rem; font-weight: 500; }
 .customer-service-ai-hint.is-new { color: var(--warning-ink); }
 .customer-service-ai-help { width: min(760px, 100%); }
+.customer-service-tpl-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; margin-left: 6px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--warning-soft); border: 1px solid var(--warning-line); color: var(--warning-ink); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.customer-service-templates { width: min(960px, 100%); display: grid; gap: 12px; }
+.customer-service-templates-body { display: grid; gap: 16px; }
+.customer-service-templates-body h4 { margin: 4px 0 0; font-size: 0.9375rem; color: var(--text-strong); }
+.customer-service-tpl-card { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.customer-service-tpl-card.is-draft { border-color: var(--info-line); }
+.customer-service-tpl-card.is-review { border-color: var(--warning-line); }
+.customer-service-tpl-card__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.customer-service-tpl-card__head strong { font-size: 0.9375rem; color: var(--text-strong); }
+.customer-service-tpl-dl { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: 0.8125rem; line-height: 1.6; }
+.customer-service-tpl-dl dt { color: var(--muted); }
+.customer-service-tpl-dl dd { margin: 0; overflow-wrap: anywhere; }
+.customer-service-tpl-dl ul { margin: 0; padding-left: 18px; }
+.customer-service-tpl-slot { padding: 0 4px; border-radius: var(--radius-sm); background: var(--info-soft); color: var(--info-ink); }
+.customer-service-tpl-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.customer-service-tpl-edit { display: grid; gap: 8px; }
+.customer-service-tpl-edit[hidden], .customer-service-ai-block[hidden], .customer-service-ai-hint[hidden], .customer-service-ai-tier[hidden] { display: none; }
+.customer-service-tpl-edit textarea { width: 100%; min-height: 72px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; font-size: 0.8125rem; line-height: 1.6; }
+.customer-service-tpl-edit label { display: grid; gap: 4px; font-size: 0.8125rem; color: var(--muted); }
 .customer-service-ai-cases summary { cursor: pointer; font-size: 0.8125rem; font-weight: 600; color: var(--text-strong); margin-bottom: 8px; }
 .customer-service-ai-progress { display: grid; gap: 8px; }
 .customer-service-ai-progress h4 { margin: 0; font-size: 0.9375rem; color: var(--text-strong); }

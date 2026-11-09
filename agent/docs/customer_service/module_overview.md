@@ -93,6 +93,13 @@ updated: 2026-11-09
 - 点“处理”经控制台页签打开 `/modules/customer-service?open=<来源|问题件|方向>&q=<单号>`：客服页预填单号并自动查询，再打开这条问题件的处理框；页签已打开时由 `console:querychange` 事件完成同样动作。当前结果里找不到时只提示，不猜测。
 - 插件的待确认预览（扫描、自提、分批）暂未汇总进“待我确认”：现有接口只能按单个插件实例读取预览，跨插件汇总需要新的核心查询，列为后续事项。
 
+### 阶段 3：模板提炼与审核（L2）
+
+- **触发**：人发出回复并存为案例后，若该场景不是锁定场景、累计案例已满 5 个、没有草案或正在使用的模板（被“不采用”的场景要再积累 5 个新案例），Agent 在进程内后台调用 AI 任务 `customer_service.distill_template`（不新增定时或队列，失败只记日志、不影响回复）。模型读最近 12 个案例和它们引用过的知识库摘录，判断处理方式是否一致：至少 3 个一致才给出草案（名称、适用条件、所需信息、回复模板、处理动作、说明），否则不生成。校验见 `shared/customer_service_ai.py` 的 `validate_template_draft` / `validate_reply_template`：每件不同的时间、单号等必须写成 `{槽位}`（最多 6 个），不能写成固定文字，也不能有承诺性措辞。
+- **审核**：客服页“处理模板”弹窗（`/customer-service/ai-templates` → Agent `/internal/v1/admin/customer-service/ai/templates`）列出待审核草案与正在使用的模板，可查看依据的案例。草案可“审核通过”“修改后通过”（改回复模板和适用条件，同样过校验）或“不采用”（可填原因）；使用中的模板可停用。审核通过后该场景升级为“按模板”（L2），同一场景旧的使用中模板改为已停用。所有操作经 `/customer-service/ai-templates/{id}/review`，按当前状态做条件更新，状态已变化时提示刷新。
+- **使用**：生成建议时把使用中的模板交给模型；回复的固定措辞按顺序全部出现在回复里（`template_applied`，确定性检查）才算按模板，处理框显示“已按模板「…」第 n 版生成”和适用条件。所选场景有模板但这次没按模板写时，标为“AI 建议”并提示核对。L2 仍需人点“回复处理”才会发出；授权自动处理属于阶段 4。
+- **知识库变更复核**：知识库依据记录文档 ID 和编辑时间。之后生成建议时如发现被模板引用的文档编辑时间变化，该模板改为“需复核”并停止使用，弹窗显示哪份文档更新了；人点“确认仍然适用”后恢复使用并记下新的编辑时间，也可以停用。只有在建议检索中再次读到该文档时才能发现变化，没有定时巡检。
+
 ## 代码入口
 
 - 客服 AI：`agent/agent/customer_service_ai.py`（服务）、`agent/customer_service_ai_composition.py`（依据来源接线）、`shared/customer_service_ai.py`（场景规则、建议校验、案例仓储）、`console/services/customer_service.py` 的 `_handle_customer_service_ai_*` 与 `_record_customer_service_ai_case`；回归见 `tests/test_customer_service_ai.py`、`console/tests/test_customer_service_ai.py`。

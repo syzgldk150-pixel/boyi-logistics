@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_TEMPLATE_REVIEW = re.compile(r"/customer-service/ai-templates/([0-9a-fA-F-]{36})/review")
 
 
 _ACTION_ROUTES = {
@@ -29,6 +32,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/customer-service/pending-summary":
         app._handle_customer_service_pending_summary(handler)
         return True
+    if path == "/customer-service/ai-templates":
+        app._handle_customer_service_ai_templates(handler)
+        return True
     return False
 
 
@@ -51,6 +57,10 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if path == "/customer-service/problems/ai-status":
         app._handle_customer_service_ai_status(handler)
+        return True
+    match = _TEMPLATE_REVIEW.fullmatch(path)
+    if match:
+        app._handle_customer_service_ai_template_review(handler, match.group(1))
         return True
     if path == "/customer-service/problems/attachments/upload":
         app._handle_customer_service_attachment_upload(handler)

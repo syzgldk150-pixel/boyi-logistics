@@ -15,10 +15,17 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 ConnectionFactory = Callable[[], Any]
 
-TIER_NEW, TIER_ADVICE = "L0", "L1"
+TIER_NEW, TIER_ADVICE, TIER_TEMPLATE = "L0", "L1", "L2"
 ADVICE_CASE_THRESHOLD = 3
 """A scenario starts showing drafted replies once it has this many recorded cases."""
 REPLY_MAX_CHARS = 300
+DISTILL_MIN_CASES = 5
+"""A scenario is offered for template distillation once it has this many cases."""
+DISTILL_SAMPLE = 12
+REDRAFT_AFTER_NEW_CASES = 5
+"""After a draft is rejected, wait for this many new cases before drafting again."""
+TEMPLATE_STATUSES = ("draft", "active", "review", "rejected", "retired")
+_SLOT = re.compile(r"\{([^{}]{1,12})\}")
 SUGGESTION_USES = ("none", "adopted", "edited")
 _BANNED_PHRASES = ("保证", "一定", "绝对", "全额赔", "承诺赔", "包赔")
 # Times and identifiers a reply states must be copied from the evidence.
@@ -161,6 +168,90 @@ def rank_similar_cases(problem: Mapping[str, Any], candidates: Sequence[Mapping[
             scored.append((score, str(case.get("created_at") or ""), dict(case)))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [{**case, "similarity": round(score, 2)} for score, _, case in scored[:limit]]
+
+
+def validate_reply_template(text: Any) -> tuple[str, list[str]]:
+    """A reply template: fixed wording plus up to 6 named {slots}; no promises, no stray braces."""
+    if not isinstance(text, str) or not text.strip() or len(text.strip()) > REPLY_MAX_CHARS:
+        raise ValueError(f"reply_template must be 1 to {REPLY_MAX_CHARS} characters")
+    template = text.strip()
+    slots = _SLOT.findall(template)
+    if len(slots) > 6 or any(not slot.strip() for slot in slots):
+        raise ValueError("reply_template may use at most 6 named slots")
+    if "{" in _SLOT.sub("", template) or "}" in _SLOT.sub("", template):
+        raise ValueError("reply_template has an unmatched brace")
+    banned = [phrase for phrase in _BANNED_PHRASES if phrase in template]
+    if banned:
+        raise ValueError(f"reply_template must not promise anything ({'、'.join(banned)})")
+    for pattern in _FACT_PATTERNS:
+        if pattern.search(_SLOT.sub("", template)):
+            raise ValueError("reply_template must put times and numbers in slots, not fixed text")
+    return template, list(dict.fromkeys(slot.strip() for slot in slots))
+
+
+def template_applied(reply: Any, reply_template: str) -> bool:
+    """True when every fixed fragment of the template appears in the reply, in order."""
+    text = re.sub(r"\s+", "", str(reply or ""))
+    position = 0
+    for fragment in _SLOT.split(reply_template)[::2]:
+        fragment = re.sub(r"\s+", "", fragment)
+        if len(fragment) < 2:
+            continue
+        found = text.find(fragment, position)
+        if found < 0:
+            return False
+        position = found + len(fragment)
+    return True
+
+
+def _string_list(value: Any, name: str, *, max_items: int, max_chars: int) -> list[str]:
+    if not isinstance(value, list) or not 1 <= len(value) <= max_items:
+        raise ValueError(f"{name} must list 1 to {max_items} items")
+    items = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip() or len(item.strip()) > max_chars:
+            raise ValueError(f"each {name} item must be 1 to {max_chars} characters")
+        items.append(item.strip())
+    return list(dict.fromkeys(items))
+
+
+def validate_template_draft(answer: Any, *, case_ids: Sequence[str], knowledge_ids: Sequence[str],
+                            evidence_sources: Sequence[str]) -> dict[str, Any]:
+    """Accept the model's template proposal, or its explicit judgment that the cases disagree."""
+    if not isinstance(answer, Mapping):
+        raise ValueError("answer must be a JSON object")
+    if answer.get("consistent") is False:
+        reason = answer.get("note")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("note must explain why the cases are not consistent")
+        return {"consistent": False, "note": reason.strip()[:200]}
+    if answer.get("consistent") is not True:
+        raise ValueError("consistent must be true or false")
+    same = answer.get("consistent_case_refs")
+    if not isinstance(same, list) or len(set(same)) < 3 or any(item not in case_ids for item in same):
+        raise ValueError("consistent_case_refs must list at least 3 of the given case ids")
+    template, slots = validate_reply_template(answer.get("reply_template"))
+    evidence_needed = _string_list(answer.get("evidence_needed"), "evidence_needed", max_items=6, max_chars=20)
+    if any(item not in evidence_sources for item in evidence_needed):
+        raise ValueError("evidence_needed must only name the given evidence sources")
+    knowledge_refs = answer.get("knowledge_refs", [])
+    if not isinstance(knowledge_refs, list) or any(item not in knowledge_ids for item in knowledge_refs):
+        raise ValueError("knowledge_refs must only list given ids")
+    name = answer.get("name")
+    action = answer.get("action")
+    note = answer.get("note", "")
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 40:
+        raise ValueError("name must be 1 to 40 characters")
+    if not isinstance(action, str) or not action.strip() or len(action.strip()) > 60:
+        raise ValueError("action must be 1 to 60 characters")
+    if not isinstance(note, str) or len(note.strip()) > 200:
+        raise ValueError("note must be at most 200 characters")
+    return {
+        "consistent": True, "name": name.strip(), "action": action.strip(), "note": note.strip(),
+        "conditions": _string_list(answer.get("conditions"), "conditions", max_items=6, max_chars=60),
+        "evidence_needed": evidence_needed, "reply_template": template, "slots": slots,
+        "consistent_case_refs": list(dict.fromkeys(same)), "knowledge_refs": list(dict.fromkeys(knowledge_refs)),
+    }
 
 
 def _json(value: Any) -> Any:
@@ -312,6 +403,167 @@ class CustomerServiceAIRepository:
             })
         return result
 
+    # ---- Templates (phase 3) ----
+
+    _TEMPLATE_COLUMNS = ("template_id, scenario_id, version, status, name, conditions_json, evidence_needed_json,"
+                         " reply_template, action_text, note, source_case_ids_json, cases_total, cases_consistent,"
+                         " knowledge_json, run_id, review_reason, rejected_case_count, reviewed_by, reviewed_at,"
+                         " created_at, updated_at")
+
+    @staticmethod
+    def _template(row: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        for key in ("conditions_json", "evidence_needed_json", "source_case_ids_json", "knowledge_json"):
+            result[key.removesuffix("_json")] = _json(result.pop(key)) or []
+        for key in ("reviewed_at", "created_at", "updated_at"):
+            if result.get(key) is not None:
+                result[key] = str(result[key])[:19]
+        return result
+
+    def templates(self, statuses: Sequence[str] = ()) -> list[dict[str, Any]]:
+        where, params = "", []
+        if statuses:
+            if any(status not in TEMPLATE_STATUSES for status in statuses):
+                raise ValueError("unknown template status")
+            where = " WHERE t.status IN (" + ",".join(["%s"] * len(statuses)) + ")"
+            params = list(statuses)
+        with self._cursor() as cursor:
+            cursor.execute("SELECT " + ", ".join("t." + column.strip() for column in self._TEMPLATE_COLUMNS.split(","))
+                           + ", s.name AS scenario_name, s.locked FROM cs_templates t"
+                           " JOIN cs_scenarios s ON s.scenario_id=t.scenario_id" + where
+                           + " ORDER BY s.sort_order, t.version DESC, t.created_at DESC", params)
+            return [self._template(row) for row in _rows(cursor)]
+
+    def get_template(self, template_id: str) -> dict[str, Any] | None:
+        with self._cursor() as cursor:
+            cursor.execute("SELECT " + self._TEMPLATE_COLUMNS + " FROM cs_templates WHERE template_id=%s",
+                           (str(template_id),))
+            rows = _rows(cursor)
+        return self._template(rows[0]) if rows else None
+
+    def scenario_cases(self, scenario_id: str, *, limit: int = DISTILL_SAMPLE) -> list[dict[str, Any]]:
+        """Most recent cases of one scenario with the knowledge their advice cited."""
+        with self._cursor() as cursor:
+            cursor.execute(
+                "SELECT c.case_id, c.problem_type, c.problem_text, c.reply_text, c.suggestion_use, c.created_at,"
+                " g.knowledge_json FROM cs_cases c LEFT JOIN cs_suggestions g ON g.suggestion_id=c.suggestion_id"
+                " WHERE c.scenario_id=%s ORDER BY c.created_at DESC LIMIT %s", (scenario_id, int(limit)))
+            rows = _rows(cursor)
+        return [{**row, "knowledge": _json(row.pop("knowledge_json")) or []} for row in rows]
+
+    def cases_by_ids(self, case_ids: Sequence[int]) -> list[dict[str, Any]]:
+        ids = [int(value) for value in case_ids][:20]
+        if not ids:
+            return []
+        with self._cursor() as cursor:
+            cursor.execute("SELECT case_id, problem_text, reply_text, suggestion_use, created_at FROM cs_cases"
+                           " WHERE case_id IN (" + ",".join(["%s"] * len(ids)) + ") ORDER BY created_at DESC", ids)
+            return [{**row, "created_at": str(row["created_at"])[:16]} for row in _rows(cursor)]
+
+    def drafting_eligible(self, scenario_id: str) -> bool:
+        """No open template and, after a rejection, enough new cases since."""
+        with self._cursor() as cursor:
+            cursor.execute("SELECT locked, case_count FROM cs_scenarios WHERE scenario_id=%s", (scenario_id,))
+            scenario = _rows(cursor)
+            cursor.execute("SELECT status, rejected_case_count FROM cs_templates WHERE scenario_id=%s", (scenario_id,))
+            templates = _rows(cursor)
+        if not scenario or scenario[0]["locked"] or int(scenario[0]["case_count"]) < DISTILL_MIN_CASES:
+            return False
+        if any(row["status"] in ("draft", "active", "review") for row in templates):
+            return False
+        rejected = [int(row["rejected_case_count"] or 0) for row in templates if row["status"] == "rejected"]
+        return not rejected or int(scenario[0]["case_count"]) >= max(rejected) + REDRAFT_AFTER_NEW_CASES
+
+    def save_template_draft(self, draft: Mapping[str, Any]) -> None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO cs_templates (template_id, scenario_id, version, status, name, conditions_json,"
+                " evidence_needed_json, reply_template, action_text, note, source_case_ids_json, cases_total,"
+                " cases_consistent, knowledge_json, run_id)"
+                " SELECT %s, %s, COALESCE(MAX(version), 0) + 1, 'draft', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+                " FROM cs_templates WHERE scenario_id=%s",
+                (draft["template_id"], draft["scenario_id"], draft["name"],
+                 json.dumps(draft["conditions"], ensure_ascii=False), json.dumps(draft["evidence_needed"], ensure_ascii=False),
+                 draft["reply_template"], draft["action"], draft["note"],
+                 json.dumps(draft["source_case_ids"]), draft["cases_total"], draft["cases_consistent"],
+                 json.dumps(draft["knowledge"], ensure_ascii=False), draft.get("run_id"), draft["scenario_id"]),
+            )
+
+    def review_template(self, template_id: str, *, action: str, actor_id: str, reply_template: str | None = None,
+                        conditions: Sequence[str] | None = None, reason: str = "") -> dict[str, Any]:
+        """approve (draft->active) | reject (draft->rejected) | retire (active/review->retired) | confirm (review->active)."""
+        allowed_from = {"approve": ("draft",), "reject": ("draft",), "retire": ("active", "review"), "confirm": ("review",)}
+        if action not in allowed_from:
+            raise CustomerServiceAIError("TEMPLATE_ACTION_INVALID", "不支持的模板操作。")
+        with self._cursor() as cursor:
+            cursor.execute("SELECT template_id, scenario_id, status, knowledge_json FROM cs_templates"
+                           " WHERE template_id=%s FOR UPDATE", (str(template_id),))
+            rows = _rows(cursor)
+            if not rows:
+                raise CustomerServiceAIError("TEMPLATE_NOT_FOUND", "没有找到这个模板。")
+            row = rows[0]
+            if row["status"] not in allowed_from[action]:
+                raise CustomerServiceAIError("TEMPLATE_STATE_CHANGED", "模板状态已变化，请刷新后再操作。")
+            scenario_id, actor = row["scenario_id"], str(actor_id)[:128]
+            if action == "approve":
+                updates, params = ["status='active'"], []
+                if reply_template is not None:
+                    updates.append("reply_template=%s")
+                    params.append(reply_template)
+                if conditions is not None:
+                    updates.append("conditions_json=%s")
+                    params.append(json.dumps(list(conditions), ensure_ascii=False))
+                cursor.execute("UPDATE cs_templates SET status='retired' WHERE scenario_id=%s AND status IN ('active','review')",
+                               (scenario_id,))
+                cursor.execute("UPDATE cs_templates SET " + ", ".join(updates) + ", reviewed_by=%s,"
+                               " reviewed_at=UTC_TIMESTAMP(6) WHERE template_id=%s", (*params, actor, row["template_id"]))
+                cursor.execute("UPDATE cs_scenarios SET tier=%s WHERE scenario_id=%s", (TIER_TEMPLATE, scenario_id))
+            elif action == "reject":
+                cursor.execute("UPDATE cs_templates t JOIN cs_scenarios s ON s.scenario_id=t.scenario_id"
+                               " SET t.status='rejected', t.review_reason=%s, t.rejected_case_count=s.case_count,"
+                               " t.reviewed_by=%s, t.reviewed_at=UTC_TIMESTAMP(6) WHERE t.template_id=%s",
+                               (reason[:500] or None, actor, row["template_id"]))
+            elif action == "retire":
+                cursor.execute("UPDATE cs_templates SET status='retired', review_reason=%s, reviewed_by=%s,"
+                               " reviewed_at=UTC_TIMESTAMP(6) WHERE template_id=%s",
+                               (reason[:500] or None, actor, row["template_id"]))
+                cursor.execute("UPDATE cs_scenarios SET tier=%s WHERE scenario_id=%s AND tier=%s",
+                               (TIER_ADVICE, scenario_id, TIER_TEMPLATE))
+            else:
+                knowledge = _json(row["knowledge_json"]) or []
+                for item in knowledge:
+                    if item.get("changed_to"):
+                        item["updated_at"] = item.pop("changed_to")
+                cursor.execute("UPDATE cs_templates SET status='active', review_reason=NULL, knowledge_json=%s,"
+                               " reviewed_by=%s, reviewed_at=UTC_TIMESTAMP(6) WHERE template_id=%s",
+                               (json.dumps(knowledge, ensure_ascii=False), actor, row["template_id"]))
+        result = self.get_template(template_id)
+        return result or {}
+
+    def flag_knowledge_change(self, seen: Mapping[str, str]) -> list[str]:
+        """Move active templates whose cited document now has another edit time to ``review``."""
+        if not seen:
+            return []
+        flagged = []
+        with self._cursor() as cursor:
+            cursor.execute("SELECT template_id, knowledge_json FROM cs_templates WHERE status='active' FOR UPDATE")
+            for row in _rows(cursor):
+                knowledge = _json(row["knowledge_json"]) or []
+                changed = []
+                for item in knowledge:
+                    doc, before = str(item.get("document_id") or ""), str(item.get("updated_at") or "")
+                    now = str(seen.get(doc) or "")
+                    if doc and before and now and now != before:
+                        item["changed_to"] = now
+                        changed.append(str(item.get("title") or doc))
+                if changed:
+                    cursor.execute("UPDATE cs_templates SET status='review', knowledge_json=%s, review_reason=%s"
+                                   " WHERE template_id=%s",
+                                   (json.dumps(knowledge, ensure_ascii=False),
+                                    ("引用的知识库文档已更新：" + "、".join(changed))[:500], row["template_id"]))
+                    flagged.append(row["template_id"])
+        return flagged
+
     def record_case(self, case: Mapping[str, Any]) -> dict[str, Any]:
         """Store one sent reply once per request id and count it for its scenario."""
         with self._cursor() as cursor:
@@ -349,6 +601,7 @@ class CustomerServiceAIRepository:
 
 __all__ = [
     "ADVICE_CASE_THRESHOLD", "CustomerServiceAIError", "CustomerServiceAIRepository", "REPLY_MAX_CHARS",
-    "SUGGESTION_USES", "TIER_ADVICE", "TIER_NEW", "mask_address", "mask_phones", "problem_key", "problem_needs_reply",
+    "DISTILL_MIN_CASES", "SUGGESTION_USES", "TIER_ADVICE", "TIER_NEW", "TIER_TEMPLATE", "template_applied",
+    "validate_reply_template", "validate_template_draft", "mask_address", "mask_phones", "problem_key", "problem_needs_reply",
     "rank_similar_cases", "validate_suggestion",
 ]

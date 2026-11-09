@@ -477,6 +477,8 @@
           <ul class="customer-service-ai-evidence">${cases.map((item) => `<li class="${item.cited ? "is-cited" : ""}"><span>${escapeHtml(item.created_at || "")}${item.cited ? " · 已参考" : ""}</span><span>${escapeHtml(item.scenario)}｜${escapeHtml(item.problem)}\n回复：${escapeHtml(item.reply)}</span></li>`).join("")}</ul>
         </details>` : "";
       const notes = [];
+      if (data.template) notes.push(aiNote("", "file-text", `已按模板「${data.template.name}」第 ${data.template.version} 版生成。适用条件：${(data.template.conditions || []).join("；")}。不适用时直接改写回复即可，你的修改会被记录。`));
+      if (data.template_not_followed) notes.push(aiNote("warn", "alert-circle", "这类问题有模板，但这次 AI 没有按模板生成，请核对后再提交。"));
       if (scenario.locked) notes.push(aiNote("", "lock", "这类问题涉及赔付或责任认定，AI 只给参考，必须由你确认后提交。"));
       if (scenario.tier === "L0") notes.push(aiNote("warn", "alert-circle", `这类问题 AI 还在学习（已有 ${scenario.case_count || 0} 个案例，满 3 个后开始代写回复），请你填写回复，提交后会存为案例。`));
       if ((data.unavailable || []).length) notes.push(aiNote("", "info", `以下信息这次没有取到：${data.unavailable.join("；")}`));
@@ -488,7 +490,7 @@
       if (nodes.hint) {
         if (data.reply) {
           if (nodes.reply && !nodes.reply.value.trim()) nodes.reply.value = data.reply;
-          nodes.hint.textContent = "AI 已起草回复，可以直接修改后提交；你的修改也会被记录学习。";
+          nodes.hint.textContent = data.template ? "已按模板生成回复，核对无误即可提交。" : "AI 已起草回复，可以直接修改后提交；你的修改也会被记录学习。";
           nodes.hint.classList.remove("is-new");
         } else {
           nodes.hint.textContent = scenario.tier === "L0" ? "请你填写回复，提交后会存为案例。" : "证据不足，AI 没有起草回复，请你填写。";
@@ -552,6 +554,99 @@
         if (window.feather) window.feather.replace();
       } catch (error) {
         node.innerHTML = aiNote("", "info", error.message || "学习进展暂不可用");
+        if (window.feather) window.feather.replace();
+      }
+    }
+
+    // ---- Handling templates: AI drafts them from consistent cases; a person approves before use. ----
+    const TEMPLATE_STATUS_TEXT = { draft: "待审核", active: "使用中", review: "需复核（已暂停）" };
+
+    function slotHtml(text) {
+      return escapeHtml(text).replace(/\{([^{}]{1,12})\}/g, '<span class="customer-service-tpl-slot">$1</span>');
+    }
+
+    function templateCardHtml(item) {
+      const cases = (item.source_cases || []).map((row) => `<li>${escapeHtml(row.created_at)}｜${escapeHtml(row.problem_text)} → ${escapeHtml(row.reply_text)}</li>`).join("");
+      const knowledge = (item.knowledge || []).map((row) => `<li>${escapeHtml(row.source || row.document_id || "")}${row.changed_to ? "（已更新）" : ""}</li>`).join("");
+      const actions = item.status === "draft"
+        ? `<button class="primary-btn" type="button" data-cs-tpl-action="approve" data-id="${escapeHtml(item.template_id)}">审核通过，开始使用</button>
+           <button class="ghost-btn" type="button" data-cs-tpl-edit="${escapeHtml(item.template_id)}">修改后通过</button>
+           <button class="ghost-btn" type="button" data-cs-tpl-action="reject" data-id="${escapeHtml(item.template_id)}">不采用</button>`
+        : item.status === "review"
+          ? `<button class="primary-btn" type="button" data-cs-tpl-action="confirm" data-id="${escapeHtml(item.template_id)}">确认仍然适用</button>
+             <button class="ghost-btn" type="button" data-cs-tpl-action="retire" data-id="${escapeHtml(item.template_id)}">停用模板</button>`
+          : `<button class="ghost-btn" type="button" data-cs-tpl-action="retire" data-id="${escapeHtml(item.template_id)}">停用模板</button>`;
+      return `<article class="customer-service-tpl-card is-${escapeHtml(item.status)}" data-cs-tpl-card="${escapeHtml(item.template_id)}">
+        <div class="customer-service-tpl-card__head"><strong>${escapeHtml(item.name)}</strong>
+          ${aiBadgeHtml({ name: item.scenario_name, tier: item.status === "draft" ? "L1" : "L2", locked: false })}
+          <span class="customer-service-ai-meta">${escapeHtml(item.scenario_name)} · 第 ${item.version} 版 · ${TEMPLATE_STATUS_TEXT[item.status] || item.status}</span></div>
+        ${item.review_reason ? aiNote(item.status === "review" ? "warn" : "", "alert-circle", item.review_reason) : ""}
+        <dl class="customer-service-tpl-dl">
+          <dt>什么时候用</dt><dd><ul>${(item.conditions || []).map((row) => `<li>${escapeHtml(row)}</li>`).join("")}</ul></dd>
+          <dt>需要的信息</dt><dd>${escapeHtml((item.evidence_needed || []).join("、"))}</dd>
+          <dt>回复模板</dt><dd>${slotHtml(item.reply_template)}</dd>
+          <dt>处理动作</dt><dd>${escapeHtml(item.action_text)}</dd>
+          <dt>依据</dt><dd>${item.cases_total} 个案例中 ${item.cases_consistent} 个处理一致${item.note ? `；${escapeHtml(item.note)}` : ""}</dd>
+          ${knowledge ? `<dt>知识库</dt><dd><ul>${knowledge}</ul></dd>` : ""}
+        </dl>
+        ${cases ? `<details><summary class="customer-service-ai-meta">查看依据的案例</summary><ul class="customer-service-ai-meta">${cases}</ul></details>` : ""}
+        <div class="customer-service-tpl-edit" data-cs-tpl-editor hidden>
+          <label>回复模板（用 {名称} 标出每件不同的内容，如 {网点}）<textarea data-cs-tpl-reply>${escapeHtml(item.reply_template)}</textarea></label>
+          <label>适用条件（每行一条，最多 6 条）<textarea data-cs-tpl-conditions>${escapeHtml((item.conditions || []).join("\n"))}</textarea></label>
+          <div class="customer-service-tpl-actions"><button class="primary-btn" type="button" data-cs-tpl-action="approve" data-edited="true" data-id="${escapeHtml(item.template_id)}">保存并开始使用</button></div>
+        </div>
+        <div class="customer-service-tpl-actions">${actions}</div>
+      </article>`;
+    }
+
+    async function loadTemplates() {
+      const body = $("[data-cs-templates-body]");
+      const count = document.querySelector("[data-cs-tpl-count]");
+      try {
+        const response = await fetch("/customer-service/ai-templates", { headers: { Accept: "application/json" } });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.message || "处理模板暂不可用");
+        const rows = data.data?.templates || [];
+        const waiting = rows.filter((row) => row.status === "draft" || row.status === "review");
+        if (count) { count.textContent = String(waiting.length); count.hidden = waiting.length === 0; }
+        if (!body) return;
+        const drafts = rows.filter((row) => row.status === "draft");
+        const inUse = rows.filter((row) => row.status !== "draft");
+        body.innerHTML = rows.length ? `
+          ${drafts.length ? `<h4>待审核的模板草案（${drafts.length}）</h4>${drafts.map(templateCardHtml).join("")}` : ""}
+          ${inUse.length ? `<h4>正在使用的模板（${inUse.length}）</h4>${inUse.map(templateCardHtml).join("")}` : ""}`
+          : aiNote("", "info", "还没有模板。某类问题积累到 5 个案例且处理方式一致后，AI 会自动总结草案，出现在这里等你审核。");
+        if (window.feather) window.feather.replace();
+      } catch (error) {
+        if (body) body.innerHTML = aiNote("error", "alert-triangle", error.message || "处理模板暂不可用");
+        if (window.feather) window.feather.replace();
+      }
+    }
+
+    async function reviewTemplate(button) {
+      const card = button.closest("[data-cs-tpl-card]");
+      const action = button.dataset.csTplAction;
+      const payload = { action };
+      if (action === "approve" && button.dataset.edited === "true" && card) {
+        payload.reply_template = card.querySelector("[data-cs-tpl-reply]")?.value || "";
+        payload.conditions = (card.querySelector("[data-cs-tpl-conditions]")?.value || "").split("\n").map((row) => row.trim()).filter(Boolean);
+      }
+      if (action === "reject") {
+        const reason = window.prompt("不采用的原因（选填，帮助 AI 下次总结得更准）：", "");
+        if (reason === null) return;
+        payload.reason = reason;
+      }
+      if (action === "retire" && !window.confirm("停用后这类问题不再按模板生成回复，确定停用？")) return;
+      button.disabled = true;
+      try {
+        await postJson(`/customer-service/ai-templates/${encodeURIComponent(button.dataset.id)}/review`, payload, { command: true });
+        setStatus({ approve: "模板已开始使用", reject: "已不采用这个草案", retire: "模板已停用", confirm: "模板复核完成，继续使用" }[action] || "已保存", "success");
+        await loadTemplates();
+      } catch (error) {
+        button.disabled = false;
+        setStatus(error.message || "模板操作失败", "error");
+        const body = $("[data-cs-templates-body]");
+        if (body) body.insertAdjacentHTML("afterbegin", aiNote("error", "alert-triangle", error.message || "模板操作失败"));
         if (window.feather) window.feather.replace();
       }
     }
@@ -1300,6 +1395,14 @@
       if (event.target.closest("[data-cs-ai-run]") && state.selected) runAiSuggestion(state.selected);
       if (event.target.closest("[data-cs-ai-help-close]")) $("[data-cs-ai-help]")?.close();
       if (event.target.matches?.("[data-cs-ai-help]")) event.target.close();
+      if (event.target.closest("[data-cs-templates-close]") || event.target.matches?.("[data-cs-templates]")) $("[data-cs-templates]")?.close();
+      const tplAction = event.target.closest("[data-cs-tpl-action]");
+      if (tplAction) reviewTemplate(tplAction);
+      const tplEdit = event.target.closest("[data-cs-tpl-edit]");
+      if (tplEdit) {
+        const editor = tplEdit.closest("[data-cs-tpl-card]")?.querySelector("[data-cs-tpl-editor]");
+        if (editor) editor.hidden = !editor.hidden;
+      }
       if (event.target.closest("[data-cs-publish-close]")) closePublishModal();
     });
     root.addEventListener("dblclick", handleProblemRowOpen);
@@ -1325,6 +1428,11 @@
       if (target.closest("[data-cs-query]")) {
         event.preventDefault();
         runQuery();
+        return;
+      }
+      if (target.closest("[data-cs-templates-open]")) {
+        const dialog = $("[data-cs-templates]");
+        if (dialog && !dialog.open) { dialog.showModal(); loadTemplates(); }
         return;
       }
       if (target.closest("[data-cs-ai-help-open]")) {
@@ -1397,6 +1505,7 @@
     });
     updateAccountSummary();
     updatePublishAccounts();
+    loadTemplates();
     // Opened from the overview's “待我确认”: query, then open that problem's dialog.
     if (root.dataset.openProblem) runQuery().then(openRequestedProblem);
     // The tab shell reuses an open customer-service tab and only reports the new query string.

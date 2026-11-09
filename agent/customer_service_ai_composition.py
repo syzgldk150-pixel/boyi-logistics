@@ -94,8 +94,10 @@ def build_customer_service_ai(runtime: Any, gateway: AITaskGateway) -> CustomerS
         result = await asyncio.to_thread(knowledge_source.search, query[:50], 3)
         if not result.get("ok"):
             return []
+        # document_id and its edit time let approved templates notice a later change of the regulation.
         return [{"source": f"{item.get('space') or '知识库'} · {item.get('title')}", "text": _excerpt(str(item.get("body") or ""), query),
-                 "url": item.get("url") or ""} for item in result.get("items") or []]
+                 "url": item.get("url") or "", "document_id": item.get("document_id") or item.get("source_id") or "",
+                 "updated_at": str(item.get("updated_at") or "")} for item in result.get("items") or []]
 
     return CustomerServiceAIService(
         CustomerServiceAIRepository(connection_factory),

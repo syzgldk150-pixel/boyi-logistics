@@ -215,6 +215,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 页面入口为 `/modules/customer-service`；当前为客服系统专用工作台，第一版只接“问题件”闭环，差错、调拨件后续再接入。
   - 客服 AI（阶段 1）：打开待处理问题件时 `/customer-service/problems/ai-suggest` 代理 Agent `/internal/v1/admin/customer-service/ai/suggest` 生成场景与回复草稿，处理框显示“AI 查到的情况”，草稿只在回复框为空时填入；回复仍由人经原有 `customer-service-reply` 直接业务接口发出，成功后 `_record_customer_service_ai_case` 调 `/internal/v1/admin/customer-service/ai/cases` 存为案例，失败只提示、不撤销回复。列表“AI 处理”列经 `/customer-service/problems/ai-status` 读取，失败显示“—”。Console 只转发问题件标识，不运行模型、不直接读写 `cs_*` 表。详见 `../agent/docs/customer_service/module_overview.md`。
   - 概览“待我确认”（阶段 2）：`templates/portal.html` 的 `data-overview-pending` 区块由 `static/overview_pending.js` 读取 `/customer-service/pending-summary`（`customer_service` 权限，无权限时区块隐藏），列出等待回复的问题件与 AI 分档；“处理”跳到 `/modules/customer-service?open=…&q=…`，客服页预填单号、自动查询并打开处理框（已打开的页签走 `console:querychange`）。等待回复口径 `shared/customer_service_ai.problem_needs_reply` 与页面 `problemNeedsAttention` 必须同步修改。插件待确认预览尚未汇总。
+  - 处理模板（阶段 3）：客服页“处理模板”弹窗经 `/customer-service/ai-templates`（GET）与 `/customer-service/ai-templates/{id}/review`（POST，approve/reject/retire/confirm）代理 Agent；只有“审核通过”可带修改后的回复模板与适用条件。处理框按模板生成时显示模板名称、版本与适用条件。页面不直接读写 `cs_templates`。
   - 页面默认保持紧凑查询条，外层展示关键词、平台、方向、更新时间日期范围、账号摘要、发布和查询；账号列表和轮询收在账号设置面板中，默认折叠；问题件页不提供声音提醒。
   - 问题件方向下拉只保留“发布给我的”和“我发布的”；前端统一传 `published_to_me` / `my_published`，由 Agent 按融辉/韵达各自原页入口映射，不再展示“收到/待处理、我登记的、韵达查询、韵达发布”等平台拆分选项。
   - 问题件处理弹窗只保留处理状态、回复内容和回复处理按钮；回复成功后必须立即在当前弹窗展示“已有回复”，不在弹窗内提供标记已读按钮。

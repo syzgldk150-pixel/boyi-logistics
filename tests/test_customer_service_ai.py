@@ -89,6 +89,15 @@ class FakeRepo:
     def similar_case_candidates(self, problem):
         return [dict(item) for item in self.candidates]
 
+    def templates(self, statuses=()):
+        return []
+
+    def flag_knowledge_change(self, seen):
+        return []
+
+    def drafting_eligible(self, scenario_id):
+        return False
+
     def scenario_stats(self):
         return [{"scenario_id": "urge", "name": "催件", "tier": "L1", "locked": False, "case_count": 5, "recent_cases": 4,
                  "adopted": 3, "edited": 1, "unused": 0, "adoption_rate": 0.75},
@@ -363,3 +372,221 @@ def test_repository_candidate_query_is_bounded_to_the_platform():
     CustomerServiceAIRepository(lambda: _Connection(cursor)).similar_case_candidates(PROBLEM)
     sql, params = cursor.executed[0]
     assert "c.platform=%s" in sql and params[0] == "yunda" and params[-1] == 60
+
+
+# ---- Phase 3: templates ----
+
+from shared.customer_service_ai import (  # noqa: E402
+    DISTILL_MIN_CASES,
+    template_applied,
+    validate_reply_template,
+    validate_template_draft,
+)
+
+TEMPLATE_TEXT = "您好，该件 {到站时间} 已到达 {网点}，今天会安排派送，请保持电话畅通。"
+
+
+def test_reply_templates_keep_facts_in_slots_and_make_no_promises():
+    assert validate_reply_template(TEMPLATE_TEXT)[1] == ["到站时间", "网点"]
+    for bad in ("您好，11-08 21:05 已到站。", "您好，保证今天到。", "您好，{网点", "", "x" * 301,
+                "".join(f"{{槽{i}}}" for i in range(7))):
+        with pytest.raises(ValueError):
+            validate_reply_template(bad)
+
+
+def test_template_applied_checks_the_fixed_wording_in_order():
+    assert template_applied("您好，该件 11-08 21:05 已到达大祥站，今天会安排派送，请保持电话畅通。", TEMPLATE_TEXT)
+    assert not template_applied("您好，大祥站今天会安排派送。", TEMPLATE_TEXT)
+
+
+DRAFT = {"consistent": True, "name": "到站未派送", "conditions": ["已到达派送网点", "没有派件扫描"],
+         "evidence_needed": ["物流轨迹"], "reply_template": TEMPLATE_TEXT, "action": "回复客户",
+         "note": "C4 额外承诺了时间", "consistent_case_refs": ["C1", "C2", "C3"], "knowledge_refs": ["K1"]}
+DRAFT_KW = {"case_ids": ["C1", "C2", "C3", "C4"], "knowledge_ids": ["K1"], "evidence_sources": ["问题件", "物流轨迹"]}
+
+
+def test_template_drafts_need_three_agreeing_cases_and_known_sources():
+    assert validate_template_draft(DRAFT, **DRAFT_KW)["slots"] == ["到站时间", "网点"]
+    assert validate_template_draft({"consistent": False, "note": "各网点做法不同"}, **DRAFT_KW)["consistent"] is False
+    for overrides in ({"consistent_case_refs": ["C1", "C2"]}, {"consistent_case_refs": ["C1", "C2", "C9"]},
+                      {"evidence_needed": ["监控录像"]}, {"knowledge_refs": ["K2"]}, {"conditions": []},
+                      {"reply_template": "您好，保证送到"}, {"consistent": "yes"}, {"name": ""}):
+        with pytest.raises(ValueError):
+            validate_template_draft({**DRAFT, **overrides}, **DRAFT_KW)
+    with pytest.raises(ValueError):
+        validate_template_draft({"consistent": False}, **DRAFT_KW)
+
+
+ACTIVE = {"template_id": "t-1", "scenario_id": "urge", "version": 2, "status": "active", "name": "到站未派送",
+          "conditions": ["已到达派送网点"], "reply_template": TEMPLATE_TEXT}
+
+
+class TemplateRepo(FakeRepo):
+    def __init__(self, templates=(), eligible=True, cases=()):
+        super().__init__()
+        self._templates = [dict(row) for row in templates]
+        self.eligible = eligible
+        self.flagged, self.drafts, self.reviews = [], [], []
+        self._cases = list(cases)
+
+    def templates(self, statuses=()):
+        return [dict(row) for row in self._templates if not statuses or row["status"] in statuses]
+
+    def flag_knowledge_change(self, seen):
+        self.flagged.append(dict(seen))
+        return []
+
+    def drafting_eligible(self, scenario_id):
+        return self.eligible
+
+    def scenario_cases(self, scenario_id, limit=12):
+        return [dict(row) for row in self._cases]
+
+    def save_template_draft(self, draft):
+        self.drafts.append(draft)
+
+    def review_template(self, template_id, **kwargs):
+        self.reviews.append((template_id, kwargs))
+        return {"template_id": template_id}
+
+    def cases_by_ids(self, ids):
+        return []
+
+
+def test_reply_following_an_approved_template_is_tier_l2():
+    reply = "您好，该件 11-08 21:05 已到达大祥站，今天会安排派送，请保持电话畅通。"
+    service, _, _ = _service(_answer(scenario="urge", reply=reply), repo=TemplateRepo([ACTIVE]))
+    result = asyncio.run(service.suggest("s1", "e1", "received"))
+    assert result["scenario"]["tier"] == "L2" and result["template"]["id"] == "t-1"
+    sent = json.loads(service._gateway._llm.calls[0][1]["content"])
+    assert sent["templates"][0]["reply_template"] == TEMPLATE_TEXT
+
+
+def test_reply_ignoring_the_template_is_flagged_and_stays_advice():
+    service, _, _ = _service(_answer(scenario="urge"), repo=TemplateRepo([ACTIVE]))
+    result = asyncio.run(service.suggest("s1", "e1", "received"))
+    assert result["scenario"]["tier"] == "L1" and result["template"] is None and result["template_not_followed"] is True
+
+
+def test_templates_under_review_are_not_used():
+    service, _, _ = _service(_answer(scenario="urge"), repo=TemplateRepo([{**ACTIVE, "status": "review"}]))
+    result = asyncio.run(service.suggest("s1", "e1", "received"))
+    assert result["template"] is None and result["template_not_followed"] is False
+    assert json.loads(service._gateway._llm.calls[0][1]["content"])["templates"] == []
+
+
+def test_knowledge_edit_times_are_checked_against_templates():
+    async def knowledge(problem):
+        return [{"source": "知识库 · 规定", "text": "到站 12 小时须说明原因", "document_id": "doc-1", "updated_at": "1731000000"}]
+
+    repo = TemplateRepo()
+    audit = FakeAudit()
+    service = CustomerServiceAIService(repo, AITaskGateway(FakeLLM(_answer(scenario="urge", reply=None, evidence_refs=[])), audit),
+                                       knowledge=EvidenceProvider("飞书知识库", knowledge), audit=audit)
+    asyncio.run(service.suggest("s1", "e1", "received"))
+    assert repo.flagged == [{"doc-1": "1731000000"}]
+
+
+CASE_ROWS = [{"case_id": index, "problem_type": "催件", "problem_text": f"什么时候到 {index}",
+              "reply_text": "您好，该件已到达大祥站，今天会安排派送。", "suggestion_use": "edited", "created_at": "2026-11-08",
+              "knowledge": [{"source": "规定", "document_id": "doc-1", "updated_at": "1", "text": "条款"}]}
+             for index in range(1, 6)]
+
+
+def test_distill_stores_a_draft_from_agreeing_cases():
+    answer = {**DRAFT, "consistent_case_refs": ["C1", "C2", "C3"], "evidence_needed": ["物流轨迹"], "knowledge_refs": ["K1"]}
+    repo = TemplateRepo(cases=CASE_ROWS)
+    service, _, _ = _service(answer, repo=repo)
+    result = asyncio.run(service.distill("urge"))
+    assert result["drafted"] is True
+    draft = repo.drafts[0]
+    assert draft["source_case_ids"] == [1, 2, 3] and draft["cases_total"] == 5 and draft["cases_consistent"] == 3
+    assert draft["knowledge"] == [{"source": "规定", "url": None, "document_id": "doc-1", "updated_at": "1"}]
+
+
+def test_distill_keeps_nothing_when_cases_disagree_or_scenario_is_locked():
+    repo = TemplateRepo(cases=CASE_ROWS)
+    service, _, _ = _service({"consistent": False, "note": "做法不同"}, repo=repo)
+    assert asyncio.run(service.distill("urge"))["drafted"] is False and repo.drafts == []
+    assert asyncio.run(service.distill("damage"))["reason"] == "scenario_locked_or_unknown"
+
+
+def test_recording_a_case_schedules_distillation_in_the_background():
+    answer = _answer(scenario="urge")
+    repo = TemplateRepo(cases=CASE_ROWS)
+    service, _, _ = _service(answer, repo=repo)
+
+    async def flow():
+        advice = await service.suggest("s1", "e1", "received")
+        service._gateway._llm.answer = {**DRAFT, "consistent_case_refs": ["C1", "C2", "C3"], "evidence_needed": ["物流轨迹"],
+                                        "knowledge_refs": []}
+        await service.record_case(request_id="r1", source_id="s1", external_id="e1", source_direction="received",
+                                  reply_text=advice["reply"], prob_status="已处理", suggestion_id=advice["suggestion_id"],
+                                  actor_id="a")
+        await asyncio.gather(*list(service._background))
+
+    asyncio.run(flow())
+    assert len(repo.drafts) == 1
+
+
+def test_review_validates_edits_before_saving():
+    repo = TemplateRepo()
+    service, _, _ = _service(_answer(), repo=repo)
+    with pytest.raises(CustomerServiceAIError):
+        asyncio.run(service.review_template("t-1", action="approve", actor_id="a", reply_template="您好，保证送到"))
+    with pytest.raises(CustomerServiceAIError):
+        asyncio.run(service.review_template("t-1", action="approve", actor_id="a", conditions=[]))
+    asyncio.run(service.review_template("t-1", action="approve", actor_id="a", reply_template=TEMPLATE_TEXT,
+                                        conditions=[" 已到站 ", ""]))
+    assert repo.reviews[0][1]["conditions"] == ["已到站"]
+
+
+class _ScriptCursor(_Cursor):
+    """Returns queued result sets, one per SELECT."""
+
+    def __init__(self, results):
+        super().__init__()
+        self.results = list(results)
+
+    def execute(self, sql, params=()):
+        self.executed.append((sql, params))
+        if sql.lstrip().startswith("SELECT"):
+            names, rows = self.results.pop(0)
+            self.description = [(name,) for name in names]
+            self.fetch_rows = rows
+
+
+def _repo(results):
+    cursor = _ScriptCursor(results)
+    return CustomerServiceAIRepository(lambda: _Connection(cursor)), cursor
+
+
+@pytest.mark.parametrize(("scenario", "templates", "expected"), [
+    ([(0, DISTILL_MIN_CASES)], [], True),
+    ([(0, DISTILL_MIN_CASES - 1)], [], False),
+    ([(1, 50)], [], False),
+    ([(0, 9)], [("draft", None)], False),
+    ([(0, 9)], [("rejected", 6)], False),
+    ([(0, 11)], [("rejected", 6)], True),
+])
+def test_drafting_eligibility(scenario, templates, expected):
+    repo, _ = _repo([(("locked", "case_count"), scenario), (("status", "rejected_case_count"), templates)])
+    assert repo.drafting_eligible("urge") is expected
+
+
+def test_review_transitions_respect_the_current_state():
+    repo, cursor = _repo([(("template_id", "scenario_id", "status", "knowledge_json"), [("t-1", "urge", "active", "[]")])])
+    with pytest.raises(CustomerServiceAIError) as changed:
+        repo.review_template("t-1", action="approve", actor_id="a")
+    assert changed.value.code == "TEMPLATE_STATE_CHANGED"
+    with pytest.raises(CustomerServiceAIError):
+        repo.review_template("t-1", action="delete", actor_id="a")
+
+
+def test_flag_knowledge_change_moves_active_templates_to_review():
+    knowledge = json.dumps([{"title": "派送规定", "document_id": "doc-1", "updated_at": "100"}])
+    repo, cursor = _repo([(("template_id", "knowledge_json"), [("t-1", knowledge), ("t-2", "[]")])])
+    assert repo.flag_knowledge_change({"doc-1": "200"}) == ["t-1"]
+    update_sql, params = cursor.executed[-1]
+    assert update_sql.startswith("UPDATE cs_templates SET status='review'") and "派送规定" in params[1]
+    assert json.loads(params[0])[0]["changed_to"] == "200"

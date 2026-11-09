@@ -1852,7 +1852,8 @@ class CustomerServiceAIStatusRequest(BaseModel):
     problems: list[CustomerServiceProblemRef] = Field(max_length=200)
 
 
-_CUSTOMER_SERVICE_AI_STATUS = {"PROBLEM_NOT_FOUND": 404, "CS_AI_UNAVAILABLE": 503, "CS_AI_FAILED": 502}
+_CUSTOMER_SERVICE_AI_STATUS = {"PROBLEM_NOT_FOUND": 404, "TEMPLATE_NOT_FOUND": 404, "CS_AI_UNAVAILABLE": 503,
+                               "CS_AI_FAILED": 502}
 
 
 def _customer_service_ai_failure(exc: CustomerServiceAIError) -> JSONResponse:
@@ -1888,6 +1889,45 @@ async def internal_customer_service_ai_record_case(req: CustomerServiceAICaseReq
             source_direction=req.source_direction, reply_text=req.reply_text, prob_status=req.prob_status,
             suggestion_id=str(req.suggestion_id) if req.suggestion_id else None, actor_id=principal.actor_id,
         )
+    except CustomerServiceAIError as exc:
+        return _customer_service_ai_failure(exc)
+    return api_success(result)
+
+
+class CustomerServiceTemplateReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: uuid.UUID
+    action: str = Field(pattern="^(approve|reject|retire|confirm)$")
+    reply_template: str | None = Field(default=None, max_length=300)
+    conditions: list[str] | None = Field(default=None, max_length=6)
+    reason: str = Field(default="", max_length=500)
+
+
+@app.get("/internal/v1/admin/customer-service/ai/templates")
+async def internal_customer_service_ai_templates(request: Request):
+    """Draft, active and to-be-reviewed handling templates with the cases they came from."""
+
+    _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    return api_success(await customer_service_ai.templates())
+
+
+@app.post("/internal/v1/admin/customer-service/ai/templates/{template_id}/review")
+async def internal_customer_service_ai_review_template(template_id: uuid.UUID, req: CustomerServiceTemplateReviewRequest,
+                                                       request: Request):
+    """A person approves (optionally edited), rejects, retires or re-confirms a template."""
+
+    principal = _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    edits = req.action == "approve"
+    try:
+        result = await customer_service_ai.review_template(
+            str(template_id), action=req.action, actor_id=principal.actor_id,
+            reply_template=req.reply_template if edits else None, conditions=req.conditions if edits else None,
+            reason=req.reason)
     except CustomerServiceAIError as exc:
         return _customer_service_ai_failure(exc)
     return api_success(result)

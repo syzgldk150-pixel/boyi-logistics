@@ -642,6 +642,47 @@ class CustomerServiceMixin:
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "total": len(pending), "items": items,
             "errors": len(result.get("errors") or [])})
 
+    def _handle_customer_service_ai_templates(self, handler: BaseHTTPRequestHandler) -> None:
+        context = self._control_plane_read_context(handler)
+        if context is None:
+            return
+        result = self._agent_request("GET", "/internal/v1/admin/customer-service/ai/templates", timeout=20,
+            console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            self._customer_service_ai_failure(handler, result, "处理模板暂不可用。")
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
+    def _handle_customer_service_ai_template_review(self, handler: BaseHTTPRequestHandler, template_id: str) -> None:
+        """A person approves (optionally edited), rejects, retires or re-confirms one template."""
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        body = self._parse_json_body(handler)
+        request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+        normalized_id = self._normalize_browser_request_uuid(template_id)
+        action = str(body.get("action") or "")
+        if not request_id or not normalized_id or action not in {"approve", "reject", "retire", "confirm"}:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "模板操作请求无效，请刷新后重试。"})
+            return
+        payload: dict[str, Any] = {"request_id": request_id, "action": action, "reason": str(body.get("reason") or "")[:500]}
+        if action == "approve":
+            if isinstance(body.get("reply_template"), str):
+                payload["reply_template"] = body["reply_template"]
+            if isinstance(body.get("conditions"), list):
+                payload["conditions"] = [str(item) for item in body["conditions"]][:6]
+        result = self._agent_request("POST", f"/internal/v1/admin/customer-service/ai/templates/{normalized_id}/review",
+            payload=payload, timeout=20, console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            error = result.get("error")
+            code = result.get("error_code") or (error.get("code") if isinstance(error, dict) else None) or "TEMPLATE_REVIEW_FAILED"
+            message = (error.get("message") if isinstance(error, dict) else error) or "模板操作失败。"
+            status = 404 if result.get("status") == 404 else 409 if result.get("status") in (400, 409, 422) else 502
+            self._send_json(handler, status, {"ok": False, "error_code": str(code), "message": str(message)})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
     def _record_customer_service_ai_case(self, handler: BaseHTTPRequestHandler, context: dict[str, Any],
                                          body: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
         """After a successful reply, store it as a learning case. Failure never undoes the reply."""

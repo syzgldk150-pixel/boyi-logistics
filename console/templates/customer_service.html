@@ -11,6 +11,7 @@
   <i data-feather="send"></i>
   <span>发布</span>
 </button>
+<button class="ghost-btn" type="button" data-cs-templates-open title="AI 从案例中总结、经人审核的处理模板">处理模板<span class="customer-service-tpl-count" data-cs-tpl-count hidden></span></button>
 <button class="ghost-btn" type="button" data-cs-ai-help-open title="AI 如何辅助处理问题件">AI 是怎么学习的</button>
 <button class="ghost-btn" type="button" data-cs-live-query title="查询当前选定账号的原平台数据">原平台查询</button>
 <button class="primary-btn customer-service-icon-btn" type="button" data-cs-query title="查询已保存数据" aria-label="查询已保存数据">
@@ -291,6 +292,16 @@
     </form>
   </dialog>
 
+  <dialog class="customer-service-modal-backdrop native-modal" data-cs-templates aria-labelledby="customer-service-templates-title">
+    <section class="customer-service-modal customer-service-templates">
+      <div class="customer-service-modal-head">
+        <h3 id="customer-service-templates-title">处理模板</h3>
+        <button class="customer-service-square-btn" type="button" title="关闭" aria-label="关闭" data-cs-templates-close><i data-feather="x"></i></button>
+      </div>
+      <p class="customer-service-ai-meta">同一类问题的处理足够一致时，AI 会总结出模板草案。<strong>经你审核通过后才会使用</strong>：之后这类问题按模板生成回复，你确认即可。模板引用的知识库文档更新后会暂停使用，等你复核。</p>
+      <div class="customer-service-templates-body" data-cs-templates-body aria-live="polite"></div>
+    </section>
+  </dialog>
   <dialog class="customer-service-modal-backdrop native-modal" data-cs-ai-help aria-labelledby="customer-service-ai-help-title">
     <section class="customer-service-modal customer-service-ai-help">
       <div class="customer-service-modal-head">
@@ -302,6 +313,7 @@
         <ol>
           <li><strong>新问题：你来写。</strong>某类问题的案例还不到 3 个时，AI 只整理信息，不代写回复。</li>
           <li><strong>AI 建议：你改后提交。</strong>案例够了以后，AI 会预先填好回复，你可以直接修改。</li>
+          <li><strong>按模板：你确认即可。</strong>同类处理足够一致时，AI 总结出模板草案，你在“处理模板”里审核通过后，这类问题按模板生成回复。</li>
           <li><strong>每次提交都会存为案例。</strong>你采纳或修改了哪些内容都会被记录；AI 起草时会参考最相似的几条案例的处理方式（不会照搬别的件的时间和单号）。</li>
         </ol>
         <section class="customer-service-ai-progress" aria-labelledby="customer-service-ai-progress-title">
