@@ -16,6 +16,8 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - `ai_tasks/gateway.py` 是 AI 任务的共用网关（阶段 0，迁移 074）：任务契约在 `../../shared/ai_tasks/`（`AITaskSpec` 定义任务 ID、提示词版本、系统提示、校验函数、重试与超时；`model_override` 预留，当前非空即拒绝），审计仓储为 `../../shared/ai_tasks/audit.py`。网关只用全局唯一激活模型：先以 `redact_sensitive` 脱敏输入，再要求 JSON 输出并经任务校验；不合格时带错误重试（最多 2 次），供应商错误不重试。每次运行写一行 `ai_task_runs`（只存输入哈希、脱敏输出、校验后结果），成功结果写入审计后才返回，审计失败即不返回。网关不保存业务数据、不调用工具；新增 AI 能力必须经此网关，不得直接调用 `llm_client`。回归见 `../../tests/test_ai_task_gateway.py`。
 
+- `customer_service_ai.py` 为客服问题件生成 AI 建议并维护案例库（阶段 1，迁移 075）：依据来源由组合根 `../customer_service_ai_composition.py` 注入（本地运单、仓库扫描、物流轨迹、飞书知识库，均只读，单个来源失败不阻断）；经共用 AI 任务网关调用，场景只从 `cs_scenarios` 固定集合选择，回复经 `../../shared/customer_service_ai.py` 的 `validate_suggestion` 校验（事实须出自依据、不得承诺）。案例少于 3 个的场景只整理依据不代写回复；破损、丢件/赔付锁定为人工。`record_case` 只记录人已发出的回复，不写平台。接口为 `/internal/v1/admin/customer-service/ai/{suggest,cases,status}`（`customer_service` 权限）。回归见 `../../tests/test_customer_service_ai.py`。
+
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
 - 扫描批次计划由已安装插件独立生成；Host 校验预览结构、候选集合及批次数量约束，原样绑定插件提交的批次数与计划摘要，不按宿主默认值重新分批。插件在首个写入前重读来源并校验完整计划，Host 仍核验实际写回执与独立读后证据。
 - 预览生成与确认的 UTC 时钟允许共享合同中的 3 秒短时回拨容差；超出该窗口的未来时间及真正到期的预览仍拒绝。隔离复现见 `../../tests/test_direct_preview_state.py`。

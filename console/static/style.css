@@ -2154,6 +2154,76 @@ body.dispatch-page .notice { display: none; }
 .customer-service-problem-reply-body {
   white-space: pre-wrap;
 }
+/* Customer-service AI (advice only; the person sends the reply). */
+.customer-service-ai-block {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.customer-service-ai-block h4 { margin: 0; }
+.customer-service-ai-tier { margin-top: 6px; }
+.customer-service-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.customer-service-ai-badge svg { width: 13px; height: 13px; }
+.customer-service-ai-badge--new { border-color: var(--warning-line); background: var(--warning-soft); color: var(--warning-ink); }
+.customer-service-ai-badge--advice { border-color: var(--info-line); background: var(--info-soft); color: var(--info-ink); }
+.customer-service-ai-meta { color: var(--muted); font-size: 0.8125rem; line-height: 1.6; }
+.customer-service-ai-evidence {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.customer-service-ai-evidence li {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.customer-service-ai-evidence li:last-child { border-bottom: 0; }
+.customer-service-ai-evidence li span:first-child { color: var(--muted); font-weight: 600; white-space: normal; }
+.customer-service-ai-evidence li.is-cited span:first-child { color: var(--info-ink); }
+.customer-service-ai-note {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.customer-service-ai-note svg { width: 14px; height: 14px; flex: none; margin-top: 3px; }
+.customer-service-ai-note--warn { border-color: var(--warning-line); background: var(--warning-soft); color: var(--warning-ink); }
+.customer-service-ai-note--error { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
+.customer-service-ai-hint { display: block; margin: 4px 0 6px; color: var(--info-ink); font-size: 0.8125rem; font-weight: 500; }
+.customer-service-ai-hint.is-new { color: var(--warning-ink); }
+.customer-service-ai-help { width: min(640px, 100%); }
+.customer-service-ai-help-body { display: grid; gap: 12px; color: var(--text); line-height: 1.7; }
+.customer-service-ai-help-body p, .customer-service-ai-help-body ol { margin: 0; }
+.customer-service-ai-help-body ol { padding-left: 20px; display: grid; gap: 6px; }
+.customer-service-ai-help-note { display: flex; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); font-size: 0.8125rem; }
+.customer-service-ai-help-note svg { width: 14px; height: 14px; flex: none; margin-top: 4px; }
 .customer-service-problem-attachments {
   display: grid;
   gap: 12px;

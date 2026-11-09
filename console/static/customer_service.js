@@ -24,7 +24,8 @@
     const settings = parseData("settings", {});
     const accounts = parseData("accounts", []);
     const accountById = new Map(accounts.map((account) => [String(account.account_id || ""), account]));
-    const state = { rows: [], selected: null, selectedDetails: [], querying: false, queryRequest: 0, replying: false, errors: [] };
+    const state = { rows: [], selected: null, selectedDetails: [], querying: false, queryRequest: 0, replying: false, errors: [],
+      ai: { request: 0, statusRequest: 0, suggestionId: null, suggestion: null, status: new Map() } };
     const seenKey = "shipnow.customerService.seenKeys";
     const seen = new Set(JSON.parse(localStorage.getItem(seenKey) || "[]"));
 
@@ -373,7 +374,7 @@
       state.rows = rows || [];
       if (!tableBody) return;
       if (!state.rows.length) {
-        tableBody.innerHTML = '<tr><td colspan="8" class="customer-service-empty">无数据</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="9" class="customer-service-empty">无数据</td></tr>';
         return;
       }
       tableBody.innerHTML = state.rows
@@ -388,12 +389,137 @@
               <td class="customer-service-strong">${escapeHtml(row.waybill_no || "")}</td>
               <td>${escapeHtml(rowProblemType(row))}</td>
               <td>${escapeHtml(row.status || "")}</td>
+              <td data-cs-ai-cell="${index}">${aiCellHtml(row)}</td>
               <td><span class="customer-service-problem-text">${escapeHtml(row.problem_text || "")}</span></td>
               <td>${escapeHtml(row.updated_at || row.created_at || "")}</td>
               <td><button class="ghost-btn customer-service-row-btn" type="button" data-cs-open-row="${index}">${actionText}</button></td>
             </tr>`;
         })
         .join("");
+      refreshAiStatus();
+    }
+
+    // ---- Customer-service AI: advice only; the reply is still sent by the person. ----
+    const AI_TIER_TEXT = { L0: "新问题", L1: "AI 建议", L2: "按模板", L3: "自动处理" };
+
+    function aiKey(row) {
+      return row && row.source_id && row.external_id && row.source_direction
+        ? [row.source_id, row.external_id, row.source_direction].join("|") : "";
+    }
+
+    function aiBadgeHtml(scenario, { long = false } = {}) {
+      if (!scenario) return "";
+      if (scenario.locked) {
+        return `<span class="customer-service-ai-badge" title="${escapeHtml(scenario.name)}"><i data-feather="lock"></i>${long ? `${escapeHtml(scenario.name)} · 必须人工确认` : "必须人工"}</span>`;
+      }
+      const tier = scenario.tier === "L0" ? "new" : "advice";
+      const label = AI_TIER_TEXT[scenario.tier] || scenario.tier;
+      return `<span class="customer-service-ai-badge customer-service-ai-badge--${tier}" title="${escapeHtml(scenario.name)}"><i data-feather="${scenario.tier === "L0" ? "alert-circle" : "cpu"}"></i>${long ? `${escapeHtml(scenario.name)} · ${label}` : label}</span>`;
+    }
+
+    function aiCellHtml(row) {
+      const status = state.ai.status.get(aiKey(row));
+      return status ? aiBadgeHtml(status.scenario) : '<span class="customer-service-ai-meta">—</span>';
+    }
+
+    async function refreshAiStatus() {
+      const problems = state.rows.filter((row) => aiKey(row)).slice(0, 200)
+        .map((row) => ({ source_id: row.source_id, external_id: row.external_id, source_direction: row.source_direction }));
+      if (!problems.length) return;
+      const request = ++state.ai.statusRequest;
+      try {
+        const data = await postJson("/customer-service/problems/ai-status", { problems });
+        if (request !== state.ai.statusRequest) return;
+        (data.data?.problems || []).forEach((item) => {
+          state.ai.status.set([item.source_id, item.external_id, item.source_direction].join("|"), item);
+        });
+        state.rows.forEach((row, index) => {
+          const cell = root.querySelector(`[data-cs-ai-cell="${index}"]`);
+          if (cell) cell.innerHTML = aiCellHtml(row);
+        });
+        if (window.feather) window.feather.replace();
+      } catch (_error) {
+        // The AI column is supplementary; the list stays usable without it.
+      }
+    }
+
+    function aiNodes() {
+      return { block: $("[data-cs-ai-block]"), body: $("[data-cs-ai-body]"), run: $("[data-cs-ai-run]"),
+        tier: $("[data-cs-ai-tier]"), hint: $("[data-cs-ai-hint]"), reply: $("[data-cs-reply-text]") };
+    }
+
+    function resetAi() {
+      state.ai.request += 1;
+      state.ai.suggestionId = null;
+      state.ai.suggestion = null;
+      const nodes = aiNodes();
+      if (nodes.block) nodes.block.hidden = true;
+      if (nodes.body) nodes.body.innerHTML = "";
+      if (nodes.run) nodes.run.hidden = true;
+      if (nodes.tier) { nodes.tier.hidden = true; nodes.tier.innerHTML = ""; }
+      if (nodes.hint) { nodes.hint.hidden = true; nodes.hint.textContent = ""; nodes.hint.classList.remove("is-new"); }
+    }
+
+    function aiNote(kind, icon, text) {
+      return `<div class="customer-service-ai-note${kind ? ` customer-service-ai-note--${kind}` : ""}"><i data-feather="${icon}"></i><span>${escapeHtml(text)}</span></div>`;
+    }
+
+    function renderAiSuggestion(data) {
+      const nodes = aiNodes();
+      const scenario = data.scenario || {};
+      if (nodes.tier) { nodes.tier.innerHTML = aiBadgeHtml(scenario, { long: true }); nodes.tier.hidden = false; }
+      const evidence = (data.evidence || []).map((item) => `<li class="${item.cited ? "is-cited" : ""}"><span>${escapeHtml(item.source)}${item.cited ? " · 已引用" : ""}</span><span>${escapeHtml(item.text)}</span></li>`).join("");
+      const knowledge = (data.knowledge || []).map((item) => `<li class="${item.cited ? "is-cited" : ""}"><span>知识库${item.cited ? " · 已引用" : ""}</span><span>${escapeHtml(item.source)}\n${escapeHtml(item.text)}</span></li>`).join("");
+      const notes = [];
+      if (scenario.locked) notes.push(aiNote("", "lock", "这类问题涉及赔付或责任认定，AI 只给参考，必须由你确认后提交。"));
+      if (scenario.tier === "L0") notes.push(aiNote("warn", "alert-circle", `这类问题 AI 还在学习（已有 ${scenario.case_count || 0} 个案例，满 3 个后开始代写回复），请你填写回复，提交后会存为案例。`));
+      if ((data.unavailable || []).length) notes.push(aiNote("", "info", `以下信息这次没有取到：${data.unavailable.join("；")}`));
+      nodes.body.innerHTML = `
+        <p class="customer-service-ai-meta">判断为「${escapeHtml(scenario.name || "")}」，把握 ${Math.round(Number(data.confidence || 0) * 100)}%。${escapeHtml(data.reason || "")}</p>
+        <ul class="customer-service-ai-evidence">${evidence}${knowledge}</ul>
+        ${notes.join("")}`;
+      if (nodes.hint) {
+        if (data.reply) {
+          if (nodes.reply && !nodes.reply.value.trim()) nodes.reply.value = data.reply;
+          nodes.hint.textContent = "AI 已起草回复，可以直接修改后提交；你的修改也会被记录学习。";
+          nodes.hint.classList.remove("is-new");
+        } else {
+          nodes.hint.textContent = scenario.tier === "L0" ? "请你填写回复，提交后会存为案例。" : "证据不足，AI 没有起草回复，请你填写。";
+          nodes.hint.classList.toggle("is-new", scenario.tier === "L0");
+        }
+        nodes.hint.hidden = false;
+      }
+      if (nodes.run) { nodes.run.hidden = false; nodes.run.textContent = "重新生成"; }
+      if (window.feather) window.feather.replace();
+    }
+
+    async function runAiSuggestion(row) {
+      const nodes = aiNodes();
+      if (!nodes.block || !nodes.body) return;
+      nodes.block.hidden = false;
+      if (!aiKey(row)) {
+        nodes.body.innerHTML = aiNote("", "info", "这条问题件来自原平台实时查询，没有本地记录，AI 建议需要先查询已发布数据。");
+        if (window.feather) window.feather.replace();
+        return;
+      }
+      const request = ++state.ai.request;
+      state.ai.suggestionId = null;
+      if (nodes.run) nodes.run.hidden = true;
+      nodes.body.innerHTML = '<p class="customer-service-ai-meta" aria-busy="true">AI 正在查运单、扫描、轨迹和知识库，约需 10–40 秒……</p>';
+      try {
+        const data = await postJson("/customer-service/problems/ai-suggest", { item: {
+          source_id: row.source_id, external_id: row.external_id, source_direction: row.source_direction } }, { command: true });
+        if (request !== state.ai.request || state.selected !== row) return;
+        state.ai.suggestion = data.data;
+        state.ai.suggestionId = data.data?.suggestion_id || null;
+        state.ai.status.set(aiKey(row), { scenario: data.data?.scenario });
+        renderAiSuggestion(data.data || {});
+      } catch (error) {
+        if (request !== state.ai.request || state.selected !== row) return;
+        nodes.body.innerHTML = aiNote("error", "alert-triangle", `${error.message || "AI 建议暂不可用"}。不影响你直接处理。`);
+        if (nodes.run) { nodes.run.hidden = false; nodes.run.textContent = "重试"; }
+        if (window.feather) window.feather.replace();
+      }
     }
 
     function refreshBadges(rows, errors) {
@@ -948,7 +1074,14 @@
       if (replyStatusNode) replyStatusNode.value = DEFAULT_REPLY_STATUS;
       state.replying = false;
       setReplySubmitting(false);
+      resetAi();
       renderProblemModal(row, [], { loading: true });
+      if (problemNeedsAttention(row)) {
+        runAiSuggestion(row);
+      } else {
+        const nodes = aiNodes();
+        if (nodes.block && aiKey(row)) { nodes.block.hidden = false; nodes.run.hidden = false; nodes.run.textContent = "生成 AI 建议"; }
+      }
       seen.add(problemKey(row));
       localStorage.setItem(seenKey, JSON.stringify(Array.from(seen).slice(-2000)));
       refreshBadges(state.rows, state.errors);
@@ -986,6 +1119,7 @@
             platform: row.platform,
             account_id: row.account_id,
             item: row,
+            ai_suggestion_id: state.ai.suggestionId,
             payload: {
               reply_text: replyText,
               prob_status: status,
@@ -1003,7 +1137,8 @@
         renderProblemModal(row, state.selectedDetails || []);
         const replyTextNode = $("[data-cs-reply-text]");
         if (replyTextNode) replyTextNode.value = "";
-        setStatus("回复已提交，正在刷新...", "success");
+        const aiCase = data.ai_case || {};
+        setStatus(aiCase.recorded ? "回复已提交，并已存入案例库，正在刷新..." : `回复已提交，正在刷新...${aiCase.message ? `（${aiCase.message}）` : ""}`, "success");
         await runQuery();
       } catch (error) {
         setStatus(error.message || "回复失败", "error");
@@ -1116,6 +1251,9 @@
         errorToggle?.setAttribute("aria-expanded", String(willOpen));
       }
       if (event.target.closest("[data-cs-problem-close]")) closeProblemModal();
+      if (event.target.closest("[data-cs-ai-run]") && state.selected) runAiSuggestion(state.selected);
+      if (event.target.closest("[data-cs-ai-help-close]")) $("[data-cs-ai-help]")?.close();
+      if (event.target.matches?.("[data-cs-ai-help]")) event.target.close();
       if (event.target.closest("[data-cs-publish-close]")) closePublishModal();
     });
     root.addEventListener("dblclick", handleProblemRowOpen);
@@ -1141,6 +1279,11 @@
       if (target.closest("[data-cs-query]")) {
         event.preventDefault();
         runQuery();
+        return;
+      }
+      if (target.closest("[data-cs-ai-help-open]")) {
+        const help = $("[data-cs-ai-help]");
+        if (help && !help.open) { help.showModal(); if (window.feather) window.feather.replace(); }
         return;
       }
       if (target.closest("[data-cs-publish-open]")) {

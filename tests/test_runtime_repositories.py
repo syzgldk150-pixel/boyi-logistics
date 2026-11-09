@@ -355,6 +355,7 @@ class RuntimeRepositoryTests(unittest.TestCase):
                 "072",
                 "073",
                 "074",
+                "075",
             ],
             [version for version, _ in migrations],
         )

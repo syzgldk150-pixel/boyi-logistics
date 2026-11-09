@@ -11,6 +11,7 @@
   <i data-feather="send"></i>
   <span>发布</span>
 </button>
+<button class="ghost-btn" type="button" data-cs-ai-help-open title="AI 如何辅助处理问题件">AI 是怎么学习的</button>
 <button class="ghost-btn" type="button" data-cs-live-query title="查询当前选定账号的原平台数据">原平台查询</button>
 <button class="primary-btn customer-service-icon-btn" type="button" data-cs-query title="查询已保存数据" aria-label="查询已保存数据">
   <i data-feather="refresh-cw"></i>
@@ -154,6 +155,7 @@
             <th>单号</th>
             <th>问题类型</th>
             <th>状态</th>
+            <th>AI 处理</th>
             <th>问题内容</th>
             <th>最后更新</th>
             <th>操作</th>
@@ -161,7 +163,7 @@
         </thead>
         <tbody data-cs-table-body>
           <tr>
-            <td colspan="8" class="customer-service-empty">无数据</td>
+            <td colspan="9" class="customer-service-empty">无数据</td>
           </tr>
         </tbody>
       </table>
@@ -174,6 +176,7 @@
         <div>
           <span class="customer-service-drawer-kicker" data-cs-problem-platform>问题件</span>
           <h3 id="customer-service-problem-title" data-cs-problem-title>处理问题件</h3>
+          <div class="customer-service-ai-tier" data-cs-ai-tier hidden></div>
         </div>
         <button class="customer-service-square-btn" type="button" title="关闭" aria-label="关闭" data-cs-problem-close>
           <i data-feather="x"></i>
@@ -186,6 +189,13 @@
               <h4>问题内容</h4>
             </div>
             <div class="customer-service-problem-content" data-cs-problem-content></div>
+            <section class="customer-service-ai-block" data-cs-ai-block hidden aria-live="polite" aria-labelledby="customer-service-ai-title">
+              <div class="customer-service-problem-section-head">
+                <h4 id="customer-service-ai-title">AI 查到的情况</h4>
+                <button class="ghost-btn customer-service-ai-retry" type="button" data-cs-ai-run hidden>生成 AI 建议</button>
+              </div>
+              <div data-cs-ai-body></div>
+            </section>
             <div class="customer-service-problem-attachment-block">
               <h4>附件</h4>
               <div class="customer-service-problem-attachments" data-cs-problem-attachments></div>
@@ -211,6 +221,7 @@
           </label>
           <label class="customer-service-field customer-service-field--reply">
             <span>回复内容</span>
+            <span class="customer-service-ai-hint" data-cs-ai-hint hidden></span>
             <textarea name="reply_text" rows="3" data-cs-reply-text placeholder="填写给原系统的问题件回复"></textarea>
           </label>
         </div>
@@ -279,6 +290,23 @@
     </form>
   </dialog>
 
+  <dialog class="customer-service-modal-backdrop native-modal" data-cs-ai-help aria-labelledby="customer-service-ai-help-title">
+    <section class="customer-service-modal customer-service-ai-help">
+      <div class="customer-service-modal-head">
+        <h3 id="customer-service-ai-help-title">AI 是怎么学习的</h3>
+        <button class="customer-service-square-btn" type="button" title="关闭" aria-label="关闭" data-cs-ai-help-close><i data-feather="x"></i></button>
+      </div>
+      <div class="customer-service-ai-help-body">
+        <p>打开问题件时，AI 会查运单、仓库扫描、物流轨迹和飞书知识库，判断属于哪类问题，并起草回复。回复只在你点“回复处理”后才会发出。</p>
+        <ol>
+          <li><strong>新问题：你来写。</strong>某类问题的案例还不到 3 个时，AI 只整理信息，不代写回复。</li>
+          <li><strong>AI 建议：你改后提交。</strong>案例够了以后，AI 会预先填好回复，你可以直接修改。</li>
+          <li><strong>每次提交都会存为案例。</strong>你采纳或修改了哪些内容都会被记录，用来让后面的建议更准确。</li>
+        </ol>
+        <p class="customer-service-ai-help-note"><i data-feather="lock"></i><span>破损、丢件和赔付类问题永远由人处理，AI 只给参考。回复里的时间、网点等事实必须来自查到的信息，否则不会生成。</span></p>
+      </div>
+    </section>
+  </dialog>
   <dialog class="customer-service-image-viewer native-modal" data-cs-image-viewer aria-label="附件图片预览">
     <div class="customer-service-image-viewer-panel">
       <button class="customer-service-square-btn customer-service-image-close" type="button" title="关闭图片" aria-label="关闭图片" data-cs-image-close>
@@ -290,6 +318,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/customer_service.js?v=20261016-dialog"></script>
+<script src="/static/customer_service.js?v=20261109-cs-ai"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
 {% endblock %}

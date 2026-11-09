@@ -4,7 +4,7 @@ type: 模块文档
 tags: [客服系统, 问题件, 融辉, 韵达, 原页接口, Console, Agent]
 related: [../code_navigation_index.md, ../project_overview.md]
 status: active
-updated: 2026-11-04
+updated: 2026-11-09
 ---
 
 # 客服系统模块说明
@@ -73,7 +73,21 @@ updated: 2026-11-04
 - 韵达详情附件 `attachment[].attachment_path` 指向 `/base/downloadOutImg.html?...` 时，必须按问题件应用根 `https://kyproblem.yunda56.com/ky_problem/public/index.php` 解析，不能拼到域名根；真实响应可能返回 `application/octet-stream` 但内容是 JPEG/PNG 等图片字节；Agent 必须按文件头嗅探并返回 `image/*`，不能按下载接口 `.html` 路径推断为 `text/html`。
 - 标准化唯一键只接受 `prob_main_id`；缺失时返回 `MISSING_EXTERNAL_ID`。
 
+## AI 辅助处理（阶段 1：AI 建议与案例库）
+
+方案见用户确认的《博益 AI 能力接入方案》阶段 1；共用 AI 调用入口见 [代码定位索引](../code_navigation_index.md) 的“AI 任务网关”。
+
+- 打开需要处理的问题件时，Console 经 `/customer-service/problems/ai-suggest` 调 Agent `/internal/v1/admin/customer-service/ai/suggest`（`customer_service` 权限）。Agent 只按 `source_id/external_id/source_direction` 重读已发布的问题件，不信任浏览器提交的内容。
+- 依据由组合根 `agent/customer_service_ai_composition.py` 注入，全部只读：本地运单（隐去姓名、电话，地址中的数字隐去）、近期仓库扫描、实时物流轨迹、飞书知识库（按问题类型在两个授权空间做原文检索，摘录命中段落）。单个来源失败或超时只在页面注明“这次没有取到”，不影响其他来源。
+- 模型只能从 `cs_scenarios` 的固定场景中选择，并起草回复；回复中的时间、单号必须能在依据中找到，不能出现“保证、一定、绝对”等承诺，否则不采用（`shared/customer_service_ai.py` 的 `validate_suggestion`）。每次调用都记入 `ai_task_runs`，建议保存在 `cs_suggestions`。
+- 场景分档：案例少于 3 个的场景为“新问题”（L0），AI 只整理依据、不代写回复（草稿保留在记录里）；满 3 个后为“AI 建议”（L1），回复框预先填好草稿，只在回复框为空时填入。破损、丢件/赔付为锁定场景，AI 只给参考，永远不会进入自动处理。
+- 回复仍由人点“回复处理”经原有直接业务接口发出，回复链路和写后核验不变。回复成功后，Console 再调 `/internal/v1/admin/customer-service/ai/cases` 把这次回复存为案例（`cs_cases`，按浏览器请求 UUID 幂等），并记下 AI 建议是被采纳、修改还是没用上；存案例失败只提示，不撤销已发出的回复。
+- 列表“AI 处理”列经 `/customer-service/problems/ai-status` 读取每条问题件最近一次建议的场景与分档；读取失败只显示“—”，列表照常使用。实时查询（原平台查询）得到的行没有本地记录，不生成 AI 建议。
+- 数据表由迁移 `074_ai_task_runs.sql`、`075_customer_service_ai.sql` 建立。相似案例检索、概览“待我确认”、模板提炼与授权自动处理属于后续阶段，尚未实现。
+
 ## 代码入口
+
+- 客服 AI：`agent/agent/customer_service_ai.py`（服务）、`agent/customer_service_ai_composition.py`（依据来源接线）、`shared/customer_service_ai.py`（场景规则、建议校验、案例仓储）、`console/services/customer_service.py` 的 `_handle_customer_service_ai_*` 与 `_record_customer_service_ai_case`；回归见 `tests/test_customer_service_ai.py`、`console/tests/test_customer_service_ai.py`。
 
 - Console 后端：`console/app.py`
 - Console 模板：`console/templates/customer_service.html`

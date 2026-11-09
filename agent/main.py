@@ -27,6 +27,9 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 from shared.finance import FinanceRepository
 from agent.ai_tasks import AITaskGateway
 from agent.finance_review_advisor import FinanceReviewAdviceError, FinanceReviewAdvisor
+from agent.customer_service_ai import CustomerServiceAIService
+from customer_service_ai_composition import build_customer_service_ai
+from shared.customer_service_ai import CustomerServiceAIError
 from shared.ai_tasks.audit import AITaskAuditRepository
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
@@ -234,6 +237,7 @@ configure_feishu_operation(feishu_operation)
 
 agent_core: AgentCore | None = None
 finance_review_advisor: "FinanceReviewAdvisor | None" = None
+customer_service_ai: "CustomerServiceAIService | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
@@ -667,7 +671,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
-    global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor
+    global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -737,6 +741,7 @@ async def lifespan(app: FastAPI):
     finance_review_advisor = FinanceReviewAdvisor(
         FinanceRepository(runtime.memory.connection_factory), runtime.llm, ai_task_gateway
     )
+    customer_service_ai = build_customer_service_ai(runtime, ai_task_gateway)
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
@@ -1820,6 +1825,87 @@ async def internal_suggest_finance_review(review_id: int, req: FinanceReviewSugg
         status_code = {"REVIEW_NOT_FOUND": 404, "FINANCE_AI_UNAVAILABLE": 503, "FINANCE_AI_FAILED": 502}.get(exc.code, 409)
         return JSONResponse(status_code=status_code, content=api_failure(exc.code, redact_text(exc.message)))
     return api_success(result)
+
+
+class CustomerServiceProblemRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(min_length=1, max_length=36)
+    external_id: str = Field(min_length=1, max_length=256)
+    source_direction: str = Field(min_length=1, max_length=32)
+
+
+class CustomerServiceAISuggestRequest(CustomerServiceProblemRef):
+    request_id: uuid.UUID
+
+
+class CustomerServiceAICaseRequest(CustomerServiceProblemRef):
+    request_id: uuid.UUID
+    reply_text: str = Field(min_length=1, max_length=2000)
+    prob_status: str = Field(default="", max_length=32)
+    suggestion_id: uuid.UUID | None = None
+
+
+class CustomerServiceAIStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    problems: list[CustomerServiceProblemRef] = Field(max_length=200)
+
+
+_CUSTOMER_SERVICE_AI_STATUS = {"PROBLEM_NOT_FOUND": 404, "CS_AI_UNAVAILABLE": 503, "CS_AI_FAILED": 502}
+
+
+def _customer_service_ai_failure(exc: CustomerServiceAIError) -> JSONResponse:
+    return JSONResponse(status_code=_CUSTOMER_SERVICE_AI_STATUS.get(exc.code, 409),
+                        content=api_failure(exc.code, redact_text(exc.message)))
+
+
+@app.post("/internal/v1/admin/customer-service/ai/suggest")
+async def internal_customer_service_ai_suggest(req: CustomerServiceAISuggestRequest, request: Request):
+    """AI scenario and drafted reply for one published problem; advice only, never sent."""
+
+    principal = _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    try:
+        result = await customer_service_ai.suggest(req.source_id, req.external_id, req.source_direction,
+                                                   actor_id=principal.actor_id)
+    except CustomerServiceAIError as exc:
+        return _customer_service_ai_failure(exc)
+    return api_success(result)
+
+
+@app.post("/internal/v1/admin/customer-service/ai/cases")
+async def internal_customer_service_ai_record_case(req: CustomerServiceAICaseRequest, request: Request):
+    """Record a reply a person already sent as a learning case (idempotent by request id)."""
+
+    principal = _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    try:
+        result = await customer_service_ai.record_case(
+            request_id=str(req.request_id), source_id=req.source_id, external_id=req.external_id,
+            source_direction=req.source_direction, reply_text=req.reply_text, prob_status=req.prob_status,
+            suggestion_id=str(req.suggestion_id) if req.suggestion_id else None, actor_id=principal.actor_id,
+        )
+    except CustomerServiceAIError as exc:
+        return _customer_service_ai_failure(exc)
+    return api_success(result)
+
+
+@app.post("/internal/v1/admin/customer-service/ai/status")
+async def internal_customer_service_ai_status(req: CustomerServiceAIStatusRequest, request: Request):
+    """Latest AI scenario per listed problem, for the list's AI column."""
+
+    _require_console_admin_request(request)
+    if customer_service_ai is None:
+        return JSONResponse(status_code=503, content=api_failure("CS_AI_UNAVAILABLE", "客服 AI 当前不可用"))
+    try:
+        rows = await customer_service_ai.status(
+            [(item.source_id, item.external_id, item.source_direction) for item in req.problems])
+    except CustomerServiceAIError as exc:
+        return _customer_service_ai_failure(exc)
+    return api_success({"problems": rows})
 
 
 @app.post("/internal/v1/admin/llm/candidates")

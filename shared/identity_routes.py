@@ -78,6 +78,8 @@ def agent_permission(method: str, path: str) -> str:
         return business_permission(path.rsplit("/", 1)[-1])
     if _under(path, "/internal/v1/admin/accounts"):
         return "accounts.manage"
+    if _under(path, "/internal/v1/admin/customer-service"):
+        return "customer_service"
     if _under(path, "/internal/v1/admin/finance"):
         return "finance.read" if read else "finance.manage"
     if path.startswith("/internal/v1/automation-projects/module-slots/waybill-entry"):

@@ -523,7 +523,10 @@ class CustomerServiceMixin:
                 self._send_json(handler, result.get("status") if result.get("status", 0) >= 400 else HTTPStatus.BAD_GATEWAY, {"ok": False,
                     "error_code": result.get("error_code"), "message": str(result.get("error") or "客服操作失败。")})
                 return
-            self._send_json(handler, HTTPStatus.OK, {"ok": True, **(result.get("data") or {})})
+            response = {"ok": True, **(result.get("data") or {})}
+            if action == "reply":
+                response["ai_case"] = self._record_customer_service_ai_case(handler, trusted_context, body, arguments)
+            self._send_json(handler, HTTPStatus.OK, response)
             return
         payload = self._customer_service_agent_payload(account, action, body)
         result = self._call_customer_service_problem_agent(
@@ -539,6 +542,79 @@ class CustomerServiceMixin:
             self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": error, "agent": data or {}})
             return
         self._send_json(handler, HTTPStatus.OK, data or {"ok": True})
+
+    @staticmethod
+    def _customer_service_ai_ref(value: Any) -> dict[str, str] | None:
+        item = value if isinstance(value, dict) else {}
+        ref = {key: str(item.get(key) or "").strip() for key in ("source_id", "external_id", "source_direction")}
+        return ref if all(ref.values()) else None
+
+    def _customer_service_ai_failure(self, handler: BaseHTTPRequestHandler, result: dict[str, Any], fallback: str) -> None:
+        error = result.get("error")
+        code = result.get("error_code") or (error.get("code") if isinstance(error, dict) else None) or "CS_AI_FAILED"
+        message = (error.get("message") if isinstance(error, dict) else error) or fallback
+        status = 404 if result.get("status") == 404 else 503 if result.get("status") == 503 else 502
+        self._send_json(handler, status, {"ok": False, "error_code": str(code), "message": str(message)})
+
+    def _handle_customer_service_ai_suggest(self, handler: BaseHTTPRequestHandler) -> None:
+        """AI scenario and drafted reply for one published problem; the person still decides and sends."""
+
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        body = self._parse_json_body(handler)
+        request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+        ref = self._customer_service_ai_ref(body.get("item"))
+        if not request_id or ref is None:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST,
+                {"ok": False, "message": "这条问题件缺少本地记录标识，请先查询已发布数据后再生成 AI 建议。"})
+            return
+        result = self._agent_request("POST", "/internal/v1/admin/customer-service/ai/suggest",
+            payload={"request_id": request_id, **ref}, timeout=150, console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            self._customer_service_ai_failure(handler, result, "AI 建议暂不可用，请直接人工处理。")
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
+    def _handle_customer_service_ai_status(self, handler: BaseHTTPRequestHandler) -> None:
+        context = self._control_plane_write_context(handler)
+        if context is None:
+            return
+        body = self._parse_json_body(handler)
+        items = body.get("problems")
+        if not isinstance(items, list) or len(items) > 200:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "问题件列表无效。"})
+            return
+        refs = [ref for ref in (self._customer_service_ai_ref(item) for item in items) if ref is not None]
+        if not refs:
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {"problems": []}})
+            return
+        result = self._agent_request("POST", "/internal/v1/admin/customer-service/ai/status",
+            payload={"problems": refs}, timeout=20, console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            self._customer_service_ai_failure(handler, result, "AI 处理状态暂不可用。")
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result.get("data")})
+
+    def _record_customer_service_ai_case(self, handler: BaseHTTPRequestHandler, context: dict[str, Any],
+                                         body: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
+        """After a successful reply, store it as a learning case. Failure never undoes the reply."""
+
+        ref = self._customer_service_ai_ref(body.get("item"))
+        request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+        if ref is None or not request_id:
+            return {"recorded": False, "message": "这条问题件没有本地记录标识，未存入案例库。"}
+        suggestion_id = self._normalize_browser_request_uuid(body.get("ai_suggestion_id"))
+        result = self._agent_request("POST", "/internal/v1/admin/customer-service/ai/cases", payload={
+            "request_id": request_id, **ref, "reply_text": arguments.get("reply_text") or "",
+            "prob_status": arguments.get("prob_status") or "", "suggestion_id": suggestion_id or None,
+        }, timeout=20, console_principal=context["_console_principal"])
+        if not result.get("ok"):
+            error = result.get("error")
+            message = (error.get("message") if isinstance(error, dict) else error) or "案例未能记录。"
+            return {"recorded": False, "message": f"回复已提交，但未存入案例库：{message}"}
+        data = result.get("data") or {}
+        return {"recorded": True, "case_id": data.get("case_id"), "suggestion_use": data.get("suggestion_use")}
 
     def _handle_customer_service_attachment_preview(
         self,

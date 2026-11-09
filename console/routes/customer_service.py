@@ -40,6 +40,12 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if action:
         app._handle_customer_service_problem_agent_action(handler, action)
         return True
+    if path == "/customer-service/problems/ai-suggest":
+        app._handle_customer_service_ai_suggest(handler)
+        return True
+    if path == "/customer-service/problems/ai-status":
+        app._handle_customer_service_ai_status(handler)
+        return True
     if path == "/customer-service/problems/attachments/upload":
         app._handle_customer_service_attachment_upload(handler)
         return True
