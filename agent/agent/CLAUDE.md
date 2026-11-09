@@ -12,7 +12,9 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 - `business_query.py` 的经营摘要按中国业务日期读取当前 `automation_plugin_invocations.started_at`，计数及新鲜度来自同一只读快照；终态口径复用共享 Invocation 定义，未知写不计成功，空数据明确返回 `NO_DATA`。直接 reader 继续校验角色与参数。`BusinessFinanceQueryService` 由组合根注入 `shared.finance.FinanceRepository`，只读取总账利润表口径（营业收入、营业成本、期间费用、利润、凭证数、已封账月份和提示）；读取失败返回 `BUSINESS_QUERY_UNAVAILABLE`，不输出金额。隔离 MySQL 验证见 `../../tests/test_automation_operations_invocations_mysql.py`。
 
-- `finance_review_advisor.py` 为财务待审生成 AI 科目建议，由组合根注入 `FinanceRepository` 和当前启用的 LLM，经 `/internal/v1/admin/finance/reviews/{id}/suggest` 调用。模型只看 `shared.finance` 准备的汇总依据和候选范围；返回结果经 `validate_review_suggestion` 严格校验后，才保存为待审上的建议；不保存规则、不记账，模型缺失或返回不合格明确失败。
+- `finance_review_advisor.py` 为财务待审生成 AI 科目建议，由组合根注入 `FinanceRepository` 和共用 AI 任务网关，经 `/internal/v1/admin/finance/reviews/{id}/suggest` 调用。模型只看 `shared.finance` 准备的汇总依据和候选范围；返回结果经 `validate_review_suggestion` 严格校验后，才保存为待审上的建议；不保存规则、不记账，模型缺失或返回不合格明确失败。
+
+- `ai_tasks/gateway.py` 是 AI 任务的共用网关（阶段 0，迁移 074）：任务契约在 `../../shared/ai_tasks/`（`AITaskSpec` 定义任务 ID、提示词版本、系统提示、校验函数、重试与超时；`model_override` 预留，当前非空即拒绝），审计仓储为 `../../shared/ai_tasks/audit.py`。网关只用全局唯一激活模型：先以 `redact_sensitive` 脱敏输入，再要求 JSON 输出并经任务校验；不合格时带错误重试（最多 2 次），供应商错误不重试。每次运行写一行 `ai_task_runs`（只存输入哈希、脱敏输出、校验后结果），成功结果写入审计后才返回，审计失败即不返回。网关不保存业务数据、不调用工具；新增 AI 能力必须经此网关，不得直接调用 `llm_client`。回归见 `../../tests/test_ai_task_gateway.py`。
 
 - 当前扫描／自提／分批公共预览合同为版本 3：`preview_state` 明确区分 `AVAILABLE/CONSUMED/EXPIRED`，`can_confirm` 只能在 AVAILABLE 时为真。已使用优先于到期状态，正式处理结果仍读取对应 Invocation；不改变签名插件的业务预览绑定或一次性消费边界。
 - 扫描批次计划由已安装插件独立生成；Host 校验预览结构、候选集合及批次数量约束，原样绑定插件提交的批次数与计划摘要，不按宿主默认值重新分批。插件在首个写入前重读来源并校验完整计划，Host 仍核验实际写回执与独立读后证据。

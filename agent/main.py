@@ -25,7 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 from shared.finance import FinanceRepository
+from agent.ai_tasks import AITaskGateway
 from agent.finance_review_advisor import FinanceReviewAdviceError, FinanceReviewAdvisor
+from shared.ai_tasks.audit import AITaskAuditRepository
 from shared.redaction import redact_text
 from shared.contracts import api_failure, api_success
 from shared.plugin_invocation_repository import PluginInvocationRepository
@@ -731,7 +733,10 @@ async def lifespan(app: FastAPI):
     catalog = plugin_runtime.composite_catalog
     agent_core.configure_tool_catalog(catalog)
     business_finance_query = BusinessFinanceQueryService(FinanceRepository(runtime.memory.connection_factory))
-    finance_review_advisor = FinanceReviewAdvisor(FinanceRepository(runtime.memory.connection_factory), runtime.llm)
+    ai_task_gateway = AITaskGateway(runtime.llm, AITaskAuditRepository(runtime.memory.connection_factory))
+    finance_review_advisor = FinanceReviewAdvisor(
+        FinanceRepository(runtime.memory.connection_factory), runtime.llm, ai_task_gateway
+    )
     automation_operations_query = AutomationOperationsQueryService(
         MySQLAutomationOperationsRepository(runtime.memory.connection_factory)
     )
@@ -1806,11 +1811,11 @@ class FinanceReviewSuggestRequest(BaseModel):
 async def internal_suggest_finance_review(review_id: int, req: FinanceReviewSuggestRequest, request: Request):
     """AI counter-account advice for one suspense review; stored as advice, never posted."""
 
-    _require_console_admin_request(request)
+    principal = _require_console_admin_request(request)
     if finance_review_advisor is None or review_id < 1:
         return JSONResponse(status_code=503, content=api_failure("FINANCE_AI_UNAVAILABLE", "财务 AI 建议当前不可用"))
     try:
-        result = await finance_review_advisor.suggest(review_id)
+        result = await finance_review_advisor.suggest(review_id, actor_id=principal.actor_id)
     except FinanceReviewAdviceError as exc:
         status_code = {"REVIEW_NOT_FOUND": 404, "FINANCE_AI_UNAVAILABLE": 503, "FINANCE_AI_FAILED": 502}.get(exc.code, 409)
         return JSONResponse(status_code=status_code, content=api_failure(exc.code, redact_text(exc.message)))

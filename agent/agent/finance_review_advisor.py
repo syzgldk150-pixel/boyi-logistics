@@ -1,22 +1,24 @@
 """AI counter-account advice for finance suspense reviews (advice only, human-confirmed).
 
-Uses the single globally active model. The model sees only the aggregate
-evidence of one review and the allowed answer space built by
-``shared.finance``; its answer must pass ``validate_review_suggestion`` before
-it is stored on the review. Nothing here saves a rule or posts a voucher.
+Runs through the shared AI task gateway (``agent.ai_tasks``) with the single
+globally active model. The model sees only the aggregate evidence of one
+review and the allowed answer space built by ``shared.finance``; its answer
+must pass ``validate_review_suggestion`` before it is stored on the review,
+and every run is audited in ``ai_task_runs``. Nothing here saves a rule or
+posts a voucher.
 """
 
 from __future__ import annotations
 
-import json
-import logging
 from typing import Any
 
+from agent.ai_tasks import AITaskGateway
+from shared.ai_tasks import AITaskError, AITaskSpec
 from shared.finance import FinanceError
 from shared.finance.rules.review_ai import validate_review_suggestion
-from shared.redaction import redact_text
 
-logger = logging.getLogger("agent")
+TASK_ID = "finance.review_counter_account"
+PROMPT_VERSION = "1"
 
 _SYSTEM_PROMPT = (
     "你是一家物流公司的会计助手，按《小企业会计准则》为一类资金流水选择对方科目。"
@@ -39,36 +41,31 @@ class FinanceReviewAdviceError(RuntimeError):
 
 
 class FinanceReviewAdvisor:
-    def __init__(self, repository: Any, llm: Any) -> None:
+    def __init__(self, repository: Any, llm: Any, gateway: AITaskGateway | None = None) -> None:
         self._repository = repository
-        self._llm = llm
+        self._gateway = gateway if gateway is not None else AITaskGateway(llm)
 
-    async def suggest(self, review_id: int) -> dict[str, Any]:
-        runtime = self._llm.public_status()
-        if not runtime.get("configured"):
-            raise FinanceReviewAdviceError("FINANCE_AI_UNAVAILABLE", "尚未启用 AI 模型，请先在“智能模型”中启用。")
+    async def suggest(self, review_id: int, *, actor_id: str | None = None) -> dict[str, Any]:
         try:
             evidence = self._repository.review_evidence(review_id)
         except FinanceError as exc:
             raise FinanceReviewAdviceError(exc.code, exc.message) from exc
         accounts, parties = evidence.pop("_accounts"), evidence.pop("_parties")
+        spec = AITaskSpec(
+            task_id=TASK_ID,
+            prompt_version=PROMPT_VERSION,
+            system_prompt=_SYSTEM_PROMPT,
+            validate=lambda answer: validate_review_suggestion(answer, accounts=accounts, parties=parties),
+        )
         try:
-            response = await self._llm.chat(
-                [{"role": "system", "content": _SYSTEM_PROMPT},
-                 {"role": "user", "content": json.dumps(evidence, ensure_ascii=False, default=str)}],
-                provider=str(runtime["provider"]),
-                expected_model=str(runtime["model"]),
-                expected_config_version_id=runtime.get("config_version_id"),
-                response_format={"type": "json_object"},
-            )
-        except Exception as exc:  # noqa: BLE001 - provider errors never reach the page verbatim
-            logger.warning("finance review advice failed: %s", redact_text(str(exc) or type(exc).__name__)[:200])
+            outcome = await self._gateway.run(spec, evidence, subject_ref=f"finance_review:{review_id}", actor_id=actor_id)
+        except AITaskError as exc:
+            if exc.code == "AI_UNAVAILABLE":
+                raise FinanceReviewAdviceError("FINANCE_AI_UNAVAILABLE", exc.message) from exc
+            if exc.code == "AI_INVALID":
+                raise FinanceReviewAdviceError("FINANCE_AI_INVALID", f"AI 返回的建议不符合要求（{exc.detail}），未保存。") from exc
             raise FinanceReviewAdviceError("FINANCE_AI_FAILED", "AI 建议生成失败，请稍后重试或直接人工处理。") from exc
         try:
-            suggestion = validate_review_suggestion(json.loads(str(response.get("content") or "")), accounts=accounts, parties=parties)
-        except (ValueError, TypeError) as exc:
-            raise FinanceReviewAdviceError("FINANCE_AI_INVALID", f"AI 返回的建议不符合要求（{exc}），未保存。") from exc
-        try:
-            return self._repository.save_review_suggestion(review_id, suggestion, model=str(runtime["model"]))
+            return self._repository.save_review_suggestion(review_id, outcome.result, model=outcome.model)
         except FinanceError as exc:
             raise FinanceReviewAdviceError(exc.code, exc.message) from exc

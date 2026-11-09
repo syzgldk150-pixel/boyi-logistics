@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-07
+updated: 2026-11-09
 ---
 
 # 数据库迁移
@@ -33,6 +33,8 @@ updated: 2026-11-07
 - `finance_sources`、`finance_doc_posting_rules` 增加默认网点和业务线两列。
 
 全部是普通 DDL，迁移器只执行一次。
+
+`074_ai_task_runs.sql` 在运行库 `agent_db` 新建 `ai_task_runs`：共用 AI 任务网关（`agent/agent/ai_tasks/gateway.py`）每次运行一行，记录任务、提示词版本、实际模型、输入的 SHA-256（不存原始输入）、脱敏后的模型输出、校验后的结果、状态、尝试次数与耗时，以及人后续采纳、修改或否决的结果。不设外键，可重复执行。财务 AI 科目建议已改走该网关，成功结果必须先写入此表才返回，因此必须先迁移再重启 Agent；回退旧代码时该表闲置无害。
 
 `066_retire_control_plane_tables.sql` 在旧 Command/Run/Step 控制平面代码删除（2026-11-03 发布）后删除其数据库残留：Runner、审批、Outbox、事项中心与事件消费表，任务级审批策略及其事件表、分组审批批次表，014/016/017/043 的一次性快照表，代次租约与写入回执上的 `orchestration_run_id` 列（先删外键），以及启用日志 `automation_project_generation_transition_tasks` 的 11 个退役 `policy_*` 列（检查约束改为只校验代次与配置版本）。Invocation、租约、写入回执、定时任务、项目策略与事件、飞书身份绑定、工具日志及全部业务和财务数据保留。迁移器经 `scripts/migration_row_export.py` 执行：每条 `DROP TABLE` 执行前导出整表，每条 `ALTER TABLE … DROP COLUMN` 执行前导出这些列非空的行，写入迁移备份目录的 `*-migration-066-removed-rows.jsonl`（权限 0600），业务验收后随回滚材料清理。各步可重复执行；066 之后不能回滚到阶段 A 之前的代码。回归见 `tests/test_migration_066_mysql.py`。
 

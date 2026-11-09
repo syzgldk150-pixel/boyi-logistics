@@ -4,7 +4,7 @@ type: 模块文档
 tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, 凭证, 科目余额表, 明细账, Decimal, 重建]
 related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md, ../../docs/finance_connector_contract.md]
 status: active
-updated: 2026-11-07
+updated: 2026-11-09
 ---
 
 # 财务模块（复式记账总账）
@@ -383,7 +383,7 @@ updated: 2026-11-07
   - 可选范围：已启用、未冻结的末级科目（排除暂记科目和本来源的资金科目），以及启用中的往来单位。
 
   依据中不含凭据或原始流水内容。
-- **生成：** Agent 的 `agent/agent/finance_review_advisor.py` 用全系统当前启用的唯一模型，要求返回 JSON。
+- **生成：** Agent 的 `agent/agent/finance_review_advisor.py` 经共用 AI 任务网关（`agent/agent/ai_tasks/gateway.py`）调用全系统当前启用的唯一模型，要求返回 JSON；返回不合格时网关带上错误原因重试一次，每次调用都记入 `ai_task_runs`（迁移 `074_ai_task_runs.sql`）。
 - **校验：** 返回结果必须通过 `validate_review_suggestion`：
   - 科目必须在候选范围内；
   - 要求往来单位的科目必须用“固定往来单位”或“按运单号核销”，并给出已有的往来单位；
