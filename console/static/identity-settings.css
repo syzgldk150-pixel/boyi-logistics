@@ -22,3 +22,32 @@
 .identity-binding-actions form{margin-top:12px}
 .identity-role-editor summary:focus-visible,.identity-binding-actions summary:focus-visible{outline:2px solid currentColor;outline-offset:4px}
 @media(max-width: 639px){.identity-create-form{display:block}.identity-create-form .identity-field{margin-bottom:16px}.identity-create-form .primary-btn{width:100%}.identity-permissions{grid-template-columns:1fr}}
+
+/* Spec layer (㊻ ㊼ ㊾): one card per area, 48 heads, 36/56 tables, compact forms. */
+.identity-section-nav { gap: 2px; width: fit-content; height: 40px; margin: 0; padding: 0 4px; border-radius: var(--r-block); background: var(--bg-subtle); }
+.identity-section-nav .ghost-btn { height: 32px; min-height: 32px; border: 0; background: transparent; color: var(--text-secondary); font-weight: 400 !important; }
+.identity-section-nav .ghost-btn:hover { background: var(--bg-surface); color: var(--text-primary); }
+.account-admin-panel { padding: 0; overflow: hidden; }
+.account-admin-panel > h2 { display: flex; align-items: center; height: 48px; margin: 0; padding: 0 16px; font-size: var(--fs-section); }
+.account-admin-panel > p { margin: -6px 16px 12px; color: var(--text-muted); font-size: var(--fs-label); }
+.account-admin-panel > p strong { color: var(--text-secondary); font-weight: 500; }
+.account-admin-panel > .identity-role-editor { margin: 0; padding: 0 16px; border-top: 1px solid var(--line-subtle); }
+.identity-role-editor summary { min-height: 48px; gap: 10px; font-size: var(--fs-body); }
+.identity-role-editor form { padding: 4px 0 16px; }
+.identity-permissions { gap: 4px 16px; padding: 4px 0 12px; }
+.identity-permissions legend { padding: 8px 0; font-size: var(--fs-label); color: var(--text-secondary); }
+.identity-permission { gap: 8px; padding: 6px 0; font-size: var(--fs-body); }
+.identity-permission small { color: var(--text-muted); font-size: var(--fs-caption); }
+.identity-role-editor input[type="checkbox"], .identity-permission input { width: 14px; height: 14px; accent-color: var(--brand-red); }
+.identity-field { gap: var(--field-gap); margin-bottom: 12px; color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; }
+.identity-field .review-input { max-width: 360px; }
+.identity-create-form { gap: 12px; margin: 0; padding: 12px 16px 14px; border-top: 1px solid var(--line-subtle); background: var(--bg-surface); }
+.identity-create-form .primary-btn { height: 34px; }
+.account-admin-panel .account-table-wrap { border: 0; border-top: 1px solid var(--line-subtle); border-radius: 0; }
+.account-admin-panel .account-table { min-width: 1062px; }
+.account-admin-panel .account-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); }
+.account-admin-panel .account-table td { height: 56px; padding: 8px 16px; border-bottom-color: var(--line-row); font-size: var(--fs-body); }
+.account-admin-panel .account-identity strong { font-weight: 500; }
+.account-admin-panel .account-identity span, .account-admin-panel .muted-copy { color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400; }
+.account-row-actions { display: flex; align-items: center; gap: 12px; }
+.account-row-actions :is(button, summary) { color: var(--text-secondary); font-size: var(--fs-body); }

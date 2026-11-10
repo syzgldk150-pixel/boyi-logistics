@@ -1690,10 +1690,10 @@ class ReceiptTemplateTests(unittest.TestCase):
 
         for expected in (
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
-            ".receipt-col-updated { width: 18%; }",
+            ".receipt-col-updated { width: 22%; }",
             ".receipt-table .receipt-updated-cell",
             "text-overflow: clip;",
-            "font-size: 0.8125rem;",
+            "font-size: var(--fs-body);",
             "<col class=\"receipt-col-updated\">",
             "class=\"receipt-updated-cell\" title=\"{{ row.updated_at }}\"",
             "class=\"receipt-updated-cell\" title=\"${escapeHtml(row.updated_at || \"\")}\"",
@@ -1705,11 +1705,12 @@ class ReceiptTemplateTests(unittest.TestCase):
 
         for expected in (
             ".receipts-page { display: grid; gap: 16px; width: 100%; min-width: 0; max-width: none; }",
+            ".receipts-page { gap: var(--card-gap); }",
             ".receipt-table-panel { position: relative; z-index: 1; overflow: hidden; }",
             ".receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden;",
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
-            ".receipt-col-photo { width: 6%; }",
-            ".receipt-col-select { width: 4%; }",
+            ".receipt-col-photo { width: 7.2%; }",
+            ".receipt-col-select { width: 3.8%; }",
         ):
             self.assertIn(expected, template)
 

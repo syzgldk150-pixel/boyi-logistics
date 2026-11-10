@@ -1,27 +1,98 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-31T00:00:00+08:00",
+  "generatedAt": "2026-11-10T00:00:00+08:00",
   "title": "Design System: 博益物流控制台",
   "extensions": {
-    "waybillQuery": {"path": "/waybills", "template": "console/templates/waybills.html", "layout": "Single filter toolbar, compact 48px table, summary rows below 640px", "detail": "Native 880px dialog with sender/receiver, goods, source-backed fees, remark and on-demand edit history; bottom sheet on mobile", "editing": "Only active Boyi manual waybills; same-dialog edit form, server fingerprint and stable browser request UUID; reread list and current detail after save", "refresh": "Show stored results first; only explicit Query submits provider backfill, keep aria-live status during pagination and sorting; reuse server results for two minutes", "preserved": ["date-range hooks", "shipnow.waybills.visibleColumns", "native C-Lodop print preview"]},
-    "originalPages": {"adapter": "console/static/browser_extensions/ronghui/", "version": "0.4.2", "loginReturn": "Embedded Yunda login shows a dedicated window action; return only to the initiating entry tab after native login", "qrLayout": "Preserve 250px QR frame inside 294px Yunda login wrapper"},
-    "waybillPrint": {"background": "console/static/assets/waybill_label_75x100.png", "layout": "console/static/js/waybill_label_html.js", "paper": "75mm × 100mm", "source": "用户提供的主单空白底版，独立于控制台 UI 规范"},
-    "maintenance": {"path": "/automations/maintenance", "entry": "system-settings", "audience": "super_admin", "layout": "native forms and separated progress rows"},
+    "waybillQuery": {
+      "path": "/waybills",
+      "template": "console/templates/waybills.html",
+      "layout": "Single filter toolbar, compact 48px table, summary rows below 640px",
+      "detail": "Native 880px dialog with sender/receiver, goods, source-backed fees, remark and on-demand edit history; bottom sheet on mobile",
+      "editing": "Only active Boyi manual waybills; same-dialog edit form, server fingerprint and stable browser request UUID; reread list and current detail after save",
+      "refresh": "Show stored results first; only explicit Query submits provider backfill, keep aria-live status during pagination and sorting; reuse server results for two minutes",
+      "preserved": [
+        "date-range hooks",
+        "shipnow.waybills.visibleColumns",
+        "native C-Lodop print preview"
+      ]
+    },
+    "originalPages": {
+      "adapter": "console/static/browser_extensions/ronghui/",
+      "version": "0.4.2",
+      "loginReturn": "Embedded Yunda login shows a dedicated window action; return only to the initiating entry tab after native login",
+      "qrLayout": "Preserve 250px QR frame inside 294px Yunda login wrapper"
+    },
+    "waybillPrint": {
+      "background": "console/static/assets/waybill_label_75x100.png",
+      "layout": "console/static/js/waybill_label_html.js",
+      "paper": "75mm × 100mm",
+      "source": "用户提供的主单空白底版，独立于控制台 UI 规范"
+    },
+    "maintenance": {
+      "path": "/automations/maintenance",
+      "entry": "system-settings",
+      "audience": "super_admin",
+      "layout": "native forms and separated progress rows"
+    },
     "reference": {
-      "name": "Cal.com",
-      "url": "https://getdesign.md/cal/design-md",
-      "adaptation": "Near-monochrome product UI adapted for a Chinese logistics operations console"
+      "name": "frontend-spec",
+      "url": "local package (Figma 51 boards)",
+      "adaptation": "Grey page, white 12px cards, red selected nav slot, 12px body type for a dense Chinese logistics console"
     },
     "colorMeta": {
-      "canvas": { "role": "neutral", "displayName": "画布", "canonical": "oklch(100% 0 0)", "tonalRamp": ["#FFFFFF", "#F8F9FA", "#F5F5F5"] },
-      "ink": { "role": "neutral", "displayName": "近黑主操作", "canonical": "oklch(17.8% 0 0)", "tonalRamp": ["#374151", "#242424", "#111111"] },
-      "focus": { "role": "focus", "displayName": "焦点蓝", "canonical": "oklch(62.3% 0.214 259.8)", "tonalRamp": ["#EFF6FF", "#3B82F6", "#1D4ED8"] },
-      "danger": { "role": "danger", "displayName": "异常红", "canonical": "oklch(63.7% 0.208 25.3)", "tonalRamp": ["#FEF2F2", "#EF4444", "#B91C1C"] },
-      "statusTints": { "role": "status", "displayName": "状态浅底/边线/深字", "tokens": { "success": ["#ECFDF5", "#BBF7D0", "#047857"], "warning": ["#FFFBEB", "#FDE68A", "#92400E"], "danger": ["#FEF2F2", "#FECACA", "#B91C1C"], "info": ["#EFF6FF", "#BFDBFE", "#1D4ED8"] }, "purpose": "徽标、提示与状态文字；深字在浅底上满足 4.5:1。" }
+      "page": {
+        "role": "neutral",
+        "displayName": "页面底色",
+        "canonical": "#F5F6F8",
+        "tonalRamp": [
+          "#FFFFFF",
+          "#F5F6F8",
+          "#F2F3F5",
+          "#EFF1F4"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "文字",
+        "canonical": "#14171C",
+        "tonalRamp": [
+          "#14171C",
+          "#565C66",
+          "#6B7280",
+          "#767D88",
+          "#B2B8C2"
+        ]
+      },
+      "brand": {
+        "role": "brand",
+        "displayName": "品牌红",
+        "canonical": "#BE1B22",
+        "tonalRamp": [
+          "#FBEAEB",
+          "#F8DDDE",
+          "#BE1B22"
+        ]
+      },
+      "status": {
+        "role": "status",
+        "displayName": "状态",
+        "canonical": "#2F7D5A / #8A5A15 / #A3161C",
+        "tonalRamp": [
+          "#EAF3EE",
+          "#FBF2E2",
+          "#F9E7E8"
+        ]
+      }
     },
     "typographyMeta": {
-      "pageTitle": { "displayName": "页面标题", "purpose": "定位当前工作区，不使用营销式超大标题。" },
-      "body": { "displayName": "任务正文", "purpose": "表单、状态和高密度数据的稳定可读性。" },
+      "pageTitle": {
+        "displayName": "页面标题",
+        "purpose": "定位当前工作区，不使用营销式超大标题。"
+      },
+      "body": {
+        "displayName": "任务正文",
+        "purpose": "表单、状态和高密度数据的稳定可读性。"
+      },
       "families": {
         "cjk": {
           "fontFamily": "Source Han Sans SC",
@@ -42,25 +113,73 @@
       }
     },
     "shadows": [
-      { "name": "control", "value": "0 1px 2px rgba(17, 17, 17, 0.06)", "purpose": "分段控制当前项和必要的控件层级。" },
-      { "name": "overlay", "value": "0 8px 24px rgba(17, 17, 17, 0.12)", "purpose": "对话框、菜单和抽屉。" }
+      {
+        "name": "control",
+        "value": "0 1px 2px rgba(17, 17, 17, 0.06)",
+        "purpose": "分段控制当前项和必要的控件层级。"
+      },
+      {
+        "name": "overlay",
+        "value": "0 8px 24px rgba(17, 17, 17, 0.12)",
+        "purpose": "对话框、菜单和抽屉。"
+      }
     ],
     "motion": [
-      { "name": "fast", "value": "120ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "悬停、按下与焦点状态。" },
-      { "name": "standard", "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "抽屉、面板和状态反馈。" },
-      { "name": "reduced", "value": "0.01ms", "purpose": "prefers-reduced-motion 下的即时替代。" }
+      {
+        "name": "fast",
+        "value": "120ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "悬停、按下与焦点状态。"
+      },
+      {
+        "name": "standard",
+        "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "抽屉、面板和状态反馈。"
+      },
+      {
+        "name": "reduced",
+        "value": "0.01ms",
+        "purpose": "prefers-reduced-motion 下的即时替代。"
+      }
     ],
     "breakpoints": [
-      { "name": "compact", "value": "640px" },
-      { "name": "mobile-shell", "value": "767px" },
-      { "name": "desktop-shell", "value": "1024px" },
-      { "name": "desktop-wide", "value": "1280px" },
-      { "name": "desktop-aside", "value": "1440px" }
+      {
+        "name": "compact",
+        "value": "640px"
+      },
+      {
+        "name": "mobile-shell",
+        "value": "767px"
+      },
+      {
+        "name": "desktop-shell",
+        "value": "1024px"
+      },
+      {
+        "name": "desktop-wide",
+        "value": "1280px"
+      },
+      {
+        "name": "desktop-aside",
+        "value": "1440px"
+      }
     ],
-    "nativeDialog": { "class": "native-modal", "open": "showModal()", "backdrop": "::backdrop rgba(17, 17, 17, 0.4)", "escape": "cancel event runs page cleanup" },
-    "touchTargets": { "rule": "@media (pointer: coarse) controls at least 44 x 44px", "source": "console/static/style.css" },
+    "nativeDialog": {
+      "class": "native-modal",
+      "open": "showModal()",
+      "backdrop": "::backdrop rgba(17, 17, 17, 0.4)",
+      "escape": "cancel event runs page cleanup"
+    },
+    "touchTargets": {
+      "rule": "@media (pointer: coarse) controls at least 44 x 44px",
+      "source": "console/static/style.css"
+    },
     "densityExceptions": [
-      { "scope": "/ocr/boyi/frame manual entry", "desktopControlHeight": "32-34px", "touchControlHeight": "44px", "reason": "常见桌面视口一屏完成录入" }
+      {
+        "scope": "/ocr/boyi/frame manual entry",
+        "desktopControlHeight": "30px",
+        "touchControlHeight": "44px",
+        "reason": "规格 ② 录单页一屏完成录入"
+      }
     ]
   },
   "components": [
@@ -70,7 +189,7 @@
       "refersTo": "button-primary",
       "description": "用于保存、提交和新增等当前页面唯一主操作。",
       "html": "<button class=\"primary-btn\">保存设置</button>",
-      "css": ".primary-btn { min-height: 40px; padding: 0 16px; border-radius: 6px; background: #111111; color: #FFFFFF; }"
+      "css": ".primary-btn { height: 32px; padding: 0 13px; border-radius: 8px; background: var(--text-primary); color: var(--text-on-dark); }"
     },
     {
       "name": "分段控制",
@@ -114,9 +233,27 @@
     }
   ],
   "narrative": {
-    "northStar": "Calm Operations Console",
-    "rules": ["任务优先", "近单色", "平面优先", "高密度可扫描", "移动端结构重排"],
-    "dos": ["主操作使用近黑", "焦点使用蓝色外环", "状态同时提供文本和颜色", "宽表只在自身容器滚动", "移动触控目标不小于 44px"],
-    "donts": ["不用红色导航强调", "不用渐变或玻璃拟态", "不用彩色粗侧边条", "不用虚构数据", "不用模糊兜底掩盖失败"]
+    "northStar": "Dense, calm operations console",
+    "rules": [
+      "任务优先",
+      "令牌唯一来源",
+      "表格按数值手写",
+      "真实非数据状态",
+      "移动端结构重排"
+    ],
+    "dos": [
+      "普通主操作使用近黑",
+      "侧栏选中图标槽使用品牌红",
+      "状态同时提供文本和颜色",
+      "宽表只在自身容器滚动",
+      "移动触控目标不小于 44px"
+    ],
+    "donts": [
+      "不写死十六进制色值",
+      "业务表不画竖线",
+      "合计行不加底色",
+      "不用渐变或玻璃拟态",
+      "不用虚构数据"
+    ]
   }
 }

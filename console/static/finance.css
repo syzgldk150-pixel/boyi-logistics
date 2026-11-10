@@ -55,3 +55,62 @@
 .finance-state--rejected, .finance-state--suspense, .finance-state--closed_period { color: var(--danger-ink); font-weight: 500; }
 .finance-state--superseded, .finance-state--no_account { color: var(--faint); }
 .finance-state--accepted, .finance-state--posted { color: var(--success-ink); }
+
+/* Spec layer (⑯–㉙): segmented tab bar 44, filter card 78, list cards, ledger pages with column rules. */
+.finance-ledger { gap: var(--card-gap); }
+.finance-tabs { flex-wrap: nowrap; gap: 2px; height: 44px; align-items: center; padding: 0 4px; overflow-x: auto; border: 0; border-radius: var(--r-block); background: var(--bg-subtle); scrollbar-width: none; }
+.finance-tab { flex: 0 0 auto; height: 32px; min-height: 32px; padding: 0 12px; border: 0; border-radius: var(--r-control); color: var(--text-secondary); font-size: var(--fs-body); font-weight: 400 !important; }
+.finance-tab:hover { color: var(--text-primary); }
+.finance-tab[aria-selected="true"] { border: 0; background: var(--bg-surface); color: var(--text-primary); font-weight: 500 !important; box-shadow: 0 1px 2px rgba(20, 23, 28, 0.08), 0 0 0 1px rgba(20, 23, 28, 0.03); }
+.finance-status:empty { display: none; }
+.finance-status { color: var(--text-muted); font-size: var(--fs-label); }
+.finance-panel { gap: var(--card-gap); }
+.finance-panel > .finance-toolbar, .finance-panel > .finance-settings, .finance-panel > form { padding: 12px 16px 13px; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); }
+.finance-panel > .finance-settings { max-width: none; }
+.finance-toolbar { gap: 10px; }
+.finance-toolbar .section-note { color: var(--text-muted); font-size: var(--fs-label); }
+.finance-panel > .section-note { margin: -4px 2px 0; color: var(--text-muted); font-size: var(--fs-label); line-height: 1.6; }
+.finance-field { gap: var(--field-gap); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; }
+.finance-field .review-input, .finance-toolbar .review-input { height: 30px; min-height: 30px; padding: 0 10px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); font-size: var(--fs-body); font-weight: 400; }
+.finance-toolbar :is(.ghost-btn, .primary-btn) { height: 30px; min-height: 30px; }
+.finance-panel > .table-wrap, .finance-panel .table-wrap { overflow: auto; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); }
+.finance-subhead { display: flex; align-items: center; height: 48px; margin: 0; padding: 0 16px; border: 1px solid var(--line-default); border-bottom: 0; border-radius: var(--r-card) var(--r-card) 0 0; background: var(--bg-surface); font-size: var(--fs-section); font-weight: 500 !important; }
+.finance-subhead + .table-wrap, .finance-subhead + * > .table-wrap:first-child { margin-top: calc(var(--card-gap) * -1); border-top-left-radius: 0; border-top-right-radius: 0; }
+.finance-table { min-width: 1062px; font-size: var(--fs-body); }
+.finance-table th, .finance-table td { padding: 0 16px; }
+.finance-table thead th { height: 36px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; border-bottom: 1px solid var(--line-default); }
+.finance-table tbody td { height: 48px; border-bottom: 1px solid var(--line-row); color: var(--text-primary); }
+.finance-table tbody tr:last-child td { border-bottom: 0; }
+.finance-table tbody tr:hover td { background: var(--bg-subtle); }
+.finance-table .num { font-family: var(--font-num); }
+.finance-table tfoot td { height: 48px; background: var(--bg-surface); border-top: 1.5px solid var(--line-total); font-weight: 500; }
+.finance-row--group td { font-weight: 500; }
+.finance-row--first td { border-top: 1px solid var(--line-group); }
+.finance-row--cancelled td { color: var(--text-disabled); }
+.finance-empty { height: 120px; color: var(--text-muted); font-size: var(--fs-label); }
+.finance-link { color: var(--text-primary); text-decoration: none; font-weight: 500; }
+.finance-link:hover { color: var(--brand-red); }
+.finance-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-caption); font-weight: 400; }
+/* 账页（科目余额表 / 明细账 / 序时账）画竖线并给行留呼吸。 */
+:is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table :is(th, td) { border-right: 1px solid var(--line-row); }
+:is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table :is(th, td):last-child { border-right: 0; }
+:is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table tbody tr:hover td { background: transparent; }
+#finance-panel-trial .finance-table tbody td { height: 64px; }
+#finance-panel-trial .finance-table thead tr + tr th { border-top: 1px solid var(--line-default); }
+/* Dialogs: radius 14, head 60, body 16/20, foot 60. */
+.finance-dialog { padding: 0; border: 0; border-radius: var(--r-modal); }
+.finance-dialog::backdrop { background: var(--overlay); }
+.finance-dialog { width: min(1000px, calc(100vw - 32px)); }
+.finance-dialog--narrow { width: min(480px, calc(100vw - 32px)); }
+.finance-dialog-body { gap: 14px; padding: 0 0 0; }
+.finance-dialog-head { height: 60px; padding: 0 16px 0 20px; border-bottom: 1px solid var(--line-subtle); }
+.finance-dialog-head h2 { font-size: var(--fs-modal-title); font-weight: 500 !important; }
+.finance-dialog-body > :not(.finance-dialog-head):not(.finance-dialog-actions) { margin-inline: 20px; }
+.finance-dialog-body > .finance-dialog-head + * { margin-top: 2px; }
+.finance-dialog-actions { align-items: center; min-height: 60px; padding: 0 20px; border-top: 1px solid var(--line-subtle); }
+.finance-dialog-actions:empty { display: none; }
+.finance-dialog .table-wrap { border-radius: var(--r-block); }
+.finance-lines { min-width: 0; }
+.finance-lines td { height: 44px; padding: 0 6px; }
+.finance-lines .review-input { height: 30px; min-height: 30px; border-radius: var(--r-control); }
+.finance-panel > .section-note { max-width: none; }

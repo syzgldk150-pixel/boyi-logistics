@@ -188,18 +188,19 @@
   .receipt-toolbar-copy { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .receipt-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
   .receipt-count-muted { color: var(--faint); font-size: var(--fs-body); font-weight: 500; }
-  .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow: auto; max-height: calc(100vh - 260px); }
-  .receipt-table { width: 100%; min-width: 1062px; table-layout: fixed; }
-  /* ⑩ column widths sum to 1062 (checkbox column replaces the spec 操作 column). */
-  .receipt-col-select { width: 40px; }
-  .receipt-col-photo { width: 76px; }
-  .receipt-col-platform { width: 84px; }
-  .receipt-col-waybill { width: 168px; }
-  .receipt-col-status { width: 132px; }
-  .receipt-col-audit { width: 132px; }
-  .receipt-col-photo-status { width: 104px; }
-  .receipt-col-signed { width: 92px; }
-  .receipt-col-updated { width: 234px; }
+  .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); }
+  .receipt-table { width: 100%; min-width: 0; table-layout: fixed; }
+  /* ⑩ widths as shares of the 1062 table (40/76/84/168/132/132/104/92/234), so the
+     table never scrolls sideways; the checkbox column replaces the spec 操作 column. */
+  .receipt-col-select { width: 3.8%; }
+  .receipt-col-photo { width: 7.2%; }
+  .receipt-col-platform { width: 7.9%; }
+  .receipt-col-waybill { width: 15.8%; }
+  .receipt-col-status { width: 12.4%; }
+  .receipt-col-audit { width: 12.4%; }
+  .receipt-col-photo-status { width: 9.8%; }
+  .receipt-col-signed { width: 8.7%; }
+  .receipt-col-updated { width: 22%; }
   .receipt-select-cell { cursor: default; }
   .receipt-select-cell input { width: 18px; height: 18px; margin: 0; accent-color: var(--text-strong); cursor: pointer; vertical-align: middle; }
   .receipt-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
@@ -221,7 +222,7 @@
     display: grid;
     place-items: center;
     width: 42px;
-    height: 34px;
+    height: 42px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--surface);
@@ -282,7 +283,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
+    width: 34px;
     height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
@@ -407,7 +408,7 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    height: 34px;
+    height: 40px;
     border: 1px solid rgba(255,255,255,.22);
     border-radius: var(--radius-md);
     background: rgba(255,255,255,.1);
@@ -605,7 +606,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
+    width: 34px;
     height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
@@ -688,7 +689,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
+    width: 34px;
     height: 34px;
     border: 1px solid transparent;
     border-radius: var(--radius-md);

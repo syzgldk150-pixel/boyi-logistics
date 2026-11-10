@@ -118,6 +118,7 @@
     els.metrics.forEach((node) => setText(node.querySelector('[data-monitoring-metric-value]'), '—'));
     const lastUpdate = latestSnapshot?.updated_at ? `，上次同步 ${latestSnapshot.updated_at}` : '';
     setText(els.updated, `同步失败${lastUpdate}`);
+    if (els.updated) els.updated.dataset.status = 'error';
     els.agentStatus.hidden = false;
     if (!latestSnapshot) {
       els.systems.replaceChildren(element('p', 'monitor-empty', '智能服务不可用，消息来源暂时无法获取。'));
@@ -237,6 +238,7 @@
     els.agentStatus.hidden = true;
     const updated = snapshot.updated_at ? `最后同步 ${snapshot.updated_at}` : '等待同步';
     setText(els.updated, `${updated}${snapshot.stale ? ' · 缓存已过期' : ''}${snapshot.refreshing ? ' · 后台刷新中' : ''}`);
+    if (els.updated) els.updated.dataset.status = snapshot.stale ? 'stale' : 'ok';
     const categories = allCategories(snapshot);
     const previousKey = categoryKey(activeCategory);
     activeCategory = categories.find((item) => categoryKey(item) === previousKey)

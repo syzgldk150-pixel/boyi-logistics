@@ -14,20 +14,7 @@
 {% endblock %}
 
 {% block page_actions %}
-{% if can_manage_plugins %}<button class="extension-install-trigger" type="button" data-extension-open><i data-feather="package"></i><span>安装扩展</span></button>{% endif %}
-<label class="automation-toolbar-field">
-  <span>搜索</span>
-  <input class="review-input compact-input" type="search" data-automation-search
-    aria-label="搜索当前模块实例" placeholder="搜索当前模块实例" autocomplete="off">
-</label>
-<label class="automation-toolbar-field">
-  <span>排序</span>
-  <select class="automation-sort-select" data-automation-sort>
-    <option value="name">按名称</option>
-    <option value="recent">按最近活动</option>
-    <option value="mode" selected>按执行方式</option>
-  </select>
-</label>
+{% if can_manage_plugins %}<button class="ghost-btn extension-install-trigger" type="button" data-extension-open><i data-feather="package"></i><span>安装扩展</span></button>{% endif %}
 
 {% endblock %}
 
@@ -108,6 +95,21 @@
   {% set provider_counts = automation_provider_counts | default({}, true) %}
   {% set provider_enabled_counts = automation_provider_enabled_counts | default({}, true) %}
   <div class="auto-provider-bar">
+    <div class="auto-filter-row">
+      <label class="automation-toolbar-field automation-toolbar-field--search">
+        <i data-feather="search" aria-hidden="true"></i>
+        <span class="sr-only">搜索</span>
+        <input type="search" data-automation-search aria-label="搜索当前模块实例" placeholder="搜索当前模块实例" autocomplete="off">
+      </label>
+      <label class="automation-toolbar-field automation-toolbar-field--sort">
+        <span>排序</span>
+        <select class="automation-sort-select" data-automation-sort>
+          <option value="name">按名称</option>
+          <option value="recent">按最近活动</option>
+          <option value="mode" selected>按执行方式</option>
+        </select>
+      </label>
+    </div>
     <div class="auto-provider-tabs" role="tablist" aria-label="自动化分类">
       <button class="auto-provider-tab" type="button" role="tab" data-automation-provider-tab data-provider="ronghui" aria-selected="true">
         <i data-feather="truck"></i>
@@ -119,6 +121,16 @@
         <span>韵达</span>
         <strong class="auto-provider-count">{{ provider_counts.get('yunda', 0) }}</strong>
       </button>
+    </div>
+    <div class="auto-stats-bar">
+      <span class="auto-stat">
+        <i data-feather="layers"></i>
+        共 <strong data-total-count>{{ provider_counts.get('ronghui', scheduled_tasks|length) }}</strong> 个任务
+      </span>
+      <span class="auto-stat">
+        <i data-feather="check-circle"></i>
+        <strong data-enabled-count>{{ provider_enabled_counts.get('ronghui', enabled_task_count) }}</strong> 个已启用
+      </span>
     </div>
   </div>
 
@@ -137,17 +149,6 @@
   </div>
   {% endif %}
 
-  {# ── 统计栏 ── #}
-  <div class="auto-stats-bar">
-    <span class="auto-stat">
-      <i data-feather="layers"></i>
-      共 <strong data-total-count>{{ provider_counts.get('ronghui', scheduled_tasks|length) }}</strong> 个任务
-    </span>
-    <span class="auto-stat">
-      <i data-feather="check-circle"></i>
-      <strong data-enabled-count>{{ provider_enabled_counts.get('ronghui', enabled_task_count) }}</strong> 个已启用
-    </span>
-  </div>
 
   {# ── 任务列表 ── #}
   {% if scheduled_tasks %}

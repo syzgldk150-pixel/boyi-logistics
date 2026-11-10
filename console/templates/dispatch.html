@@ -98,11 +98,26 @@
     }
     .drawer-search-box { padding: 16px; }
     .drawer-scroll-area { min-height: 0; overscroll-behavior: contain; }
-    .route-input { min-height: 34px; font-size: var(--fs-section); }
-    .search-action-btn { min-height: 34px; }
+    .route-input { min-height: 44px; font-size: var(--fs-section); }
+    .search-action-btn { min-height: 44px; }
     .route-suggest-list { max-height: min(40dvh, 320px); }
   }
 
+
+  /* Spec layer (㉝ ㉞): map fills the area under the 76 header, floating 380 query card. */
+  @media (min-width: 768px) {
+    .dispatch-page .main-content { gap: 0; padding: 0 !important; }
+    .dispatch-page .top-header { margin: 0; }
+    .dispatch-page #amap-container { top: var(--header-h); height: auto; }
+    .map-drawer { top: calc(var(--header-h) + 20px); left: 20px; width: 380px; border: 0; border-radius: var(--r-card); box-shadow: 0 8px 28px rgba(20, 23, 28, 0.12); }
+  }
+  .drawer-search-box { padding: 14px 16px 16px; border-bottom-color: var(--line-subtle); border-radius: var(--r-card) var(--r-card) 0 0; }
+  .drawer-title { margin: 0 0 10px; font-size: var(--fs-section); }
+  .route-icon .feather { width: 14px; height: 14px; color: var(--status-info); stroke-width: 1.8; }
+  .route-icon.dest .feather { color: var(--brand-red); }
+  .route-input { height: 38px; border-color: var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); font-weight: 400; }
+  .route-input:focus { border-color: var(--line-strong); box-shadow: 0 0 0 3px var(--bg-subtle); }
+  .route-input:focus-visible { outline: 0; }
 </style>
 <script>
   window.__dispatchConfig = {{ dispatch_config | tojson }};

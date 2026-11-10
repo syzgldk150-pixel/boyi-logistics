@@ -280,6 +280,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 ## 移动端导航与视觉壳层
 
 - 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 桌面侧栏分组只由 `navigation.py` 的 `NAVIGATION_GROUPS` 与注册项 `group` 字段决定（当前“运单业务”收纳运单录入、寄件运单查询、物流跟踪、回单管理）；模板按连续同组项渲染可折叠分组，移动底栏和更多面板仍为平铺。侧栏“搜索页面（⌘K）”只在浏览器内过滤已有导航项；收起侧栏与分组展开状态是浏览器本地便利偏好，不进入 `ui_preferences_json`。视觉令牌与组件尺寸以根目录 `DESIGN.md` 为准。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
 - 模块代码注册状态目录：`module_status_registry.py`。它按 15 个固定模块顺序登记唯一 `code_registered`；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
 - 系统区可见固定模块顺序为“智能模型 → 系统管理”，不再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。原事项中心 `/work-items` 已于 2026-11 删除。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。

@@ -4,7 +4,7 @@
 {% block subtitle %}韵达与融辉实时待办{% endblock %}
 
 {% block page_actions %}
-<button class="primary-btn monitoring-refresh" type="button" data-monitoring-refresh aria-label="刷新首页数据" title="刷新首页数据">
+<button class="ghost-btn monitoring-refresh" type="button" data-monitoring-refresh aria-label="刷新首页数据" title="刷新首页数据">
   <i data-feather="refresh-cw"></i>
   <span class="monitoring-refresh-label">立即刷新</span>
 </button>
@@ -245,7 +245,7 @@
     gap: 8px;
   }
   .monitor-icon-btn {
-    width: 40px;
+    width: 34px;
     height: 34px;
     border: 1px solid var(--line);
     background: var(--canvas);
@@ -325,7 +325,7 @@
     .monitoring-refresh {
       width: 44px;
       min-width: 44px;
-      min-height: 34px;
+      min-height: 44px;
       padding: 0;
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
@@ -351,6 +351,56 @@
     .monitor-panel, .monitor-item { padding: 12px; }
   }
   @media (prefers-reduced-motion: reduce) { .monitor-category { transition: none; } }
+
+  /* Spec layer (① 调度工作台): sync strip, KPI strip, message-center card. */
+  .monitor-dashboard { display: grid; gap: var(--card-gap); }
+  .monitor-dashboard > * + * { margin-top: 0 !important; }
+  .monitor-sync { display: flex; align-items: center; gap: 8px; margin: -4px 0 -2px; color: var(--text-muted); font: 400 var(--fs-label)/20px var(--font-num); }
+  .monitor-sync::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--status-success-dot); }
+  .monitor-sync[data-status="stale"]::before { background: var(--warning); }
+  .monitor-sync[data-status="error"]::before { background: var(--status-danger); }
+  .monitor-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) !important; min-height: 56px; border-color: var(--line-default) !important; border-radius: var(--r-card) !important; }
+  body .monitor-metric { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-content: center; column-gap: 8px; row-gap: 0; min-height: 56px; padding: 8px 16px; border-right: 1px solid var(--line-subtle); text-align: left; }
+  body .monitor-metric span { grid-column: 1 / -1; color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400; }
+  body .monitor-metric strong { font: 500 var(--fs-kpi)/1.4 var(--font-num); color: var(--text-primary); }
+  body .monitor-metric[data-tone="warning"] strong { color: var(--brand-red); }
+  body .monitor-metric small { align-self: center; color: var(--text-muted); font-size: var(--fs-caption); }
+  body .monitor-metric.is-active { background: var(--bg-subtle); box-shadow: inset 0 -2px 0 var(--brand-red); }
+  .monitor-shell { grid-template-columns: minmax(0, 1fr); gap: 0; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); overflow: hidden; }
+  .monitor-grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line-subtle); }
+  .monitor-grid .monitor-empty { margin: 0; color: var(--text-muted); font-size: var(--fs-label); }
+  body .monitor-panel { flex: 1 1 360px; min-width: 0; padding: 0; border: 0 !important; background: transparent; box-shadow: none; }
+  .monitor-panel-header { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 0; }
+  .monitor-panel-title h2 { margin: 0; font-size: var(--fs-card-title); font-weight: 500 !important; }
+  .monitor-panel-title i, .monitor-panel-title .feather { width: 14px; height: 14px; }
+  .monitor-status { height: 18px; padding: 0 6px; border-radius: var(--r-chip); font-size: var(--fs-caption); }
+  .monitor-source-note { margin: 0 0 8px; color: var(--text-muted); font-size: var(--fs-caption); }
+  .monitor-category-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  body .monitor-category { display: inline-flex; align-items: center; gap: 6px; width: auto; min-height: 26px; height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: var(--bg-subtle); color: var(--text-secondary); box-shadow: none; }
+  body .monitor-category:hover { background: var(--fill-muted); }
+  body .monitor-category.is-active { background: var(--text-primary); color: var(--text-on-dark); border-color: transparent; box-shadow: none; }
+  .monitor-category-icon, .monitor-category-meta { display: none !important; }
+  .monitor-category-title { font-size: var(--fs-label); font-weight: 400; }
+  body .monitor-category-count { min-width: 0; padding: 0; background: transparent !important; color: inherit !important; font: 500 var(--fs-label)/1 var(--font-num); }
+  body .monitor-category.is-active .monitor-category-count { color: var(--text-on-dark) !important; }
+  .monitor-other-categories { margin-top: 6px; }
+  .monitor-other-categories > summary { color: var(--text-tertiary); font-size: var(--fs-label); cursor: pointer; }
+  body .monitor-detail { border: 0; border-radius: 0; box-shadow: none; }
+  .monitor-detail-header { min-height: 64px; padding: 10px 16px; border-bottom: 1px solid var(--line-subtle); }
+  .monitor-detail-title strong { font-size: var(--fs-section); font-weight: 500; }
+  .monitor-detail-title span { color: var(--text-muted); font-size: var(--fs-caption); }
+  .monitor-action-btn { height: 30px; min-height: 30px; padding: 0 12px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); font-size: var(--fs-body); }
+  .monitor-items-status { margin: 12px 16px; padding: 10px 12px; border-radius: var(--r-block); background: var(--bg-subtle); color: var(--text-tertiary); font-size: var(--fs-label); }
+  .monitor-items-status[data-status="error"] { background: var(--status-danger-soft); color: var(--status-danger); }
+  .monitor-items-status[data-stale="true"] { background: var(--status-warn-soft); color: var(--status-warn); }
+  .monitor-item { min-height: 82px; padding: 14px 16px; border-bottom: 1px solid var(--line-row); }
+  .monitor-item-title { font-size: var(--fs-section); font-weight: 400; color: var(--text-primary); }
+  .monitor-item-meta { color: var(--text-muted); font-size: var(--fs-label); }
+  .monitor-item-link { color: var(--brand-red); font-size: var(--fs-label); }
+  .monitor-pagination { min-height: 44px; padding: 6px 16px; border-top: 1px solid var(--line-subtle); }
+  .overview-pending { border-color: var(--line-default) !important; border-radius: var(--r-card) !important; }
+  @media (max-width: 1023px) { .monitor-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
+  @media (max-width: 639px) { .monitor-metrics { grid-template-columns: 1fr !important; } }
 </style>
 
 <div class="monitor-dashboard" data-monitoring-dashboard>
@@ -422,6 +472,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/monitoring.js?v=20261015b"></script>
+<script src="/static/monitoring.js?v=20261110-spec"></script>
 <script src="/static/overview_pending.js?v=20261109-cs-ai"></script>
 {% endblock %}

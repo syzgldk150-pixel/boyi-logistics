@@ -156,3 +156,23 @@
 @media (max-width: 640px) {
   .wm-search-form { flex-basis: 100%; max-width: none; }
 }
+
+/* Spec layer (㊳ ㊴): query card 70, result card with 36/48 table. */
+.wm-search-panel { min-height: 70px; padding: 14px 16px; }
+.wm-search-form { max-width: 620px; }
+.wm-search-field input { height: 34px; border-color: var(--line-default); border-radius: var(--r-control); font-size: var(--fs-body); }
+.wm-search-field input:focus-visible { border-color: var(--line-strong); outline: 0; box-shadow: 0 0 0 3px var(--bg-subtle); }
+.wm-search-field svg { width: 14px; height: 14px; }
+.wm-video-note { color: var(--text-muted); font-size: var(--fs-label); }
+.wm-video-note[data-configured="false"] { color: var(--status-warn); }
+.wm-feedback { margin: 0; border-radius: var(--r-block); font-size: var(--fs-label); }
+.wm-result { padding: 0; overflow: hidden; }
+.wm-result .section-title { display: flex; align-items: center; gap: 6px; height: 48px; margin: 0; padding: 0 16px; font-size: var(--fs-section); }
+.wm-result .section-title .feather { width: 14px; height: 14px; color: var(--text-tertiary); }
+.wm-location { padding-bottom: 12px; border-bottom: 1px solid var(--line-subtle); }
+.wm-location-text { margin: -4px 16px 0; color: var(--text-secondary); font-size: var(--fs-body); }
+.wm-table-wrap { border: 0 !important; border-radius: 0 !important; }
+.wm-table { min-width: 1062px; }
+.wm-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; border-bottom: 1px solid var(--line-default); }
+.wm-table td { height: 48px; padding: 0 16px; border-bottom: 1px solid var(--line-row); font-size: var(--fs-body); }
+.wm-hint { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line-subtle); color: var(--text-muted); font-size: var(--fs-caption); }

@@ -4,7 +4,7 @@
 {% block body_class %}finance-page{% endblock %}
 {% block breadcrumb %}财务模块{% endblock %}
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261107-advice">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261110-spec">{% endblock %}
 
 {% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
@@ -308,7 +308,7 @@
   <form method="dialog" class="finance-dialog-body" data-voucher-form>
     <header class="finance-dialog-head">
       <h2 id="finance-voucher-title" data-voucher-title>新建凭证</h2>
-      <button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button>
+      <button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button>
     </header>
     <div class="finance-voucher-meta">
       <label class="finance-field">记账日期 <input class="review-input" type="date" name="posting_date" required></label>
@@ -329,7 +329,7 @@
 
 <dialog class="finance-dialog finance-dialog--narrow" data-account-dialog aria-labelledby="finance-account-title">
   <form method="dialog" class="finance-dialog-body" data-account-form>
-    <header class="finance-dialog-head"><h2 id="finance-account-title" data-account-title>新增科目</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <header class="finance-dialog-head"><h2 id="finance-account-title" data-account-title>新增科目</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <label class="finance-field">科目代码 <input class="review-input" name="code" inputmode="numeric" pattern="[1-6][0-9]{3}([0-9]{2}){0,4}" required></label>
     <p class="section-note">一级 4 位；下级为上级代码加 2 位，例如 100201。</p>
     <label class="finance-field">名称 <input class="review-input" name="name" maxlength="64" required></label>
@@ -352,7 +352,7 @@
 </dialog>
 <dialog class="finance-dialog finance-dialog--narrow" data-source-dialog aria-labelledby="finance-source-title">
   <form method="dialog" class="finance-dialog-body" data-source-form>
-    <header class="finance-dialog-head"><h2 id="finance-source-title" data-source-title>新建来源</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <header class="finance-dialog-head"><h2 id="finance-source-title" data-source-title>新建来源</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <label class="finance-field" data-create-only>来源代码 <input class="review-input" name="source_key" maxlength="64" placeholder="例如 rh_main、wechat_shop"></label>
     <label class="finance-field">来源名称 <input class="review-input" name="display_name" maxlength="128" required></label>
     <label class="finance-field" data-create-only>接入方式 <select class="review-input" name="kind"><option value="online">在线抓取</option><option value="file">文件导入</option></select></label>
@@ -372,7 +372,7 @@
 
 <dialog class="finance-dialog finance-dialog--narrow" data-line-rule-dialog aria-labelledby="finance-line-rule-title">
   <form method="dialog" class="finance-dialog-body" data-line-rule-form>
-    <header class="finance-dialog-head"><h2 id="finance-line-rule-title" data-line-rule-title>流水记账规则</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <header class="finance-dialog-head"><h2 id="finance-line-rule-title" data-line-rule-title>流水记账规则</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <label class="finance-field">提供方代码 <input class="review-input" name="provider" maxlength="32"></label>
     <label class="finance-field">一级项目（原文） <input class="review-input" name="item_l1" maxlength="128"></label>
     <label class="finance-field">二级项目（原文，可空） <input class="review-input" name="item_l2" maxlength="128"></label>
@@ -392,7 +392,7 @@
 
 <dialog class="finance-dialog finance-dialog--narrow" data-amount-dialog aria-labelledby="finance-amount-title">
   <form method="dialog" class="finance-dialog-body" data-amount-form>
-    <header class="finance-dialog-head"><h2 id="finance-amount-title" data-amount-title>补录金额</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <header class="finance-dialog-head"><h2 id="finance-amount-title" data-amount-title>补录金额</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <p class="section-note">保存后写回运单并记入运单修改记录；已打印的面单需要重新打印。</p>
     <label class="finance-field">运费 <input class="review-input" name="freight_fee" inputmode="decimal" maxlength="32"></label>
     <label class="finance-field">中转费 <input class="review-input" name="transfer_fee" inputmode="decimal" maxlength="32"></label>
@@ -404,7 +404,7 @@
 
 <dialog class="finance-dialog finance-dialog--narrow" data-party-dialog aria-labelledby="finance-party-title">
   <form method="dialog" class="finance-dialog-body" data-party-form>
-    <header class="finance-dialog-head"><h2 id="finance-party-title" data-party-title>新建往来单位</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <header class="finance-dialog-head"><h2 id="finance-party-title" data-party-title>新建往来单位</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <label class="finance-field">类型
       <select class="review-input" name="party_type"><option value="customer">客户（月结）</option><option value="platform">平台</option><option value="sender">寄件人（代收货款）</option><option value="supplier">供应商</option><option value="employee">员工</option><option value="other">其他</option></select>
     </label>
@@ -422,7 +422,7 @@
 
 <dialog class="finance-dialog" data-senders-dialog aria-labelledby="finance-senders-title">
   <div class="finance-dialog-body">
-    <header class="finance-dialog-head"><h2 id="finance-senders-title">从月结寄件人建档</h2><button type="button" class="ghost-btn" data-dialog-close aria-label="关闭">关闭</button></header>
+    <header class="finance-dialog-head"><h2 id="finance-senders-title">从月结寄件人建档</h2><button type="button" class="modal-close" data-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <p class="section-note">列出博益开单中付款方式为“月结”、尚未关联往来单位的寄件人（按姓名 + 电话）。点“建档”创建客户并关联。</p>
     <div class="table-wrap"><table class="finance-table">
       <thead><tr><th scope="col">寄件人</th><th scope="col">电话</th><th scope="col" class="num">运单数</th><th scope="col">最近开单</th><th scope="col">操作</th></tr></thead>

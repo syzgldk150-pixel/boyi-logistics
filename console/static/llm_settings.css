@@ -96,9 +96,41 @@
   .audit-row { grid-template-columns: 1fr; gap: 4px; }
 }
 @media (pointer: coarse) {
-  .llm-action, .llm-form input, .llm-form select { min-height: 34px; }
+  .llm-action, .llm-form input, .llm-form select { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .llm-settings * { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Spec layer (㊹ ㊺): compact cards with 64 heads, provider blocks, 36/48 tables. */
+.llm-settings { gap: var(--card-gap); padding: 0; }
+.llm-status-hero, .llm-section, .llm-readonly { border-color: var(--line-default); border-radius: var(--r-card); }
+.llm-status-hero { min-height: 68px; padding: 12px 16px; }
+.llm-status-hero h2 { margin: 2px 0 0; font: 500 var(--fs-modal-title)/1.4 var(--font-num); }
+.llm-section h2, .llm-readonly h2 { margin: 2px 0 0; font-size: var(--fs-section); line-height: 1.4; }
+.llm-settings .eyebrow { color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400; }
+.llm-status-hero p, .llm-section-heading p, .llm-readonly p { color: var(--text-muted); font-size: var(--fs-label); }
+.llm-health, .llm-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-caption); font-weight: 400; }
+.llm-feedback { border-radius: var(--r-block); font-size: var(--fs-label); }
+.llm-section { padding: 12px 16px 16px; }
+.llm-section-heading { align-items: center; min-height: 40px; margin-bottom: 12px; }
+.provider-grid { gap: 12px; }
+.provider-card { gap: 10px; padding: 14px 16px; border-color: var(--line-default); border-radius: var(--r-block); background: var(--bg-surface); }
+.provider-card h3 { font-size: var(--fs-section); }
+.provider-card dl { grid-template-columns: 72px 1fr; gap: 6px 12px; font-size: var(--fs-label); }
+.provider-card dt { color: var(--text-muted); }
+.provider-card dd { font-family: var(--font-num); }
+.llm-form { gap: 12px; }
+.llm-form label { gap: var(--field-gap); color: var(--text-secondary); font-size: var(--fs-label); }
+.llm-form input, .llm-form select { border-color: var(--line-default); border-radius: var(--r-control); font-size: var(--fs-body); }
+.llm-table-wrap { margin: 0 -16px; }
+.llm-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); border-bottom-color: var(--line-default); color: var(--text-secondary); font-size: var(--fs-label); }
+.llm-table td { height: 56px; padding: 8px 16px; border-bottom-color: var(--line-row); vertical-align: middle; }
+.llm-action { height: 30px; min-height: 30px; border-color: var(--line-default); border-radius: var(--r-control); font-size: var(--fs-body); font-weight: 500; }
+.llm-action[data-danger="true"] { color: var(--status-danger); border-color: var(--line-default); }
+.audit-row { min-height: 34px; padding: 8px 0; border-bottom-color: var(--line-row); font: 400 var(--fs-body)/1.5 var(--font-ui); }
+.audit-row span { color: var(--text-muted); }
+.audit-row:last-child { border-bottom: 0; }
+.llm-readonly { padding: 14px 16px; }
+@media (max-width: 639px) { .llm-settings { padding: 0 0 96px; } }
