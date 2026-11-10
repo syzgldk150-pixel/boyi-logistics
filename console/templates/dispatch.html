@@ -25,7 +25,7 @@
   .drawer-scroll-area { flex: 1; overflow-y: auto; background: var(--surface); }
   .drawer-scroll-area[hidden] { display: none; } /* 只有查询后才显示 */
 
-  .drawer-title { font-size: 1rem; font-weight: 600; color: var(--text-strong); margin: 0 0 12px; }
+  .drawer-title { font-size: var(--fs-section); font-weight: 500; color: var(--text-strong); margin: 0 0 12px; }
 
   /* 搜索表单简化版 */
   .route-field-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -34,18 +34,18 @@
   .route-icon.dest .feather { color: var(--success); }
   .route-swap-icon { width: 14px; height: 14px; margin-right: 4px; stroke-width: 2.5; }
   .route-field-main { position: relative; flex: 1; }
-  .route-input { width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 0.8125rem; font-weight: 500; outline: none; background: var(--surface); }
+  .route-input { width: 100%; height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; font-size: var(--fs-body); font-weight: 500; outline: none; background: var(--surface); }
   .route-input:focus { border-color: var(--focus-strong); background: var(--canvas); }
   .route-input:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .route-swap-row { padding-left: 32px; margin: -4px 0 4px; }
-  .route-swap-btn { padding: 0 8px; font-size: 0.8125rem; }
+  .route-swap-btn { padding: 0 8px; font-size: var(--fs-body); }
   .route-advanced { margin-top: 12px; }
-  .route-advanced summary { min-height: 40px; display: flex; align-items: center; font-size: 0.8125rem; color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; }
+  .route-advanced summary { min-height: 34px; display: flex; align-items: center; font-size: var(--fs-body); color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; }
   .route-advanced summary:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; border-radius: var(--radius-sm); }
   .route-advanced-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-  .route-advanced-field { display: grid; gap: 4px; font-size: 0.8125rem; color: var(--text); font-weight: 500; }
-  .distance-overview-title { display: block; margin-bottom: 4px; font-size: 0.8125rem; color: var(--text-strong); font-weight: 600; }
-  .distance-overview-meta { font-size: 0.8125rem; color: var(--muted); }
+  .route-advanced-field { display: grid; gap: 4px; font-size: var(--fs-body); color: var(--text); font-weight: 500; }
+  .distance-overview-title { display: block; margin-bottom: 4px; font-size: var(--fs-body); color: var(--text-strong); font-weight: 500; }
+  .distance-overview-meta { font-size: var(--fs-body); color: var(--muted); }
   .platform-card--internal { border-color: var(--text-strong); }
   .p-icon--primary { background: var(--text-strong); color: var(--canvas); }
   .route-suggest-list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: min(320px, calc(100vh - 180px)); background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-overlay); overflow-y: auto; overflow-x: hidden; z-index: 30; }
@@ -53,31 +53,31 @@
   .route-suggest-item { width: 100%; border: 0; border-bottom: 1px solid var(--surface-muted); background: var(--canvas); padding: 12px 12px; text-align: left; cursor: pointer; transition: background var(--fast); }
   .route-suggest-item:last-child { border-bottom: 0; }
   .route-suggest-item:hover { background: var(--surface); }
-  .route-suggest-primary { font-size: 0.8125rem; font-weight: 600; color: var(--text-strong); display: block; }
-  .route-suggest-secondary { font-size: 0.8125rem; color: var(--muted); margin-top: 4px; display: block; line-height: 1.4; }
-  .route-suggest-empty { padding: 12px 12px; font-size: 0.8125rem; color: var(--muted); background: var(--canvas); }
+  .route-suggest-primary { font-size: var(--fs-body); font-weight: 500; color: var(--text-strong); display: block; }
+  .route-suggest-secondary { font-size: var(--fs-body); color: var(--muted); margin-top: 4px; display: block; line-height: 1.4; }
+  .route-suggest-empty { padding: 12px 12px; font-size: var(--fs-body); color: var(--muted); background: var(--canvas); }
 
   .search-action-row { display: flex; gap: 12px; margin-top: 16px; }
-  .search-action-btn { flex: 1; height: 40px; min-height: 40px; border-radius: 6px; font-size: 0.8125rem; }
+  .search-action-btn { flex: 1; height: 34px; min-height: 34px; border-radius: 6px; font-size: var(--fs-body); }
 
   /* 结果卡片 */
   .result-section { padding: 16px; }
-  .result-header { font-size: 0.8125rem; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
+  .result-header { font-size: var(--fs-body); font-weight: 500; color: var(--muted); margin-bottom: 12px; }
 
   .distance-overview { background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: none; }
-  .distance-val strong { font-size: 1.375rem; font-family: var(--font-display); font-weight: 600; color: var(--text-strong); }
-  .distance-val span { font-size: 0.8125rem; color: var(--muted); font-weight: 600; margin-left: 4px; }
+  .distance-val strong { font-size: var(--fs-page-title); font-family: var(--font-display); font-weight: 500; color: var(--text-strong); }
+  .distance-val span { font-size: var(--fs-body); color: var(--muted); font-weight: 500; margin-left: 4px; }
 
   .platform-card { background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 12px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; transition: background var(--fast), border-color var(--fast); box-shadow: none; }
   .platform-card:hover { border-color: var(--line-strong); background: var(--surface); }
   .p-info { display: flex; align-items: center; gap: 12px; }
   .p-icon { width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text); display: grid; place-items: center; }
   .p-icon .feather { width: 16px; height: 16px; color: currentColor; stroke-width: 2.4; }
-  .p-name { font-weight: 600; color: var(--text-strong); font-size: 0.8125rem; margin-bottom: 2px; }
-  .p-meta { font-size: 0.8125rem; color: var(--muted); }
+  .p-name { font-weight: 500; color: var(--text-strong); font-size: var(--fs-body); margin-bottom: 2px; }
+  .p-meta { font-size: var(--fs-body); color: var(--muted); }
   .p-price { text-align: right; }
-  .p-price-val { font-size: 1.125rem; font-family: var(--font-display); font-weight: 600; color: var(--text-strong); }
-  .p-price-status { font-size: 0.8125rem; color: var(--warning); margin-top: 2px; white-space: nowrap; }
+  .p-price-val { font-size: var(--fs-modal-title); font-family: var(--font-display); font-weight: 500; color: var(--text-strong); }
+  .p-price-status { font-size: var(--fs-body); color: var(--warning); margin-top: 2px; white-space: nowrap; }
 
   @media (max-width: 767px) {
     .dispatch-page .top-header { display: none; }
@@ -98,8 +98,8 @@
     }
     .drawer-search-box { padding: 16px; }
     .drawer-scroll-area { min-height: 0; overscroll-behavior: contain; }
-    .route-input { min-height: 44px; font-size: 1rem; }
-    .search-action-btn { min-height: 44px; }
+    .route-input { min-height: 34px; font-size: var(--fs-section); }
+    .search-action-btn { min-height: 34px; }
     .route-suggest-list { max-height: min(40dvh, 320px); }
   }
 

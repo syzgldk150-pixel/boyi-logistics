@@ -17,6 +17,10 @@ _ROUTE_PATTERN = re.compile(
     r"^/(?:[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*)?$"
 )
 _MENU_SECTIONS = frozenset({"primary", "system"})
+# Desktop sidebar groups: id -> (label, icon). Members stay in registration order.
+NAVIGATION_GROUPS: dict[str, tuple[str, str]] = {
+    "waybill": ("运单业务", "truck"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,7 @@ class ConsoleMenuRegistration:
     icon: str
     section: str
     show_in_navigation: bool = True
+    group: str = ""
 
     def __post_init__(self) -> None:
         if not _MENU_ID_PATTERN.fullmatch(self.menu_id):
@@ -45,6 +50,8 @@ class ConsoleMenuRegistration:
             raise ValueError("menu section must be primary or system")
         if not isinstance(self.show_in_navigation, bool):
             raise TypeError("show_in_navigation must be a boolean")
+        if self.group and self.group not in NAVIGATION_GROUPS:
+            raise ValueError("menu group must be a registered navigation group")
 
     def to_navigation_item(self) -> dict[str, str]:
         return {
@@ -53,6 +60,7 @@ class ConsoleMenuRegistration:
             "mobile_label": self.mobile_label,
             "icon": self.icon,
             "section": self.section,
+            "group": self.group,
         }
 
 
@@ -83,10 +91,10 @@ def register_console_menus(
 CONSOLE_MENU_REGISTRATIONS = register_console_menus(
     (
         ConsoleMenuRegistration("overview", "/", "概览", "首页", "grid", "primary"),
-        ConsoleMenuRegistration("waybill_entry", "/ocr", "运单录入", "录单", "file-text", "primary"),
-        ConsoleMenuRegistration("waybill_query", "/waybills", "寄件运单查询", "运单", "list", "primary"),
-        ConsoleMenuRegistration("tracking", "/tracking", "物流跟踪", "跟踪", "search", "primary"),
-        ConsoleMenuRegistration("receipts", "/receipts", "回单管理", "回单", "image", "primary"),
+        ConsoleMenuRegistration("waybill_entry", "/ocr", "运单录入", "录单", "file-text", "primary", group="waybill"),
+        ConsoleMenuRegistration("waybill_query", "/waybills", "寄件运单查询", "运单", "list", "primary", group="waybill"),
+        ConsoleMenuRegistration("tracking", "/tracking", "物流跟踪", "跟踪", "search", "primary", group="waybill"),
+        ConsoleMenuRegistration("receipts", "/receipts", "回单管理", "回单", "image", "primary", group="waybill"),
         ConsoleMenuRegistration("customer_service", "/modules/customer-service", "客户服务", "客服", "headphones", "primary"),
         ConsoleMenuRegistration("finance", "/modules/finance", "财务模块", "财务", "dollar-sign", "primary"),
         ConsoleMenuRegistration("dispatch", "/dispatch", "货拉拉调度", "调度", "map-pin", "primary"),

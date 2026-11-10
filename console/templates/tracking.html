@@ -20,7 +20,7 @@
   .tracking-search-desc {
     margin: 0 0 24px;
     color: var(--muted);
-    font-size: 0.875rem;
+    font-size: var(--fs-body);
     font-weight: 500;
   }
   .tracking-input-row { display: flex; gap: 12px; align-items: center; max-width: 760px; margin: 0 auto; }
@@ -45,7 +45,7 @@
     outline: none;
     background: transparent;
     color: var(--text-strong);
-    font-size: 1rem;
+    font-size: var(--fs-section);
     font-weight: 500;
     min-width: 0;
   }
@@ -54,8 +54,8 @@
   .tracking-type-badge {
     padding: 4px 12px;
     border-radius: var(--radius-pill);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     white-space: nowrap;
     flex-shrink: 0;
     transition: opacity var(--fast);
@@ -75,8 +75,8 @@
     color: var(--muted);
     text-align: center;
   }
-  .tracking-state .feather { width: 40px; height: 40px; stroke-width: 1.5; opacity: 0.6; }
-  .tracking-state p { margin: 0; font-size: 0.875rem; font-weight: 500; }
+  .tracking-state .feather { width: 40px; height: 34px; stroke-width: 1.5; opacity: 0.6; }
+  .tracking-state p { margin: 0; font-size: var(--fs-body); font-weight: 500; }
   .tracking-state--error .feather { color: var(--danger); opacity: 1; }
   .tracking-state--loading .tracking-spinner {
     width: 28px;
@@ -112,8 +112,8 @@
   }
   .tracking-result-header-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: wrap; }
   .tracking-result-header strong {
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--fs-section);
+    font-weight: 500;
     color: var(--text-strong);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
@@ -124,7 +124,7 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    height: 40px;
+    height: 34px;
     border-radius: var(--radius-md);
     border: 1px solid var(--line);
     color: var(--muted);
@@ -152,7 +152,7 @@
     max-width: 760px;
     margin: 16px auto 0;
   }
-  .tracking-recent-label { color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
+  .tracking-recent-label { color: var(--muted); font-size: var(--fs-body); font-weight: 500; }
   .tracking-recent-chip {
     min-height: 32px;
     padding: 0 12px;
@@ -162,13 +162,13 @@
     color: var(--text);
     cursor: pointer;
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     font-variant-numeric: tabular-nums;
     transition: border-color var(--fast), background var(--fast);
   }
   .tracking-recent-chip:hover { border-color: var(--line-strong); background: var(--surface); }
   .tracking-recent-chip:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
-  .tracking-loading-hint { font-size: 0.8125rem !important; color: var(--faint); }
+  .tracking-loading-hint { font-size: var(--fs-body) !important; color: var(--faint); }
 
   .tracking-result-panel--shipment .shipment-tabs { margin-right: 52px; }
 
@@ -183,7 +183,7 @@
     border-radius: var(--radius-md);
     background: var(--surface);
     color: var(--text);
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     line-height: 1.5;
   }
   .shipment-decrypt-note--error { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
@@ -196,10 +196,10 @@
     animation: tracking-spin 800ms linear infinite;
     flex-shrink: 0;
   }
-  .shipment-decrypt-note .ghost-btn { min-height: 40px; padding: 0 12px; font-size: 0.8125rem; }
-  .shipment-tab-busy { color: var(--muted); font-weight: 600; }
+  .shipment-decrypt-note .ghost-btn { min-height: 34px; padding: 0 12px; font-size: var(--fs-body); }
+  .shipment-tab-busy { color: var(--muted); font-weight: 500; }
 
-  .tracking-table tr.is-latest td { background: var(--surface); color: var(--text-strong); font-weight: 600; }
+  .tracking-table tr.is-latest td { background: var(--surface); color: var(--text-strong); font-weight: 500; }
   .route-latest-tag {
     display: inline-block;
     margin-left: 8px;
@@ -208,8 +208,8 @@
     background: var(--info-soft);
     color: var(--info-ink);
     font-family: var(--font-ui, inherit);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.6;
     vertical-align: 1px;
   }
@@ -234,13 +234,13 @@
   .r7-summary-label {
     margin-bottom: 4px;
     color: var(--muted);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .r7-summary-value {
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.45;
     overflow-wrap: anywhere;
   }
@@ -250,8 +250,8 @@
   .r7-section:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
   .r7-section-title {
     margin: 0 0 12px;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--fs-section);
+    font-weight: 500;
     color: var(--text-strong);
   }
   .r7-kv-grid {
@@ -263,13 +263,13 @@
   .r7-kv-label {
     margin-bottom: 4px;
     color: var(--muted);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .r7-kv-value {
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.5;
     overflow-wrap: anywhere;
   }
@@ -288,8 +288,8 @@
     background: transparent;
     color: var(--muted);
     cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     padding: 8px 12px;
     white-space: nowrap;
   }
@@ -312,8 +312,8 @@
     background: var(--canvas);
     color: var(--text-strong);
     cursor: pointer;
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.2;
     padding: 12px 16px;
     white-space: nowrap;
@@ -364,15 +364,15 @@
   .shipment-stat-label,
   .shipment-metric-label {
     color: var(--muted);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.25;
   }
   .shipment-stat-value {
     margin-top: 4px;
     color: var(--text-strong);
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--fs-section);
+    font-weight: 500;
     line-height: 1.2;
     overflow-wrap: anywhere;
   }
@@ -409,8 +409,8 @@
     padding: 12px 16px;
     border-bottom: 1px solid var(--surface-muted);
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.2;
   }
   .shipment-section-icon {
@@ -480,8 +480,8 @@
   .shipment-party-row-title {
     padding-top: 4px;
     color: var(--muted);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.3;
     white-space: nowrap;
   }
@@ -494,15 +494,15 @@
   .shipment-party-field { min-width: 0; }
   .shipment-party-field-label {
     color: var(--muted);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.25;
   }
   .shipment-party-field-value {
     margin-top: 4px;
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.38;
     overflow-wrap: anywhere;
   }
@@ -513,8 +513,8 @@
   .shipment-metric-value {
     margin-top: 4px;
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
@@ -535,8 +535,8 @@
     border-radius: var(--radius-md);
     background: var(--danger-soft);
     color: var(--accent);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
 
   .r7-route-list {
@@ -553,18 +553,18 @@
   .r7-route-name {
     margin: 0 0 4px;
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .r7-route-station {
     color: var(--accent);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     margin-bottom: 8px;
   }
   .r7-route-meta {
     color: var(--muted);
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     line-height: 1.5;
     overflow-wrap: anywhere;
   }
@@ -587,14 +587,14 @@
     padding: 12px 12px;
     text-align: left;
     vertical-align: top;
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     line-height: 1.55;
   }
   .tracking-table th {
     background: var(--surface);
     color: var(--muted);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     white-space: nowrap;
   }
   .tracking-table tr:last-child td { border-bottom: 0; }
@@ -604,7 +604,7 @@
     text-align: center;
     padding: 32px 24px;
     color: var(--muted);
-    font-size: 0.875rem;
+    font-size: var(--fs-body);
     font-weight: 500;
   }
 
@@ -635,17 +635,17 @@
   }
   .timeline-node:first-child .timeline-dot { border-color: var(--focus-strong); background: var(--focus-strong); outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .timeline-node-time {
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     color: var(--muted);
-    font-weight: 600;
+    font-weight: 500;
     margin-bottom: 4px;
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
-  .timeline-node-desc { font-size: 0.875rem; color: var(--text-strong); font-weight: 500; line-height: 1.5; }
-  .timeline-node:first-child .timeline-node-desc { font-weight: 600; color: var(--text-strong); }
+  .timeline-node-desc { font-size: var(--fs-body); color: var(--text-strong); font-weight: 500; line-height: 1.5; }
+  .timeline-node:first-child .timeline-node-desc { font-weight: 500; color: var(--text-strong); }
   .timeline-node-location {
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     color: var(--muted);
     margin-top: 4px;
     display: inline-flex;
@@ -675,8 +675,8 @@
   }
   .tracking-contact-icon .feather { width: 24px; height: 24px; }
   .tracking-contact-info { flex: 1; min-width: 0; }
-  .tracking-contact-info h3 { margin: 0 0 8px; font-size: 1rem; font-weight: 600; color: var(--text-strong); }
-  .tracking-contact-note { margin: 0 0 16px; font-size: 0.875rem; color: var(--muted); line-height: 1.6; font-weight: 500; }
+  .tracking-contact-info h3 { margin: 0 0 8px; font-size: var(--fs-section); font-weight: 500; color: var(--text-strong); }
+  .tracking-contact-note { margin: 0 0 16px; font-size: var(--fs-body); color: var(--muted); line-height: 1.6; font-weight: 500; }
   .tracking-contact-phone-row {
     display: flex;
     align-items: center;
@@ -690,8 +690,8 @@
   .tracking-contact-phone-row:hover { border-color: var(--line-strong); }
   .tracking-contact-phone-row .feather { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
   .tracking-contact-phone-number {
-    font-size: 1.125rem;
-    font-weight: 600;
+    font-size: var(--fs-modal-title);
+    font-weight: 500;
     color: var(--text-strong);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
@@ -699,7 +699,7 @@
   .tracking-contact-phone-number a { color: var(--accent); text-decoration: none; transition: color var(--fast); }
   .tracking-contact-phone-number a:hover { color: var(--danger-ink); text-decoration: underline; }
   .tracking-contact-phone-number a:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; border-radius: 4px; }
-  .tracking-contact-hours { margin-left: auto; font-size: 0.8125rem; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .tracking-contact-hours { margin-left: auto; font-size: var(--fs-body); color: var(--muted); font-weight: 500; white-space: nowrap; }
 
   @media (max-width: 1023px) {
     .r7-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -727,11 +727,11 @@
   @media (max-width: 639px) {
     .tracking-page { gap: 16px; }
     .tracking-search-box { padding: 24px 16px; }
-    .tracking-search-desc { margin-bottom: 16px; font-size: 0.8125rem; line-height: 1.5; text-wrap: pretty; }
+    .tracking-search-desc { margin-bottom: 16px; font-size: var(--fs-body); line-height: 1.5; text-wrap: pretty; }
     .tracking-input-row { gap: 8px; }
-    .tracking-recent-chip { min-height: 44px; }
-    .tracking-input-wrap { height: 44px; padding: 0 12px; }
-    .tracking-search-btn { width: auto; min-width: 88px; height: 44px; padding: 0 12px; gap: 8px; font-size: 0.875rem; }
+    .tracking-recent-chip { min-height: 34px; }
+    .tracking-input-wrap { height: 34px; padding: 0 12px; }
+    .tracking-search-btn { width: auto; min-width: 88px; height: 34px; padding: 0 12px; gap: 8px; font-size: var(--fs-body); }
     .tracking-search-btn .feather { width: 16px; height: 16px; }
     .tracking-result-panel { padding: 16px 12px; }
     .r7-summary-strip, .r7-kv-grid, .r7-route-list { grid-template-columns: 1fr; }
@@ -766,6 +766,53 @@
     .tracking-contact-phone-row { flex-wrap: wrap; }
     .tracking-contact-hours { margin-left: 0; width: 100%; margin-top: 4px; }
   }
+
+  /* Spec layer (③–⑥): full-width cards, 44 search, underline tabs, 36/56 table. */
+  .tracking-page { gap: var(--card-gap); max-width: none; margin: 0; }
+  .tracking-search-box { padding: 20px 16px 18px; border-color: var(--line-default); border-radius: var(--r-card); box-shadow: none; }
+  .tracking-search-desc { margin: 0 0 14px; color: var(--text-tertiary); font-size: var(--fs-label); font-weight: 400; }
+  .tracking-input-row { gap: 10px; max-width: 760px; }
+  .tracking-input-wrap { height: 44px; padding: 0 14px; gap: 10px; border-color: var(--line-default); border-radius: var(--r-control); }
+  .tracking-input-wrap:focus-within { border-color: var(--line-strong); outline: 0; box-shadow: 0 0 0 3px var(--bg-subtle); }
+  .tracking-input-wrap .feather { width: 16px; height: 16px; color: var(--text-tertiary); }
+  .tracking-input { font: 500 var(--fs-section)/1 var(--font-num); }
+  .tracking-input:focus-visible { outline: 0; }
+  .tracking-input::placeholder { color: var(--text-muted); font-weight: 400; font-family: var(--font-ui); }
+  .tracking-type-badge { height: 20px; padding: 0 8px; display: inline-flex; align-items: center; border: 0 !important; border-radius: var(--r-chip); font-size: var(--fs-caption); font-weight: 400; }
+  .tracking-type-badge--rh { background: var(--fill-muted); color: var(--text-secondary); }
+  .tracking-type-badge--yd { background: var(--status-success-soft); color: var(--status-success); }
+  .tracking-type-badge--zx { background: var(--status-info-soft); color: var(--status-info); }
+  .tracking-search-btn { height: 44px; min-height: 44px; padding: 0 28px; }
+  .tracking-recent { margin-top: 12px; gap: 6px; }
+  .tracking-recent-label { color: var(--text-muted); font-size: var(--fs-label); font-weight: 400; }
+  .tracking-recent-chip { min-height: 26px; height: 26px; padding: 0 10px; border-color: var(--line-default); border-radius: var(--r-control); font: 400 var(--fs-label)/1 var(--font-num); color: var(--text-primary); }
+  .tracking-state { min-height: 420px; justify-content: center; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); padding: 32px 16px; gap: 6px; }
+  .tracking-state .feather { width: 40px; height: 40px; stroke-width: 1.1; opacity: 1; color: var(--text-tertiary); }
+  .tracking-state p { color: var(--text-muted); font-size: var(--fs-label); font-weight: 400; }
+  .tracking-state p:first-of-type { color: var(--text-primary); font-size: var(--fs-section); font-weight: 500; }
+  .tracking-result-panel { padding: 0; border-color: var(--line-default); border-radius: var(--r-card); box-shadow: none; overflow: hidden; }
+  .tracking-result-header { min-height: 48px; margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line-subtle); }
+  .tracking-result-header strong { font-family: var(--font-num); font-size: var(--fs-section); }
+  .tracking-result-close { width: 30px; height: 30px; border-color: var(--line-default); border-radius: var(--r-control); }
+  .tracking-result-close .feather { width: 14px; height: 14px; }
+  .tracking-result-panel--shipment .tracking-result-close { top: 9px; right: 16px; }
+  .shipment-tabs { gap: 24px; height: 44px; align-items: flex-end; margin: 0 0 0; padding: 0 16px; border-bottom: 1px solid var(--line-subtle); }
+  .tracking-result-panel--shipment .shipment-tabs { margin-right: 0; padding-right: 64px; }
+  .shipment-tab { position: relative; min-width: 0; height: 44px; padding: 0 2px; border: 0; background: transparent; color: var(--text-tertiary); font-size: var(--fs-body); font-weight: 400; }
+  .shipment-tab:hover { background: transparent; color: var(--text-primary); }
+  .shipment-tab.is-active { background: transparent; color: var(--text-primary); font-weight: 500; border: 0; }
+  .shipment-tab.is-active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px; background: var(--brand-red); }
+  .shipment-tab-panel { padding: 0; }
+  .shipment-decrypt-note { margin: 12px 16px; border-color: var(--line-default); border-radius: var(--r-block); }
+  .tracking-table-wrap { border: 0; border-radius: 0; }
+  .tracking-table { min-width: 760px; }
+  .tracking-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); vertical-align: middle; }
+  .tracking-table td { height: 56px; padding: 10px 16px; border-bottom-color: var(--line-row); color: var(--text-primary); vertical-align: middle; line-height: 1.5; }
+  .tracking-table .mono { font-family: var(--font-num); }
+  .tracking-table tr.is-latest td { background: transparent; font-weight: 400; }
+  .tracking-table tr.is-latest td:first-child { font-weight: 500; }
+  .route-latest-tag { height: 18px; line-height: 18px; padding: 0 6px; border-radius: var(--r-chip); background: var(--brand-accent-soft); color: var(--brand-red); font-size: var(--fs-caption); }
+  .tracking-empty { color: var(--text-muted); font-weight: 400; }
 </style>
 
 <section class="tracking-page">

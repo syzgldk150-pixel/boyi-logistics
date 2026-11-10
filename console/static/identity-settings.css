@@ -1,10 +1,10 @@
 .identity-section-nav,.identity-form-actions,.identity-inline-form,.identity-binding-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .identity-section-nav{margin-bottom:24px}
 .identity-role-editor{border-top:1px solid var(--border,var(--line));padding:16px 0}
-.identity-role-editor summary{display:flex;align-items:center;gap:16px;cursor:pointer;min-height:44px;flex-wrap:wrap;list-style:revert}
+.identity-role-editor summary{display:flex;align-items:center;gap:16px;cursor:pointer;min-height: 34px;flex-wrap:wrap;list-style:revert}
 .identity-role-editor form{padding-top:24px}
 .identity-permissions{border:0;padding:12px 0 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px;margin:0}
-.identity-permissions legend{font-weight:600;padding:12px 0}
+.identity-permissions legend{font-weight:500;padding:12px 0}
 .identity-permission{display:flex;align-items:flex-start;gap:12px;padding:8px 0;cursor:pointer}
 .identity-permission input{margin-top:4px;flex:none;width:18px;height:18px}
 .identity-role-editor input[type="checkbox"]{appearance:auto;accent-color:var(--text-strong);width:18px;height:18px;vertical-align:middle}
@@ -12,11 +12,11 @@
 .account-admin-panel .review-input::placeholder{color:var(--muted);opacity:1}
 .identity-permission small{display:block;color:var(--text-muted,var(--muted));line-height:1.6;margin-top:4px}
 .identity-field{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;min-width:0}
-.identity-field .review-input{width:100%;max-width:440px;min-height:44px}
+.identity-field .review-input{width:100%;max-width:440px;min-height: 34px}
 .identity-create-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px;margin:24px 0}
 .identity-create-form .identity-field{flex:1 1 200px;margin:0}
-.identity-create-form .primary-btn{min-height:44px}
-.identity-inline-form select{max-width:250px;min-height:44px}
+.identity-create-form .primary-btn{min-height: 34px}
+.identity-inline-form select{max-width:250px;min-height: 34px}
 .identity-binding-actions details{min-width:180px}
 .identity-binding-actions details[open]{width:320px;max-width:100%}
 .identity-binding-actions form{margin-top:12px}

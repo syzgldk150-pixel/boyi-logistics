@@ -21,6 +21,7 @@ from console.services.waybill_entry_extensions import WaybillEntryExtensionsServ
 from console.services.warehouse_monitor import WarehouseMonitorServiceMixin
 from console.navigation import (
     CONSOLE_NAVIGATION,
+    NAVIGATION_GROUPS,
 )
 from shared.service_identity import validate_service_identity_secrets
 
@@ -89,6 +90,7 @@ class LocalDocFlowApp(
         self.template_env.globals["ui_label"] = ui_label
         self.template_env.globals["current_admin_user"] = current_admin_user
         self.template_env.globals["console_navigation"] = CONSOLE_NAVIGATION
+        self.template_env.globals["navigation_groups"] = NAVIGATION_GROUPS
         self.template_env.globals["navigation_for_user"] = self._business_module_navigation
         self.template_env.globals["mobile_navigation_for_user"] = (
             self._business_module_mobile_navigation_for_user

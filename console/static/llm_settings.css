@@ -24,11 +24,11 @@
 
 .llm-status-hero h2,
 .llm-section h2,
-.llm-readonly h2 { margin: 4px 0 8px; color: var(--text-strong); font-size: 1.125rem; line-height: 1.625rem; font-weight: 600; }
+.llm-readonly h2 { margin: 4px 0 8px; color: var(--text-strong); font-size: var(--fs-modal-title); line-height: 1.625rem; font-weight: 500; }
 .llm-status-hero p,
 .llm-section-heading p,
-.llm-readonly p { margin: 0; color: var(--muted); font-size: 0.8125rem; line-height: 1.125rem; }
-.llm-settings .eyebrow { color: var(--muted); font-size: 0.8125rem; line-height: 1.125rem; font-weight: 500; }
+.llm-readonly p { margin: 0; color: var(--muted); font-size: var(--fs-body); line-height: 1.125rem; }
+.llm-settings .eyebrow { color: var(--muted); font-size: var(--fs-body); line-height: 1.125rem; font-weight: 500; }
 
 .llm-health,
 .llm-badge {
@@ -40,14 +40,14 @@
   padding: 4px 8px;
   background: var(--surface-muted);
   color: var(--text);
-  font-size: 0.8125rem;
+  font-size: var(--fs-body);
   font-weight: 500;
 }
 .llm-health[data-tone="success"], .llm-badge[data-tone="success"] { background: var(--success-soft); color: var(--success-ink); }
 .llm-health[data-tone="warning"], .llm-badge[data-tone="warning"] { background: var(--warning-soft); color: var(--warning-ink); }
 .llm-health[data-tone="danger"], .llm-badge[data-tone="danger"] { background: var(--danger-soft); color: var(--danger-ink); }
 
-.llm-feedback { padding: 12px 16px; border: 1px solid var(--info-line); border-radius: var(--radius-lg); background: var(--info-soft); color: var(--info-ink); font-size: 0.8125rem; }
+.llm-feedback { padding: 12px 16px; border: 1px solid var(--info-line); border-radius: var(--radius-lg); background: var(--info-soft); color: var(--info-ink); font-size: var(--fs-body); }
 .llm-feedback[data-tone="danger"] { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger-ink); }
 .llm-feedback[data-tone="success"] { border-color: var(--success-line); background: var(--success-soft); color: var(--success-ink); }
 
@@ -56,23 +56,23 @@
 .provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .provider-card { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
 .provider-card header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-.provider-card h3 { margin: 0; color: var(--text-strong); font-size: 1rem; font-weight: 600; }
-.provider-card dl { display: grid; grid-template-columns: 100px 1fr; gap: 8px 12px; margin: 0; font-size: 0.8125rem; }
+.provider-card h3 { margin: 0; color: var(--text-strong); font-size: var(--fs-section); font-weight: 500; }
+.provider-card dl { display: grid; grid-template-columns: 100px 1fr; gap: 8px 12px; margin: 0; font-size: var(--fs-body); }
 .provider-card dt { color: var(--muted); }
 .provider-card dd { margin: 0; overflow-wrap: anywhere; }
 
 .llm-form { display: grid; grid-template-columns: 180px minmax(240px, 1fr) minmax(260px, 1.4fr) auto; align-items: end; gap: 16px; }
-.llm-form label { display: grid; gap: 8px; color: var(--text); font-size: 0.8125rem; font-weight: 500; }
-.llm-form input, .llm-form select { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 0 12px; background: var(--canvas); color: var(--text-strong); }
+.llm-form label { display: grid; gap: 8px; color: var(--text); font-size: var(--fs-body); font-weight: 500; }
+.llm-form input, .llm-form select { width: 100%; min-height: 34px; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 0 12px; background: var(--canvas); color: var(--text-strong); }
 .llm-form input:focus-visible, .llm-form select:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; border-color: var(--focus-strong); }
 .llm-key-field small { color: var(--muted); font-weight: 400; line-height: 1.4; }
 
 .llm-table-wrap { overflow-x: auto; }
-.llm-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-.llm-table th { padding: 12px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--muted); text-align: left; font-size: 0.8125rem; font-weight: 600; }
+.llm-table { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
+.llm-table th { padding: 12px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--muted); text-align: left; font-size: var(--fs-body); font-weight: 500; }
 .llm-table td { padding: 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .llm-table-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.llm-action { min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 0 12px; background: var(--canvas); color: var(--text-strong); font: inherit; font-weight: 500; cursor: pointer; transition: background var(--fast), border-color var(--fast); }
+.llm-action { min-height: 34px; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 0 12px; background: var(--canvas); color: var(--text-strong); font: inherit; font-weight: 500; cursor: pointer; transition: background var(--fast), border-color var(--fast); }
 .llm-action:hover { background: var(--surface); border-color: var(--line-strong); }
 .llm-action:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
 .llm-action[data-danger="true"] { color: var(--danger-ink); border-color: var(--danger-line); }
@@ -80,7 +80,7 @@
 .llm-action:disabled { opacity: .5; cursor: wait; }
 
 .audit-list { display: grid; gap: 0; }
-.audit-row { display: grid; grid-template-columns: 150px 1fr 150px; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 0.8125rem; }
+.audit-row { display: grid; grid-template-columns: 150px 1fr 150px; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-body); }
 .audit-row span { color: var(--muted); }
 .llm-readonly { padding: 24px; }
 
@@ -96,7 +96,7 @@
   .audit-row { grid-template-columns: 1fr; gap: 4px; }
 }
 @media (pointer: coarse) {
-  .llm-action, .llm-form input, .llm-form select { min-height: 44px; }
+  .llm-action, .llm-form input, .llm-form select { min-height: 34px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

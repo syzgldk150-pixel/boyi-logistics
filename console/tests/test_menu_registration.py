@@ -13,6 +13,7 @@ from console.navigation import (
     ConsoleMenuRegistration,
     register_console_menus,
     validate_mobile_bottom_nav,
+    NAVIGATION_GROUPS,
 )
 from shared.business_modules import BUSINESS_MODULE_CATALOG
 
@@ -55,9 +56,16 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
     )
     assert "/work-items" not in {item["route"] for item in CONSOLE_NAVIGATION}
     assert all(
-        set(item) == {"route", "label", "mobile_label", "icon", "section"}
+        set(item) == {"route", "label", "mobile_label", "icon", "section", "group"}
         for item in CONSOLE_NAVIGATION
     )
+    assert [item["route"] for item in CONSOLE_NAVIGATION if item["group"] == "waybill"] == [
+        "/ocr",
+        "/waybills",
+        "/tracking",
+        "/receipts",
+    ]
+    assert all(not item["group"] or item["group"] in NAVIGATION_GROUPS for item in CONSOLE_NAVIGATION)
 
 
 def test_system_status_menu_is_retired() -> None:

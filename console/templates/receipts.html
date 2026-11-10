@@ -27,25 +27,25 @@
   }
   .receipt-field { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
   .receipt-field label,
-  .receipt-field-label { color: var(--text-strong); font-size: 0.8125rem; font-weight: 600; }
+  .receipt-field-label { color: var(--text-strong); font-size: var(--fs-body); font-weight: 500; }
   .receipt-field input,
   .receipt-field select {
     width: 100%;
-    min-height: 40px;
+    min-height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--canvas);
     color: var(--text-strong);
     padding: 0 12px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .receipt-field input:focus,
   .receipt-field select:focus {
     border-color: var(--text-strong);
     outline: 2px solid var(--focus-strong); outline-offset: 2px;
   }
-  .receipt-field--search input { font-weight: 600; }
+  .receipt-field--search input { font-weight: 500; }
   .receipt-date-field { position: relative; min-width: 280px; }
   .receipt-date-range-wrap { position: relative; }
   .receipt-date-range-control {
@@ -54,14 +54,14 @@
     align-items: center;
     gap: 12px;
     width: 100%;
-    min-height: 40px;
+    min-height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--canvas);
     color: var(--text-strong);
     padding: 0 12px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     text-align: left;
     cursor: pointer;
   }
@@ -94,8 +94,8 @@
   .receipt-calendar-title {
     text-align: center;
     color: var(--text-strong);
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--fs-section);
+    font-weight: 500;
   }
   .receipt-calendar-nav {
     display: grid;
@@ -120,8 +120,8 @@
     place-items: center;
     min-height: 28px;
     color: var(--text-strong);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .receipt-calendar-grid { overflow: hidden; border-radius: var(--radius-md); }
   .receipt-calendar-day {
@@ -131,12 +131,12 @@
     border: 0;
     background: var(--canvas);
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     cursor: pointer;
   }
   .receipt-calendar-day:hover { background: var(--info-soft); }
-  .receipt-calendar-day.is-outside { color: var(--faint); font-weight: 600; }
+  .receipt-calendar-day.is-outside { color: var(--faint); font-weight: 500; }
   .receipt-calendar-day.is-in-range { background: var(--info-soft); color: var(--text-strong); }
   .receipt-calendar-day.is-start,
   .receipt-calendar-day.is-end {
@@ -158,14 +158,14 @@
     background: var(--surface);
     color: var(--text);
     padding: 0 8px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     cursor: pointer;
   }
   .receipt-range-btn:hover { border-color: var(--line-strong); background: var(--surface-muted); }
   .receipt-query-btn {
     min-width: 104px;
-    min-height: 40px;
+    min-height: 34px;
     gap: 8px;
     justify-self: stretch;
     padding: 0 16px;
@@ -183,33 +183,34 @@
   .btn-spinner[hidden] { display: none; }
   @keyframes receipt-spin { to { transform: rotate(360deg); } }
   .receipt-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 16px; border-bottom: 1px solid var(--line); }
-  .receipt-toolbar strong { color: var(--text-strong); font-size: 1rem; font-weight: 600; }
-  .receipt-toolbar span { color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
+  .receipt-toolbar strong { color: var(--text-strong); font-size: var(--fs-section); font-weight: 500; }
+  .receipt-toolbar span { color: var(--muted); font-size: var(--fs-body); font-weight: 500; }
   .receipt-toolbar-copy { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .receipt-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-  .receipt-count-muted { color: var(--faint); font-size: 0.8125rem; font-weight: 600; }
-  .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); }
-  .receipt-table { width: 100%; min-width: 0; table-layout: fixed; }
-  .receipt-col-select { width: 4%; }
-  .receipt-col-photo { width: 6%; }
-  .receipt-col-platform { width: 8%; }
-  .receipt-col-waybill { width: 18%; }
-  .receipt-col-status { width: 13%; }
-  .receipt-col-audit { width: 12%; }
-  .receipt-col-photo-status { width: 11%; }
-  .receipt-col-signed { width: 10%; }
-  .receipt-col-updated { width: 18%; }
+  .receipt-count-muted { color: var(--faint); font-size: var(--fs-body); font-weight: 500; }
+  .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow: auto; max-height: calc(100vh - 260px); }
+  .receipt-table { width: 100%; min-width: 1062px; table-layout: fixed; }
+  /* ⑩ column widths sum to 1062 (checkbox column replaces the spec 操作 column). */
+  .receipt-col-select { width: 40px; }
+  .receipt-col-photo { width: 76px; }
+  .receipt-col-platform { width: 84px; }
+  .receipt-col-waybill { width: 168px; }
+  .receipt-col-status { width: 132px; }
+  .receipt-col-audit { width: 132px; }
+  .receipt-col-photo-status { width: 104px; }
+  .receipt-col-signed { width: 92px; }
+  .receipt-col-updated { width: 234px; }
   .receipt-select-cell { cursor: default; }
   .receipt-select-cell input { width: 18px; height: 18px; margin: 0; accent-color: var(--text-strong); cursor: pointer; vertical-align: middle; }
   .receipt-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
   .receipt-table th,
   .receipt-table td { overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
-  .receipt-table th { padding: 12px 8px; font-size: 0.8125rem; }
-  .receipt-table td { padding: 12px 8px; font-size: 0.8125rem; }
+  .receipt-table th { padding: 12px 8px; font-size: var(--fs-body); }
+  .receipt-table td { padding: 12px 8px; font-size: var(--fs-body); }
   .receipt-table .receipt-updated-cell {
     overflow: visible;
     text-overflow: clip;
-    font-size: 0.8125rem;
+    font-size: var(--fs-body);
     font-variant-numeric: tabular-nums;
   }
   .receipt-row { cursor: pointer; transition: background var(--base); }
@@ -220,7 +221,7 @@
     display: grid;
     place-items: center;
     width: 42px;
-    height: 42px;
+    height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--surface);
@@ -236,8 +237,8 @@
     max-width: 100%;
     color: var(--text-strong);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: middle;
@@ -253,8 +254,8 @@
     background: var(--surface);
     color: var(--text);
     padding: 0 8px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     white-space: nowrap;
   }
   .receipt-chip--yunda { border-color: var(--info-soft); background: var(--info-soft); color: var(--info-ink); }
@@ -273,8 +274,8 @@
     border-radius: var(--radius-md);
     background: var(--primary);
     color: var(--canvas);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .receipt-close-btn,
   .receipt-icon-btn {
@@ -282,7 +283,7 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    height: 40px;
+    height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--canvas);
@@ -327,8 +328,8 @@
     border-bottom: 1px solid var(--line);
     background: var(--canvas);
   }
-  .receipt-modal-head h2 { margin: 0; color: var(--text-strong); font-size: 1rem; font-weight: 600; }
-  .receipt-modal-head p { margin: 4px 0 0; color: var(--muted); font-size: 0.8125rem; }
+  .receipt-modal-head h2 { margin: 0; color: var(--text-strong); font-size: var(--fs-section); font-weight: 500; }
+  .receipt-modal-head p { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-body); }
   .receipt-modal-actions { display: flex; align-items: center; gap: 8px; }
   .receipt-review-status {
     display: flex;
@@ -343,13 +344,13 @@
     background: var(--success-soft);
     color: var(--success-ink);
     padding: 8px 12px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .receipt-review-status[hidden] { display: none; }
   .receipt-review-status i { width: 17px; height: 17px; flex: 0 0 auto; }
   .receipt-review-status strong { color: var(--success-ink); }
-  .receipt-review-status span { color: var(--success-ink); font-weight: 600; }
+  .receipt-review-status span { color: var(--success-ink); font-weight: 500; }
   .receipt-review-status--failed {
     border-color: var(--danger-line);
     background: var(--danger-soft);
@@ -397,7 +398,7 @@
     color: var(--line);
     background: rgba(255,255,255,.08);
     text-align: center;
-    font-size: 0.875rem;
+    font-size: var(--fs-body);
   }
   .receipt-preview-stage.is-broken img { display: none; }
   .receipt-preview-stage.is-broken .receipt-preview-error { display: block; }
@@ -406,7 +407,7 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    height: 40px;
+    height: 34px;
     border: 1px solid rgba(255,255,255,.22);
     border-radius: var(--radius-md);
     background: rgba(255,255,255,.1);
@@ -437,13 +438,13 @@
   }
   .receipt-review-field { min-width: 0; }
   .receipt-review-field--recipient_address { grid-column: span 2; }
-  .receipt-review-field span { display: block; color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
+  .receipt-review-field span { display: block; color: var(--muted); font-size: var(--fs-body); font-weight: 500; }
   .receipt-review-field strong {
     display: block;
     margin-top: 1px;
     color: var(--text-strong);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -495,7 +496,7 @@
     align-items: center;
     justify-content: center;
     min-width: 40px;
-    height: 40px;
+    height: 34px;
     border: 1px solid rgba(255,255,255,.18);
     border-radius: var(--radius-md);
     background: rgba(255,255,255,.1);
@@ -507,18 +508,18 @@
   .receipt-review-tool-btn--text {
     min-width: 42px;
     padding: 0 8px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .receipt-review-rotation {
     min-width: 38px;
     color: var(--line);
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
-  .receipt-review-counter { color: var(--line); font-size: 0.8125rem; font-weight: 600; }
+  .receipt-review-counter { color: var(--line); font-size: var(--fs-body); font-weight: 500; }
   .receipt-review-stage {
     position: relative;
     display: flex;
@@ -553,7 +554,7 @@
     color: var(--line);
     background: rgba(255,255,255,.08);
     text-align: center;
-    font-size: 0.875rem;
+    font-size: var(--fs-body);
   }
   .receipt-review-stage.is-broken img { display: none; }
   .receipt-review-stage.is-broken .receipt-review-error { display: block; }
@@ -589,8 +590,8 @@
     background: var(--canvas);
     color: var(--text-strong);
     padding: 12px 12px 12px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     box-shadow: var(--shadow-overlay);
   }
   .receipt-review-reason[hidden] { display: none; }
@@ -605,7 +606,7 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    height: 40px;
+    height: 34px;
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
     background: var(--canvas);
@@ -623,7 +624,7 @@
     color: var(--text-strong);
     padding: 8px 12px;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
   }
   .receipt-review-reason-actions {
     display: flex;
@@ -632,10 +633,10 @@
   }
   .receipt-review-reason-actions .ghost-btn,
   .receipt-review-reason-actions .primary-btn {
-    min-height: 40px;
+    min-height: 34px;
     padding: 0 12px;
-    font-size: 0.8125rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
   }
   .receipt-audit-body { min-height: 0; background: var(--canvas); }
   .receipt-modal-card--confirm {
@@ -648,10 +649,10 @@
     gap: 16px;
     padding: 16px;
     color: var(--text);
-    font-size: 0.875rem;
+    font-size: var(--fs-body);
     line-height: 1.55;
   }
-  .receipt-confirm-body strong { color: var(--text-strong); font-weight: 600; }
+  .receipt-confirm-body strong { color: var(--text-strong); font-weight: 500; }
   .receipt-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
   .receipt-empty { padding: 24px; color: var(--muted); text-align: center; }
   .receipt-empty-state {
@@ -663,8 +664,8 @@
     text-align: center;
   }
   .receipt-empty-state i { color: var(--line-strong); }
-  .receipt-empty-state strong { color: var(--text-strong); font-size: 0.875rem; font-weight: 600; }
-  .receipt-empty-state span { max-width: 420px; font-size: 0.8125rem; line-height: 1.6; }
+  .receipt-empty-state strong { color: var(--text-strong); font-size: var(--fs-body); font-weight: 500; }
+  .receipt-empty-state span { max-width: 420px; font-size: var(--fs-body); line-height: 1.6; }
   .receipt-sync-status {
     display: flex;
     align-items: center;
@@ -675,8 +676,8 @@
     border-radius: var(--radius-md);
     background: var(--canvas);
     color: var(--text-strong);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--fs-body);
+    font-weight: 500;
     box-shadow: var(--shadow-soft);
   }
   .receipt-sync-status[hidden] { display: none; }
@@ -688,7 +689,7 @@
     align-items: center;
     justify-content: center;
     width: 40px;
-    height: 40px;
+    height: 34px;
     border: 1px solid transparent;
     border-radius: var(--radius-md);
     background: transparent;
@@ -724,6 +725,56 @@
     .receipt-review-main { grid-template-columns: minmax(0, 1fr); }
     .receipt-review-thumbs { flex-direction: row; }
     .receipt-review-reason { left: 10px; right: 10px; top: 72px; width: auto; }
+  }
+
+  /* Spec layer (⑩ ⑪ ⑫ ㉜): cards, 36 header, 62 rows with 44 thumbnails, 20 chips. */
+  .receipts-page { gap: var(--card-gap); }
+  .receipt-filter-panel, .receipt-table-panel { border-color: var(--line-default); border-radius: var(--r-card); box-shadow: none; }
+  .receipt-filter-form { gap: 10px; padding: 12px 16px 13px; }
+  .receipt-field { gap: var(--field-gap); }
+  .receipt-field label, .receipt-field-label { color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; }
+  .receipt-field input, .receipt-field select { height: 30px; min-height: 30px; font-weight: 400; border-color: var(--line-default); border-radius: var(--r-control); }
+  .receipt-field--search input { font-weight: 400; }
+  .receipt-toolbar { min-height: 48px; padding: 8px 16px; border-bottom: 0; }
+  .receipt-toolbar strong { font-size: var(--fs-card-title); }
+  .receipt-toolbar span, .receipt-count-muted { color: var(--text-muted); font-size: var(--fs-label); font-weight: 400; }
+  .receipt-toolbar-actions :is(.ghost-btn, .primary-btn) { height: 30px; min-height: 30px; }
+  .receipt-table th { height: 36px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); }
+  .receipt-table td { height: 62px; padding: 0 0 0 16px; border-bottom: 1px solid var(--line-row); color: var(--text-primary); }
+  .receipt-table tbody tr:last-child td { border-bottom: 0; }
+  .receipt-table .receipt-select-cell { padding-left: 16px; }
+  .receipt-select-cell input { width: 14px; height: 14px; accent-color: var(--brand-red); }
+  .receipt-row:hover, .receipt-row.is-selected { background: var(--bg-subtle); }
+  .receipt-thumb { width: 44px; height: 44px; border-color: var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-disabled); }
+  .receipt-thumb .feather { width: 18px; height: 18px; stroke-width: 1.3; }
+  .receipt-code { font-family: var(--font-num); font-weight: 500; letter-spacing: 0; }
+  .receipt-table .receipt-updated-cell { font-family: var(--font-num); color: var(--text-primary); }
+  .receipt-chip { height: 20px; min-height: 20px; padding: 0 7px; border: 0; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-caption); font-weight: 400; }
+  .receipt-chip--yunda, .receipt-chip--receive { background: var(--status-info-soft); color: var(--status-info); }
+  .receipt-chip--ronghui, .receipt-chip--ok { background: var(--status-success-soft); color: var(--status-success); }
+  .receipt-chip--send { background: var(--status-danger-soft); color: var(--status-danger); }
+  .receipt-chip--warn { background: var(--status-warn-soft); color: var(--status-warn); }
+  .receipt-chip--muted { color: var(--text-tertiary); }
+  .receipt-count-pill { min-width: 22px; min-height: 22px; border-radius: var(--r-small-button); background: var(--text-primary); font: 500 var(--fs-label)/1 var(--font-num); }
+  .receipt-modal { background: var(--overlay); }
+  .receipt-date-range-control { height: 30px; min-height: 30px; }
+  .receipt-table th.receipt-select-cell { text-overflow: clip; }
+  .receipt-select-cell input { appearance: auto; -webkit-appearance: checkbox; }
+  .receipt-modal.native-modal::backdrop { background: var(--overlay); }
+  .receipt-modal-card { border: 0; border-radius: var(--r-modal); }
+  .receipt-modal-card--review { width: min(1240px, calc(100vw - 48px)); height: min(800px, calc(100dvh - 48px)); }
+  .receipt-modal-head { align-items: center; min-height: 60px; padding: 10px 20px; border-bottom-color: var(--line-subtle); }
+  .receipt-modal-head h2 { font-size: var(--fs-modal-title); font-family: var(--font-num); }
+  .receipt-modal-head p { margin-top: 2px; color: var(--text-muted); font-size: var(--fs-label); }
+  .receipt-review-body { background: var(--text-primary); }
+  .receipt-review-stage { border: 0; border-radius: 0; background: transparent; }
+  .receipt-review-main { padding: 20px; }
+  .receipt-review-summary-wrap { padding: 16px 20px; border-top: 0; }
+  .receipt-review-summary { gap: 12px 24px; }
+  .receipt-review-field span { color: var(--text-muted); font-size: var(--fs-label); font-weight: 400; }
+  .receipt-review-field strong { margin-top: 5px; color: var(--text-primary); font-weight: 400; }
+  @media (max-width: 1439px) and (min-width: 768px) {
+    .receipt-filter-form { grid-template-columns: minmax(180px, 1.3fr) repeat(3, minmax(104px, .7fr)) minmax(220px, 1fr) auto; }
   }
 </style>
 
@@ -884,7 +935,7 @@
             <td><span class="receipt-chip">{{ row.receipt_status or '未同步' }}</span></td>
             <td><span class="receipt-chip {% if row.audit_status == '审核通过' %}receipt-chip--ok{% elif row.audit_status in ['待审核', '审核不通过'] or ('待' in (row.audit_status or '') and '审核' in (row.audit_status or '')) %}receipt-chip--warn{% else %}receipt-chip--muted{% endif %}" data-receipt-audit-chip>{{ row.audit_status or '未同步' }}</span></td>
             <td><span class="receipt-chip {% if row.photo_count %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.photo_status or '无照片' }}</span></td>
-            <td><span class="receipt-chip {% if row.signed_confirmed in ['是', '已确认'] %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.signed_confirmed or '-' }}</span></td>
+            <td>{% if row.signed_confirmed and row.signed_confirmed != '-' %}{{ row.signed_confirmed }}{% else %}<span class="cell-empty">—</span>{% endif %}</td>
             <td class="receipt-updated-cell" title="{{ row.updated_at }}">{{ row.updated_at }}</td>
           </tr>
           {% else %}
@@ -2393,7 +2444,6 @@
         ? `<button class="receipt-thumb" type="button" data-receipt-thumb-preview aria-label="预览回单照片"><img src="${escapeHtml(row.thumbnail_url)}" alt="" data-receipt-thumb-image></button>`
         : `<span class="receipt-thumb receipt-thumb--empty"><i data-feather="image"></i></span>`;
       const photoCount = Number(row.photo_count || 0);
-      const signedOk = row.signed_confirmed === "是" || row.signed_confirmed === "已确认";
       return `
         <tr class="receipt-row" data-receipt-id="${id}" data-platform="${platform}" data-direction="${direction}">
           <td class="receipt-select-cell"><input type="checkbox" data-receipt-select value="${id}" aria-label="选择回单 ${escapeHtml(row.waybill_no || row.id || "")}"></td>
@@ -2403,7 +2453,7 @@
           <td><span class="receipt-chip">${escapeHtml(row.receipt_status || "未同步")}</span></td>
           <td><span class="receipt-chip ${auditClassFor(row.audit_status)}" data-receipt-audit-chip>${escapeHtml(row.audit_status || "未同步")}</span></td>
           <td><span class="receipt-chip ${okClassFor(photoCount > 0)}">${escapeHtml(row.photo_status || "无照片")}</span></td>
-          <td><span class="receipt-chip ${okClassFor(signedOk)}">${escapeHtml(row.signed_confirmed || "-")}</span></td>
+          <td>${row.signed_confirmed && row.signed_confirmed !== "-" ? escapeHtml(row.signed_confirmed) : '<span class="cell-empty">—</span>'}</td>
           <td class="receipt-updated-cell" title="${escapeHtml(row.updated_at || "")}">${escapeHtml(row.updated_at || "")}</td>
         </tr>
       `;

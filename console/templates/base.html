@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="preload" href="/static/assets/fonts/InterVariable-Latin.woff2?v=4f95b56c" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/assets/fonts/SourceHanSansCN-UI.woff2?v=27533854" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=20261109-cs-ai">
+  <link rel="stylesheet" href="/static/style.css?v=20261110-spec">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -29,10 +29,51 @@
       <span class="mobile-brand-context">{{ page_breadcrumb | striptags | trim }}</span>
     </header>
 
-    <aside class="sidebar" data-reveal="sidebar">
-      <a class="brand" href="/" aria-label="返回首页" title="返回首页" data-shell-home-link>
-        <img src="/static/assets/boyi-logistics-logo-7e1f2994.webp" width="186" height="53" alt="">
-      </a>
+    <aside class="sidebar" data-reveal="sidebar" aria-label="侧边栏">
+      <div class="sidebar-head">
+        <a class="brand" href="/" aria-label="返回首页" title="返回首页" data-shell-home-link>
+          <img src="/static/assets/boyi-logistics-logo-7e1f2994.webp" width="186" height="53" alt="">
+        </a>
+        <button class="sidebar-collapse" type="button" data-sidebar-collapse aria-label="收起侧栏" aria-pressed="false" title="收起侧栏"><i data-feather="chevrons-left"></i></button>
+      </div>
+
+      <div class="sidebar-search" role="search">
+        <i data-feather="search" aria-hidden="true"></i>
+        <label class="sr-only" for="sidebar-page-filter">搜索页面</label>
+        <input id="sidebar-page-filter" type="search" placeholder="搜索页面" autocomplete="off" data-nav-filter>
+        <kbd aria-hidden="true">⌘K</kbd>
+      </div>
+
+      <nav class="nav-menu" data-nav-list aria-label="主导航">
+        {% set groups = navigation_groups if navigation_groups is defined else {} %}
+        {% for item in navigation_items if item.section == 'primary' %}
+        {% set group = item.group if item.group in groups else '' %}
+        {% set prev_group = (loop.previtem.group if loop.previtem and loop.previtem.group in groups else '') if not loop.first else '' %}
+        {% set next_group = (loop.nextitem.group if loop.nextitem and loop.nextitem.group in groups else '') if not loop.last else '' %}
+        {% if group and group != prev_group %}
+        <div class="nav-group" data-nav-group="{{ group }}">
+          <button class="nav-group-toggle" type="button" data-nav-group-toggle aria-expanded="true" aria-controls="nav-group-{{ group }}">
+            <span class="nav-icon"><i data-feather="{{ groups[group][1] }}"></i></span><b class="nav-label">{{ groups[group][0] }}</b><i class="nav-group-chevron" data-feather="chevron-down"></i>
+          </button>
+          <div class="nav-group-items" id="nav-group-{{ group }}">
+        {% endif %}
+        <a class="nav-link{% if group %} nav-link--child{% endif %}" href="{{ item.route }}" title="{{ item.label }}">
+          <span class="nav-label">{{ item.label }}</span><span class="nav-icon" aria-hidden="true"><i data-feather="{{ item.icon }}"></i></span>
+        </a>
+        {% if group and group != next_group %}
+          </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <div class="nav-menu-divider">
+          {% for item in navigation_items if item.section == 'system' %}
+          <a class="nav-link" href="{{ item.route }}" title="{{ item.label }}">
+            <span class="nav-label">{{ item.label }}</span><span class="nav-icon" aria-hidden="true"><i data-feather="{{ item.icon }}"></i></span>
+          </a>
+          {% endfor %}
+        </div>
+        <p class="nav-filter-empty" data-nav-filter-empty hidden>没有匹配的页面</p>
+      </nav>
 
       <div class="user-profile">
         {% set avatar_src = (admin_user.avatar_url if admin_user and admin_user.avatar_url else '/static/assets/avatar-placeholder.svg') %}
@@ -53,25 +94,10 @@
         </div>
         {% if admin_user and not admin_user.is_legacy_basic_auth %}
         <form class="logout-form" action="/logout" method="post">
-          <button class="logout-button" type="submit" aria-label="退出登录"><i data-feather="log-out"></i></button>
+          <button class="logout-button" type="submit" aria-label="退出登录" title="退出登录"><i data-feather="log-out"></i></button>
         </form>
         {% endif %}
       </div>
-
-      <nav class="nav-menu" data-nav-list aria-label="主导航">
-        {% for item in navigation_items if item.section == 'primary' %}
-        <a class="nav-link" href="{{ item.route }}">
-          <i data-feather="{{ item.icon }}"></i><span>{{ item.label }}</span>
-        </a>
-        {% endfor %}
-        <div class="nav-menu-divider">
-          {% for item in navigation_items if item.section == 'system' %}
-          <a class="nav-link" href="{{ item.route }}">
-            <i data-feather="{{ item.icon }}"></i><span>{{ item.label }}</span>
-          </a>
-          {% endfor %}
-        </div>
-      </nav>
     </aside>
 
     <main class="main-content {% block main_class %}{% endblock %}" id="main-content" data-reveal="main" data-console-main data-console-tab-title="{{ page_breadcrumb | striptags | trim | e }}">
@@ -97,7 +123,8 @@
               <input id="global-tracking-input" type="search" name="tracking_number" placeholder="搜索运单号，回车查询" autocomplete="off" data-global-tracking-input>
             </form>
           </div>
-          <div class="top-header-actions top-header-actions--page">{{ page_actions_content | safe }}</div>
+          <button class="header-icon-button" type="button" data-console-refresh aria-label="刷新当前页面" title="刷新"><i data-feather="refresh-cw"></i></button>
+          {% if page_actions_content | trim %}<div class="top-header-actions top-header-actions--page">{{ page_actions_content | safe }}</div>{% endif %}
         </div>
       </header>
 
@@ -187,7 +214,7 @@
 
   <script id="mobile-navigation-data" type="application/json">{{ {'routes': mobile_nav, 'navigation': mobile_navigation_items, 'isSyncSupported': mobile_nav_sync_supported} | tojson }}</script>
   <script src="/static/vendor/feather-4.29.2.min.js"></script>
-  <script src="/static/console_ui.js?v=v32"></script>
+  <script src="/static/console_ui.js?v=20261110-spec"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

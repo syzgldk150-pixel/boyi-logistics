@@ -20,132 +20,173 @@
 <style>
   .waybill-page, .waybill-workbench, .waybill-list-panel { min-width: 0; }
   .waybill-page [hidden] { display: none !important; }
-  .waybill-list-panel { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--canvas); }
-  .waybill-filter-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; padding: 16px; }
-  .waybill-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-  .waybill-filter-form > .waybill-field { flex: 1 1 120px; }
-  .waybill-filter-form > .waybill-field:first-of-type { flex: 2 1 240px; }
-  .waybill-filter-form > .waybill-field:nth-of-type(2) { flex: 2 1 240px; }
-  .waybill-label { font-size: 0.8125rem; color: var(--text); font-weight: 500; }
-  .waybill-search-shell, .waybill-date-trigger, .waybill-select, .waybill-edit-input { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--canvas); color: var(--text-strong); }
-  .waybill-search-shell { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
-  .waybill-search-shell input { width: 100%; min-width: 0; min-height: 40px; border: 0; outline: none; background: transparent; }
+  .waybill-workbench { display: grid; gap: var(--card-gap); }
+  .waybill-filter-card, .waybill-list-panel { border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); }
+  .waybill-filter-card { position: relative; z-index: 5; }
+  .waybill-list-panel { overflow: hidden; }
+  .waybill-filter-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 12px 16px 13px; }
+  .waybill-field { display: flex; flex-direction: column; gap: var(--field-gap); min-width: 0; }
+  .waybill-filter-form > .waybill-field { flex: 0 1 118px; min-width: 96px; }
+  .waybill-filter-form > .waybill-field:first-of-type { flex: 1 1 200px; min-width: 150px; }
+  .waybill-filter-form > .waybill-field:nth-of-type(2) { flex: 0 1 238px; min-width: 200px; }
+  .waybill-label { font-size: var(--fs-label); color: var(--text-secondary); font-weight: 500; }
+  .waybill-search-shell, .waybill-date-trigger, .waybill-select, .waybill-edit-input { width: 100%; height: 30px; min-height: 30px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); font-size: var(--fs-body); }
+  .waybill-search-shell { display: flex; align-items: center; gap: 8px; padding: 0 12px; color: var(--text-muted); }
+  .waybill-search-shell .feather { width: 14px; height: 14px; }
+  .waybill-search-shell input { width: 100%; min-width: 0; height: 28px; min-height: 0; border: 0; outline: none; background: transparent; color: var(--text-primary); }
   .waybill-search-shell:focus-within, .waybill-page :is(button, a, input, select, textarea):focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
   .waybill-search-shell input:focus-visible { outline: none; }
-  .waybill-page input::placeholder, .waybill-page textarea::placeholder { color: var(--muted); }
-  .waybill-select { padding: 0 12px; appearance: auto; font-size: 0.875rem; }
+  .waybill-page input::placeholder, .waybill-page textarea::placeholder { color: var(--text-muted); }
+  .waybill-select { padding: 0 10px; appearance: auto; }
   .waybill-date-picker, .waybill-tool-wrap { position: relative; min-width: 0; }
-  .waybill-date-trigger { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 0 12px; cursor: pointer; }
+  .waybill-date-trigger { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 0 12px; cursor: pointer; font-family: var(--font-num); }
+  .waybill-date-trigger .feather { width: 14px; height: 14px; color: var(--text-tertiary); }
   .waybill-date-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .waybill-date-value.is-placeholder, .waybill-muted-line, .waybill-cell-sub, .waybill-meta-count { color: var(--muted); }
-  .waybill-calendar-popover, .waybill-popover { position: absolute; z-index: 30; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--canvas); box-shadow: var(--shadow-overlay); }
-  .waybill-calendar-popover { top: calc(100% + 8px); right: 0; width: 336px; max-width: calc(100vw - 32px); }
-  .waybill-calendar-head { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .waybill-calendar-title { text-align: center; font-weight: 600; }
-  .waybill-calendar-nav { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-md); cursor: pointer; color: var(--text); }
-  .waybill-calendar-nav:hover, .waybill-calendar-day:hover { background: var(--surface-muted); }
+  .waybill-date-value.is-placeholder, .waybill-muted-line, .waybill-cell-sub, .waybill-meta-count { color: var(--text-muted); }
+  .waybill-calendar-popover, .waybill-popover { position: absolute; z-index: 30; padding: 12px; border: 1px solid var(--line-default); border-radius: var(--r-block); background: var(--bg-surface); box-shadow: var(--shadow-overlay); }
+  .waybill-calendar-popover { top: calc(100% + 6px); left: 0; width: 300px; max-width: calc(100vw - 32px); }
+  .waybill-calendar-head { display: grid; grid-template-columns: 28px 1fr 28px; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .waybill-calendar-title { text-align: center; font-size: var(--fs-section); font-weight: 500; }
+  .waybill-calendar-nav { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--r-small-button); cursor: pointer; color: var(--text-secondary); }
+  .waybill-calendar-nav:hover, .waybill-calendar-day:hover { background: var(--bg-subtle); }
   .waybill-calendar-weekdays, .waybill-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
-  .waybill-calendar-weekdays { font-size: 0.8125rem; color: var(--muted); }
-  .waybill-calendar-day { min-height: 40px; padding: 4px; border-radius: var(--radius-sm); color: var(--text); cursor: pointer; }
-  .waybill-calendar-day.is-outside { color: var(--muted); }
-  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px var(--line); }
-  .waybill-calendar-day.is-in-range { background: var(--surface-muted); }
-  .waybill-calendar-day.is-start, .waybill-calendar-day.is-end { background: var(--primary); color: var(--canvas); }
-  .waybill-calendar-presets, .waybill-calendar-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
-  .waybill-calendar-preset { flex: 1; min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; }
+  .waybill-calendar-weekdays { height: 28px; align-items: center; font-size: var(--fs-caption); color: var(--text-muted); }
+  .waybill-calendar-day { height: 32px; min-height: 32px; padding: 0; border-radius: var(--r-small-button); color: var(--text-primary); font: 400 var(--fs-body)/1 var(--font-num); cursor: pointer; }
+  .waybill-calendar-day.is-outside { color: var(--text-disabled); }
+  .waybill-calendar-day.is-today { box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .waybill-calendar-day.is-in-range { border-radius: 0; background: var(--bg-selected); }
+  .waybill-calendar-day.is-start, .waybill-calendar-day.is-end { border-radius: var(--r-small-button); background: var(--text-primary); color: var(--text-on-dark); }
+  .waybill-calendar-presets, .waybill-calendar-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; }
+  .waybill-calendar-foot { padding-top: 10px; border-top: 1px solid var(--line-subtle); }
+  .waybill-calendar-preset { flex: 1; height: 28px; min-height: 28px; border: 1px solid var(--line-default); border-radius: var(--r-small-button); font-size: var(--fs-label); cursor: pointer; }
+  .waybill-calendar-preset:hover { background: var(--bg-subtle); }
   .waybill-filter-actions, .waybill-toolbar-actions, .waybill-pager, .waybill-page-size-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .waybill-filter-actions { margin-left: auto; }
-  .waybill-filter-count { min-width: 24px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text-strong); text-align: center; }
-  .waybill-popover { top: calc(100% + 8px); right: 0; width: 264px; max-width: calc(100vw - 32px); }
-  .waybill-popover-title { margin: 0 0 12px; font-size: 0.875rem; font-weight: 600; }
-  .waybill-popover-grid { display: grid; gap: 12px; }
-  .waybill-check { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+  .waybill-filter-actions :is(.ghost-btn, .primary-btn) { height: 30px; min-height: 30px; }
+  .waybill-filter-count { min-width: 18px; padding: 0 4px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font: 400 var(--fs-caption)/16px var(--font-num); text-align: center; }
+  .waybill-popover { top: calc(100% + 6px); right: 0; width: 240px; max-width: calc(100vw - 32px); }
+  .waybill-popover-title { margin: 0 0 10px; font-size: var(--fs-section); font-weight: 500; }
+  .waybill-popover-grid { display: grid; gap: 10px; }
+  .waybill-check { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: var(--fs-body); font-weight: 400 !important; }
   .waybill-field.waybill-check { flex-direction: row; justify-content: flex-start; }
-  .waybill-check input { appearance: auto; width: 16px; height: 16px; accent-color: var(--primary); }
-  .waybill-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .waybill-check input { appearance: auto; width: 14px; height: 14px; accent-color: var(--brand-red); }
+  .waybill-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 48px; padding: 8px 16px; }
   .waybill-toolbar-actions { margin-left: auto; }
-  .waybill-toolbar-actions > .waybill-select { width: auto; }
-  .waybill-meta-count { font-size: 0.8125rem; white-space: nowrap; }
-  .waybill-refresh-status { flex: 1 1 200px; margin: 0; padding: 8px 12px; font-size: 0.8125rem; }
-  .waybill-notice { margin: 0 16px 12px; }
-  .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; border-top: 1px solid var(--line); }
-  .waybill-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; text-align: left; }
-  .waybill-table th { position: sticky; top: 0; background: var(--surface); color: var(--text); font-weight: 600; white-space: nowrap; }
-  .waybill-table :is(th, td) { padding: 8px 12px; border-bottom: 1px solid var(--line); }
-  .waybill-table tbody tr { height: 48px; cursor: pointer; }
-  .waybill-table tbody tr:hover, .waybill-table tbody tr.is-selected { background: var(--surface); }
-  .waybill-no-link { padding: 0; font-weight: 600; color: var(--text-strong); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .waybill-no-link:hover { text-decoration: underline; }
-  .waybill-source-label { display: inline-block; font-size: 0.8125rem; color: var(--muted); }
-  .waybill-cell-main, .waybill-cell-sub, .waybill-muted-line { line-height: 16px; white-space: nowrap; }
-  .waybill-cell-main { color: var(--text-strong); }
-  .waybill-cell-sub, .waybill-muted-line { font-size: 0.8125rem; }
-  .waybill-col-fee { text-align: right; }
-  .waybill-fee { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-strong); }
-  .waybill-row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-  .waybill-row-actions :is(button, a) { display: inline-flex; align-items: center; min-height: 40px; padding: 4px; line-height: 1; color: var(--text); cursor: pointer; }
-  .waybill-status-pill { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text); font-size: 0.8125rem; white-space: nowrap; }
-  .waybill-status-pill[data-tone="info"] { background: var(--accent-soft); color: var(--info-ink); }
-  .waybill-status-pill[data-tone="success"] { background: var(--success-soft); color: var(--success-ink); }
-  .waybill-status-pill[data-tone="warning"] { background: var(--warning-soft); color: var(--warning-ink); }
-  .waybill-status-pill[data-tone="danger"] { background: var(--danger-soft); color: var(--danger-ink); }
-  .waybill-empty { display: grid; place-items: center; min-height: 240px; padding: 32px; text-align: center; color: var(--muted); }
-  .waybill-empty .feather { margin: 0 auto 12px; }
-  .waybill-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
-  .waybill-page-size-control .waybill-select { width: auto; }
+  .waybill-toolbar-actions > .waybill-select { width: auto; height: 30px; }
+  .waybill-toolbar-actions .ghost-btn { height: 30px; min-height: 30px; }
+  .waybill-meta-count { font-size: var(--fs-body); color: var(--text-muted); white-space: nowrap; }
+  .waybill-meta-count strong, .waybill-total { color: var(--text-primary); font-weight: 500; }
+  .waybill-refresh-status { flex: 0 1 auto; margin: 0; padding: 0 8px; height: 20px; display: inline-flex; align-items: center; border: 0; border-radius: var(--r-chip); background: var(--status-warn-soft); color: var(--status-warn); font-size: var(--fs-caption); }
+  .waybill-notice { margin: 0 16px 10px; }
+  .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; }
+  .waybill-table { width: 100%; min-width: 1062px; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-body); text-align: left; }
+  .waybill-table th { position: sticky; top: 0; z-index: 1; height: 36px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; white-space: nowrap; border-bottom: 1px solid var(--line-default); }
+  .waybill-table td { padding: 0 0 0 16px; border-bottom: 1px solid var(--line-row); vertical-align: middle; overflow: hidden; }
+  .waybill-table tbody tr:last-child td { border-bottom: 0; }
+  .waybill-table th[data-col="no"] { width: 124px; }
+  .waybill-table th[data-col="date"] { width: 84px; }
+  .waybill-table th[data-col="receiver"] { width: 102px; }
+  .waybill-table th[data-col="sender"] { width: 94px; }
+  .waybill-table th[data-col="destination"] { width: 116px; }
+  .waybill-table th[data-col="goods"] { width: 82px; }
+  .waybill-table th[data-col="payment"] { width: 64px; }
+  .waybill-table th[data-col="fee"] { width: 88px; }
+  .waybill-table th[data-col="status"] { width: 234px; }
+  .waybill-table th[data-w="actions"] { width: 74px; }
+  .waybill-table :is(th, td).waybill-col-fee { padding: 0 16px 0 0; text-align: right; }
+  .waybill-table tbody tr { height: 56px; cursor: pointer; }
+  .waybill-table tbody tr:hover, .waybill-table tbody tr.is-selected { background: var(--bg-subtle); }
+  .waybill-no-link { padding: 0; font: 500 var(--fs-body)/16px var(--font-num); color: var(--text-primary); cursor: pointer; white-space: nowrap; }
+  .waybill-no-link:hover { color: var(--brand-red); }
+  .waybill-source-label { display: block; margin-top: 2px; font-size: var(--fs-caption); color: var(--text-muted); }
+  .waybill-cell-main, .waybill-cell-sub, .waybill-muted-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .waybill-cell-main { line-height: 16px; color: var(--text-primary); }
+  .waybill-cell-sub, .waybill-muted-line { margin-top: 2px; font-size: var(--fs-caption); line-height: 14px; font-family: var(--font-num); }
+  .waybill-table td.waybill-col-date { overflow: visible; }
+  .waybill-col-date .waybill-cell-main { font-family: var(--font-num); font-variant-numeric: normal; overflow: visible; }
+  .waybill-fee { font-family: var(--font-num); font-weight: 500; white-space: nowrap; color: var(--text-primary); }
+  .waybill-col-status .waybill-cell-sub { padding-right: 12px; font-family: var(--font-ui); }
+  .waybill-table td.waybill-col-actions { padding-left: 12px; }
+  .waybill-row-actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  .waybill-row-actions :is(button, a) { display: inline-flex; align-items: center; min-height: 24px; padding: 0; line-height: 1; color: var(--text-secondary); font-size: var(--fs-body); cursor: pointer; }
+  .waybill-row-actions :is(button, a):hover { color: var(--text-primary); }
+  .waybill-status-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-caption); line-height: 1; white-space: nowrap; }
+  .waybill-status-pill::before { content: ""; width: 5px; height: 5px; border-radius: 999px; background: currentColor; }
+  .waybill-status-pill[data-tone="info"] { background: var(--status-info-soft); color: var(--status-info); }
+  .waybill-status-pill[data-tone="success"] { background: var(--status-success-soft); color: var(--status-success); }
+  .waybill-status-pill[data-tone="warning"] { background: var(--status-warn-soft); color: var(--status-warn); }
+  .waybill-status-pill[data-tone="danger"] { background: var(--status-danger-soft); color: var(--status-danger); }
+  .waybill-empty { min-height: 320px; }
+  .waybill-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 6px 16px; border-top: 1px solid var(--line-subtle); }
+  .waybill-page-size-control { color: var(--text-muted); font-size: var(--fs-body); font-weight: 400 !important; }
+  .waybill-page-size-control .waybill-select { width: auto; height: 26px; min-height: 26px; border: 0; background-color: var(--bg-subtle); }
+  .waybill-pager :is(.ghost-btn) { height: 28px; min-height: 28px; }
+  /* 1280 breakpoint (⑨): drop 发货人 / 结算方式, keep key, status and actions. */
+  @media (min-width: 640px) and (max-width: 1439px) {
+    .waybill-table { min-width: 902px; }
+    .waybill-table :is(th, td)[data-col="sender"], .waybill-table :is(th, td)[data-col="payment"] { display: none; }
+    .waybill-table th[data-col="no"] { width: 120px; }
+    .waybill-table th[data-col="date"] { width: 88px; }
+    .waybill-table th[data-col="receiver"] { width: 104px; }
+    .waybill-table th[data-col="destination"] { width: 122px; }
+    .waybill-table th[data-col="goods"] { width: 96px; }
+    .waybill-table th[data-col="fee"] { width: 84px; }
+    .waybill-table th[data-col="status"] { width: 204px; }
+    .waybill-table th[data-w="actions"] { width: 84px; }
+  }
   .waybill-detail-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
   .waybill-detail-dialog:not([open]) { display: none; }
-  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; font-size: 0.875rem; }
+  .waybill-detail-content { max-height: calc(100dvh - 48px); display: flex; flex-direction: column; font-size: var(--fs-body); }
   .waybill-detail-head { align-items: center; padding: 16px 24px 12px; }
   .waybill-detail-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .waybill-detail-title-row .waybill-detail-title { font-size: 1.125rem; font-weight: 600; overflow-wrap: anywhere; }
-  .waybill-detail-date { color: var(--muted); margin-top: 4px; font-size: 0.8125rem; }
+  .waybill-detail-title-row .waybill-detail-title { font-size: var(--fs-modal-title); font-weight: 500; overflow-wrap: anywhere; }
+  .waybill-detail-date { color: var(--muted); margin-top: 4px; font-size: var(--fs-body); }
   .waybill-detail-body { overflow-y: auto; min-height: 0; padding: 0 24px; }
   .waybill-detail-section { padding: 16px 0; border-bottom: 1px solid var(--line); }
   .waybill-detail-section:last-child { border-bottom: 0; }
-  .waybill-detail-section h3 { margin: 0 0 12px; font-size: 0.875rem; font-weight: 600; color: var(--text-strong); }
+  .waybill-detail-section h3 { margin: 0 0 12px; font-size: var(--fs-body); font-weight: 500; color: var(--text-strong); }
   .waybill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
   .waybill-parties { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 16px 0 12px; }
   .waybill-party { min-width: 0; padding: 12px 12px; border-radius: var(--radius-lg); background: var(--surface); }
-  .waybill-party-role { margin: 0 0 4px; color: var(--muted); font-size: 0.8125rem; font-weight: 500; }
+  .waybill-party-role { margin: 0 0 4px; color: var(--muted); font-size: var(--fs-body); font-weight: 500; }
   .waybill-party-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
-  .waybill-party-main strong { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+  .waybill-party-main strong { font-weight: 500; color: var(--text-strong); overflow-wrap: anywhere; }
   .waybill-party-phone { color: var(--text); font-variant-numeric: tabular-nums; }
-  .waybill-party-address { margin: 4px 0 0; color: var(--text); font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; }
+  .waybill-party-address { margin: 4px 0 0; color: var(--text); font-size: var(--fs-body); line-height: 1.5; overflow-wrap: anywhere; }
   .waybill-detail-facts { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0 24px; padding: 4px 0 12px; border-bottom: 1px solid var(--line); }
   .waybill-facts-block { min-width: 0; }
-  .waybill-facts-block h3 { margin: 0; padding: 8px 0 4px; color: var(--muted); font-size: 0.8125rem; font-weight: 500; }
+  .waybill-facts-block h3 { margin: 0; padding: 8px 0 4px; color: var(--muted); font-size: var(--fs-body); font-weight: 500; }
   .waybill-kv { margin: 0; }
   .waybill-kv-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: baseline; gap: 12px; padding: 4px 0; line-height: 1.5; }
-  .waybill-kv-row dt { color: var(--muted); font-size: 0.8125rem; }
+  .waybill-kv-row dt { color: var(--muted); font-size: var(--fs-body); }
   .waybill-kv-row dd { margin: 0; color: var(--text-strong); overflow-wrap: anywhere; white-space: pre-wrap; }
   .waybill-kv-row dd.is-money { text-align: right; font-variant-numeric: tabular-nums; }
   .waybill-kv--remark { padding: 8px 0; border-bottom: 1px solid var(--line); }
   .waybill-kv-empty { color: var(--muted); padding: 4px 0; }
   .waybill-link { padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
   .waybill-link-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-  .waybill-link-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 0.8125rem; cursor: pointer; }
+  .waybill-link-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: var(--fs-body); cursor: pointer; }
   .waybill-link-toggle:hover { text-decoration: underline; }
   .waybill-link-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 4px 84px; }
   .waybill-link-form[hidden] { display: none; }
   .waybill-link-platform { width: auto; min-width: 104px; }
   .waybill-link-no { flex: 1 1 160px; min-width: 0; }
-  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8125rem; color: var(--muted); padding: 12px 0 12px; }
+  .waybill-detail-times { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: var(--fs-body); color: var(--muted); padding: 12px 0 12px; }
   .waybill-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line); background: var(--canvas); }
   .waybill-detail-action-group { display: flex; gap: 8px; flex-wrap: wrap; }
   .waybill-detail-actions form { margin: 0; }
-  .waybill-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--danger-soft); color: var(--danger-ink); cursor: pointer; }
+  .waybill-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--danger-soft); color: var(--danger-ink); cursor: pointer; }
   .waybill-danger-btn:hover { background: var(--danger-soft); }
   .waybill-danger-btn:disabled { opacity: .55; cursor: not-allowed; }
   .waybill-detail-message, .waybill-print-status { margin: 12px 24px; }
   .waybill-history.waybill-detail-section { padding: 4px 0; }
-  .waybill-history summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; color: var(--text-strong); }
+  .waybill-history summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 8px; font-size: var(--fs-body); font-weight: 500; color: var(--text-strong); }
   .waybill-history summary::before { content: "＋"; }
   .waybill-history[open] summary::before { content: "−"; }
   .waybill-history-list { margin: 0; padding-left: 24px; }
   .waybill-history-list > li { padding: 12px 0; border-bottom: 1px solid var(--line); }
   .waybill-history-list p { margin: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-  .waybill-history-meta { color: var(--muted); font-size: 0.8125rem; }
+  .waybill-history-meta { color: var(--muted); font-size: var(--fs-body); }
   .waybill-edit-form { min-height: 0; display: flex; flex-direction: column; }
   .waybill-edit-input { padding: 8px 12px; }
   .waybill-edit-input:is(textarea) { min-height: 80px; resize: vertical; }
@@ -167,14 +208,14 @@
     .waybill-table thead { display: none; }
     .waybill-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; padding: 12px 16px; gap: 8px 12px; border-bottom: 1px solid var(--line); }
     .waybill-table td { display: block; padding: 0; border: 0; min-width: 0; }
-    .waybill-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 0.8125rem; }
+    .waybill-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: var(--fs-body); }
     .waybill-table .waybill-col-no { grid-column: 1 / -1; }
     .waybill-table .waybill-col-status { grid-column: 2; grid-row: 2; text-align: right; }
     .waybill-table .waybill-col-actions { grid-column: 1 / -1; }
     .waybill-no-link, .waybill-cell-main, .waybill-cell-sub, .waybill-muted-line { white-space: normal; overflow-wrap: anywhere; }
     .waybill-col-fee { text-align: left; }
     .waybill-row-actions { justify-content: flex-end; }
-    .waybill-row-actions :is(button, a), .waybill-page :is(.ghost-btn, .primary-btn, .waybill-danger-btn, .waybill-select, .waybill-date-trigger, .waybill-search-shell, .waybill-edit-input, .waybill-calendar-nav, .waybill-calendar-day, .waybill-calendar-preset, .waybill-check, .extension-dialog-close, .waybill-no-link) { min-height: 44px; }
+    .waybill-row-actions :is(button, a), .waybill-page :is(.ghost-btn, .primary-btn, .waybill-danger-btn, .waybill-select, .waybill-date-trigger, .waybill-search-shell, .waybill-edit-input, .waybill-calendar-nav, .waybill-calendar-day, .waybill-calendar-preset, .waybill-check, .extension-dialog-close, .waybill-no-link) { min-height: 34px; }
     .waybill-page .extension-dialog-close { min-width: 44px; }
     .waybill-footer { justify-content: center; }
     .waybill-pager { justify-content: center; }
@@ -296,7 +337,7 @@
 
 <section class="waybill-page">
   <div class="waybill-workbench" data-waybill-ajax-panel data-waybill-source-refresh='{{ {"allowed": source_refresh is defined and source_refresh is not none, "source": filters.source, "date_from": filters.date_from, "date_to": filters.date_to, "reason": (sync_status.warnings | join("；")) if sync_status else ""} | tojson }}' >
-    <section class="waybill-list-panel">
+    <section class="waybill-filter-card" aria-label="筛选">
       <form id="waybillFilterForm" class="waybill-filter-form" method="get" action="/waybills" data-waybill-filter-form>
         <input type="hidden" name="page" value="1">
         <div class="waybill-field">
@@ -382,9 +423,11 @@
           <button class="primary-btn" type="submit" data-waybill-query><i data-feather="search"></i> 查询</button>
         </div>
       </form>
+    </section>
 
+    <section class="waybill-list-panel" aria-label="运单列表">
       <div class="waybill-toolbar">
-        <div class="waybill-meta-count">共 {{ pagination.total }} 条 · 显示 {{ pagination.offset + 1 if pagination.total else 0 }}–{{ pagination.offset + rows|length }}</div>
+        <div class="waybill-meta-count"><span class="waybill-total">共 {{ pagination.total }} 条</span>&nbsp;&nbsp;显示 {{ pagination.offset + 1 if pagination.total else 0 }}–{{ pagination.offset + rows|length }}</div>
         <p class="waybill-refresh-status notice" data-waybill-refresh-status aria-live="polite" role="status" hidden></p>
         <div class="waybill-toolbar-actions">
           <select class="waybill-select" name="sort" form="waybillFilterForm" data-waybill-sort aria-label="排序方式">
@@ -435,9 +478,9 @@
               <th data-col="destination">到站</th>
               <th class="waybill-col-goods" data-col="goods">货物</th>
               <th data-col="payment">结算方式</th>
-              <th class="waybill-col-fee" data-col="fee">费用(元)</th>
+              <th class="waybill-col-fee" data-col="fee">费用（元）</th>
               <th class="waybill-col-status" data-col="status">状态</th>
-              <th class="waybill-col-actions">操作</th>
+              <th class="waybill-col-actions" data-w="actions">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -467,7 +510,7 @@
               <td class="waybill-col-fee" data-col="fee" data-label="费用">
                 <div class="waybill-fee">{% if row.opening_cost and ((row.source in ['ronghui', 'yunda']) or row.freight_fee) %}¥{{ row.opening_cost }}{% else %}无数据{% endif %}</div>
               </td>
-              <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}</td>
+              <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}{% if row.scan_status and not row.linked_status_note %}<div class="waybill-cell-sub" title="{{ row.scan_status }}">{{ row.scan_status }}</div>{% endif %}</td>
               <td class="waybill-col-actions"><div class="waybill-row-actions"><button type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情">详情</button><a href="{{ row.tracking_url }}" data-console-navigate aria-label="跟踪 {{ row.waybill_no }} 轨迹">轨迹</a></div></td>
             </tr>
             {% endfor %}
@@ -479,11 +522,10 @@
         </template>
         {% endfor %}
         {% else %}
-        <div class="waybill-empty">
-          <div>
-            <i data-feather="inbox"></i>
-            <div>暂无符合条件的已开单运单</div>
-          </div>
+        <div class="waybill-empty state-block">
+          <i data-feather="inbox"></i>
+          <p class="state-block__title">没有符合条件的记录</p>
+          <p class="state-block__desc">调整关键词、开单日期或状态后重新查询</p>
         </div>
         {% endif %}
       </div>

@@ -210,7 +210,7 @@
         if (getTabKey(linkUrl) !== tabKey) {
           continue;
         }
-        const label = normalizeLabel(link.querySelector("span")?.textContent || link.textContent);
+        const label = normalizeLabel(link.querySelector(".nav-label, span")?.textContent || link.textContent);
         const icon = getIconNameFromNode(link.querySelector("[data-feather], .feather"));
         return { label, icon };
       }
@@ -1384,6 +1384,127 @@
     });
   }
 
+  function readSidebarPreference(key) {
+    try { return window.localStorage.getItem(key); } catch (_error) { return null; }
+  }
+
+  function writeSidebarPreference(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (_error) { /* per-viewer convenience only */ }
+  }
+
+  function initSidebarShell() {
+    const root = document.documentElement;
+    if (root.hasAttribute("data-sidebar-bound")) {
+      return;
+    }
+    root.setAttribute("data-sidebar-bound", "true");
+    const sidebar = document.querySelector(".sidebar");
+    if (!sidebar) {
+      return;
+    }
+
+    const collapseButton = sidebar.querySelector("[data-sidebar-collapse]");
+    const applyCollapsed = (collapsed) => {
+      if (collapsed) root.setAttribute("data-sidebar", "collapsed");
+      else root.removeAttribute("data-sidebar");
+      if (collapseButton) {
+        collapseButton.setAttribute("aria-pressed", collapsed ? "true" : "false");
+        collapseButton.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
+        collapseButton.title = collapsed ? "展开侧栏" : "收起侧栏";
+      }
+    };
+    applyCollapsed(readSidebarPreference("console.sidebar") === "collapsed");
+    collapseButton?.addEventListener("click", () => {
+      const collapsed = root.getAttribute("data-sidebar") !== "collapsed";
+      applyCollapsed(collapsed);
+      writeSidebarPreference("console.sidebar", collapsed ? "collapsed" : "expanded");
+    });
+
+    sidebar.querySelectorAll("[data-nav-group]").forEach((group) => {
+      const toggle = group.querySelector("[data-nav-group-toggle]");
+      const key = `console.nav-group.${group.dataset.navGroup}`;
+      if (readSidebarPreference(key) === "closed" && !group.querySelector(".nav-link.active")) {
+        toggle?.setAttribute("aria-expanded", "false");
+      }
+      toggle?.addEventListener("click", () => {
+        if (root.getAttribute("data-sidebar") === "collapsed") {
+          applyCollapsed(false);
+          writeSidebarPreference("console.sidebar", "expanded");
+          toggle.setAttribute("aria-expanded", "true");
+          return;
+        }
+        const open = toggle.getAttribute("aria-expanded") !== "true";
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        writeSidebarPreference(key, open ? "open" : "closed");
+      });
+    });
+
+    const filterInput = sidebar.querySelector("[data-nav-filter]");
+    const menu = sidebar.querySelector(".nav-menu");
+    const empty = sidebar.querySelector("[data-nav-filter-empty]");
+    const links = () => Array.from(sidebar.querySelectorAll(".nav-menu .nav-link"));
+    const applyFilter = () => {
+      const query = String(filterInput?.value || "").trim().toLowerCase();
+      let visible = 0;
+      links().forEach((link) => {
+        const groupLabel = link.closest("[data-nav-group]")?.querySelector("[data-nav-group-toggle] .nav-label")?.textContent || "";
+        const text = `${link.textContent} ${groupLabel}`.toLowerCase();
+        const match = !query || text.includes(query);
+        link.hidden = !match;
+        if (match) visible += 1;
+      });
+      sidebar.querySelectorAll("[data-nav-group]").forEach((group) => {
+        group.hidden = Boolean(query) && !group.querySelector(".nav-link:not([hidden])");
+      });
+      const divider = sidebar.querySelector(".nav-menu-divider");
+      if (divider) divider.hidden = Boolean(query) && !divider.querySelector(".nav-link:not([hidden])");
+      menu?.classList.toggle("is-filtering", Boolean(query));
+      if (empty) empty.hidden = !query || visible > 0;
+    };
+    filterInput?.addEventListener("input", applyFilter);
+    filterInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        filterInput.value = "";
+        applyFilter();
+        filterInput.blur();
+        return;
+      }
+      if (event.key === "Enter") {
+        const first = links().find((link) => !link.hidden);
+        if (first) {
+          event.preventDefault();
+          first.click();
+          filterInput.value = "";
+          applyFilter();
+        }
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && String(event.key).toLowerCase() === "k" && filterInput) {
+        event.preventDefault();
+        if (root.getAttribute("data-sidebar") === "collapsed") applyCollapsed(false);
+        filterInput.focus();
+        filterInput.select();
+      }
+    });
+
+    document.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-console-refresh]") : null;
+      if (!button) {
+        return;
+      }
+      event.preventDefault();
+      button.classList.add("is-spinning");
+      const url = new URL(window.location.href);
+      if (openTabs.has(getTabKey(url))) {
+        Promise.resolve(ensureModuleTab(url, { reload: true, pushState: false }))
+          .finally(() => button.classList.remove("is-spinning"));
+        return;
+      }
+      window.location.reload();
+    });
+  }
+
   function initPage(root = document) {
     if (root === document) {
       ensureInitialTab();
@@ -1403,6 +1524,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     initSubmitStates();
+    initSidebarShell();
     initPartialSidebarNavigation();
     initPage();
   });
