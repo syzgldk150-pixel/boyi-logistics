@@ -801,7 +801,9 @@
   .receipt-review-field span { color: var(--text-muted); font-size: var(--fs-label); font-weight: 400; }
   .receipt-review-field strong { margin-top: 5px; color: var(--text-primary); font-weight: 400; }
   @media (max-width: 1439px) and (min-width: 768px) {
-    .receipt-filter-form { grid-template-columns: minmax(180px, 1.3fr) repeat(3, minmax(104px, .7fr)) minmax(220px, 1fr) auto; }
+    .receipt-filter-form { grid-template-columns: minmax(150px, 1.3fr) repeat(3, minmax(96px, .7fr)) minmax(200px, 1fr) auto; }
+    .receipt-filter-form .receipt-date-field { grid-column: auto; min-width: 0; }
+    .receipt-filter-form .receipt-query-btn { width: auto; }
   }
 </style>
 

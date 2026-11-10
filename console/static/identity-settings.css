@@ -57,13 +57,13 @@
 .identity-form-actions .primary-btn { height: 32px; }
 .identity-active-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: var(--fs-label); font-weight: 400 !important; }
 .account-admin-panel .account-table-wrap { border: 0; border-top: 1px solid var(--line-subtle); border-radius: 0; }
-.account-admin-panel .account-table { min-width: 1062px; table-layout: fixed; }
+.account-admin-panel .account-table { min-width: 860px; table-layout: fixed; }
 .account-admin-panel .account-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); }
-.account-admin-panel .account-table th:nth-child(1) { width: 260px; }
-.account-admin-panel .account-table th:nth-child(2) { width: 300px; }
-.account-admin-panel .account-table th:nth-child(3) { width: 120px; }
-.account-admin-panel .account-table th:nth-child(4) { width: 260px; }
-.account-admin-panel .account-table th:nth-child(5) { width: 122px; }
+.account-admin-panel .account-table th:nth-child(1) { width: 24.5%; }
+.account-admin-panel .account-table th:nth-child(2) { width: 28.2%; }
+.account-admin-panel .account-table th:nth-child(3) { width: 11.3%; }
+.account-admin-panel .account-table th:nth-child(4) { width: 22.5%; }
+.account-admin-panel .account-table th:nth-child(5) { width: 13.5%; }
 .account-admin-panel .account-table td { height: 56px; padding: 8px 16px; border-bottom-color: var(--line-row); font-size: var(--fs-body); color: var(--text-primary); }
 .account-admin-panel .account-table tr:last-child td { border-bottom: 0; }
 .account-admin-panel .account-identity strong { font-weight: 500; }

@@ -3003,14 +3003,6 @@ body .account-admin-panel {
   box-shadow: none;
 }
 
-body .waybill-filter-form,
-body .receipt-filter-form,
-body .tracking-filter-form,
-body .finance-filter-form,
-body .customer-service-filter-form,
-body .line-haul-toolbar-panel {
-  background: var(--surface);
-}
 
 body .waybill-search-shell:focus-within,
 body .waybill-date-trigger:focus-visible,
@@ -3701,7 +3693,6 @@ body [class$="-dialog"], body [class*="-dialog "], body [class$="-modal"], body 
 .customer-service-table tbody tr.is-attention td { background: var(--status-warn-surface); }
 .customer-service-table tbody tr.is-attention:hover td { background: var(--status-warn-soft); }
 .customer-service-table tbody tr:last-child td { border-bottom: 0; }
-body .customer-service-filter-form { background: transparent; }
 .customer-service-tpl-count[hidden] { display: none !important; }
 @media (min-width: 768px) {
   .top-header-search { min-width: 140px; flex: 0 3 var(--header-search-w); }
@@ -3894,8 +3885,52 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
 .harness-icon-button .feather { width: 15px; height: 15px; }
 .harness-feedback { border-radius: var(--r-block); font-size: var(--fs-label); }
 .harness-footnote { margin-top: 14px; color: var(--text-muted); font-size: var(--fs-caption); }
-body .waybill-filter-card .waybill-filter-form { background: transparent; }
 .header-icon-button { display: inline-grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-secondary); cursor: pointer; }
 .header-icon-button .feather { width: 15px; height: 15px; }
 @media (max-width: 767px) { .header-icon-button { display: none; } }
 .line-haul-table tr[hidden] { display: none; }
+
+/* ---- Review fixes (2026-11-11) ---- */
+/* Pages with many header actions (客户服务) drop the global waybill search instead of crushing the module tabs. */
+@media (min-width: 768px) {
+  .top-header:has(.top-header-actions--page > :nth-child(5)) .top-header-search { display: none; }
+  .console-tab-bar { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+}
+/* 客户服务筛选：来源 / 关键词 / 平台 / 方向 / 更新时间 / 账号设置 one row. */
+.customer-service-filter-form { grid-template-columns: minmax(120px, .9fr) minmax(180px, 1.6fr) minmax(104px, .75fr) minmax(112px, .8fr) minmax(190px, 1.2fr) auto; align-items: end; }
+.customer-service-filter-form > .customer-service-field, .customer-service-filter-form .customer-service-field--wide, .customer-service-filter-form .customer-service-date-field { min-width: 0; grid-column: auto; }
+.customer-service-settings-toggle { height: 30px; min-height: 30px; padding: 0 12px; }
+.customer-service-settings-toggle .feather { width: 13px; height: 13px; }
+@media (max-width: 1023px) { .customer-service-filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 639px) { .customer-service-filter-form { grid-template-columns: 1fr; } }
+.customer-service-table td.customer-service-empty { height: 160px; color: var(--text-muted); font-size: var(--fs-label); font-weight: 400 !important; text-align: center; }
+/* Tables keep spec proportions (shares of 1062) so the 1280 layout never hides the 操作 column. */
+.customer-service-table, .line-haul-table, .automation-account-table, .account-admin-panel .account-table { min-width: 860px; }
+.customer-service-table th:nth-child(1) { width: 5.5%; }
+.customer-service-table th:nth-child(2) { width: 11.1%; }
+.customer-service-table th:nth-child(3) { width: 12.4%; }
+.customer-service-table th:nth-child(4) { width: 10.4%; }
+.customer-service-table th:nth-child(5) { width: 6.6%; }
+.customer-service-table th:nth-child(6) { width: 6.4%; }
+.customer-service-table th:nth-child(7) { width: 31.2%; }
+.customer-service-table th:nth-child(8) { width: 9.8%; }
+.customer-service-table th:nth-child(9) { width: 6.6%; }
+.line-haul-table th:nth-child(1) { width: 18.8%; }
+.line-haul-table th:nth-child(2) { width: 36.8%; }
+.line-haul-table th:nth-child(3) { width: 9.4%; }
+.line-haul-table th:nth-child(4) { width: 12.2%; }
+.line-haul-table th:nth-child(5) { width: 14.1%; }
+.line-haul-table th:nth-child(6) { width: 8.7%; }
+.automation-account-table th:nth-child(1) { width: 18.8%; }
+.automation-account-table th:nth-child(2) { width: 14.1%; }
+.automation-account-table th:nth-child(3) { width: 12.2%; }
+.automation-account-table th:nth-child(4) { width: 17.9%; }
+.automation-account-table th:nth-child(5) { width: 10.4%; }
+.automation-account-table th:nth-child(6) { width: 14.1%; }
+.automation-account-table th:nth-child(7) { width: 12.5%; }
+/* Mobile: no extra gap under the header; the overview sync strip stays on one line. */
+@media (max-width: 767px) {
+  .main-content { display: block; }
+  .main-content > :not(.top-header):not(script):not(style):not(template):not(dialog) + :not(script):not(style):not(template):not(dialog) { margin-top: var(--card-gap); }
+  .top-header { margin-bottom: 8px !important; }
+}
