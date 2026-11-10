@@ -362,7 +362,8 @@ class MonitoringConsoleTests(unittest.TestCase):
                 page.wait_for_function(f"{ronghui_metric} === '3'")
                 self.assertEqual("待响应 1 · 待处理 2", page.locator('[data-monitoring-metric="ronghui-work"] [data-monitoring-metric-note]').text_content())
                 self.assertEqual("—", page.locator('[data-monitoring-metric="yunda-work"] [data-monitoring-metric-value]').text_content())
-                self.assertEqual(4, page.locator(".monitor-metric").count())
+                self.assertEqual(5, page.locator(".monitor-metric").count())
+                self.assertTrue(page.locator("[data-overview-pending-metric]").is_hidden())
                 self.assertEqual(0, page.locator("[data-monitoring-daily-sign]").count())
 
                 page.locator("[data-monitoring-refresh]").click()

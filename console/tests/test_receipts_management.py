@@ -1601,10 +1601,11 @@ class ReceiptTemplateTests(unittest.TestCase):
         self.assertIn("data-receipt-download-images", template)
         self.assertIn("data-receipt-review-modal", template)
         self.assertNotIn("data-receipt-original-open", template)
-        self.assertNotIn("<th>操作</th>", template)
-        self.assertIn("data-receipt-select-all", template)
-        self.assertEqual(2, template.count('type="checkbox" data-receipt-select value='))
-        self.assertIn('params.set("receipt_ids", receiptIds.join(","))', template)
+        self.assertIn("<th>操作</th>", template)
+        self.assertNotIn("data-receipt-select-all", template)
+        self.assertEqual(2, template.count('data-receipt-open aria-label="查看回单'))
+        self.assertIn("receiptNeedsAudit(row.audit_status)", template)
+        self.assertIn("window.location.href = receiptImageArchiveUrl();", template)
         self.assertIn("data-receipt-audit-modal", template)
         self.assertNotIn("data-receipt-audit-frame", template)
         self.assertIn("审核直接提交原平台", template)
@@ -1690,7 +1691,7 @@ class ReceiptTemplateTests(unittest.TestCase):
 
         for expected in (
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
-            ".receipt-col-updated { width: 22%; }",
+            ".receipt-col-updated { width: 15.6%; }",
             ".receipt-table .receipt-updated-cell",
             "text-overflow: clip;",
             "font-size: var(--fs-body);",
@@ -1710,7 +1711,7 @@ class ReceiptTemplateTests(unittest.TestCase):
             ".receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden;",
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
             ".receipt-col-photo { width: 7.2%; }",
-            ".receipt-col-select { width: 3.8%; }",
+            ".receipt-col-actions { width: 10.2%; }",
         ):
             self.assertIn(expected, template)
 

@@ -672,6 +672,49 @@ class DocumentServiceMixin:
             return
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "message": "已保存", "row": row})
 
+    def _handle_line_haul_contact_delete(self, handler: BaseHTTPRequestHandler, path: str) -> None:
+        values = self._parse_urlencoded_form(handler)
+        return_to = self._safe_return_to(values.get("return_to", ""), "/line-haul-contacts")
+        contact_id = self._parse_line_haul_contact_id(path, "delete")
+        if contact_id is None:
+            self._redirect_with_message(handler, return_to, "专线分流资料不存在。", "warning")
+            return
+        try:
+            row = self.repository.delete_line_haul_contact(contact_id)
+        except Exception as exc:
+            self._redirect_with_message(handler, return_to, f"删除失败：{exc}", "warning")
+            return
+        if not row:
+            self._redirect_with_message(handler, return_to, "专线分流资料不存在或已删除。", "warning")
+            return
+        self._redirect_with_message(
+            handler,
+            return_to,
+            f"已删除：{row.get('company_name', '')} / {row.get('service_area', '')}",
+            "success",
+        )
+
+    def _handle_line_haul_company_rename(self, handler: BaseHTTPRequestHandler) -> None:
+        values = self._parse_urlencoded_form(handler)
+        return_to = self._safe_return_to(values.get("return_to", ""), "/line-haul-contacts")
+        current_name = str(values.get("current_company_name", "") or "").strip()
+        new_name = str(values.get("company_name", "") or "").strip()
+        if not current_name or not new_name:
+            self._redirect_with_message(handler, return_to, "公司名称不能为空。", "warning")
+            return
+        if len(new_name) > 128:
+            self._redirect_with_message(handler, return_to, "公司名称过长。", "warning")
+            return
+        try:
+            changed = self.repository.rename_line_haul_company(current_name, new_name)
+        except Exception as exc:
+            self._redirect_with_message(handler, return_to, f"保存失败：{exc}", "warning")
+            return
+        if not changed:
+            self._redirect_with_message(handler, return_to, "没有找到这家公司的站点，可能已被修改。", "warning")
+            return
+        self._redirect_with_message(handler, return_to, f"已更新公司名称：{new_name}（{changed} 个站点）", "success")
+
     def _handle_line_haul_contact_import_paste(self, handler: BaseHTTPRequestHandler) -> None:
         values = self._parse_urlencoded_form(handler)
         return_to = self._safe_return_to(values.get("return_to", ""), "/line-haul-contacts")

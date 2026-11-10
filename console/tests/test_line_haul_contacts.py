@@ -76,6 +76,20 @@ class _LineHaulRepo:
         self.filters = filters
         return list(self.rows)
 
+    def delete_line_haul_contact(self, contact_id):
+        for index, row in enumerate(self.rows):
+            if row["id"] == contact_id:
+                return self.rows.pop(index)
+        return None
+
+    def rename_line_haul_company(self, current_name, new_name):
+        changed = 0
+        for row in self.rows:
+            if row["company_name"] == current_name:
+                row["company_name"] = new_name
+                changed += 1
+        return changed
+
     def search_line_haul_contacts_page(self, filters, *, page=1, page_size=50):
         self.filters = filters
         self.page_args = {"page": page, "page_size": page_size}
@@ -315,6 +329,40 @@ class LineHaulRouteTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.SEE_OTHER, handler.status)
         self.assertEqual("0531-82518680 / 15053103046", repo.created[0]["phone_numbers"])
         self.assertIn("/line-haul-contacts?message=", handler.header("Location"))
+
+    def test_delete_line_haul_contact_redirects_with_result(self):
+        repo = _LineHaulRepo()
+        app = self._build_app(repo)
+        handler = _Handler(path="/line-haul-contacts/1/delete", form={"return_to": "/line-haul-contacts?q=武汉"})
+
+        app._handle_line_haul_contact_delete(handler, "/line-haul-contacts/1/delete")
+
+        self.assertEqual(HTTPStatus.SEE_OTHER, handler.status)
+        self.assertEqual([], repo.rows)
+        self.assertIn("kind=success", handler.header("Location"))
+
+        missing = _Handler(path="/line-haul-contacts/9/delete", form={})
+        app._handle_line_haul_contact_delete(missing, "/line-haul-contacts/9/delete")
+        self.assertIn("kind=warning", missing.header("Location"))
+
+    def test_rename_line_haul_company_updates_every_station(self):
+        repo = _LineHaulRepo()
+        repo.rows.append({**repo.rows[0], "id": 2, "service_area": "武汉分部"})
+        app = self._build_app(repo)
+        handler = _Handler(
+            path="/line-haul-contacts/company/rename",
+            form={"current_company_name": "武汉宏大物流", "company_name": "武汉宏大物流有限公司"},
+        )
+
+        app._handle_line_haul_company_rename(handler)
+
+        self.assertEqual(HTTPStatus.SEE_OTHER, handler.status)
+        self.assertEqual({"武汉宏大物流有限公司"}, {row["company_name"] for row in repo.rows})
+
+        empty = _Handler(path="/line-haul-contacts/company/rename", form={"current_company_name": "武汉宏大物流有限公司", "company_name": " "})
+        app._handle_line_haul_company_rename(empty)
+        self.assertIn("kind=warning", empty.header("Location"))
+        self.assertEqual({"武汉宏大物流有限公司"}, {row["company_name"] for row in repo.rows})
 
     def test_update_line_haul_contact_returns_saved_row(self):
         repo = _LineHaulRepo()

@@ -6,21 +6,9 @@
 {% block main_class %}line-haul-main{% endblock %}
 
 {% block content %}
+{% set page_companies = rows | selectattr('show_company') | list | length %}
 <section class="panel line-haul-toolbar-panel" aria-label="专线分流资料查询">
-  <div class="line-haul-compact-head">
-    <div>
-      <p class="section-note line-haul-toolbar-note">维护专线公司、站点、地址和联系方式。</p>
-    </div>
-    <div class="line-haul-toolbar-actions">
-      <button class="icon-btn line-haul-tool-btn" type="button" title="新增资料" aria-label="新增资料" data-line-haul-open="create">
-        <i data-feather="plus"></i>
-      </button>
-      <button class="icon-btn line-haul-tool-btn" type="button" title="表格粘贴导入" aria-label="表格粘贴导入" data-line-haul-open="import">
-        <i data-feather="clipboard"></i>
-      </button>
-    </div>
-  </div>
-
+  <p class="line-haul-toolbar-note">按公司、站点、地址或电话搜索；结果按公司和站点分组展示。</p>
   <form id="lineHaulFilterForm" class="line-haul-filter-form" action="/line-haul-contacts" method="get" data-line-haul-filter-form>
     <input type="hidden" name="page" value="1">
     <div class="line-haul-search-field">
@@ -32,7 +20,7 @@
       <i data-feather="search"></i>
       <span>查询</span>
     </button>
-    <button class="ghost-btn line-haul-reset-btn" type="button" aria-label="清空搜索" data-line-haul-reset {% if not filters.q %}hidden{% endif %}>
+    <button class="ghost-btn line-haul-reset-btn" type="button" aria-label="清空搜索" data-line-haul-reset>
       <i data-feather="x"></i>
     </button>
   </form>
@@ -41,93 +29,137 @@
 <dialog class="line-haul-modal-backdrop native-modal" data-line-haul-modal aria-labelledby="line-haul-modal-title">
   <div class="line-haul-modal">
     <div class="line-haul-modal-head">
-      <h2 class="section-title" id="line-haul-modal-title">维护资料</h2>
+      <h2 class="section-title" id="line-haul-modal-title">新增分流地址</h2>
       <button class="icon-btn line-haul-modal-close" type="button" title="关闭" aria-label="关闭" data-line-haul-close>
         <i data-feather="x"></i>
       </button>
     </div>
-    <div class="line-haul-modal-tabs" role="tablist" aria-label="资料维护方式" data-line-haul-tabs>
-      <button type="button" class="line-haul-modal-tab" data-line-haul-tab="create" aria-selected="true">新增</button>
-      <button type="button" class="line-haul-modal-tab" data-line-haul-tab="import" aria-selected="false">粘贴导入</button>
-    </div>
 
     <form class="line-haul-modal-panel" action="/line-haul-contacts/create" method="post" data-ui-submit data-line-haul-panel="create">
       <input type="hidden" name="return_to" value="{{ return_to }}">
-      <div class="line-haul-create-grid">
-        <label>
+      <div class="line-haul-form-body">
+        <label class="line-haul-form-field line-haul-form-field--full">
           <span>公司名称</span>
-          <input class="review-input" type="text" name="company_name" required placeholder="武汉宏大物流">
+          <input class="review-input" type="text" name="company_name" required maxlength="128" placeholder="例如：长沙湘达物流有限公司" data-line-haul-create-company>
         </label>
-        <label>
-          <span>分流站点/城市</span>
-          <input class="review-input" type="text" name="service_area" required placeholder="武汉总部">
-        </label>
-        <label class="line-haul-wide-field">
+        <div class="line-haul-form-row">
+          <label class="line-haul-form-field line-haul-form-field--grow">
+            <span>站点 / 城市</span>
+            <input class="review-input" type="text" name="service_area" required maxlength="128" placeholder="例如：长沙南站 S 站">
+          </label>
+          <label class="line-haul-form-field line-haul-form-field--contact">
+            <span>联系人</span>
+            <input class="review-input" type="text" name="contact_name" maxlength="128" placeholder="姓名">
+          </label>
+          <label class="line-haul-form-field line-haul-form-field--phone">
+            <span>联系电话</span>
+            <input class="review-input" type="text" name="phone_numbers" maxlength="512" placeholder="区号-号码">
+          </label>
+        </div>
+        <label class="line-haul-form-field line-haul-form-field--full">
           <span>详细地址</span>
-          <input class="review-input" type="text" name="address" placeholder="东西湖区革新大道富民路天黎物流">
+          <input class="review-input" type="text" name="address" placeholder="省 / 市 / 区 + 街道门牌">
         </label>
-        <label>
-          <span>联系人</span>
-          <input class="review-input" type="text" name="contact_name" placeholder="张">
-        </label>
-        <label>
-          <span>联系电话</span>
-          <input class="review-input" type="text" name="phone_numbers" placeholder="027-83089895 / 13035114111">
-        </label>
-        <label>
+        <label class="line-haul-form-field line-haul-form-field--full">
           <span>备注</span>
-          <input class="review-input" type="text" name="remark" placeholder="查询、查货、专线负责人">
+          <textarea class="review-input" name="remark" placeholder="例如：拆包需提前 2 小时（选填）"></textarea>
         </label>
       </div>
-      <button class="primary-btn" type="submit">
-        <i data-feather="plus"></i>
-        <span>新增资料</span>
-      </button>
+      <div class="line-haul-modal-foot">
+        <button class="line-haul-link-btn" type="button" data-line-haul-switch="import">从表格粘贴导入</button>
+        <span class="line-haul-modal-foot-actions">
+          <button class="ghost-btn" type="button" data-line-haul-close>取消</button>
+          <button class="primary-btn" type="submit">保存</button>
+        </span>
+      </div>
     </form>
 
     <form class="line-haul-modal-panel" action="/line-haul-contacts/import-paste" method="post" data-ui-submit data-line-haul-panel="import" hidden>
       <input type="hidden" name="return_to" value="{{ return_to }}">
-      <label class="section-note line-haul-modal-note" for="line-haul-paste-text">复制三列：公司名称、分流站点/城市、地址电话原文。公司列为空时沿用上一行。</label>
-      <textarea id="line-haul-paste-text" class="review-input line-haul-paste-box" name="paste_text" placeholder="物流公司&#9;目的城市&#9;联系人及电话"></textarea>
-      <button class="primary-btn" type="submit">
-        <i data-feather="clipboard"></i>
-        <span>解析并导入</span>
-      </button>
+      <div class="line-haul-form-body">
+        <label class="section-note line-haul-modal-note" for="line-haul-paste-text">复制三列：公司名称、分流站点/城市、地址电话原文。公司列为空时沿用上一行。</label>
+        <textarea id="line-haul-paste-text" class="review-input line-haul-paste-box" name="paste_text" placeholder="物流公司&#9;目的城市&#9;联系人及电话"></textarea>
+      </div>
+      <div class="line-haul-modal-foot">
+        <button class="line-haul-link-btn" type="button" data-line-haul-switch="create">逐条新增</button>
+        <span class="line-haul-modal-foot-actions">
+          <button class="ghost-btn" type="button" data-line-haul-close>取消</button>
+          <button class="primary-btn" type="submit">解析并导入</button>
+        </span>
+      </div>
     </form>
 
     <form class="line-haul-modal-panel" action="" method="post" data-ui-submit data-line-haul-panel="edit" data-line-haul-edit-form hidden>
       <input type="hidden" name="return_to" value="{{ return_to }}">
       <input type="hidden" name="source_text" value="" data-line-haul-edit-field>
-      <div class="line-haul-create-grid">
-        <label>
+      <div class="line-haul-form-body">
+        <label class="line-haul-form-field line-haul-form-field--full">
           <span>公司名称</span>
-          <input class="review-input" type="text" name="company_name" required data-line-haul-edit-field>
+          <input class="review-input" type="text" name="company_name" required maxlength="128" data-line-haul-edit-field>
         </label>
-        <label>
-          <span>分流站点/城市</span>
-          <input class="review-input" type="text" name="service_area" required data-line-haul-edit-field>
-        </label>
-        <label class="line-haul-wide-field">
+        <div class="line-haul-form-row">
+          <label class="line-haul-form-field line-haul-form-field--grow">
+            <span>站点 / 城市</span>
+            <input class="review-input" type="text" name="service_area" required maxlength="128" data-line-haul-edit-field>
+          </label>
+          <label class="line-haul-form-field line-haul-form-field--contact">
+            <span>联系人</span>
+            <input class="review-input" type="text" name="contact_name" maxlength="128" data-line-haul-edit-field>
+          </label>
+          <label class="line-haul-form-field line-haul-form-field--phone">
+            <span>联系电话</span>
+            <input class="review-input" type="text" name="phone_numbers" maxlength="512" data-line-haul-edit-field>
+          </label>
+        </div>
+        <label class="line-haul-form-field line-haul-form-field--full">
           <span>详细地址</span>
-          <textarea class="review-input line-haul-edit-address" name="address" data-line-haul-edit-field></textarea>
+          <input class="review-input line-haul-edit-address" type="text" name="address" data-line-haul-edit-field>
         </label>
-        <label>
-          <span>联系人</span>
-          <input class="review-input" type="text" name="contact_name" data-line-haul-edit-field>
-        </label>
-        <label>
-          <span>联系电话</span>
-          <input class="review-input" type="text" name="phone_numbers" data-line-haul-edit-field>
-        </label>
-        <label>
+        <label class="line-haul-form-field line-haul-form-field--full">
           <span>备注</span>
-          <input class="review-input" type="text" name="remark" data-line-haul-edit-field>
+          <textarea class="review-input" name="remark" data-line-haul-edit-field></textarea>
         </label>
       </div>
-      <button class="primary-btn" type="submit">
-        <i data-feather="save"></i>
-        <span>保存修改</span>
-      </button>
+      <div class="line-haul-modal-foot">
+        <span></span>
+        <span class="line-haul-modal-foot-actions">
+          <button class="ghost-btn" type="button" data-line-haul-close>取消</button>
+          <button class="primary-btn" type="submit">保存</button>
+        </span>
+      </div>
+    </form>
+
+    <form class="line-haul-modal-panel" action="/line-haul-contacts/company/rename" method="post" data-ui-submit data-line-haul-panel="company" hidden>
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <input type="hidden" name="current_company_name" value="" data-line-haul-company-current>
+      <div class="line-haul-form-body">
+        <label class="line-haul-form-field line-haul-form-field--full">
+          <span>公司名称</span>
+          <input class="review-input" type="text" name="company_name" required maxlength="128" data-line-haul-company-name>
+        </label>
+        <p class="line-haul-modal-note">修改后，这家公司下的全部站点同步使用新名称。</p>
+      </div>
+      <div class="line-haul-modal-foot">
+        <span></span>
+        <span class="line-haul-modal-foot-actions">
+          <button class="ghost-btn" type="button" data-line-haul-close>取消</button>
+          <button class="primary-btn" type="submit">保存</button>
+        </span>
+      </div>
+    </form>
+
+    <form class="line-haul-modal-panel" action="" method="post" data-ui-submit data-line-haul-panel="delete" data-line-haul-delete-form hidden>
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <div class="line-haul-form-body">
+        <p class="line-haul-delete-copy">确定删除 <strong data-line-haul-delete-label></strong>？删除后不能恢复，需要时重新新增。</p>
+      </div>
+      <div class="line-haul-modal-foot">
+        <span></span>
+        <span class="line-haul-modal-foot-actions">
+          <button class="ghost-btn" type="button" data-line-haul-close>取消</button>
+          <button class="danger-btn" type="submit">删除</button>
+        </span>
+      </div>
     </form>
   </div>
 </dialog>
@@ -142,73 +174,66 @@
 {% endif %}
 
 <section class="panel line-haul-list-panel">
-  <div class="section-head section-head--compact">
+  <div class="line-haul-list-head">
     <div>
       <h2 class="section-title">分流地址列表</h2>
-      <p class="section-note">查询结果按公司和站点展示。</p>
+      <p class="line-haul-list-sub">{% if has_search %}{% if pagination.total_pages > 1 %}本页 {{ page_companies }} 家公司 · 共 {{ pagination.total }} 个站点{% else %}{{ page_companies }} 家公司 · {{ pagination.total }} 个站点{% endif %}{% else %}等待查询{% endif %}</p>
     </div>
-  </div>
-
-  <div class="line-haul-results-meta">
-    <span>{{ '查询结果' if has_search else '等待查询' }}</span>
-    <div class="line-haul-results-tools">
-      <label class="line-haul-page-size-control" for="lineHaulPageSize">
-        每页
-        <select id="lineHaulPageSize" class="line-haul-select" name="page_size" form="lineHaulFilterForm" data-line-haul-page-size>
-          {% for item in [20, 50, 100] %}
-          <option value="{{ item }}" {% if pagination.page_size == item %}selected{% endif %}>{{ item }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <span>显示 {{ pagination.offset + 1 if pagination.total else 0 }} 到 {{ pagination.offset + rows|length }}，共 {{ pagination.total }} 条</span>
-    </div>
+    <button class="primary-btn" type="button" data-line-haul-open="create"><i data-feather="plus"></i><span>新增分流地址</span></button>
   </div>
 
   <div class="line-haul-table-wrap{% if not rows %} line-haul-table-wrap--empty{% endif %}">
     <table class="line-haul-table">
       <thead>
         <tr>
-          <th>公司名称</th>
-          <th>站点/城市</th>
+          <th>站点 / 城市</th>
           <th>详细地址</th>
           <th>联系人</th>
           <th>联系电话</th>
           <th>备注</th>
-          <th>更新时间</th>
           <th>操作</th>
         </tr>
       </thead>
       <tbody>
         {% for row in rows %}
-        <tr data-line-haul-row>
-          {% if row.show_company %}
-          <td rowspan="{{ row.company_rowspan }}">
-            <div class="line-haul-cell-text line-haul-cell-text--strong">{{ row.company_name }}</div>
+        {% if row.show_company %}
+        <tr class="line-haul-company-row" data-line-haul-company="{{ row.company_name }}">
+          <td colspan="4">
+            <div class="line-haul-company">
+              <strong>{{ row.company_name }}</strong>
+              <span class="line-haul-company-count">{{ row.company_rowspan }} 个站点</span>
+            </div>
           </td>
-          {% endif %}
-          <td><div class="line-haul-cell-text line-haul-cell-text--strong">{{ row.service_area or '-' }}</div></td>
-          <td class="line-haul-address-cell"><div class="line-haul-cell-text line-haul-cell-text--wrap">{{ row.address or '-' }}</div></td>
-          <td><div class="line-haul-cell-text">{{ row.contact_name or '-' }}</div></td>
-          <td><div class="line-haul-cell-text line-haul-cell-text--wrap">{{ row.phone_numbers or '-' }}</div></td>
-          <td><div class="line-haul-cell-text line-haul-cell-text--wrap">{{ row.remark or '-' }}</div></td>
-          <td class="line-haul-updated-at">{{ row.updated_at or '-' }}</td>
+          <td colspan="2">
+            <div class="line-haul-company-tools">
+              <span class="line-haul-updated-at">{% if row.company_updated_at %}更新于 {{ row.company_updated_at[:16] }}{% endif %}</span>
+              <button type="button" data-line-haul-company-edit="{{ row.company_name }}">编辑</button>
+              <button type="button" data-line-haul-company-copy="{{ row.company_name }}">复制</button>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+        <tr data-line-haul-row data-line-haul-row-company="{{ row.company_name }}" data-line-haul-copy-text="{{ [row.service_area, row.address, row.contact_name, row.phone_numbers, row.remark] | select | join(' ') }}">
+          <td class="line-haul-station-cell"><div class="line-haul-cell-text">{{ row.service_area or '—' }}</div></td>
+          <td class="line-haul-address-cell"><div class="line-haul-cell-text line-haul-cell-text--wrap">{% if row.address %}{{ row.address }}{% else %}<span class="cell-empty">—</span>{% endif %}</div></td>
+          <td><div class="line-haul-cell-text">{% if row.contact_name %}{{ row.contact_name }}{% else %}<span class="cell-empty">—</span>{% endif %}</div></td>
+          <td><div class="line-haul-cell-text line-haul-cell-text--wrap line-haul-phone">{% if row.phone_numbers %}{{ row.phone_numbers }}{% else %}<span class="cell-empty">—</span>{% endif %}</div></td>
+          <td><div class="line-haul-cell-text line-haul-cell-text--wrap line-haul-remark">{{ row.remark or '' }}</div></td>
           <td>
             <div class="line-haul-row-actions">
-              <button class="ghost-btn line-haul-edit-btn" type="button" data-line-haul-edit='{{ row|tojson }}'>
-                <i data-feather="edit-3"></i>
-                <span>编辑</span>
-              </button>
+              <button type="button" data-line-haul-edit='{{ row|tojson }}'>编辑</button>
+              <button type="button" class="is-muted" data-line-haul-delete="{{ row.id }}" data-line-haul-delete-name="{{ row.company_name }} / {{ row.service_area }}">删除</button>
             </div>
           </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="8" class="line-haul-empty">{{ '暂无匹配的专线分流资料。' if has_search else '请输入关键词查询专线分流资料。' }}</td>
+          <td colspan="6" class="line-haul-empty">{{ '暂无匹配的专线分流资料。' if has_search else '请输入关键词查询专线分流资料。' }}</td>
         </tr>
         {% endfor %}
         {% if rows %}
         <tr data-line-haul-filter-empty hidden>
-          <td colspan="8" class="line-haul-empty">暂无匹配的专线分流资料。</td>
+          <td colspan="6" class="line-haul-empty">暂无匹配的专线分流资料。</td>
         </tr>
         {% endif %}
       </tbody>
@@ -216,17 +241,26 @@
   </div>
 
   <div class="line-haul-footer">
-    <div class="line-haul-page-size">第 {{ pagination.page }} / {{ pagination.total_pages }} 页</div>
+    <div class="line-haul-results-meta">
+      <label class="line-haul-page-size-control" for="lineHaulPageSize">每页
+        <select id="lineHaulPageSize" class="line-haul-select" name="page_size" form="lineHaulFilterForm" data-line-haul-page-size>
+          {% for item in [20, 50, 100] %}
+          <option value="{{ item }}" {% if pagination.page_size == item %}selected{% endif %}>{{ item }} 条</option>
+          {% endfor %}
+        </select>
+      </label>
+      <span>· 显示 {{ pagination.offset + 1 if pagination.total else 0 }} 到 {{ pagination.offset + rows|length }}，共 {{ pagination.total }} 条 · 第 {{ pagination.page }} / {{ pagination.total_pages }} 页</span>
+    </div>
     <div class="line-haul-pager">
       {% if prev_url %}
-      <a class="ghost-btn" href="{{ prev_url }}"><i data-feather="chevron-left"></i> 上一页</a>
+      <a class="ghost-btn" href="{{ prev_url }}">上一页</a>
       {% else %}
-      <button class="ghost-btn" type="button" disabled><i data-feather="chevron-left"></i> 上一页</button>
+      <button class="ghost-btn" type="button" disabled>上一页</button>
       {% endif %}
       {% if next_url %}
-      <a class="ghost-btn" href="{{ next_url }}">下一页<i data-feather="chevron-right"></i></a>
+      <a class="ghost-btn" href="{{ next_url }}">下一页</a>
       {% else %}
-      <button class="ghost-btn" type="button" disabled>下一页<i data-feather="chevron-right"></i></button>
+      <button class="ghost-btn" type="button" disabled>下一页</button>
       {% endif %}
     </div>
   </div>
@@ -238,8 +272,7 @@
   (function () {
     const modal = document.querySelector("[data-line-haul-modal]");
     const modalTitle = document.querySelector("#line-haul-modal-title");
-    const tabWrap = document.querySelector("[data-line-haul-tabs]");
-    const tabs = document.querySelectorAll("[data-line-haul-tab]");
+    const panelTitles = {create: "新增分流地址", import: "粘贴导入分流地址", edit: "编辑分流地址", company: "编辑公司", delete: "删除站点"};
     const panels = document.querySelectorAll("[data-line-haul-panel]");
     const editForm = document.querySelector("[data-line-haul-edit-form]");
     const filterForm = document.querySelector("[data-line-haul-filter-form]");
@@ -253,12 +286,7 @@
     });
 
     function selectPanel(name) {
-      const isEdit = name === "edit";
-      if (tabWrap) tabWrap.hidden = isEdit;
-      if (modalTitle) modalTitle.textContent = isEdit ? "编辑资料" : "维护资料";
-      tabs.forEach((tab) => {
-        tab.setAttribute("aria-selected", !isEdit && tab.dataset.lineHaulTab === name ? "true" : "false");
-      });
+      if (modalTitle) modalTitle.textContent = panelTitles[name] || panelTitles.create;
       panels.forEach((panel) => {
         panel.hidden = panel.dataset.lineHaulPanel !== name;
       });
@@ -306,8 +334,45 @@
     modal?.addEventListener("click", (event) => {
       if (event.target === modal) closeModal();
     });
-    tabs.forEach((tab) => {
-      tab.addEventListener("click", () => selectPanel(tab.dataset.lineHaulTab || "create"));
+    document.querySelectorAll("[data-line-haul-switch]").forEach((button) => {
+      button.addEventListener("click", () => selectPanel(button.dataset.lineHaulSwitch || "create"));
+    });
+    const companyCurrent = document.querySelector("[data-line-haul-company-current]");
+    const companyName = document.querySelector("[data-line-haul-company-name]");
+    document.querySelectorAll("[data-line-haul-company-edit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const name = button.getAttribute("data-line-haul-company-edit") || "";
+        if (companyCurrent) companyCurrent.value = name;
+        if (companyName) companyName.value = name;
+        openModal("company");
+      });
+    });
+    const deleteForm = document.querySelector("[data-line-haul-delete-form]");
+    const deleteLabel = document.querySelector("[data-line-haul-delete-label]");
+    document.querySelectorAll("[data-line-haul-delete]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const id = String(button.getAttribute("data-line-haul-delete") || "");
+        if (!deleteForm || !/^\d+$/.test(id)) return;
+        deleteForm.action = `/line-haul-contacts/${id}/delete`;
+        if (deleteLabel) deleteLabel.textContent = button.getAttribute("data-line-haul-delete-name") || "";
+        openModal("delete");
+      });
+    });
+    document.querySelectorAll("[data-line-haul-company-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const name = button.getAttribute("data-line-haul-company-copy") || "";
+        const lines = [name];
+        document.querySelectorAll("[data-line-haul-row]").forEach((row) => {
+          if (row.getAttribute("data-line-haul-row-company") === name) lines.push(row.getAttribute("data-line-haul-copy-text") || "");
+        });
+        try {
+          await navigator.clipboard.writeText(lines.filter(Boolean).join("\n"));
+          button.textContent = "已复制";
+        } catch (_error) {
+          button.textContent = "复制失败";
+        }
+        window.setTimeout(() => { button.textContent = "复制"; }, 1600);
+      });
     });
     modal?.addEventListener("close", () => {
       document.body.classList.remove("line-haul-modal-open");

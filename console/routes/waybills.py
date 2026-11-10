@@ -81,4 +81,10 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path.startswith("/line-haul-contacts/") and path.endswith("/update"):
         app._handle_line_haul_contact_update(handler, path)
         return True
+    if path == "/line-haul-contacts/company/rename":
+        app._handle_line_haul_company_rename(handler)
+        return True
+    if path.startswith("/line-haul-contacts/") and path.endswith("/delete"):
+        app._handle_line_haul_contact_delete(handler, path)
+        return True
     return False

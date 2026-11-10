@@ -1460,10 +1460,15 @@ class WaybillsReceiptsServiceMixin:
             ):
                 group_end += 1
             group_size = group_end - index
+            company_updated_at = max(
+                (str(rows[row_index].get("updated_at", "") or "") for row_index in range(index, group_end)),
+                default="",
+            )
             for row_index in range(index, group_end):
                 display_row = dict(rows[row_index])
                 display_row["show_company"] = row_index == index
                 display_row["company_rowspan"] = group_size if row_index == index else 0
+                display_row["company_updated_at"] = company_updated_at
                 display_rows.append(display_row)
             index = group_end
         return display_rows

@@ -2403,6 +2403,31 @@ class DocumentRepository:
                 return None
             return self._select_line_haul_contact_for_cursor(cursor, int(contact_id))
 
+    def delete_line_haul_contact(self, contact_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute("SELECT id FROM line_haul_contacts WHERE id = %s", (int(contact_id),))
+            if not cursor.fetchone():
+                return None
+            existing = self._select_line_haul_contact_for_cursor(cursor, int(contact_id))
+            cursor.execute("DELETE FROM line_haul_contacts WHERE id = %s", (int(contact_id),))
+            if cursor.rowcount == 0:
+                return None
+            return existing
+
+    def rename_line_haul_company(self, current_name: str, new_name: str) -> int:
+        current = str(current_name or "").strip()
+        target = str(new_name or "").strip()
+        if not current or not target:
+            raise ValueError("公司名称不能为空。")
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                "UPDATE line_haul_contacts SET company_name = %s, updated_at = %s WHERE company_name = %s",
+                (target, _now_iso(), current),
+            )
+            return int(cursor.rowcount or 0)
+
     def import_line_haul_contacts(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         stats = {"inserted": 0, "skipped_duplicate": 0}
         if not rows:

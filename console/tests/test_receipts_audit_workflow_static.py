@@ -140,10 +140,13 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
         self.assertIn("resetReviewImageTransform", template)
         self.assertIn("summaryFieldsForRecord", template)
         self.assertIn('field === "waybill_no"', template)
-        self.assertIn("receipt-review-reason-popover", template)
+        self.assertIn("receipt-review-reason-layer", template)
         self.assertIn("receipt-review-reason-head", template)
+        self.assertIn("驳回回单", template)
+        self.assertIn("data-receipt-reason-option", template)
         self.assertIn('reviewReasonClose?.addEventListener("click", hideFailReasonPanel)', template)
-        self.assertIn('reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"))', template)
+        # The 驳回回单 dialog is the explicit confirmation: it submits the rejection directly.
+        self.assertIn('const audit = receiptAuditPayloadFor("failed");', template)
 
     def test_receipts_audit_returns_verified_result_without_original_page_fallback(self):
         template = (CONSOLE_DIR / "templates" / "receipts.html").read_text(encoding="utf-8")
@@ -155,7 +158,8 @@ class ReceiptAuditWorkflowStaticTests(unittest.TestCase):
             "newBrowserRequestUuid",
             '"X-Browser-Request-UUID": browserRequestUuid',
             "applyReceiptAuditPayload",
-            'reason: result === "failed" ? (reviewReason?.value || "") : ""',
+            'reason: result === "failed" ? receiptRejectReasonText() : "",',
+            'return [preset, note].filter(Boolean).join("；");',
             "确认驳回回单",
             "确认后将把当前回单提交为审核不通过，并使用上方填写的原因。请确认回单照片和运单信息无误。",
             "确认驳回",

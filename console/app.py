@@ -433,6 +433,12 @@ class LocalDocFlowApp(
         if path.startswith("/line-haul-contacts/") and path.endswith("/update"):
             self._handle_line_haul_contact_update(handler, path)
             return
+        if path == "/line-haul-contacts/company/rename":
+            self._handle_line_haul_company_rename(handler)
+            return
+        if path.startswith("/line-haul-contacts/") and path.endswith("/delete"):
+            self._handle_line_haul_contact_delete(handler, path)
+            return
         if path == "/templates/select":
             self._handle_template_select(handler)
             return

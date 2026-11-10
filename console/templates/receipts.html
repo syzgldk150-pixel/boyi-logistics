@@ -190,9 +190,8 @@
   .receipt-count-muted { color: var(--faint); font-size: var(--fs-body); font-weight: 500; }
   .receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); }
   .receipt-table { width: 100%; min-width: 0; table-layout: fixed; }
-  /* ⑩ widths as shares of the 1062 table (40/76/84/168/132/132/104/92/234), so the
-     table never scrolls sideways; the checkbox column replaces the spec 操作 column. */
-  .receipt-col-select { width: 3.8%; }
+  /* ⑩ widths as shares of the 1062 table (76/84/168/132/132/104/92/166/108), so the
+     table never scrolls sideways. */
   .receipt-col-photo { width: 7.2%; }
   .receipt-col-platform { width: 7.9%; }
   .receipt-col-waybill { width: 15.8%; }
@@ -200,9 +199,8 @@
   .receipt-col-audit { width: 12.4%; }
   .receipt-col-photo-status { width: 9.8%; }
   .receipt-col-signed { width: 8.7%; }
-  .receipt-col-updated { width: 22%; }
-  .receipt-select-cell { cursor: default; }
-  .receipt-select-cell input { width: 18px; height: 18px; margin: 0; accent-color: var(--text-strong); cursor: pointer; vertical-align: middle; }
+  .receipt-col-updated { width: 15.6%; }
+  .receipt-col-actions { width: 10.2%; }
   .receipt-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
   .receipt-table th,
   .receipt-table td { overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
@@ -743,8 +741,6 @@
   .receipt-table th { height: 36px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); }
   .receipt-table td { height: 62px; padding: 0 0 0 16px; border-bottom: 1px solid var(--line-row); color: var(--text-primary); }
   .receipt-table tbody tr:last-child td { border-bottom: 0; }
-  .receipt-table .receipt-select-cell { padding-left: 16px; }
-  .receipt-select-cell input { width: 14px; height: 14px; accent-color: var(--brand-red); }
   .receipt-row:hover, .receipt-row.is-selected { background: var(--bg-subtle); }
   .receipt-thumb { width: 44px; height: 44px; border-color: var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-disabled); }
   .receipt-thumb .feather { width: 18px; height: 18px; stroke-width: 1.3; }
@@ -759,8 +755,38 @@
   .receipt-count-pill { min-width: 22px; min-height: 22px; border-radius: var(--r-small-button); background: var(--text-primary); font: 500 var(--fs-label)/1 var(--font-num); }
   .receipt-modal { background: var(--overlay); }
   .receipt-date-range-control { height: 30px; min-height: 30px; }
-  .receipt-table th.receipt-select-cell { text-overflow: clip; }
-  .receipt-select-cell input { appearance: auto; -webkit-appearance: checkbox; }
+  .receipt-row-actions { display: flex; align-items: center; gap: 14px; }
+  .receipt-row-actions button { padding: 0; border: 0; background: none; color: var(--text-secondary); font-size: var(--fs-body); cursor: pointer; }
+  .receipt-row-actions button:hover { color: var(--text-primary); }
+  .receipt-row-actions button.is-danger { color: var(--status-danger); }
+  .receipt-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 6px 16px; border-top: 1px solid var(--line-subtle); }
+  .receipt-page-size { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: var(--fs-label); font-weight: 400 !important; }
+  .receipt-page-size select { height: 26px; padding: 0 8px; border: 0; border-radius: var(--r-small-button); background: var(--bg-subtle); color: var(--text-primary); font-size: var(--fs-label); appearance: auto; }
+  .receipt-pager { display: flex; align-items: center; gap: 6px; }
+  .receipt-page-btn { display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: var(--r-small-button); color: var(--text-secondary); font: 400 var(--fs-body)/1 var(--font-num); }
+  .receipt-page-btn:hover { background: var(--bg-subtle); color: var(--text-primary); }
+  .receipt-page-btn[aria-current="page"] { background: var(--text-primary); color: var(--text-on-dark); }
+  .receipt-page-btn.is-disabled { color: var(--text-disabled); }
+  .receipt-page-btn .feather { width: 13px; height: 13px; }
+  .receipt-page-gap { color: var(--text-muted); font-size: var(--fs-body); padding: 0 2px; }
+  .receipt-empty { height: 300px; }
+  .receipt-empty-state { gap: 6px; color: var(--text-muted); }
+  .receipt-empty-state .feather { width: 32px; height: 32px; stroke-width: 1.2; color: var(--text-tertiary); }
+  .receipt-empty-state strong { color: var(--text-primary); font-size: var(--fs-section); font-weight: 500; }
+  .receipt-empty-state span { font-size: var(--fs-label); }
+  /* ㉜ 驳回回单: 480 dialog over the review stage. */
+  .receipt-review-reason-layer { position: absolute; inset: 0; z-index: 8; display: grid; place-items: center; background: var(--overlay-nested); border-radius: inherit; }
+  .receipt-review-reason-layer[hidden] { display: none; }
+  .receipt-review-reason { position: static; width: min(480px, calc(100% - 32px)); gap: 0; padding: 0; border: 0; border-radius: var(--r-modal); box-shadow: var(--shadow-overlay); font-weight: 400; }
+  .receipt-review-reason-head { height: 60px; padding: 0 16px 0 20px; border-bottom: 1px solid var(--line-subtle); }
+  .receipt-review-reason-head h3 { margin: 0; font-size: var(--fs-modal-title); font-weight: 500 !important; }
+  .receipt-review-reason-close { width: 30px; height: 30px; border: 0; }
+  .receipt-review-reason-body { display: grid; gap: 14px; margin: 0; padding: 16px 20px; border: 0; }
+  .receipt-review-reason-body legend { float: left; width: 100%; margin-bottom: 2px; padding: 0; color: var(--text-muted); font-size: var(--fs-label); font-weight: 400; }
+  .receipt-reason-option { display: flex; align-items: center; gap: 10px; color: var(--text-primary); font-size: var(--fs-body); font-weight: 400 !important; cursor: pointer; }
+  .receipt-reason-option input { appearance: auto; width: 14px; height: 14px; margin: 0; accent-color: var(--text-primary); }
+  .receipt-review-reason textarea { min-height: 64px; margin-top: 2px; border-color: var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); font-weight: 400; }
+  .receipt-review-reason-actions { height: 60px; align-items: center; padding: 0 20px; border-top: 1px solid var(--line-subtle); }
   .receipt-modal.native-modal::backdrop { background: var(--overlay); }
   .receipt-modal-card { border: 0; border-radius: var(--r-modal); }
   .receipt-modal-card--review { width: min(1240px, calc(100vw - 48px)); height: min(800px, calc(100dvh - 48px)); }
@@ -781,7 +807,7 @@
 
 <section class="receipts-page" data-receipts-page data-receipts-data-url="/receipts/data">
   <div class="receipt-filter-panel">
-    <form class="receipt-filter-form" method="get" action="/receipts" data-receipt-filter-form>
+    <form id="receiptFilterForm" class="receipt-filter-form" method="get" action="/receipts" data-receipt-filter-form>
       <input type="hidden" name="queried" value="{{ '1' if query_requested else '' }}" data-receipt-query-marker>
       <input type="hidden" name="direction" value="send">
       <div class="receipt-field receipt-field--search">
@@ -882,16 +908,11 @@
         <button class="ghost-btn" type="button" data-receipt-download-images>
           <i data-feather="download"></i> <span data-receipt-download-label>下载图片</span>
         </button>
-        <div class="inline-actions" data-receipt-pagination-actions>
-          {% if prev_url %}<a class="ghost-btn" href="{{ prev_url }}" data-receipt-page="{{ pagination.page - 1 }}"><i data-feather="chevron-left"></i> 上一页</a>{% endif %}
-          {% if next_url %}<a class="ghost-btn" href="{{ next_url }}" data-receipt-page="{{ pagination.page + 1 }}">下一页 <i data-feather="chevron-right"></i></a>{% endif %}
-        </div>
       </div>
     </div>
     <div class="receipt-table-wrap">
       <table class="receipt-table" data-receipt-table>
         <colgroup>
-          <col class="receipt-col-select">
           <col class="receipt-col-photo">
           <col class="receipt-col-platform">
           <col class="receipt-col-waybill">
@@ -900,10 +921,10 @@
           <col class="receipt-col-photo-status">
           <col class="receipt-col-signed">
           <col class="receipt-col-updated">
+          <col class="receipt-col-actions">
         </colgroup>
         <thead>
           <tr>
-            <th class="receipt-select-cell"><input type="checkbox" data-receipt-select-all aria-label="全选本页回单"></th>
             <th>照片</th>
             <th>平台</th>
             <th>运单号</th>
@@ -912,12 +933,12 @@
             <th>照片状态</th>
             <th>签收确认</th>
             <th>更新时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
           {% for row in rows %}
           <tr class="receipt-row" data-receipt-id="{{ row.id }}" data-platform="{{ row.platform }}" data-direction="{{ row.direction }}">
-            <td class="receipt-select-cell"><input type="checkbox" data-receipt-select value="{{ row.id }}" aria-label="选择回单 {{ row.waybill_no or row.id }}"></td>
             <td>
               <div class="receipt-thumb-list">
                 {% if row.thumbnail_url %}
@@ -938,12 +959,14 @@
             <td><span class="receipt-chip {% if row.photo_count %}receipt-chip--ok{% else %}receipt-chip--muted{% endif %}">{{ row.photo_status or '无照片' }}</span></td>
             <td>{% if row.signed_confirmed and row.signed_confirmed != '-' %}{{ row.signed_confirmed }}{% else %}<span class="cell-empty">—</span>{% endif %}</td>
             <td class="receipt-updated-cell" title="{{ row.updated_at }}">{{ row.updated_at }}</td>
+            {% set audit_text = row.audit_status or '' %}
+            <td class="receipt-actions-cell"><div class="receipt-row-actions"><button type="button" data-receipt-open aria-label="查看回单 {{ row.waybill_no or row.id }}">查看</button>{% if audit_text == '待审核' or ('待' in audit_text and '审核' in audit_text) %}<button type="button" class="is-danger" data-receipt-open aria-label="审核回单 {{ row.waybill_no or row.id }}">审核</button>{% endif %}</div></td>
           </tr>
           {% else %}
           <tr>
             <td class="receipt-empty" colspan="9">
               <div class="receipt-empty-state">
-                <i data-feather="inbox"></i>
+                <i data-feather="mail"></i>
                 <strong>暂无回单数据</strong>
                 <span>点击“查询”会从原系统查询当前条件的数据。</span>
               </div>
@@ -952,6 +975,14 @@
           {% endfor %}
         </tbody>
       </table>
+    </div>
+    <div class="receipt-footer">
+      <label class="receipt-page-size" for="receiptPageSize">每页
+        <select id="receiptPageSize" name="page_size" form="receiptFilterForm" data-receipt-page-size>
+          {% for item in [20, 50, 100] %}<option value="{{ item }}" {% if (pagination.page_size or 50) == item %}selected{% endif %}>{{ item }} 条</option>{% endfor %}
+        </select>
+      </label>
+      <nav class="receipt-pager" aria-label="回单分页" data-receipt-pagination-actions data-page="{{ pagination.page or 1 }}" data-total-pages="{{ pagination.total_pages or 1 }}"></nav>
     </div>
   </div>
 
@@ -971,15 +1002,24 @@
           <button class="receipt-close-btn" type="button" data-receipt-review-close aria-label="关闭审核"><i data-feather="x"></i></button>
         </div>
       </div>
-      <div class="receipt-review-reason receipt-review-reason-popover" data-receipt-fail-reason-panel hidden>
-        <div class="receipt-review-reason-head">
-          <label for="receipt-audit-reason">不通过原因</label>
-          <button class="receipt-review-reason-close" type="button" data-receipt-fail-reason-close aria-label="收起不通过原因"><i data-feather="x"></i></button>
-        </div>
-        <textarea id="receipt-audit-reason" data-receipt-audit-reason placeholder="可选，审核不通过时填写原因"></textarea>
-        <div class="receipt-review-reason-actions">
-          <button class="ghost-btn" type="button" data-receipt-fail-reason-cancel>取消</button>
-          <button class="primary-btn" type="button" data-receipt-fail-reason-submit><i data-feather="x-circle"></i> 提交不通过</button>
+      <div class="receipt-review-reason-layer" data-receipt-fail-reason-panel hidden>
+        <div class="receipt-review-reason" role="dialog" aria-modal="true" aria-labelledby="receipt-reason-title">
+          <div class="receipt-review-reason-head">
+            <h3 id="receipt-reason-title">驳回回单</h3>
+            <button class="receipt-review-reason-close" type="button" data-receipt-fail-reason-close aria-label="关闭驳回回单"><i data-feather="x"></i></button>
+          </div>
+          <fieldset class="receipt-review-reason-body">
+            <legend>驳回原因</legend>
+            {% for reason in ['照片模糊，看不清签收信息', '缺少收件人签字或盖章', '非本人签收，未授权代收', '签收单与运单号不符'] %}
+            <label class="receipt-reason-option"><input type="radio" name="receipt_reject_reason" value="{{ reason }}" data-receipt-reason-option>{{ reason }}</label>
+            {% endfor %}
+            <label class="sr-only" for="receipt-audit-reason">补充说明</label>
+            <textarea id="receipt-audit-reason" data-receipt-audit-reason placeholder="补充说明（选填），会随驳回通知推给寄方"></textarea>
+          </fieldset>
+          <div class="receipt-review-reason-actions">
+            <button class="ghost-btn" type="button" data-receipt-fail-reason-cancel>取消</button>
+            <button class="primary-btn" type="button" data-receipt-fail-reason-submit>确认驳回</button>
+          </div>
         </div>
       </div>
       <div class="receipt-review-body">
@@ -1081,8 +1121,6 @@
   const receiptCount = page.querySelector("[data-receipt-count]");
   const paginationActions = page.querySelector("[data-receipt-pagination-actions]");
   const downloadImagesButton = page.querySelector("[data-receipt-download-images]");
-  const downloadImagesLabel = page.querySelector("[data-receipt-download-label]");
-  const selectAllReceipts = page.querySelector("[data-receipt-select-all]");
   const preview = page.querySelector("[data-receipt-preview]");
   const previewTitle = page.querySelector("[data-receipt-preview-title]");
   const previewSubtitle = page.querySelector("[data-receipt-preview-subtitle]");
@@ -1900,6 +1938,17 @@
     }).join("");
   };
 
+  const receiptRejectReasonText = () => {
+    const preset = reviewModal?.querySelector("[data-receipt-reason-option]:checked")?.value || "";
+    const note = String(reviewReason?.value || "").trim();
+    return [preset, note].filter(Boolean).join("；");
+  };
+
+  const resetRejectReason = () => {
+    reviewModal?.querySelectorAll("[data-receipt-reason-option]").forEach((input) => { input.checked = false; });
+    if (reviewReason) reviewReason.value = "";
+  };
+
   const hideFailReasonPanel = () => {
     if (reviewReasonPanel) reviewReasonPanel.hidden = true;
     if (reviewAuditFail) reviewAuditFail.innerHTML = '<i data-feather="x-circle"></i> 审核不通过';
@@ -1908,8 +1957,7 @@
 
   const showFailReasonPanel = () => {
     if (reviewReasonPanel) reviewReasonPanel.hidden = false;
-    if (reviewAuditFail) reviewAuditFail.innerHTML = '<i data-feather="x-circle"></i> 提交不通过';
-    reviewReason?.focus?.();
+    reviewModal?.querySelector("[data-receipt-reason-option]")?.focus?.();
     window.feather?.replace?.();
   };
 
@@ -2079,7 +2127,7 @@
     if (reviewTitle) reviewTitle.textContent = "正在加载";
     if (reviewSubtitle) reviewSubtitle.textContent = "正在读取回单详情。";
     renderReviewSummary({}, {});
-    if (reviewReason) reviewReason.value = "";
+    resetRejectReason();
     hideFailReasonPanel();
     reviewAttachments = [];
     reviewImageIndex = 0;
@@ -2102,7 +2150,7 @@
       }
       reviewAttachments = (detail.attachments || []).filter((item) => item && item.file_url);
       reviewImageIndex = 0;
-      if (reviewReason) reviewReason.value = "";
+      resetRejectReason();
       hideFailReasonPanel();
       renderReviewImage();
       updateReviewRecordNav();
@@ -2153,7 +2201,7 @@
     return {
       receiptId: String(reviewReceiptId),
       result,
-      reason: result === "failed" ? (reviewReason?.value || "") : "",
+      reason: result === "failed" ? receiptRejectReasonText() : "",
       number,
     };
   };
@@ -2281,7 +2329,12 @@
   reviewRecordNext?.addEventListener("click", () => openReviewByOffset(1));
   reviewReasonClose?.addEventListener("click", hideFailReasonPanel);
   reviewReasonCancel?.addEventListener("click", hideFailReasonPanel);
-  reviewReasonSubmit?.addEventListener("click", () => requestReceiptAuditConfirmation("failed"));
+  // The 驳回回单 dialog is the explicit confirmation for a rejection.
+  reviewReasonSubmit?.addEventListener("click", () => {
+    if (!reviewReceiptId) return;
+    const audit = receiptAuditPayloadFor("failed");
+    if (audit) executeReceiptAuditInBackground(audit);
+  });
   reviewAuditPass?.addEventListener("click", () => {
     hideFailReasonPanel();
     executeReceiptAuditInBackground(receiptAuditPayloadFor("passed"));
@@ -2369,20 +2422,6 @@
     window.feather?.replace?.();
   };
 
-  const selectedReceiptIds = () => Array.from(table?.querySelectorAll("[data-receipt-select]:checked") || [])
-    .map((input) => input.value)
-    .filter(Boolean);
-
-  const updateReceiptSelection = () => {
-    const boxes = Array.from(table?.querySelectorAll("[data-receipt-select]") || []);
-    const checked = boxes.filter((input) => input.checked).length;
-    if (selectAllReceipts) {
-      selectAllReceipts.checked = boxes.length > 0 && checked === boxes.length;
-      selectAllReceipts.indeterminate = checked > 0 && checked < boxes.length;
-      selectAllReceipts.disabled = boxes.length === 0;
-    }
-    if (downloadImagesLabel) downloadImagesLabel.textContent = checked ? `下载所选图片（${checked}）` : "下载图片";
-  };
 
   const bindReceiptRows = () => {
     table?.querySelectorAll("[data-receipt-id]").forEach((row) => {
@@ -2391,8 +2430,10 @@
         event.stopPropagation();
         openReview(row.dataset.receiptId, row);
       });
-      row.querySelector(".receipt-select-cell")?.addEventListener("click", (event) => event.stopPropagation());
-      row.querySelector("[data-receipt-select]")?.addEventListener("change", updateReceiptSelection);
+      row.querySelectorAll("[data-receipt-open]").forEach((button) => button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openReview(row.dataset.receiptId, row);
+      }));
       row.querySelectorAll("[data-receipt-thumb-image]").forEach((image) => {
         if (image.complete && image.naturalWidth === 0) markBrokenThumbnail(image);
         image.addEventListener("error", () => markBrokenThumbnail(image), { once: true });
@@ -2447,7 +2488,6 @@
       const photoCount = Number(row.photo_count || 0);
       return `
         <tr class="receipt-row" data-receipt-id="${id}" data-platform="${platform}" data-direction="${direction}">
-          <td class="receipt-select-cell"><input type="checkbox" data-receipt-select value="${id}" aria-label="选择回单 ${escapeHtml(row.waybill_no || row.id || "")}"></td>
           <td><div class="receipt-thumb-list">${thumbnail}</div></td>
           <td><span class="receipt-chip receipt-chip--${platformClassFor(row.platform)}">${escapeHtml(row.platform_label || row.platform || "-")}</span></td>
           <td><span class="receipt-code" title="${escapeHtml(row.waybill_no || "")}">${escapeHtml(row.waybill_no || "-")}</span></td>
@@ -2456,12 +2496,12 @@
           <td><span class="receipt-chip ${okClassFor(photoCount > 0)}">${escapeHtml(row.photo_status || "无照片")}</span></td>
           <td>${row.signed_confirmed && row.signed_confirmed !== "-" ? escapeHtml(row.signed_confirmed) : '<span class="cell-empty">—</span>'}</td>
           <td class="receipt-updated-cell" title="${escapeHtml(row.updated_at || "")}">${escapeHtml(row.updated_at || "")}</td>
+          <td class="receipt-actions-cell"><div class="receipt-row-actions"><button type="button" data-receipt-open aria-label="查看回单 ${escapeHtml(row.waybill_no || row.id || "")}">查看</button>${receiptNeedsAudit(row.audit_status) ? `<button type="button" class="is-danger" data-receipt-open aria-label="审核回单 ${escapeHtml(row.waybill_no || row.id || "")}">审核</button>` : ""}</div></td>
         </tr>
       `;
     }).join("");
     window.feather?.replace?.();
     bindReceiptRows();
-    updateReceiptSelection();
   };
 
   const buildReceiptParams = (pageNumber = 1) => {
@@ -2472,7 +2512,6 @@
     return params;
   };
 
-  const receiptUrlForPage = (pageNumber) => `/receipts?${buildReceiptParams(pageNumber).toString()}`;
 
   const receiptImageArchiveUrl = (receiptIds = []) => {
     const params = buildReceiptParams(1);
@@ -2481,12 +2520,37 @@
     return `/receipts/download-images?${params.toString()}`;
   };
 
+  const receiptNeedsAudit = (status) => {
+    const text = String(status || "");
+    return text === "待审核" || (text.includes("待") && text.includes("审核"));
+  };
+
+  const pagerPages = (current, total) => {
+    if (total <= 7) return Array.from({length: total}, (_, index) => index + 1);
+    const pages = new Set([1, total, current - 1, current, current + 1]);
+    const sorted = Array.from(pages).filter((value) => value >= 1 && value <= total).sort((a, b) => a - b);
+    const result = [];
+    sorted.forEach((value, index) => {
+      if (index && value - sorted[index - 1] > 1) result.push("…");
+      result.push(value);
+    });
+    return result;
+  };
+
   const renderPagination = (pagination = {}) => {
     if (!paginationActions) return;
     const currentPage = Number(pagination.page || 1);
+    const totalPages = Math.max(1, Number(pagination.total_pages || 1));
+    const pageHref = (pageNumber) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("page", String(pageNumber));
+      return `${url.pathname}${url.search}`;
+    };
+    const link = (pageNumber, label, extra = "") => `<a class="receipt-page-btn${extra}" href="${pageHref(pageNumber)}" data-receipt-page="${pageNumber}"${pageNumber === currentPage && !label ? ' aria-current="page"' : ""}>${label || pageNumber}</a>`;
     paginationActions.innerHTML = [
-      pagination.has_prev ? `<a class="ghost-btn" href="${receiptUrlForPage(currentPage - 1)}" data-receipt-page="${currentPage - 1}"><i data-feather="chevron-left"></i> 上一页</a>` : "",
-      pagination.has_next ? `<a class="ghost-btn" href="${receiptUrlForPage(currentPage + 1)}" data-receipt-page="${currentPage + 1}">下一页 <i data-feather="chevron-right"></i></a>` : ""
+      currentPage > 1 ? link(currentPage - 1, '<i data-feather="chevron-left"></i>', " receipt-page-btn--nav") : '<span class="receipt-page-btn receipt-page-btn--nav is-disabled" aria-hidden="true"><i data-feather="chevron-left"></i></span>',
+      ...pagerPages(currentPage, totalPages).map((value) => value === "…" ? '<span class="receipt-page-gap">…</span>' : link(value, "")),
+      currentPage < totalPages ? link(currentPage + 1, '<i data-feather="chevron-right"></i>', " receipt-page-btn--nav") : '<span class="receipt-page-btn receipt-page-btn--nav is-disabled" aria-hidden="true"><i data-feather="chevron-right"></i></span>',
     ].join("");
     window.feather?.replace?.();
   };
@@ -2516,7 +2580,11 @@
   };
 
   bindReceiptRows();
-  updateReceiptSelection();
+  renderPagination({
+    page: Number(paginationActions?.dataset.page || 1),
+    total_pages: Number(paginationActions?.dataset.totalPages || 1),
+  });
+  window.feather?.replace?.();
 
   const formatDate = (date) => {
     const year = date.getFullYear();
@@ -2772,14 +2840,19 @@
       setSyncStatus("请先查询回单列表后再下载图片。", "is-error");
       return;
     }
-    window.location.href = receiptImageArchiveUrl(selectedReceiptIds());
+    window.location.href = receiptImageArchiveUrl();
   });
 
-  selectAllReceipts?.addEventListener("change", () => {
-    table?.querySelectorAll("[data-receipt-select]").forEach((input) => {
-      input.checked = selectAllReceipts.checked;
-    });
-    updateReceiptSelection();
+  page.querySelector("[data-receipt-page-size]")?.addEventListener("change", async () => {
+    if (queryMarker && queryMarker.value !== "1") return;
+    setSubmitBusy(true);
+    try {
+      await refreshReceiptTable(1);
+    } catch (error) {
+      setSyncStatus(error.message || String(error), "is-error");
+    } finally {
+      setSubmitBusy(false);
+    }
   });
 
   paginationActions?.addEventListener("click", async (event) => {

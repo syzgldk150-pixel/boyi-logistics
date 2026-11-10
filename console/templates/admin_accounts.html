@@ -4,7 +4,64 @@
 {% block breadcrumb %}系统管理{% endblock %}
 {% block subtitle %}身份权限、后台账号与飞书绑定{% endblock %}
 
-{% block head %}<link rel="stylesheet" href="/static/identity-settings.css?v=20261110-spec">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/identity-settings.css?v=20261110-spec2">{% endblock %}
 {% block content %}
 {% include 'identity_management.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const root = document.querySelector(".main-content:not([hidden])") || document;
+    root.querySelectorAll("[data-identity-dialog-open]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const dialog = document.getElementById(button.getAttribute("data-identity-dialog-open") || "");
+        if (dialog && typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+        dialog?.querySelector("input:not([type=hidden]), select")?.focus();
+      });
+    });
+    document.querySelectorAll(".identity-dialog").forEach((dialog) => {
+      dialog.querySelectorAll("[data-identity-dialog-close]").forEach((button) => button.addEventListener("click", () => dialog.close()));
+      dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+    });
+
+    const card = root.querySelector("[data-identity-roles]");
+    if (!card) return;
+    const addButton = card.querySelector("[data-identity-roles-add]");
+    const cancelButton = card.querySelector("[data-identity-role-cancel]");
+    const editingLabel = card.querySelector("[data-identity-editing-label]");
+    const items = Array.from(card.querySelectorAll("[data-identity-role-item]"));
+    const closeEditors = () => {
+      items.forEach((item) => {
+        item.classList.remove("is-editing");
+        const form = item.querySelector("[data-identity-role-form]");
+        if (form) { form.reset(); form.hidden = true; }
+        const chip = item.querySelector("[data-identity-role-chip]");
+        if (chip) { chip.textContent = chip.dataset.defaultText || ""; chip.classList.remove("identity-chip--dark"); }
+        const edit = item.querySelector("[data-identity-role-edit]");
+        if (edit) edit.hidden = false;
+      });
+      if (editingLabel) { editingLabel.hidden = true; editingLabel.textContent = ""; }
+      if (cancelButton) cancelButton.hidden = true;
+      if (addButton) addButton.hidden = false;
+    };
+    items.forEach((item) => {
+      const edit = item.querySelector("[data-identity-role-edit]");
+      edit?.addEventListener("click", () => {
+        closeEditors();
+        item.classList.add("is-editing");
+        const form = item.querySelector("[data-identity-role-form]");
+        if (form) form.hidden = false;
+        const chip = item.querySelector("[data-identity-role-chip]");
+        if (chip) { chip.textContent = "编辑中"; chip.classList.add("identity-chip--dark"); }
+        edit.hidden = true;
+        if (editingLabel) { editingLabel.hidden = false; editingLabel.textContent = `· 正在编辑「${edit.getAttribute("data-identity-role-edit") || ""}」`; }
+        if (cancelButton) cancelButton.hidden = false;
+        if (addButton) addButton.hidden = true;
+        form?.querySelector("input[name=name]")?.focus();
+      });
+    });
+    cancelButton?.addEventListener("click", closeEditors);
+  })();
+</script>
 {% endblock %}
