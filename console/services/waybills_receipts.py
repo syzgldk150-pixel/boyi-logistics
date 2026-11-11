@@ -7,9 +7,8 @@ from console.services.business_calls import call_business
 from console.services.waybill_printing import build_waybill_print_data
 
 
-# One provider backfill per (source, date range) at a time; a complete result
-# is reused briefly so repeated queries of the same range stay instant.
-WAYBILL_REFRESH_REUSE_SECONDS = 120
+# One live provider query per (source, date range) at a time; identical
+# concurrent requests share it, and no result is reused by a later query.
 WAYBILL_REFRESH_WAIT_SECONDS = 100
 _WAYBILL_REFRESH_LOCK = threading.Lock()
 _WAYBILL_REFRESH_FLIGHTS: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -18,16 +17,9 @@ _WAYBILL_REFRESH_FLIGHTS: dict[tuple[str, str, str], dict[str, Any]] = {}
 def _waybill_refresh_flight(key: tuple[str, str, str]) -> tuple[dict[str, Any], bool]:
     """Return the shared flight for ``key`` and whether the caller runs it."""
 
-    now = time.monotonic()
     with _WAYBILL_REFRESH_LOCK:
         flight = _WAYBILL_REFRESH_FLIGHTS.get(key)
         if flight is not None and not flight["done"].is_set():
-            return flight, False
-        if (
-            flight is not None
-            and (flight.get("result") or {}).get("complete") is True
-            and now - flight["finished_at"] < WAYBILL_REFRESH_REUSE_SECONDS
-        ):
             return flight, False
         flight = {"done": threading.Event(), "result": None, "finished_at": 0.0}
         _WAYBILL_REFRESH_FLIGHTS[key] = flight
@@ -37,10 +29,9 @@ def _waybill_refresh_flight(key: tuple[str, str, str]) -> tuple[dict[str, Any], 
 def _finish_waybill_refresh_flight(key: tuple[str, str, str], flight: dict[str, Any]) -> None:
     with _WAYBILL_REFRESH_LOCK:
         flight["finished_at"] = time.monotonic()
-        if (flight.get("result") or {}).get("complete") is not True:
-            # Failures are never reused; waiters still read this result once.
-            if _WAYBILL_REFRESH_FLIGHTS.get(key) is flight:
-                del _WAYBILL_REFRESH_FLIGHTS[key]
+        # Results are never reused by a later query; waiters still read this one once.
+        if _WAYBILL_REFRESH_FLIGHTS.get(key) is flight:
+            del _WAYBILL_REFRESH_FLIGHTS[key]
         flight["done"].set()
 
 
@@ -86,11 +77,11 @@ class WaybillsReceiptsServiceMixin:
             start_date = datetime.strptime(start_text, "%Y-%m-%d").date()
             end_date = datetime.strptime(end_text, "%Y-%m-%d").date()
         except ValueError:
-            return "", "", "开单日期格式无效，已跳过外部刷新。"
+            return "", "", "开单日期格式无效，请重新选择日期。"
         if start_date > end_date:
-            return "", "", "开单开始日期不能晚于结束日期，已跳过外部刷新。"
+            return "", "", "开单开始日期不能晚于结束日期，请重新选择日期。"
         if (end_date - start_date).days + 1 > 31:
-            return "", "", "开单日期范围超过 31 天，已跳过外部刷新，请缩小范围后重试。"
+            return "", "", "原平台最多按 31 天查询，请缩小开单日期范围后重新查询。"
         return start_date.isoformat(), end_date.isoformat(), ""
 
     @staticmethod
@@ -141,12 +132,12 @@ class WaybillsReceiptsServiceMixin:
         if error:
             return None, [error]
         if not start:
-            return None, ["未指定日期，本次仅查询服务器数据；请选择日期补查原平台。"]
+            start = end = self._waybill_default_date().replace("/", "-")
         # A browser page read uses the same authenticated principal as other
         # direct business reads. Never invent an account from a provider name.
         user = getattr(handler, "current_admin_user", None)
         if self._mysql_console_principal(user) is None:
-            return None, ["原平台补查需要已登录的管理员会话，当前展示服务器快照。"]
+            return None, ["查询原平台需要已登录的管理员会话。"]
         return {"source": str(filters["source"]), "date_from": start, "date_to": end}, []
 
     def _refresh_waybill_sources(
@@ -171,7 +162,7 @@ class WaybillsReceiptsServiceMixin:
         return {
             "complete": complete,
             "messages": ["已按原平台覆盖范围更新数据，列表和汇总使用同一数据库快照。"] if complete else [],
-            "warnings": [] if complete else ["原平台数据未完整更新，以下列表和汇总仅代表已保存的服务器数据。"],
+            "warnings": [] if complete else ["原平台没有完整返回本次查询，请稍后重新查询。"],
             "refreshed_at": datetime.now().strftime("%H:%M"),
         }
 
@@ -224,10 +215,11 @@ class WaybillsReceiptsServiceMixin:
             return
         result = dict(flight.get("result") or {
             "complete": False, "messages": [],
-            "warnings": ["原平台数据未完整更新，以下列表和汇总仅代表已保存的服务器数据。"],
+            "warnings": ["原平台没有完整返回本次查询，请稍后重新查询。"],
             "refreshed_at": ""})
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {
-            "refreshed": True, **result, "reused": not owner}})
+            "refreshed": True, **result, "reused": not owner,
+            "date_from": plan["date_from"], "date_to": plan["date_to"]}})
 
     def _render_waybills(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         def first_value(name: str, default: str = "") -> str:
@@ -259,6 +251,13 @@ class WaybillsReceiptsServiceMixin:
             filters["sort"] = "open_date_desc"
         page = positive_int("page", 1)
         page_size = min(max(positive_int("page_size", 50), 10), 100)
+        if self._waybill_sync_providers(filters["source"]) and not (requested_date_from or requested_date_to) and (
+            filters["q"] or filters["payment_method"] or filters["delivery_method"]
+            or filters["status"] != "all" or filters["source"] != "all"
+        ):
+            # Platforms are queried by date; the list must cover exactly the fetched range.
+            requested_date_from = requested_date_to = self._waybill_default_date()
+            filters["date_from"] = filters["date_to"] = requested_date_from
         has_requested_date_filter = bool(requested_date_from or requested_date_to)
         has_active_non_date_filters = any(
             str(filters.get(name, "") or "").strip()
@@ -325,8 +324,13 @@ class WaybillsReceiptsServiceMixin:
         source_refresh: dict[str, str] | None = None
         if has_active_filters:
             source_refresh, sync_status["warnings"] = self._waybill_source_refresh_plan(handler, filters)
+        # Rows of 融辉/韵达 are shown only right after a live query (the browser's own list read).
+        # A full page or tab load waits for that query instead of showing stored rows.
+        list_read = str(getattr(handler, "headers", {}).get("X-Requested-With") or "") == "WaybillAjaxSearch"
+        provider_query = has_active_filters and bool(self._waybill_sync_providers(filters["source"]))
+        live_pending = provider_query and source_refresh is not None and not list_read
 
-        if has_active_filters:
+        if has_active_filters and not live_pending and not (provider_query and source_refresh is None):
             try:
                 result = self.repository.search_waybills(filters, page=page, page_size=page_size)
                 db_error = ""
@@ -372,6 +376,7 @@ class WaybillsReceiptsServiceMixin:
             db_error=db_error,
             sync_status=sync_status,
             source_refresh=source_refresh,
+            live_pending=live_pending,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
         )

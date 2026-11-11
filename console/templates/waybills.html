@@ -336,7 +336,7 @@
 {% endmacro %}
 
 <section class="waybill-page">
-  <div class="waybill-workbench" data-waybill-ajax-panel data-waybill-source-refresh='{{ {"allowed": source_refresh is defined and source_refresh is not none, "source": filters.source, "date_from": filters.date_from, "date_to": filters.date_to, "reason": (sync_status.warnings | join("；")) if sync_status else ""} | tojson }}' >
+  <div class="waybill-workbench" data-waybill-ajax-panel{% if live_pending %} data-waybill-live-pending{% endif %}>
     <section class="waybill-filter-card" aria-label="筛选">
       <form id="waybillFilterForm" class="waybill-filter-form" method="get" action="/waybills" data-waybill-filter-form>
         <input type="hidden" name="page" value="1">
@@ -522,11 +522,18 @@
         </template>
         {% endfor %}
         {% else %}
+        {% if live_pending %}
+        <div class="waybill-empty state-block">
+          <p class="state-block__title">正在查询原平台最新数据…</p>
+          <p class="state-block__desc">融辉、韵达按开单日期实时查询，完成后显示结果</p>
+        </div>
+        {% else %}
         <div class="waybill-empty state-block">
           <i data-feather="inbox"></i>
           <p class="state-block__title">没有符合条件的记录</p>
           <p class="state-block__desc">调整关键词、开单日期或状态后重新查询</p>
         </div>
+        {% endif %}
         {% endif %}
       </div>
 
@@ -891,7 +898,7 @@
     return true;
   }
 
-  function closeWaybillDetail(scope, { reload = true } = {}) {
+  function closeWaybillDetail(scope) {
     const detail = scope.querySelector("[data-waybill-detail-dialog]");
     scope.classList.remove("is-detail-open");
     scope.querySelectorAll("[data-waybill-row]").forEach((item) => item.classList.remove("is-selected"));
@@ -901,10 +908,6 @@
       detail.close();
     } else {
       detail?.removeAttribute("open");
-    }
-    if (reload && pendingRefresh && !loadInProgress && scope === panel()) {
-      pendingRefresh = false;
-      loadWaybills(new URL(window.location.href), { pushState: false });
     }
   }
 
@@ -1272,23 +1275,7 @@
   }
 
   let refreshController = null;
-  let refreshState = null;
   let loadNumber = 0;
-  let loadInProgress = false;
-  let pendingRefresh = false;
-
-  function detailOpen(scope = panel()) {
-    return Boolean(scope?.classList.contains("is-detail-open") || scope?.querySelector("[data-waybill-edit-form]"));
-  }
-
-  function refreshPlan(scope = panel()) {
-    try { return JSON.parse(scope?.dataset.waybillSourceRefresh || "null"); }
-    catch { return null; }
-  }
-
-  function refreshKey(plan) {
-    return plan ? JSON.stringify([plan.source, plan.date_from, plan.date_to]) : "";
-  }
 
   function setRefreshNotice(message, kind = "info") {
     const status = panel()?.querySelector("[data-waybill-refresh-status]");
@@ -1299,8 +1286,26 @@
     status.classList.toggle("notice--success", kind === "success");
   }
 
-  function restoreRefreshNotice() {
-    if (refreshState && refreshState.key === refreshKey(refreshPlan())) setRefreshNotice(refreshState.message, refreshState.kind);
+  // Shown instead of rows while the platforms answer or when they could not:
+  // stored rows of 融辉/韵达 are never displayed as if they were current.
+  function showListState(title, description = "") {
+    const current = panel();
+    if (!current) return;
+    const shell = current.querySelector(".waybill-table-shell");
+    if (shell) {
+      const block = document.createElement("div");
+      block.className = "waybill-empty state-block";
+      const titleNode = document.createElement("p");
+      titleNode.className = "state-block__title";
+      titleNode.textContent = title;
+      const descNode = document.createElement("p");
+      descNode.className = "state-block__desc";
+      descNode.textContent = description;
+      block.append(titleNode, descNode);
+      shell.replaceChildren(block);
+    }
+    const total = current.querySelector(".waybill-total");
+    if (total) total.textContent = "共 0 条";
   }
 
   async function fetchPanel(url) {
@@ -1316,86 +1321,70 @@
     } finally { window.clearTimeout(timeout); }
   }
 
-  async function refreshSources() {
-    const plan = refreshPlan();
-    refreshController?.abort();
-    refreshController = null;
-    refreshState = null;
-    if (!plan?.allowed) {
-      if (plan?.reason) setRefreshNotice(plan.reason, "warning");
-      return;
-    }
-    const key = refreshKey(plan);
-    const controller = new AbortController();
-    refreshController = controller;
-    refreshState = { key, message: "正在补查原平台数据…", kind: "info" };
-    restoreRefreshNotice();
-    const timeout = window.setTimeout(() => controller.abort(), 105000);
-    try {
-      const response = await fetch("/waybills/source-refresh", {
-        method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: plan.source, date_from: plan.date_from, date_to: plan.date_to }),
-      });
-      const result = await response.json();
-      if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || "补查失败，当前显示服务器数据，请重新查询。");
-      if (controller !== refreshController || !panel() || window.location.pathname !== "/waybills") return;
-      const data = result.data;
-      const time = data.refreshed_at ? `（${data.refreshed_at}）` : "";
-      refreshState = {
-        key,
-        message: data.complete ? `已按原平台更新${time}${data.reused ? "，复用两分钟内的补查结果" : ""}` : (data.warnings || []).join("；") || "原平台数据未完整更新，当前显示已保存的服务器数据。",
-        kind: data.complete ? "success" : "warning",
-      };
-      if (key !== refreshKey(refreshPlan())) return;
-      // Preserve an in-progress query or an open detail while providers finish;
-      // closing the detail applies the deferred refresh.
-      if (loadInProgress || detailOpen()) {
-        pendingRefresh = true;
-        restoreRefreshNotice();
-        return;
-      }
-      // Pagination/sorting during the backfill remains the current view.
-      await loadWaybills(new URL(window.location.href), { pushState: false, silent: true });
-      restoreRefreshNotice();
-    } catch (error) {
-      if (controller !== refreshController) return;
-      refreshState = { key, message: error?.name === "AbortError" ? "补查等待已结束，当前显示服务器数据；请稍后重新查询。" : error.message, kind: "warning" };
-      restoreRefreshNotice();
-    } finally { window.clearTimeout(timeout); }
-  }
-
-  async function loadWaybills(url, { pushState = true, refresh = false, silent = false } = {}) {
+  // Pagination, sorting and page size read the list of the current query.
+  async function loadWaybills(url, { pushState = true, notice = null } = {}) {
     const sequence = ++loadNumber;
-    loadInProgress = true;
-    pendingRefresh = false;
-    if (refresh) { refreshController?.abort(); refreshController = null; refreshState = null; pendingRefresh = false; }
-    if (!silent) setBusy(true);
+    setBusy(true);
     try {
       const nextPanel = await fetchPanel(url);
       const currentPanel = panel();
       if (sequence !== loadNumber || !currentPanel || window.location.pathname !== "/waybills") return false;
-      closeWaybillDetail(currentPanel, { reload: false });
+      closeWaybillDetail(currentPanel);
       currentPanel.replaceWith(document.importNode(nextPanel, true));
       if (pushState) window.history.pushState({ waybillAjax: true }, "", url.href);
       bindWaybillSearch();
       window.ConsoleUI?.initPage?.(panel() || document);
       window.ConsoleUI?.refreshIcons?.();
-      restoreRefreshNotice();
-      if (refresh) refreshSources();
+      if (notice) setRefreshNotice(notice.message, notice.kind);
       return true;
     } catch (error) {
-      if (silent) throw error;
       setRefreshNotice(error.message || "运单列表读取失败，请重新查询。", "warning");
       return false;
     } finally {
-      if (sequence === loadNumber) {
-        loadInProgress = false;
-        setBusy(false);
-        if (pendingRefresh && !detailOpen()) {
-          pendingRefresh = false;
-          loadWaybills(new URL(window.location.href), { pushState: false });
-        }
+      if (sequence === loadNumber) setBusy(false);
+    }
+  }
+
+  // 查询: ask 融辉/韵达 for the range first, then show the list of exactly that range.
+  async function queryLive(url, { pushState = true } = {}) {
+    const sequence = ++loadNumber;
+    refreshController?.abort();
+    const controller = new AbortController();
+    refreshController = controller;
+    const params = url.searchParams;
+    const currentPanel = panel();
+    if (currentPanel) closeWaybillDetail(currentPanel);
+    showListState("正在查询原平台最新数据…", "融辉、韵达按开单日期实时查询，完成后显示结果");
+    setRefreshNotice("");
+    setBusy(true);
+    const timeout = window.setTimeout(() => controller.abort(), 105000);
+    try {
+      const response = await fetch("/waybills/source-refresh", {
+        method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: params.get("source") || "all", date_from: params.get("date_from") || "", date_to: params.get("date_to") || "" }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (sequence !== loadNumber || controller !== refreshController) return;
+      if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || "原平台查询失败，请重新查询。");
+      const data = result.data;
+      const warnings = (data.warnings || []).join("；");
+      if ((data.refreshed && !data.complete) || (!data.refreshed && warnings)) {
+        throw new Error(warnings || "原平台没有完整返回本次查询，请稍后重新查询。");
       }
+      if (data.date_from) { params.set("date_from", data.date_from); params.set("date_to", data.date_to); }
+      await loadWaybills(url, {
+        pushState,
+        notice: data.refreshed ? { message: `已按原平台查询（${data.refreshed_at}）`, kind: "success" } : null,
+      });
+    } catch (error) {
+      if (sequence !== loadNumber || controller !== refreshController) return;
+      const message = error?.name === "AbortError" ? "原平台查询超时，请稍后重新查询。" : (error.message || "原平台查询失败，请重新查询。");
+      showListState("本次没有拿到原平台数据", message);
+      setRefreshNotice(message, "warning");
+      setBusy(false);
+    } finally {
+      window.clearTimeout(timeout);
+      if (refreshController === controller) refreshController = null;
     }
   }
 
@@ -1432,7 +1421,8 @@
       normalizeParams(params);
       url.search = params.toString();
       const activeQuery = event.submitter?.matches("[data-waybill-query]") === true;
-      loadWaybills(url, { refresh: activeQuery });
+      if (activeQuery) queryLive(url);
+      else loadWaybills(url);
     });
 
     current.querySelector("[data-waybill-page-size]")?.addEventListener("change", () => {
@@ -1469,6 +1459,8 @@
 
   window.WaybillAjaxSearch = { init: bindWaybillSearch, load: loadWaybills };
   bindWaybillSearch();
+  // A full page or tab load of a 融辉/韵达 query runs the live query instead of showing stored rows.
+  if (panel()?.hasAttribute("data-waybill-live-pending")) queryLive(new URL(window.location.href), { pushState: false });
 })();
 </script>
 {% endblock %}

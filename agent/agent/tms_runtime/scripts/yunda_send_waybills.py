@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -37,6 +38,8 @@ MAIL_LIST_URL = f"{YUNDA_INMS_ORIGIN}/ky_inms/public/index.php/system/mail/list.
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_PAGE_SIZE = 200
 DEFAULT_MAX_PAGES = 50
+# Per-waybill detail reads in flight at once; bounded to keep the load on the platform modest.
+ENRICH_MAX_WORKERS = 4
 DATE_FIELD_NAME = "发件日期"
 SOURCE_SEND_WAYBILL = "send_waybill"
 SOURCE_SPECIAL_LINE = "special_line"
@@ -439,11 +442,8 @@ def enrich_records(
     *,
     target_date: dt.date,
 ) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for row in rows:
+    def enrich(row: dict[str, Any]) -> dict[str, Any]:
         bill_code = _clean_str(row.get("Logistics_Id"))
-        if not bill_code:
-            continue
         detail = fetch_waybill_detail(session, bill_code, params)
         original = fetch_original_data(session, bill_code, params)
         renderer = (
@@ -451,11 +451,17 @@ def enrich_records(
             if row.get(INTERNAL_SOURCE_FIELD) == SOURCE_SEND_WAYBILL
             else {}
         )
-        records.append(normalize_record(
+        return normalize_record(
             row, detail, original, renderer, target_date=target_date,
             source=str(row[INTERNAL_SOURCE_FIELD]),
-        ))
-    return records
+        )
+
+    wanted = [row for row in rows if _clean_str(row.get("Logistics_Id"))]
+    if len(wanted) <= 1:
+        return [enrich(row) for row in wanted]
+    # Results keep the list order; any failed waybill fails the whole read.
+    with ThreadPoolExecutor(max_workers=min(ENRICH_MAX_WORKERS, len(wanted))) as pool:
+        return list(pool.map(enrich, wanted))
 
 
 def run_once(params: dict[str, Any]) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Explicit backfill uses one in-flight call and reuses successful results."""
+"""Every explicit query reaches the platforms; only concurrent identical requests share one call."""
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from unittest.mock import Mock
@@ -67,17 +67,23 @@ def test_concurrent_identical_refresh_shares_one_agent_call():
     assert all(result["complete"] for result in results)
 
 
-def test_complete_refresh_reused_until_exact_120_second_expiry(monkeypatch):
+def test_completed_query_is_never_reused_by_a_later_query():
     app = build_app()
     app._agent_request = Mock(return_value={"ok": True, "data": {"complete": True}})
-    clock = [1000.0]
-    monkeypatch.setattr(refresh.time, "monotonic", lambda: clock[0])
-    assert not run_refresh(app)[1]["data"]["reused"]
-    clock[0] += 119.99
-    assert run_refresh(app)[1]["data"]["reused"]
-    clock[0] += 0.01
-    assert not run_refresh(app)[1]["data"]["reused"]
+    first = run_refresh(app)[1]["data"]
+    second = run_refresh(app)[1]["data"]
+    assert not first["reused"] and not second["reused"]
+    assert (first["date_from"], first["date_to"]) == (PLAN["date_from"], PLAN["date_to"])
     assert app._agent_request.call_count == 2
+
+
+def test_missing_dates_query_today(monkeypatch):
+    app = build_app()
+    app._agent_request = Mock(return_value={"ok": True, "data": {"complete": True}})
+    monkeypatch.setattr(type(app), "_waybill_default_date", staticmethod(lambda: "2026/10/13"))
+    result = run_refresh(app, {**PLAN, "date_from": "", "date_to": ""})[1]["data"]
+    assert result["complete"] and (result["date_from"], result["date_to"]) == ("2026-10-13", "2026-10-13")
+    assert app._agent_request.call_args.kwargs["payload"]["params"] == PLAN
 
 
 @pytest.mark.parametrize("failure", [{"ok": False}, {"ok": True, "data": {"complete": False}}, None, TimeoutError()])
@@ -85,15 +91,14 @@ def test_partial_invalid_or_failed_refresh_never_cached(failure):
     app = build_app()
     app._agent_request = Mock(side_effect=[failure, {"ok": True, "data": {"complete": True}}])
     first = run_refresh(app)[1]["data"]
-    assert not first["complete"] and "仅代表已保存的服务器数据" in first["warnings"][0]
+    assert not first["complete"] and "没有完整返回" in first["warnings"][0]
     second = run_refresh(app)[1]["data"]
     assert second["complete"] and not second["reused"]
     assert app._agent_request.call_count == 2
 
 
 @pytest.mark.parametrize("plan,warning", [
-    ({**PLAN, "date_from": "", "date_to": ""}, "未指定日期"),
-    ({**PLAN, "date_from": "2026-09-01"}, "超过 31 天"),
+    ({**PLAN, "date_from": "2026-09-01"}, "最多按 31 天"),
     ({**PLAN, "date_from": "2026-10-14"}, "不能晚于"),
     ({**PLAN, "date_from": "2026-02-30"}, "日期格式无效"),
 ])

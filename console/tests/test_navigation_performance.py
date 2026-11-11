@@ -104,19 +104,19 @@ class NavigationPerformanceTests(unittest.TestCase):
         login_template = (CONSOLE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
 
         self.assertNotIn("cdn.jsdelivr.net/npm/chart.js", template)
-        self.assertIn("/static/style.css?v=20261111-spec4", template)
+        self.assertIn("/static/style.css?v=20261111-spec5", template)
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", template)
-        self.assertIn("/static/console_ui.js?v=20261110-spec", template)
+        self.assertIn("/static/console_ui.js?v=20261111-norefresh", template)
         self.assertIn(
-            "/static/style.css?v=20261111-spec4",
+            "/static/style.css?v=20261111-spec5",
             login_template,
         )
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", login_template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", login_template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", login_template)
-        self.assertIn("/static/console_ui.js?v=20261110-spec", login_template)
+        self.assertIn("/static/console_ui.js?v=20261111-norefresh", login_template)
         self.assertNotIn("unpkg.com", template)
         self.assertNotIn("unpkg.com", login_template)
         self.assertNotIn("api.dicebear.com", template)

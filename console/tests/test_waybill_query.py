@@ -13,8 +13,11 @@ from database import DocumentRepository, WAYBILL_SOURCE_LABELS, WAYBILL_STATUS_L
 
 
 class _RenderHandler:
-    def __init__(self):
+    def __init__(self, *, admin=False, list_read=False):
         self.wfile = io.BytesIO()
+        self.headers = {"X-Requested-With": "WaybillAjaxSearch"} if list_read else {}
+        if admin:
+            self.current_admin_user = {"id": 1, "username": "fixture-admin"}
         self.status = None
         self.sent_headers = []
 
@@ -28,27 +31,38 @@ class _RenderHandler:
         pass
 
 
-def test_authenticated_waybill_get_reads_snapshot_without_calling_agent():
+def test_platform_page_load_waits_for_live_query_instead_of_stored_rows():
     repository = _WaybillRepo()
     app = _build_waybill_app(repository)
-    handler = _RenderHandler()
-    handler.current_admin_user = {"id": 1, "username": "fixture-admin"}
+    handler = _RenderHandler(admin=True)
     app._agent_request = lambda *_args, **_kwargs: unittest.TestCase().fail("GET must not call Agent")
     app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"], "date_to": ["2026-09-08"]})
+    html = handler.wfile.getvalue().decode("utf-8")
+    assert repository.calls == []
+    assert "data-waybill-ajax-panel data-waybill-live-pending" in html and "正在查询原平台最新数据" in html
+
+
+def test_list_read_after_live_query_reads_exactly_that_range():
+    repository = _WaybillRepo()
+    app = _build_waybill_app(repository)
+    handler = _RenderHandler(admin=True, list_read=True)
+    app._agent_request = lambda *_args, **_kwargs: unittest.TestCase().fail("list read must not call Agent")
+    app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"], "date_to": ["2026-09-08"]})
     assert len(repository.calls) == 1
+    assert "data-waybill-ajax-panel data-waybill-live-pending" not in handler.wfile.getvalue().decode("utf-8")
     assert app._waybill_source_refresh_plan(handler, repository.calls[0]["filters"]) == (
         {"source": "yunda", "date_from": "2026-09-08", "date_to": "2026-09-08"}, [])
 
 
-def test_basic_auth_snapshot_cannot_offer_provider_refresh():
+def test_basic_auth_cannot_query_platforms_and_sees_no_stored_platform_rows():
     repository = _WaybillRepo()
     app = _build_waybill_app(repository)
-    handler = _RenderHandler()
+    handler = _RenderHandler(list_read=True)
     handler.current_admin_user = {"id": 1, "username": "fixture", "is_legacy_basic_auth": True}
     app._agent_request = lambda *_args, **_kwargs: unittest.TestCase().fail("GET must not call Agent")
     app._render_waybills(handler, {"source": ["yunda"], "date_from": ["2026-09-08"]})
-    assert "原平台补查需要已登录的管理员会话" in handler.wfile.getvalue().decode("utf-8")
-    assert len(repository.calls) == 1
+    assert "查询原平台需要已登录的管理员会话" in handler.wfile.getvalue().decode("utf-8")
+    assert repository.calls == []
 
 
 class _PostHandler(_RenderHandler):
@@ -483,76 +497,45 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertIn('name="date_from" value="2026-06-22"', html)
         self.assertIn('name="date_to" value="2026-06-22"', html)
 
-    def test_date_range_get_is_read_only_and_queries_persisted_snapshot(self):
+    def test_date_range_list_read_queries_that_range_without_agent(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
-        handler = _RenderHandler()
-        agent_calls = []
-
-        def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
-            agent_calls.append({"method": method, "endpoint": endpoint, "payload": payload, "timeout": timeout})
-            self.fail("waybill GET must not call Agent execution")
-
-        app._agent_request = fake_agent_request
+        handler = _RenderHandler(admin=True, list_read=True)
+        app._agent_request = lambda *args, **kwargs: self.fail("waybill GET must not call Agent")
 
         app._render_waybills(
             handler,
-            {
-                "date_from": ["2026-05-12"],
-                "date_to": ["2026-05-13"],
-                "source": ["all"],
-                "page_size": ["50"],
-            },
+            {"date_from": ["2026-05-12"], "date_to": ["2026-05-13"], "source": ["all"], "page_size": ["50"]},
         )
 
-        self.assertEqual([], agent_calls)
         self.assertEqual(1, len(repository.calls))
         self.assertEqual("2026/05/12", repository.calls[0]["filters"]["date_from"])
         self.assertEqual("2026/05/13", repository.calls[0]["filters"]["date_to"])
-        self.assertIn("服务器快照", handler.wfile.getvalue().decode("utf-8"))
 
-    def test_date_filter_renders_read_only_snapshot_notice(self):
+    def test_keyword_without_dates_queries_today_for_platform_sources(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
-        handler = _RenderHandler()
+        handler = _RenderHandler(admin=True, list_read=True)
+        app._agent_request = lambda *args, **kwargs: self.fail("list read must not call Agent")
 
-        app._agent_request = lambda *args, **kwargs: self.fail("GET must remain read-only")
-
-        app._render_waybills(
-            handler,
-            {
-                "date_from": ["2026-06-22"],
-                "date_to": ["2026-06-22"],
-                "source": ["yunda"],
-            },
-        )
-
-        html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("服务器快照", html)
-
-    def test_keyword_filter_queries_waybills(self):
-        repository = _WaybillRepo()
-        app = _build_waybill_app(repository)
-        handler = _RenderHandler()
-        app._agent_request = lambda *args, **kwargs: self.fail("agent should not be called without a date range")
-
-        app._render_waybills(
-            handler,
-            {
-                "q": ["2003441361"],
-                "page_size": ["50"],
-                "source": ["yunda"],
-                "payment_method": ["到付"],
-                "delivery_method": ["送货"],
-            },
-        )
+        with patch.object(type(app), "_waybill_default_date", staticmethod(lambda: "2026/06/22")):
+            app._render_waybills(
+                handler,
+                {
+                    "q": ["2003441361"],
+                    "page_size": ["50"],
+                    "source": ["yunda"],
+                    "payment_method": ["到付"],
+                    "delivery_method": ["送货"],
+                },
+            )
 
         self.assertEqual(1, len(repository.calls))
         self.assertEqual(
             {
                 "q": "2003441361",
-                "date_from": "",
-                "date_to": "",
+                "date_from": "2026/06/22",
+                "date_to": "2026/06/22",
                 "status": "all",
                 "source": "yunda",
                 "payment_method": "到付",
@@ -582,9 +565,8 @@ class WaybillQueryRenderTests(unittest.TestCase):
     def test_status_filter_queries_waybills(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
-        handler = _RenderHandler()
 
-        app._render_waybills(handler, {"status": ["signed"]})
+        app._render_waybills(_RenderHandler(admin=True, list_read=True), {"status": ["signed"]})
 
         self.assertEqual(1, len(repository.calls))
         self.assertEqual("signed", repository.calls[0]["filters"]["status"])
@@ -629,46 +611,24 @@ class WaybillQueryRenderTests(unittest.TestCase):
 
         self.assertEqual(1, len(repository.calls))
 
-    def test_long_date_range_skips_external_refresh_and_still_queries_local(self):
+    def test_long_date_range_is_refused_without_showing_stored_rows(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
-        handler = _RenderHandler()
-        app._agent_request = lambda *args, **kwargs: self.fail("long date range should not refresh external providers")
+        handler = _RenderHandler(admin=True, list_read=True)
+        app._agent_request = lambda *args, **kwargs: self.fail("long date range must not reach providers")
 
-        app._render_waybills(
-            handler,
-            {
-                "date_from": ["2026-05-01"],
-                "date_to": ["2026-06-15"],
-            },
-        )
+        app._render_waybills(handler, {"date_from": ["2026-05-01"], "date_to": ["2026-06-15"]})
 
-        self.assertEqual(1, len(repository.calls))
-        html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("开单日期范围超过 31 天", html)
+        self.assertEqual([], repository.calls)
+        self.assertIn("最多按 31 天", handler.wfile.getvalue().decode("utf-8"))
 
-    def test_agent_unavailability_is_irrelevant_to_read_only_waybill_get(self):
+    def test_page_render_never_calls_agent(self):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
-        handler = _RenderHandler()
-
-        def fake_agent_request(method, endpoint, *, payload=None, timeout=None):
-            self.fail("GET must not call Agent")
-
-        app._agent_request = fake_agent_request
-
-        app._render_waybills(
-            handler,
-            {
-                "date_from": ["2026-05-12"],
-                "date_to": ["2026-05-12"],
-                "source": ["ronghui"],
-            },
-        )
-
+        app._agent_request = lambda *args, **kwargs: self.fail("GET must not call Agent")
+        for handler in (_RenderHandler(admin=True), _RenderHandler(admin=True, list_read=True)):
+            app._render_waybills(handler, {"date_from": ["2026-05-12"], "date_to": ["2026-05-12"], "source": ["ronghui"]})
         self.assertEqual(1, len(repository.calls))
-        html = handler.wfile.getvalue().decode("utf-8")
-        self.assertIn("服务器快照", html)
 
     def test_keyword_where_only_searches_allowed_identity_fields(self):
         repository = DocumentRepository.__new__(DocumentRepository)

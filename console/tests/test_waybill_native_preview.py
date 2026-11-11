@@ -300,13 +300,13 @@ def test_history_loads_once_on_demand_and_escapes_saved_changes(query_page):
     assert not query_page.errors
 
 
-def test_only_query_refreshes_sources_and_reuse_status_survives_navigation(query_page):
+def test_query_asks_platforms_first_and_list_navigation_does_not(query_page):
     page = query_page.page
     assert query_page.source_requests == []
     page.locator("[data-waybill-query]").click()
-    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台更新')")
+    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台查询')")
     assert query_page.source_requests == [{"source": "all", "date_from": "2026-01-02", "date_to": "2026-01-02"}]
-    assert len(query_page.list_requests) == 3
+    assert len(query_page.list_requests) == 2
     page.locator("[data-waybill-sort]").select_option("open_date_asc")
     page.wait_for_function("location.search.includes('sort=open_date_asc')")
     page.locator("[data-waybill-page-size]").select_option("20")
@@ -314,39 +314,35 @@ def test_only_query_refreshes_sources_and_reuse_status_survives_navigation(query
     page.get_by_role("link", name="下一页", exact=True).click()
     page.wait_for_function("location.search.includes('page=2')")
     assert len(query_page.source_requests) == 1
-    assert "已按原平台更新" in page.locator("[data-waybill-refresh-status]").inner_text()
     page.locator("[data-waybill-query]").click()
-    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('复用两分钟内')")
+    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台查询')")
     assert len(query_page.source_requests) == 2
     assert not query_page.errors
 
 
-def test_incomplete_source_refresh_shows_warning_after_list_reload(query_page):
+def test_incomplete_platform_answer_shows_reason_and_no_stored_rows(query_page):
     query_page.source_complete = False
     page = query_page.page
     page.locator("[data-waybill-query]").click()
     page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.classList.contains('notice--warning')")
     assert "原平台数据未完整更新" in page.locator("[data-waybill-refresh-status]").inner_text()
-    assert len(query_page.list_requests) == 3
+    assert "本次没有拿到原平台数据" in page.locator(".waybill-table-shell").inner_text()
+    assert page.locator("[data-waybill-row]").count() == 0
+    assert len(query_page.list_requests) == 1
     assert not query_page.errors
 
 
-def test_completed_backfill_preserves_an_unsaved_edit(query_page):
+def test_rows_are_hidden_until_the_platforms_answer(query_page):
     query_page.defer_refresh = True
     page = query_page.page
     page.locator("[data-waybill-query]").click()
-    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('正在补查')")
-    detail = open_detail(page)
-    detail.locator("[data-waybill-edit]").click()
-    form = detail.locator("[data-waybill-edit-form]")
-    form.locator('[name="field_remark"]').fill("不能丢失的合成备注")
+    page.wait_for_function("document.querySelector('.waybill-table-shell')?.textContent.includes('正在查询原平台最新数据')")
+    assert page.locator("[data-waybill-row]").count() == 0
     route, result = query_page.source_pending.pop()
     route.fulfill(content_type="application/json", body=result)
-    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台更新')")
-    assert form.locator('[name="field_remark"]').input_value() == "不能丢失的合成备注"
+    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台查询')")
+    assert page.locator("[data-waybill-row]").count() > 0
     assert len(query_page.list_requests) == 2
-    detail.locator("[data-waybill-detail-close]").click()
-    page.wait_for_function("!document.querySelector('[data-waybill-detail-dialog]')?.open")
     assert not query_page.errors
 
 

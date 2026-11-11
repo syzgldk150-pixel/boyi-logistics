@@ -1488,21 +1488,6 @@
       }
     });
 
-    document.addEventListener("click", (event) => {
-      const button = event.target instanceof Element ? event.target.closest("[data-console-refresh]") : null;
-      if (!button) {
-        return;
-      }
-      event.preventDefault();
-      button.classList.add("is-spinning");
-      const url = new URL(window.location.href);
-      if (openTabs.has(getTabKey(url))) {
-        Promise.resolve(ensureModuleTab(url, { reload: true, pushState: false }))
-          .finally(() => button.classList.remove("is-spinning"));
-        return;
-      }
-      window.location.reload();
-    });
   }
 
   function initPage(root = document) {

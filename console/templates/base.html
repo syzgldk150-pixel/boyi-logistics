@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <link rel="preload" href="/static/assets/fonts/InterVariable-Latin.woff2?v=4f95b56c" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/assets/fonts/SourceHanSansCN-UI.woff2?v=27533854" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=20261111-spec4">
+  <link rel="stylesheet" href="/static/style.css?v=20261111-spec5">
   <script>try{if(localStorage.getItem("console.sidebar")==="collapsed")document.documentElement.setAttribute("data-sidebar","collapsed")}catch(e){}</script>
   {% block head %}{% endblock %}
 </head>
@@ -124,7 +124,6 @@
               <input id="global-tracking-input" type="search" name="tracking_number" placeholder="搜索运单号，回车查询" autocomplete="off" data-global-tracking-input>
             </form>
           </div>
-          <button class="header-icon-button" type="button" data-console-refresh aria-label="刷新当前页面" title="刷新"><i data-feather="refresh-cw"></i></button>
           {% if page_actions_content | trim %}<div class="top-header-actions top-header-actions--page">{{ page_actions_content | safe }}</div>{% endif %}
         </div>
       </header>
@@ -215,7 +214,7 @@
 
   <script id="mobile-navigation-data" type="application/json">{{ {'routes': mobile_nav, 'navigation': mobile_navigation_items, 'isSyncSupported': mobile_nav_sync_supported} | tojson }}</script>
   <script src="/static/vendor/feather-4.29.2.min.js"></script>
-  <script src="/static/console_ui.js?v=20261110-spec"></script>
+  <script src="/static/console_ui.js?v=20261111-norefresh"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

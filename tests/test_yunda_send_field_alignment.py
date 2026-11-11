@@ -302,3 +302,39 @@ def test_sheet_header_migration_preserves_original_positions_and_appends_new_fie
     assert state == [list(FIELD_NAMES)]
     assert state[0][24] == "发件日期"
     assert calls == ["read_sheet", "write_sheet", "read_sheet"]
+
+
+def test_parallel_detail_reads_keep_list_order_and_fail_as_a_whole(monkeypatch):
+    import threading
+    import time as time_module
+
+    calls, active, peak, lock = [], [0], [0], threading.Lock()
+
+    def enrich_parts(*args, **_kwargs):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time_module.sleep(0.01)
+        with lock:
+            active[0] -= 1
+        calls.append(args[1])
+        return {}
+
+    monkeypatch.setattr(runtime, "fetch_waybill_detail", enrich_parts)
+    monkeypatch.setattr(runtime, "fetch_original_data", lambda *_: {})
+    monkeypatch.setattr(runtime, "fetch_send_waybill_renderer", lambda *_: {})
+    monkeypatch.setattr(runtime, "normalize_record", lambda row, *_a, **_k: {"no": row["Logistics_Id"]})
+    rows = [{"Logistics_Id": f"W{index:02d}", runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE} for index in range(12)]
+    rows.insert(3, {"Logistics_Id": "", runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE})
+    records = runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15))
+    assert [item["no"] for item in records] == [f"W{index:02d}" for index in range(12)]
+    assert 1 < peak[0] <= runtime.ENRICH_MAX_WORKERS
+
+    def failing(_session, bill_code, _params):
+        if bill_code == "W05":
+            raise ValueError("detail failed")
+        return {}
+
+    monkeypatch.setattr(runtime, "fetch_waybill_detail", failing)
+    with pytest.raises(ValueError, match="detail failed"):
+        runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15))
