@@ -191,3 +191,18 @@ def test_waybill_source_preparation_runs_off_the_event_loop():
         assert result["complete"] is True
         assert prepared_on and prepared_on[0] != loop_thread
     asyncio.run(scenario())
+
+
+def test_failure_reason_names_http_status_and_endpoint_without_query_or_body():
+    from types import SimpleNamespace
+
+    from agent.send_waybills_business import _failure_reason
+
+    class HTTPError(Exception):
+        pass
+
+    error = HTTPError("secret body text")
+    error.response = SimpleNamespace(status_code=429, request=SimpleNamespace(
+        url="https://kyinms.example/ky_inms/public/index.php/business/waybill/sendwaybill/renderer.html?LogisticsId=1"))
+    assert _failure_reason(error) == "HTTPError 429 renderer.html"
+    assert _failure_reason(ValueError("x")) == "ValueError"

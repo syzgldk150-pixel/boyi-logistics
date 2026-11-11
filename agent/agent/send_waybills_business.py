@@ -169,7 +169,7 @@ class DirectWaybillQueryService:
                 auth_code = str(getattr(exc, "code", "") or "")
                 if code == "WAYBILL_SOURCE_QUERY_FAILED" and auth_code.startswith("AUTH_"):
                     code = "WAYBILL_SOURCE_LOGIN_REQUIRED"
-                reason = type(exc).__name__
+                reason = _failure_reason(exc)
                 LOGGER.warning("send-waybills-query source failed source=%s code=%s reason=%s", source, code, reason)
                 return publications, [{"source": source, "code": code, "reason": reason}]
             return publications, []
@@ -190,6 +190,23 @@ class DirectWaybillQueryService:
                 "errors": errors, "data_status": "complete" if not errors else "partial",
                 "error_code": errors[0]["code"] if errors else "",
                 "error": "原平台数据未完整更新，列表仅展示本地已保存数据。" if errors else ""}
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Exception class plus, for an HTTP error, its status and endpoint file name.
+
+    Only these safe parts: never the message, query string or response body.
+    """
+    parts = [type(exc).__name__]
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        parts.append(str(status))
+        url = str(getattr(getattr(response, "request", None), "url", "") or getattr(response, "url", "") or "")
+        tail = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if tail and all(ch.isalnum() or ch in "._-" for ch in tail):
+            parts.append(tail[:60])
+    return " ".join(parts)
 
 
 def build_direct_waybill_query_service(*, connection_factory, source_resolver=None,

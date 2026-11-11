@@ -38,8 +38,10 @@ MAIL_LIST_URL = f"{YUNDA_INMS_ORIGIN}/ky_inms/public/index.php/system/mail/list.
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_PAGE_SIZE = 200
 DEFAULT_MAX_PAGES = 50
-# Per-waybill detail reads in flight at once; bounded to keep the load on the platform modest.
-ENRICH_MAX_WORKERS = 4
+# Per-waybill detail reads in flight at once. 2026-11-11: 4 at once met an HTTP
+# error from Yunda on the live query, so reads are sequential again until the
+# status code shows whether the platform throttles concurrent reads.
+ENRICH_MAX_WORKERS = 1
 DATE_FIELD_NAME = "发件日期"
 SOURCE_SEND_WAYBILL = "send_waybill"
 SOURCE_SPECIAL_LINE = "special_line"
@@ -457,7 +459,7 @@ def enrich_records(
         )
 
     wanted = [row for row in rows if _clean_str(row.get("Logistics_Id"))]
-    if len(wanted) <= 1:
+    if len(wanted) <= 1 or ENRICH_MAX_WORKERS <= 1:
         return [enrich(row) for row in wanted]
     # Results keep the list order; any failed waybill fails the whole read.
     with ThreadPoolExecutor(max_workers=min(ENRICH_MAX_WORKERS, len(wanted))) as pool:

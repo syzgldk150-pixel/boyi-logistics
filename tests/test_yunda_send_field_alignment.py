@@ -326,6 +326,7 @@ def test_parallel_detail_reads_keep_list_order_and_fail_as_a_whole(monkeypatch):
     monkeypatch.setattr(runtime, "normalize_record", lambda row, *_a, **_k: {"no": row["Logistics_Id"]})
     rows = [{"Logistics_Id": f"W{index:02d}", runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE} for index in range(12)]
     rows.insert(3, {"Logistics_Id": "", runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE})
+    monkeypatch.setattr(runtime, "ENRICH_MAX_WORKERS", 4)
     records = runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15))
     assert [item["no"] for item in records] == [f"W{index:02d}" for index in range(12)]
     assert 1 < peak[0] <= runtime.ENRICH_MAX_WORKERS
