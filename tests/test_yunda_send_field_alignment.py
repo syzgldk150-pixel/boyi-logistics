@@ -339,3 +339,37 @@ def test_parallel_detail_reads_keep_list_order_and_fail_as_a_whole(monkeypatch):
     monkeypatch.setattr(runtime, "fetch_waybill_detail", failing)
     with pytest.raises(ValueError, match="detail failed"):
         runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15))
+
+
+def test_list_pages_above_100_rows_are_read_as_100_row_upstream_pages():
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self, payload):
+            self.payload, self.text = payload, "{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class Session:
+        def post(self, url, *, data, **_kwargs):
+            calls.append((data["page"], data["rows"]))
+            assert data["rows"] <= 100, "Yunda rejects rows above 100"
+            start = (data["page"] - 1) * data["rows"]
+            rows = [{"Logistics_Id": f"W{index:03d}"} for index in range(start, min(start + data["rows"], 250))]
+            return Response({"rows": rows, "total": 250, "footer": []})
+
+    first = runtime.fetch_send_page(Session(), {}, target_date=date(2026, 8, 15), page=1, page_size=200)
+    second = runtime.fetch_send_page(Session(), {}, target_date=date(2026, 8, 15), page=2, page_size=200)
+    assert calls == [(1, 100), (2, 100), (3, 100)]
+    assert [row["Logistics_Id"] for row in first["rows"]] == [f"W{index:03d}" for index in range(200)]
+    assert [row["Logistics_Id"] for row in second["rows"]] == [f"W{index:03d}" for index in range(200, 250)]
+    assert first["total"] == second["total"] == 250
+    with pytest.raises(ValueError, match="PAGE_SIZE_UNSUPPORTED"):
+        runtime.fetch_send_page(Session(), {}, target_date=date(2026, 8, 15), page=1, page_size=150)

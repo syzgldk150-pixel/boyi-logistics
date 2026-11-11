@@ -36,11 +36,11 @@ MAIL_INDEX_URL = f"{YUNDA_INMS_ORIGIN}/ky_inms/public/index.php/system/mail/inde
 MAIL_LIST_URL = f"{YUNDA_INMS_ORIGIN}/ky_inms/public/index.php/system/mail/list.html"
 
 DEFAULT_TZ = ZoneInfo("Asia/Shanghai")
-DEFAULT_PAGE_SIZE = 200
+DEFAULT_PAGE_SIZE = 100
 DEFAULT_MAX_PAGES = 50
-# Per-waybill detail reads in flight at once. 2026-11-11: 4 at once met an HTTP
-# error from Yunda on the live query, so reads are sequential again until the
-# status code shows whether the platform throttles concurrent reads.
+# Per-waybill detail reads in flight at once. Sequential until concurrent reads
+# are verified against the live platform (the 2026-11-11 live-query failure was
+# the 100-row list limit, not concurrency, but 4 at once is still unverified).
 ENRICH_MAX_WORKERS = 1
 DATE_FIELD_NAME = "发件日期"
 SOURCE_SEND_WAYBILL = "send_waybill"
@@ -254,6 +254,61 @@ def _special_line_list_form(target_date: dt.date, *, page: int, rows: int) -> di
     }
 
 
+# Yunda rejects list requests above 100 rows ("rows必须小于等于 100", HTTP 400,
+# observed 2026-11-11). Callers keep their page size; a larger logical page is
+# read as consecutive 100-row upstream pages and merged.
+YUNDA_LIST_MAX_ROWS = 100
+
+
+def _post_list_page(
+    session: Any,
+    params: dict[str, Any],
+    *,
+    url: str,
+    referer: str,
+    form: dict[str, Any],
+    label: str,
+) -> Any:
+    headers = {
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": YUNDA_INMS_ORIGIN,
+        "Referer": referer,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    response = session.post(
+        url,
+        data=form,
+        headers=headers,
+        allow_redirects=False,
+        timeout=_coerce_int(params.get("request_timeout_sec"), 30),
+    )
+    return _decode_json_response(response, label=label)
+
+
+def _capped_list_page(fetch_upstream: Any, *, page: int, page_size: int) -> Any:
+    """One logical page of ``page_size`` rows from upstream pages of at most 100."""
+    if page_size <= YUNDA_LIST_MAX_ROWS:
+        return fetch_upstream(page, page_size)
+    if page_size % YUNDA_LIST_MAX_ROWS:
+        raise ValueError("WAYBILL_PAGE_SIZE_UNSUPPORTED")
+    parts = page_size // YUNDA_LIST_MAX_ROWS
+    rows: list[dict[str, Any]] = []
+    total: int | None = None
+    footer: Any = None
+    for upstream_page in range((page - 1) * parts + 1, page * parts + 1):
+        payload = fetch_upstream(upstream_page, YUNDA_LIST_MAX_ROWS)
+        part_rows, part_total = _complete_page_shape(payload)
+        if total is None:
+            total, footer = part_total, payload.get("footer")
+        elif part_total != total:
+            raise ValueError("WAYBILL_PAGE_TOTAL_CHANGED")
+        rows.extend(part_rows)
+        if len(part_rows) < YUNDA_LIST_MAX_ROWS:
+            break
+    return {"rows": rows, "total": total, "footer": footer}
+
+
 def fetch_send_page(
     session: Any,
     params: dict[str, Any],
@@ -262,21 +317,12 @@ def fetch_send_page(
     page: int,
     page_size: int,
 ) -> Any:
-    headers = {
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": YUNDA_INMS_ORIGIN,
-        "Referer": SEND_INDEX_URL,
-        "X-Requested-With": "XMLHttpRequest",
-    }
-    response = session.post(
-        SEND_LIST_URL,
-        data=_send_list_form(target_date, page=page, rows=page_size),
-        headers=headers,
-        allow_redirects=False,
-        timeout=_coerce_int(params.get("request_timeout_sec"), 30),
+    return _capped_list_page(
+        lambda upstream_page, rows: _post_list_page(
+            session, params, url=SEND_LIST_URL, referer=SEND_INDEX_URL,
+            form=_send_list_form(target_date, page=upstream_page, rows=rows), label="寄件运单列表"),
+        page=page, page_size=page_size,
     )
-    return _decode_json_response(response, label="寄件运单列表")
 
 
 def fetch_special_line_page(
@@ -287,21 +333,12 @@ def fetch_special_line_page(
     page: int,
     page_size: int,
 ) -> Any:
-    headers = {
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Origin": YUNDA_INMS_ORIGIN,
-        "Referer": SPECIAL_LINE_INDEX_URL,
-        "X-Requested-With": "XMLHttpRequest",
-    }
-    response = session.post(
-        SPECIAL_LINE_LIST_URL,
-        data=_special_line_list_form(target_date, page=page, rows=page_size),
-        headers=headers,
-        allow_redirects=False,
-        timeout=_coerce_int(params.get("request_timeout_sec"), 30),
+    return _capped_list_page(
+        lambda upstream_page, rows: _post_list_page(
+            session, params, url=SPECIAL_LINE_LIST_URL, referer=SPECIAL_LINE_INDEX_URL,
+            form=_special_line_list_form(target_date, page=upstream_page, rows=rows), label="寄件填仓列表"),
+        page=page, page_size=page_size,
     )
-    return _decode_json_response(response, label="寄件填仓列表")
 
 
 def collect_send_rows(

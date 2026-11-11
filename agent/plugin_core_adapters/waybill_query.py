@@ -270,8 +270,8 @@ def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Map
             from agent.tms_runtime.session_broker import get_session_broker
             from tools.yunda_send_waybills_sync_tool import _console_waybill_records
             session = get_session_broker(profile).build_requests_session(validate=False)
-            send, _send_total = yunda.collect_send_rows(session, {}, target_date=day, page_size=200, max_pages=50)
-            special, _special_total = yunda.collect_special_line_rows(session, {}, target_date=day, page_size=200, max_pages=50)
+            send, _send_total = yunda.collect_send_rows(session, {}, target_date=day, page_size=100, max_pages=100)
+            special, _special_total = yunda.collect_special_line_rows(session, {}, target_date=day, page_size=100, max_pages=100)
             merged = yunda._merge_rows_by_waybill(yunda._with_source(send, yunda.SOURCE_SEND_WAYBILL),
                                                   yunda._with_source(special, yunda.SOURCE_SPECIAL_LINE))
             normalized = yunda.enrich_records(session, merged, {}, target_date=day)
