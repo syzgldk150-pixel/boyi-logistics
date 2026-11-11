@@ -3336,34 +3336,68 @@ body .line-haul-tool-btn {
 }
 /* Plugin categories share one management surface; finance and customer
    service collectors keep their module data-source pages. */
-.automation-category-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid var(--line);
-}
-
-.automation-category-tabs a {
+.module-plugin-icons {
   display: inline-flex;
   align-items: center;
-  min-height: 34px;
-  padding: 0 16px;
-  border-bottom: 2px solid transparent;
+  gap: 8px;
+}
+
+.module-plugin-icons[hidden] { display: none; }
+
+.module-plugin-icons__label {
   color: var(--muted);
-  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.module-plugin-icons__list {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.module-plugin-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--canvas);
+  color: var(--text-strong);
+  font-weight: 600;
   text-decoration: none;
 }
 
-.automation-category-tabs a:hover { color: var(--text-strong); }
-.automation-category-tabs a[aria-current="page"] {
-  border-bottom-color: var(--text-strong);
-  color: var(--text-strong);
+.module-plugin-icon:hover { background: var(--surface); }
+
+.module-plugin-icon:focus-visible {
+  outline: 2px solid var(--focus-strong);
+  outline-offset: 2px;
 }
 
-.automation-category-tabs a:focus-visible {
-  outline: 2px solid var(--focus-strong);
-  outline-offset: -2px;
+.module-plugin-icon__dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--canvas);
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.module-plugin-icon__dot[data-tone="ok"] { background: var(--success); }
+.module-plugin-icon__dot[data-tone="warn"] { background: var(--warning); }
+
+@media (pointer: coarse) {
+  .module-plugin-icon { width: 44px; height: 44px; }
+}
+
+@media (max-width: 640px) {
+  .module-plugin-icons__label { display: none; }
 }
 
 .automation-filter-notice {
@@ -3785,10 +3819,6 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
 
 /* ---- 自动化 (㊲) ---- */
 .auto-page { display: grid; gap: var(--card-gap); }
-.automation-category-tabs { display: flex; gap: 2px; width: 100%; height: 40px; align-items: center; padding: 0 4px; margin: 0; border: 0; border-radius: var(--r-block); background: var(--bg-subtle); }
-.automation-category-tabs a { height: 32px; min-height: 32px; display: inline-flex; align-items: center; padding: 0 12px; border: 0; border-radius: var(--r-control); color: var(--text-secondary); font-size: var(--fs-body); font-weight: 400; }
-.automation-category-tabs a[aria-current="page"] { background: var(--bg-surface); color: var(--text-primary); font-weight: 500; border: 0; box-shadow: 0 1px 2px rgba(20, 23, 28, 0.08), 0 0 0 1px rgba(20, 23, 28, 0.03); }
-.automation-category-tabs a[aria-current="page"]::after { display: none; }
 .automation-filter-notice { min-height: 40px; margin: 0; padding: 0 16px; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); color: var(--text-tertiary); font-size: var(--fs-label); }
 .automation-filter-notice a { color: var(--text-primary); font-weight: 500; }
 .auto-provider-bar { flex-wrap: wrap; gap: 10px; padding: 0; }

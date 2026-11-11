@@ -6,7 +6,7 @@
 {% block subtitle %}处理融辉与韵达问题件{% endblock %}
 
 {% block page_actions %}
-<a class="ghost-btn" data-console-navigate href="/modules/customer-service/data-sources">数据源</a>
+{% set plugin_module = "customer_service" %}{% set plugin_manage_url = "/modules/customer-service/data-sources" %}{% include "_module_plugin_icons.html" %}
 <button class="ghost-btn customer-service-icon-btn" type="button" data-cs-publish-open title="发布问题件" aria-label="发布问题件">
   <i data-feather="send"></i>
   <span>发布</span>
@@ -337,4 +337,5 @@
 {% block scripts %}
 <script src="/static/customer_service.js?v=20261109-cs-ai"></script>
 <script src="/static/module_source_selector.js?v=v32"></script>
+<script src="/static/module_plugin_icons.js?v=20261111"></script>
 {% endblock %}
