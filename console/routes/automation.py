@@ -65,9 +65,6 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path in {"/module-data-sources/finance", "/module-data-sources/customer_service"}:
         app._handle_module_sources_get(handler, path.rsplit("/", 1)[1])
         return True
-    if path in {"/module-data-sources/finance/plugins", "/module-data-sources/customer_service/plugins"}:
-        app._handle_module_plugins_get(handler, path.split("/")[2])
-        return True
     if path in {"/modules/finance/data-sources", "/modules/customer-service/data-sources"}:
         module = "finance" if path == "/modules/finance/data-sources" else "customer_service"
         app._render_automations(handler, query, module=module)

@@ -6,15 +6,14 @@
 {% block subtitle %}处理融辉与韵达问题件{% endblock %}
 
 {% block page_actions %}
-{% set plugin_module = "customer_service" %}{% set plugin_manage_url = "/modules/customer-service/data-sources" %}{% include "_module_plugin_icons.html" %}
+<a class="ghost-btn" data-console-navigate href="/modules/customer-service/data-sources">数据源</a>
 <button class="ghost-btn customer-service-icon-btn" type="button" data-cs-publish-open title="发布问题件" aria-label="发布问题件">
   <i data-feather="send"></i>
   <span>发布</span>
 </button>
 <button class="ghost-btn" type="button" data-cs-templates-open title="AI 从案例中总结、经人审核的处理模板">处理模板<span class="customer-service-tpl-count" data-cs-tpl-count hidden></span></button>
 <button class="ghost-btn" type="button" data-cs-ai-help-open title="AI 如何辅助处理问题件">AI 是怎么学习的</button>
-<button class="ghost-btn" type="button" data-cs-live-query title="查询当前选定账号的原平台数据">原平台查询</button>
-<button class="primary-btn customer-service-icon-btn" type="button" data-cs-query title="查询已保存数据" aria-label="查询已保存数据">
+<button class="primary-btn customer-service-icon-btn" type="button" data-cs-query title="用选定账号实时查询原平台" aria-label="用选定账号实时查询原平台">
   <i data-feather="search"></i>
   <span>查询</span>
 </button>
@@ -24,7 +23,7 @@
 <section
   class="customer-service-page"
   data-customer-service-workbench
-  data-query-url="/customer-service/problems/query"
+  data-query-url="/customer-service/problems/live-query"
   data-settings="{{ settings | tojson | forceescape }}"
   data-accounts="{{ accounts | tojson | forceescape }}"
   data-open-problem="{{ open_problem }}"
@@ -38,7 +37,6 @@
 
   <section class="customer-service-toolbar">
     <form class="customer-service-filter-form customer-service-filter-form--compact" data-cs-filter-form>
-      <label class="customer-service-field"><span>来源</span><select data-cs-source data-source-selector="customer_service"><option value="">全部来源</option></select></label>
       <label class="customer-service-field customer-service-field--wide">
         <span>关键词</span>
         <input type="search" name="q" placeholder="单号 / 问题内容" autocomplete="off" data-cs-q value="{{ prefill_q }}">
@@ -335,7 +333,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/customer_service.js?v=20261111-account-name"></script>
-<script src="/static/module_source_selector.js?v=v32"></script>
-<script src="/static/module_plugin_icons.js?v=20261111"></script>
+<script src="/static/customer_service.js?v=20261111-live-only"></script>
 {% endblock %}

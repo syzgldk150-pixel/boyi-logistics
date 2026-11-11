@@ -2,7 +2,7 @@
 module: 项目维护
 type: 维护边界
 status: active
-updated: 2026-11-06
+updated: 2026-11-11
 ---
 
 # V3.2 第一轮维护边界
@@ -35,7 +35,7 @@ updated: 2026-11-06
 
 ## 产品入口与契约
 
-功能插件仍在 `/automations`。财务采集在 `/modules/finance/data-sources`，客服采集在 `/modules/customer-service/data-sources`，两者复用原安装、配置、启停、计划、执行和升级服务。自动化页只列功能插件；财务、客服模块页右上角以图标列出本模块采集插件，点图标进入对应数据源页并按插件筛选（2026-11-11 起取代三页共用的分类标签）。业务来源查询直接读本地数据库，采集器停用或卸载不删除固定财务/客服页面。
+功能插件仍在 `/automations`。财务采集在 `/modules/finance/data-sources`，客服采集在 `/modules/customer-service/data-sources`，两者复用原安装、配置、启停、计划、执行和升级服务。自动化页只列功能插件；财务、客服采集插件从各自模块页的“数据源”进入管理（2026-11-11 起取代三页共用的分类标签）。业务来源查询直接读本地数据库，采集器停用或卸载不删除固定财务/客服页面。
 
 Manifest 可选 `management`，字段精确为 `purpose/module/dataset/version`。功能为 `action/automation/空/空`；财务为 `collector/finance/finance.transactions/1`；客服为 `collector/customer_service/customer_service.problems/1`。旧已签名清单不改字节；仅对已确认的两个旧采集 plugin_id 作固定归属映射。新包归属在上传检查及安装前验证；升级不能静默改变模块或数据契约。
 

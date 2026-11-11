@@ -137,7 +137,9 @@ class CustomerServiceModuleTests(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertIn('data-customer-service-workbench', app.sent_html)
-        self.assertIn('/customer-service/problems/query', app.sent_html)
+        self.assertIn('/customer-service/problems/live-query', app.sent_html)
+        self.assertNotIn('data-cs-live-query', app.sent_html)
+        self.assertNotIn('data-cs-source', app.sent_html)
         self.assertIn('问题件工作台', app.sent_html)
         self.assertNotIn('module-detail', app.sent_html)
 
@@ -158,6 +160,28 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, app.sent_status)
         self.assertEqual({"ronghui-a", "yunda-a"}, {row["account_id"] for row in app.sent_payload["rows"]})
         self.assertEqual(2, len({call["request_id"] for call in calls}))
+
+    def test_live_rows_get_their_unique_collector_source(self):
+        app = self._build_app()
+
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def execute(self, sql): self.sql = sql
+            def fetchall(self):
+                return [{"provider": "yunda", "account_id": "yunda-a", "source_id": "src-yunda"},
+                        {"provider": "ronghui", "account_id": "yunda-a", "source_id": "src-other-platform"}]
+
+        class Connection:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def cursor(self): return Cursor()
+
+        app.repository = types.SimpleNamespace(connect=lambda: Connection())
+        rows = [{"platform": "yunda", "account_id": "yunda-a"}, {"platform": "yunda", "account_id": "unmapped"},
+                {"platform": "yunda", "account_id": "yunda-a", "source_id": "kept"}]
+        app._attach_customer_service_source_ids(rows)
+        self.assertEqual(["src-yunda", None, "kept"], [row.get("source_id") for row in rows])
 
     def test_live_query_requires_explicit_known_accounts(self):
         app = self._build_app()

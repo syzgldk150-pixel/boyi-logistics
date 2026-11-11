@@ -6,7 +6,7 @@
 {% block subtitle %}总账 · 小企业会计准则 · 内部管理账{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261110-spec">{% endblock %}
 
-{% block page_actions %}{% set plugin_module = "finance" %}{% set plugin_manage_url = "/modules/finance/data-sources" %}{% include "_module_plugin_icons.html" %}{% endblock %}
+{% block page_actions %}<a class="ghost-btn" data-console-navigate href="/modules/finance/data-sources">数据源</a>{% endblock %}
 
 {% block content %}
 <section class="finance-ledger" data-finance-ledger data-can-manage="{{ 'true' if can_manage else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}">
@@ -433,5 +433,4 @@
 </dialog>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance.js?v=20261107-advice"></script>
-<script src="/static/module_plugin_icons.js?v=20261111"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance.js?v=20261107-advice"></script>{% endblock %}

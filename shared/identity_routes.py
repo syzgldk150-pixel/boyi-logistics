@@ -24,9 +24,9 @@ def console_permission(method: str, path: str) -> str:
                      or path == "/finance/sources" or (path.startswith("/finance/sources/") and not path.endswith("/files"))
                      or (path.startswith("/finance/vouchers/") and path.endswith("/cancel"))):
         return SUPER_ADMIN
-    if _under(path, "/finance") or _under(path, "/modules/finance") or path in {"/module-data-sources/finance", "/module-data-sources/finance/plugins"}:
+    if _under(path, "/finance") or _under(path, "/modules/finance") or path == "/module-data-sources/finance":
         return "finance.read" if read else "finance.manage"
-    if _under(path, "/customer-service") or _under(path, "/modules/customer-service") or path in {"/module-data-sources/customer_service", "/module-data-sources/customer_service/plugins"}:
+    if _under(path, "/customer-service") or _under(path, "/modules/customer-service") or path == "/module-data-sources/customer_service":
         return "customer_service"
     if _under(path, "/tracking") or _under(path, "/receipts"):
         return "customer_service" if path.endswith("/audit") else "business.query"

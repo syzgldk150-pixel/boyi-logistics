@@ -470,8 +470,30 @@ class CustomerServiceMixin:
                 continue
             rows.extend(data["rows"])
             sources.append({"account_id": account_id, "total": data.get("total"), "returned": len(data["rows"])})
+        self._attach_customer_service_source_ids(rows)
         self._send_json(handler, HTTPStatus.OK, {"ok": not errors, "rows": rows, "errors": errors,
             "sources": sources, "source": "live_platform"})
+
+    def _attach_customer_service_source_ids(self, rows: list[Any]) -> None:
+        """Give live rows their collector source so AI status/suggestions can find the published record.
+
+        The (module, provider, account_id) key is unique; a row without a mapping keeps no source_id.
+        """
+        if not rows:
+            return
+        try:
+            with self.repository.connect() as connection, connection.cursor() as cursor:
+                cursor.execute("SELECT provider, account_id, source_id FROM module_data_source_accounts"
+                               " WHERE module='customer_service'")
+                mapping = {(row["provider"], row["account_id"]): row["source_id"] for row in cursor.fetchall()}
+        except Exception:
+            LOGGER.warning("Customer service source mapping unavailable for live rows")
+            return
+        for row in rows:
+            if isinstance(row, dict) and not row.get("source_id"):
+                source_id = mapping.get((str(row.get("platform") or ""), str(row.get("account_id") or "")))
+                if source_id:
+                    row["source_id"] = source_id
 
     def _resolve_customer_service_action_account(
         self,

@@ -753,12 +753,11 @@
         : "";
     }
 
-    async function runQuery(live = false) {
-      live = live === true;
+    // The only query: selected accounts against the live platforms. Saved snapshots are not shown here.
+    async function runQuery() {
       const request = ++state.queryRequest;
       const accountIds = selectedAccounts();
-      const sourceId = $("[data-cs-source]")?.value || "";
-      if ((!accountIds.length && !sourceId) || (live && !accountIds.length)) {
+      if (!accountIds.length) {
         state.querying = false;
         setQueryBusy(false);
         setStatus("请先选择账号", "warning");
@@ -766,12 +765,11 @@
       }
       state.querying = true;
       setQueryBusy(true);
-      setStatus("正在查询问题件...", "loading");
+      setStatus("正在查询原平台问题件...", "loading");
       try {
-        const data = await postJson(live ? "/customer-service/problems/live-query" : "/customer-service/problems/query", {
+        const data = await postJson("/customer-service/problems/live-query", {
           platforms: selectedPlatforms(),
-          account_ids: live ? accountIds : sourceId ? [] : accountIds,
-          source_ids: !live && sourceId ? [sourceId] : [],
+          account_ids: accountIds,
           filters: filters(),
         }, { command: true });
         if (request !== state.queryRequest || !root.isConnected) return;
@@ -791,7 +789,6 @@
         }
       }
     }
-    $("[data-cs-source]")?.addEventListener("module-source-change", runQuery);
 
     function buildSettingsPayload() {
       return {
@@ -1492,11 +1489,6 @@
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (!target) return;
       if (!isRootActive()) return;
-      if (target.closest("[data-cs-live-query]")) {
-        event.preventDefault();
-        runQuery(true);
-        return;
-      }
       if (target.closest("[data-cs-query]")) {
         event.preventDefault();
         runQuery();

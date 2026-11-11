@@ -4,7 +4,7 @@ type: 模块文档
 tags: [客服系统, 问题件, 融辉, 韵达, 原页接口, Console, Agent]
 related: [../code_navigation_index.md, ../project_overview.md]
 status: active
-updated: 2026-11-09
+updated: 2026-11-11
 ---
 
 # 客服系统模块说明
@@ -82,7 +82,7 @@ updated: 2026-11-09
 - 模型只能从 `cs_scenarios` 的固定场景中选择，并起草回复；回复中的时间、单号必须能在依据中找到，不能出现“保证、一定、绝对”等承诺，否则不采用（`shared/customer_service_ai.py` 的 `validate_suggestion`）。每次调用都记入 `ai_task_runs`，建议保存在 `cs_suggestions`。
 - 场景分档：案例少于 3 个的场景为“新问题”（L0），AI 只整理依据、不代写回复（草稿保留在记录里）；满 3 个后为“AI 建议”（L1），回复框预先填好草稿，只在回复框为空时填入。破损、丢件/赔付为锁定场景，AI 只给参考，永远不会进入自动处理。
 - 回复仍由人点“回复处理”经原有直接业务接口发出，回复链路和写后核验不变。回复成功后，Console 再调 `/internal/v1/admin/customer-service/ai/cases` 把这次回复存为案例（`cs_cases`，按浏览器请求 UUID 幂等），并记下 AI 建议是被采纳、修改还是没用上；存案例失败只提示，不撤销已发出的回复。
-- 列表“AI 处理”列经 `/customer-service/problems/ai-status` 读取每条问题件最近一次建议的场景与分档；读取失败只显示“—”，列表照常使用。实时查询（原平台查询）得到的行没有本地记录，不生成 AI 建议。
+- 列表“AI 处理”列经 `/customer-service/problems/ai-status` 读取每条问题件最近一次建议的场景与分档；读取失败只显示“—”，列表照常使用。客服页只有实时查询（2026-11-11 起去掉已保存数据查询）：Console 按（平台, 账号）给实时行补上采集来源 `source_id`，已被采集器发布的问题件照常有 AI 状态与建议；采集器尚未收录的新件没有本地记录，不生成 AI 建议。
 - 数据表由迁移 `074_ai_task_runs.sql`、`075_customer_service_ai.sql` 建立。
 
 ### 阶段 2：相似案例、学习进展、概览“待我确认”
