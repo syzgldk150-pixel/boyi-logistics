@@ -6,6 +6,7 @@ not permission to declare a platform-wide snapshot complete.
 """
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -13,6 +14,8 @@ from typing import Any, Callable, Mapping
 
 from shared.waybill_source_coverage import WaybillSourceRepository, WaybillSourceScope, coverage_satisfies
 from agent.tms_runtime.direct_execution import call_blocking
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -160,9 +163,15 @@ class DirectWaybillQueryService:
                     if first_failure is not None:
                         raise first_failure
             except Exception as exc:
-                # No raw provider response, credentials or arbitrary error text.
+                # No raw provider response, credentials or arbitrary error text:
+                # only our own codes, a login state code and the exception class.
                 code = str(exc) if str(exc).startswith("WAYBILL_") and str(exc).replace("_", "").isalnum() else "WAYBILL_SOURCE_QUERY_FAILED"
-                return publications, [{"source": source, "code": code}]
+                auth_code = str(getattr(exc, "code", "") or "")
+                if code == "WAYBILL_SOURCE_QUERY_FAILED" and auth_code.startswith("AUTH_"):
+                    code = "WAYBILL_SOURCE_LOGIN_REQUIRED"
+                reason = type(exc).__name__
+                LOGGER.warning("send-waybills-query source failed source=%s code=%s reason=%s", source, code, reason)
+                return publications, [{"source": source, "code": code, "reason": reason}]
             return publications, []
 
         sources = ["ronghui", "yunda"] if provider == "all" else [provider]

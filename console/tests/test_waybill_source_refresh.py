@@ -129,3 +129,14 @@ def test_refresh_rejects_invalid_closed_contract(plan):
     app._agent_request = Mock()
     assert run_refresh(app, plan)[0] == 400
     app._agent_request.assert_not_called()
+
+
+def test_failed_platform_is_named_with_its_reason():
+    app = build_app()
+    app._agent_request = Mock(return_value={"ok": False, "error_code": "WAYBILL_SOURCE_QUERY_FAILED", "data": {
+        "complete": False, "errors": [
+            {"source": "yunda", "code": "WAYBILL_SOURCE_LOGIN_REQUIRED", "reason": "TMSAuthStateError"},
+            {"source": "ronghui", "code": "WAYBILL_SOURCE_QUERY_FAILED", "reason": "ConnectionError"}]}})
+    warnings = run_refresh(app, {**PLAN, "source": "all"})[1]["data"]["warnings"]
+    assert warnings[0].startswith("韵达账号未登录") and "TMSAuthStateError" in warnings[0]
+    assert warnings[1] == "融辉查询失败（WAYBILL_SOURCE_QUERY_FAILED，ConnectionError）"

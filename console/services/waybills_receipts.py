@@ -162,9 +162,40 @@ class WaybillsReceiptsServiceMixin:
         return {
             "complete": complete,
             "messages": ["已按原平台覆盖范围更新数据，列表和汇总使用同一数据库快照。"] if complete else [],
-            "warnings": [] if complete else ["原平台没有完整返回本次查询，请稍后重新查询。"],
+            "warnings": [] if complete else self._waybill_refresh_failure_reasons(result, data),
             "refreshed_at": datetime.now().strftime("%H:%M"),
         }
+
+    @staticmethod
+    def _waybill_refresh_failure_reasons(result: dict[str, Any], data: Any) -> list[str]:
+        """Say which platform failed and why, from Agent codes only (never raw text)."""
+
+        labels = {"ronghui": "融辉", "yunda": "韵达"}
+        texts = {
+            "WAYBILL_SOURCE_LOGIN_REQUIRED": "账号未登录或登录已失效，请到“业务账号”重新登录",
+            "WAYBILL_QUERY_TIMEOUT_BEFORE_PUBLISH": "查询超时，请缩小日期范围后重试",
+            "WAYBILL_SOURCE_SCOPE_UNVERIFIED": "无法核实查询账号（检查寄件同步插件的账号绑定）",
+            "WAYBILL_SOURCE_SCOPE_CHANGED": "查询期间账号网点发生变化",
+            "WAYBILL_SOURCE_DATE_MISMATCH": "原平台返回了其他日期的数据",
+            "WAYBILL_SOURCE_NORMALIZATION_LOST_ROWS": "原平台数据转换后条数不一致",
+            "WAYBILL_SOURCE_QUERY_FAILED": "查询失败",
+        }
+        reasons = []
+        errors = data.get("errors") if isinstance(data, dict) else None
+        for item in errors if isinstance(errors, list) else []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "")
+            detail = texts.get(code, "查询失败")
+            tag = "，".join(value for value in (code, str(item.get("reason") or "")) if value)
+            reasons.append(f"{labels.get(str(item.get('source') or ''), '原平台')}{detail}（{tag}）")
+        if not reasons:
+            code = str(result.get("error_code") or "")
+            if code == "agent_timeout":
+                reasons.append("原平台查询超时，请缩小日期范围后重试。")
+            else:
+                reasons.append("原平台没有完整返回本次查询，请稍后重新查询" + (f"（{code}）" if code else "") + "。")
+        return reasons
 
     def _handle_waybill_source_refresh(self, handler: BaseHTTPRequestHandler) -> None:
         """Backfill provider data after the page already showed the snapshot.
