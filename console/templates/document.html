@@ -536,7 +536,7 @@
   .manual-side-head h4 { font-size: var(--fs-section); }
   body.boyi-frame-page { background: var(--bg-surface); }
   @media (min-width: 1000px) {
-    body.boyi-frame-page .manual-workbench { grid-template-columns: minmax(0, 1fr) 300px; grid-auto-rows: auto; overflow: hidden; }
+    body.boyi-frame-page .manual-workbench { grid-template-columns: minmax(0, 1fr) clamp(300px, 26vw, 460px); grid-auto-rows: auto; overflow: hidden; }
     body.boyi-frame-page .manual-card { height: 100%; overflow: hidden; }
     body.boyi-frame-page .manual-form, body.boyi-frame-page .manual-scroll { overflow-y: auto; }
     body.boyi-frame-page .manual-side { overflow-y: auto; gap: 0; border-left: 1px solid var(--line-subtle); }
