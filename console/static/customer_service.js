@@ -284,9 +284,33 @@
         .replace(/"/g, "&quot;");
     }
 
+    // Business account notes (the grey name on the business account page), loaded once in the background.
+    const accountNames = new Map();
+
+    function accountDisplayName(accountId) {
+      const name = accountNames.get(String(accountId || "")) || "";
+      return name && name !== String(accountId || "") ? name : "";
+    }
+
+    async function loadAccountNames() {
+      try {
+        const response = await fetch("/customer-service/problem-settings", {credentials: "same-origin"});
+        const payload = await response.json();
+        (payload?.accounts || []).forEach((account) => {
+          const id = String(account?.account_id || "");
+          const name = String(account?.name || "").trim();
+          if (id && name) accountNames.set(id, name);
+        });
+      } catch (_error) {
+        return;
+      }
+      if (accountNames.size && state.rows.length) renderRows(state.rows);
+    }
+
     function displayAccount(row) {
       const account = accountById.get(String(row.account_id || "")) || {};
       return (
+        accountDisplayName(row.account_id) ||
         row.account_login ||
         row.login_account ||
         account.login_account ||
@@ -721,7 +745,7 @@
               const code = item.error_code ? ` · ${item.error_code}` : "";
               return `
                 <div class="customer-service-error-item">
-                  <strong>${escapeHtml(platform)} / ${escapeHtml(item.account_label || item.account_id || "")}${escapeHtml(code)}</strong>
+                  <strong>${escapeHtml(platform)} / ${escapeHtml(accountDisplayName(item.account_id) || item.account_label || item.account_id || "")}${escapeHtml(code)}</strong>
                   <span>${escapeHtml(item.message || "账号查询失败")}</span>
                 </div>`;
             })
@@ -1554,6 +1578,7 @@
     updateAccountSummary();
     updatePublishAccounts();
     loadTemplates();
+    loadAccountNames();
     // Opened from the overview's “待我确认”: query, then open that problem's dialog.
     if (root.dataset.openProblem) runQuery().then(openRequestedProblem);
     // The tab shell reuses an open customer-service tab and only reports the new query string.
