@@ -390,3 +390,55 @@ def test_list_pages_above_100_rows_are_read_as_100_row_upstream_pages():
     assert first["total"] == second["total"] == 250
     with pytest.raises(ValueError, match="PAGE_SIZE_UNSUPPORTED"):
         runtime.fetch_send_page(Session(), {}, target_date=date(2026, 8, 15), page=1, page_size=150)
+
+
+def _stored(**overrides):
+    stored = {"sender_name": "合成寄件人", "sender_phone": "07315186128", "sender_address": "合成寄件地址",
+              "receiver_name": "合成收件人", "receiver_phone": "18874714321", "receiver_address": "湖南省合成市合成路1号",
+              "recorded_cost": "81.85", "receipt_required": "1", "freight_fee": "115.00"}
+    stored.update(overrides)
+    return stored
+
+
+def _listed(**overrides):
+    row = {"Logistics_Id": "W01", "Modify_Date": "", "Buyer_Mobile": "188****4321", "Buyer_Phone": "",
+           "Sender_Phone": "073*****128", "Sender_Mobile": "", "Freight": "115.00",
+           runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SEND_WAYBILL}
+    row.update(overrides)
+    return row
+
+
+def test_unchanged_waybill_reuses_decrypted_contacts_and_cost():
+    original, renderer = runtime.reuse_decrypted(_listed(), _stored())
+    assert original["Buyer_Mobile"] == "18874714321" and original["Buyer_Address"] == "湖南省合成市合成路1号"
+    assert original["Sender_Mobile"] == "07315186128"
+    assert renderer == {"Logistics_Id": "W01", "price": {"Total": "81.85"}, "Delivers_Return": "1"}
+
+
+@pytest.mark.parametrize("listed,stored", [
+    ({"Modify_Date": "2026-11-11 10:00:00"}, {}),
+    ({"Buyer_Mobile": "188****9999"}, {}),
+    ({"Sender_Phone": "", "Sender_Mobile": ""}, {}),
+    ({"Freight": "120.00"}, {}),
+    ({}, {"receiver_address": ""}),
+    ({}, {"receiver_phone": "188****4321"}),
+    ({}, {"recorded_cost": ""}),
+    ({}, {"receipt_required": ""}),
+])
+def test_changed_or_incomplete_waybill_is_decrypted_again(listed, stored):
+    assert runtime.reuse_decrypted(_listed(**listed), _stored(**stored)) is None
+    assert runtime.reuse_decrypted(_listed(), None) is None
+
+
+def test_enrich_skips_decryption_only_for_reusable_waybills(monkeypatch):
+    calls = []
+    monkeypatch.setattr(runtime, "fetch_waybill_details", lambda _s, codes, _p: {code: {} for code in codes})
+    monkeypatch.setattr(runtime, "fetch_original_data", lambda _s, code, _p: calls.append(("original", code)) or {})
+    monkeypatch.setattr(runtime, "fetch_send_waybill_renderer", lambda _s, code, _r, _p: calls.append(("renderer", code)) or {})
+    monkeypatch.setattr(runtime, "normalize_record", lambda row, _d, original, renderer, **_k: {"no": row["Logistics_Id"], "phone": original.get("Buyer_Mobile")})
+    rows = [_listed(Logistics_Id="W01"), _listed(Logistics_Id="W02"), _listed(Logistics_Id="W03", Modify_Date="2026-11-11 10:00:00")]
+    records = runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15),
+                                     known={"W01": _stored(), "W03": _stored()})
+    assert [item["no"] for item in records] == ["W01", "W02", "W03"]
+    assert records[0]["phone"] == "18874714321"
+    assert calls == [("original", "W02"), ("renderer", "W02"), ("original", "W03"), ("renderer", "W03")]

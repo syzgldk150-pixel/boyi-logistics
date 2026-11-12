@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -502,12 +504,68 @@ def fetch_send_waybill_renderer(
 
 
 
+def _masked_matches(listed: Any, stored: str) -> bool:
+    """A masked list value like 188****4321 agrees with the stored full value."""
+    shown = _clean_str(listed)
+    if not shown:
+        return True
+    if "*" not in shown:
+        return shown == stored
+    head, tail = shown.split("*", 1)[0], shown.rsplit("*", 1)[-1]
+    return len(stored) >= len(head) + len(tail) and stored.startswith(head) and stored.endswith(tail)
+
+
+def _same_money(left: Any, right: Any) -> bool:
+    try:
+        return Decimal(_clean_str(left) or "0") == Decimal(_clean_str(right) or "0")
+    except InvalidOperation:
+        return False
+
+
+def reuse_decrypted(row: dict[str, Any], stored: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Already decrypted contact and cost values for an unchanged waybill.
+
+    Only when Yunda shows no modification (empty ``Modify_Date``), the stored
+    values are complete and unmasked, the masked list phones agree with them
+    and the freight is unchanged. Otherwise the caller decrypts again. Scan,
+    signing and to-pay values always come from the current read.
+    """
+    if not stored or _clean_str(row.get("Modify_Date")):
+        return None
+    values = {key: _clean_str(stored.get(key)) for key in (
+        "sender_name", "sender_phone", "sender_address", "receiver_name", "receiver_phone",
+        "receiver_address", "recorded_cost", "receipt_required", "freight_fee")}
+    needed = ("sender_phone", "sender_address", "receiver_phone", "receiver_address")
+    if any(not values[key] or "*" in values[key] for key in needed):
+        return None
+    if not all(_masked_matches(row.get(key), values["receiver_phone"]) for key in ("Buyer_Mobile", "Buyer_Phone")):
+        return None
+    if not any(_masked_matches(row.get(key), values["sender_phone"]) and _clean_str(row.get(key))
+               for key in ("Sender_Mobile", "Sender_Phone")):
+        return None
+    if not _same_money(row.get("Freight"), values["freight_fee"]):
+        return None
+    original = {
+        "Sender_Name": values["sender_name"] or row.get("Sender_Name"), "Sender_Mobile": values["sender_phone"],
+        "Sender_Address": values["sender_address"], "Buyer_Name": values["receiver_name"] or row.get("Buyer_Name"),
+        "Buyer_Mobile": values["receiver_phone"], "Buyer_Address": values["receiver_address"],
+    }
+    renderer: dict[str, Any] = {}
+    if row.get(INTERNAL_SOURCE_FIELD) == SOURCE_SEND_WAYBILL:
+        if not values["recorded_cost"] or "*" in values["recorded_cost"] or values["receipt_required"] not in {"0", "1"}:
+            return None
+        renderer = {"Logistics_Id": _clean_str(row.get("Logistics_Id")),
+                    "price": {"Total": values["recorded_cost"]}, "Delivers_Return": values["receipt_required"]}
+    return original, renderer
+
+
 def enrich_records(
     session: Any,
     rows: list[dict[str, Any]],
     params: dict[str, Any],
     *,
     target_date: dt.date,
+    known: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     wanted = [row for row in rows if _clean_str(row.get("Logistics_Id"))]
     details = fetch_waybill_details(session, [_clean_str(row.get("Logistics_Id")) for row in wanted], params)
@@ -515,12 +573,16 @@ def enrich_records(
     def enrich(row: dict[str, Any]) -> dict[str, Any]:
         bill_code = _clean_str(row.get("Logistics_Id"))
         detail = details[bill_code]
-        original = fetch_original_data(session, bill_code, params)
-        renderer = (
-            fetch_send_waybill_renderer(session, bill_code, row, params)
-            if row.get(INTERNAL_SOURCE_FIELD) == SOURCE_SEND_WAYBILL
-            else {}
-        )
+        reused = reuse_decrypted(row, (known or {}).get(bill_code))
+        if reused is not None:
+            original, renderer = reused
+        else:
+            original = fetch_original_data(session, bill_code, params)
+            renderer = (
+                fetch_send_waybill_renderer(session, bill_code, row, params)
+                if row.get(INTERNAL_SOURCE_FIELD) == SOURCE_SEND_WAYBILL
+                else {}
+            )
         return normalize_record(
             row, detail, original, renderer, target_date=target_date,
             source=str(row[INTERNAL_SOURCE_FIELD]),

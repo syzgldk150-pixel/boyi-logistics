@@ -234,6 +234,21 @@ def collect_ronghui_day(session, day: date, *, site_code=None, check_deadline=No
         first_page=0, page_size=100, max_pages=50)
 
 
+def _stored_scope_rows(scope: WaybillSourceScope, day: date) -> dict[str, dict[str, Any]]:
+    """Already published rows of this exact source scope and day, by waybill number.
+
+    Used only to skip decrypting unchanged waybills; when it cannot be read,
+    every waybill is decrypted again.
+    """
+    import logging
+    try:
+        rows = WaybillSourceRepository(waybill_connection).read_scope(scope, day)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("stored waybill rows unavailable reason=%s", type(exc).__name__)
+        return {}
+    return {str(row.get("waybill_no") or ""): row for row in rows if row.get("waybill_no")}
+
+
 def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Mapping[str, Any],
                                    verify_scope: Callable[[], WaybillSourceScope],
                                    own_site_only: bool = False) -> WaybillQuerySource:
@@ -274,7 +289,7 @@ def build_reviewed_provider_source(*, scope: WaybillSourceScope, descriptor: Map
             special, _special_total = yunda.collect_special_line_rows(session, {}, target_date=day, page_size=100, max_pages=100)
             merged = yunda._merge_rows_by_waybill(yunda._with_source(send, yunda.SOURCE_SEND_WAYBILL),
                                                   yunda._with_source(special, yunda.SOURCE_SPECIAL_LINE))
-            normalized = yunda.enrich_records(session, merged, {}, target_date=day)
+            normalized = yunda.enrich_records(session, merged, {}, target_date=day, known=_stored_scope_rows(scope, day))
             records = _console_waybill_records(normalized, target_date=day)
         if len(records) != len(normalized):
             raise ValueError("WAYBILL_SOURCE_NORMALIZATION_LOST_ROWS")
