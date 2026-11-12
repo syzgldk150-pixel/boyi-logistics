@@ -227,7 +227,8 @@ class YundaEntryTemplateTests(unittest.TestCase):
         self.assertIn('data-entry-add-provider="boyi"', html)
         self.assertIn('data-entry-add-provider="yunda"', html)
         self.assertIn('data-entry-add-provider="ronghui"', html)
-        self.assertIn('data-entry-ocr-link href="/ocr?mode=ocr"', html)
+        self.assertNotIn('data-entry-ocr-link', html)
+        self.assertNotIn('图片识别队列', html)
         self.assertIn('data-entry-initial-provider="yunda"', html)
         self.assertIn(
             'data-entry-pending-src="https://kyinms.yunda56.com/ky_inms/public/index.php/business/waybill/entry/indexNew.html?page=tab&amp;p=nil"',

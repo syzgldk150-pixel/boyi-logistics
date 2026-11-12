@@ -67,7 +67,7 @@
   .entry-tab-close .feather { width: 14px; height: 14px; stroke-width: 2.25; }
   .entry-tabs-shell[data-entry-single="true"] .entry-tab-close { display: none; }
   .entry-tabs-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-  .entry-add-btn, .entry-ocr-link { height: 34px; min-height: 34px; padding: 0 12px; border-radius: var(--radius-sm); font-size: var(--fs-body); font-weight: 500; }
+  .entry-add-btn { height: 34px; min-height: 34px; padding: 0 12px; border-radius: var(--radius-sm); font-size: var(--fs-body); font-weight: 500; }
   .entry-add-btn[disabled] { opacity: .5; cursor: not-allowed; }
   @media (prefers-reduced-motion: reduce) {
     .entry-tab, .entry-tab::after, .entry-tab-close { transition: none; }
@@ -275,22 +275,17 @@
   .address-parser-error[hidden] { display: none; }
   .address-parser-actions { display: flex; justify-content: center; gap: 12px; padding: 16px 24px 16px; }
   .address-parser-actions .action-btn { height: 34px; min-height: 34px; padding: 0 16px; }
-  .printer-popover-wrap { position: relative; }
-  .printer-trigger { height: 32px; min-height: 32px; padding: 0 12px; border-radius: 8px; font-size: var(--fs-body); font-weight: 500; }
-  .printer-trigger .feather, .mode-switch .feather { width: 15px; height: 15px; }
-  .printer-popover {
-    position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 310px;
-    padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--canvas);
-    box-shadow: var(--shadow-overlay);
+  .mode-switch .feather { width: 15px; height: 15px; }
+  .manual-subsection-title--tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .manual-inline-link {
+    display: inline-flex; align-items: center; gap: 4px; height: 24px; min-height: 24px; margin: -6px 0; padding: 0 6px;
+    border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary, var(--muted));
+    font: inherit; font-size: var(--fs-label); cursor: pointer;
   }
-  .printer-popover[hidden] { display: none; }
-  .printer-popover-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .printer-popover-head h4 { margin: 0; color: var(--text-strong); font-size: var(--fs-body); font-weight: 500; }
-  .printer-grid { display: grid; gap: 12px; }
-  .printer-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; }
-  .printer-label { color: var(--text); font-size: var(--fs-body); font-weight: 500; }
-  .printer-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
-  .printer-mini-btn { height: 30px; min-height: 30px; padding: 0 12px; border-radius: 6px; font-size: var(--fs-body); font-weight: 500; }
+  .manual-inline-link:hover { background: var(--fill-muted, var(--surface-muted)); color: var(--text-primary, var(--text-strong)); }
+  .manual-inline-link:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 1px; }
+  .manual-inline-link:disabled { opacity: .5; cursor: default; }
+  .manual-inline-link .feather { width: 13px; height: 13px; }
   .ocr-secondary { display: grid; gap: 12px; }
   .ocr-upload-box {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -546,6 +541,26 @@
   @media (min-width: 1200px) {
     body.boyi-frame-page .manual-workbench { grid-template-columns: minmax(0, 1fr) clamp(420px, 32vw, 560px); }
   }
+  /* 运单录入页单独放大一档字号（其它页面仍用全局令牌）。 */
+  body.entry-tabs-page .entry-tabs-shell,
+  body.boyi-frame-page {
+    --fs-section: 15px;
+    --fs-card-title: 14.5px;
+    --fs-body: 14px;
+    --fs-label: 13.5px;
+    --fs-caption: 12.5px;
+  }
+  body.entry-tabs-page .entry-tab { font-size: var(--fs-body); }
+  body.boyi-frame-page .manual-row { grid-template-columns: 80px minmax(0, 1fr); }
+  body.boyi-frame-page .manual-label { line-height: 34px; }
+  body.boyi-frame-page :is(.manual-input, .manual-select) { height: 34px; font-size: var(--fs-body); }
+  body.boyi-frame-page .manual-textarea { height: auto; }
+  body.boyi-frame-page .action-btn { height: 36px; min-height: 36px; font-size: var(--fs-body); }
+  body.boyi-frame-page .manual-toggle { font-size: var(--fs-body); }
+  body.boyi-frame-page .manual-input[type="date"] { padding: 0 6px 0 10px; }
+  @media (min-width: 1200px) {
+    body.boyi-frame-page .manual-workbench { grid-template-columns: minmax(0, 1fr) clamp(320px, 27vw, 480px); }
+  }
 </style>
 {% endblock %}
 
@@ -640,10 +655,9 @@
     </div>
     <div class="entry-tabs-actions">
       <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="boyi"><i data-feather="plus"></i> 新建博益</button>
-      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="truck"></i> 韵达原页</button>
-      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="truck"></i> 融辉原页</button>
-      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="best"><i data-feather="truck"></i> 百世原页</button>
-      <a class="ghost-btn entry-ocr-link" data-entry-ocr-link href="/ocr?mode=ocr"><i data-feather="image"></i> 图片识别队列</a>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="yunda"><i data-feather="external-link"></i> 韵达原页</button>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="ronghui"><i data-feather="external-link"></i> 融辉原页</button>
+      <button type="button" class="ghost-btn entry-add-btn" data-entry-add-provider="best"><i data-feather="external-link"></i> 百世原页</button>
     </div>
   </div>
   <div class="entry-tab-limit" data-entry-tab-limit hidden>最多同时打开 6 个录单页签，请先关闭不需要的页签。</div>
@@ -679,87 +693,20 @@
 <div data-mode-root data-active-mode="{{ 'ronghui' if is_ronghui_mode else ('yunda' if is_yunda_mode else ('ocr' if is_ocr_mode else 'manual')) }}">
 <div class="manual-workbench mode-panel" data-manual-workbench data-mode-panel="manual" {% if is_boyi_frame %}data-boyi-frame-root{% endif %} {% if is_ocr_mode or is_yunda_mode or is_ronghui_mode %}hidden{% endif %}>
   <section class="manual-card">
+    {% if not is_boyi_frame %}
     <div class="manual-head">
       <div class="manual-title">
         <h3>手工录单</h3>
         <span class="manual-chip" data-manual-state-chip>新建草稿</span>
       </div>
       <div class="manual-head-tools">
-        <div class="printer-popover-wrap" data-printer-popover>
-          <button type="button" class="ghost-btn printer-trigger" data-printer-toggle aria-expanded="false" aria-controls="printer-settings-panel">
-            <i data-feather="printer"></i> 打印机设置
-          </button>
-          <div class="printer-popover" id="printer-settings-panel" data-printer-panel hidden>
-            <div class="printer-popover-head">
-              <h4>打印机设置</h4>
-              <span class="manual-chip" data-printer-service-status>C-Lodop优先</span>
-            </div>
-            <div class="printer-grid">
-              <div class="printer-row">
-                <label class="printer-label" for="printer_name">打印机</label>
-                <select id="printer_name" name="printer_name" class="manual-select" data-printer-setting>
-                  <option>系统默认打印机</option>
-                  <option>热敏面单打印机</option>
-                </select>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="printer_paper">纸张</label>
-                <input id="printer_paper" type="text" name="printer_paper" value="75mm×100mm 热敏标签" class="manual-input" readonly>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_dpi">打印精度</label>
-                <select id="print_dpi" name="print_dpi" class="manual-select" data-printer-setting>
-                  <option value="203">203 dpi（8 点/毫米）</option>
-                  <option value="300">300 dpi（12 点/毫米）</option>
-                </select>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_copies">份数</label>
-                <input id="print_copies" type="number" min="1" max="5" value="1" class="manual-input" name="print_copies" data-printer-setting>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_orientation">方向</label>
-                <select id="print_orientation" name="print_orientation" class="manual-select" data-printer-setting>
-                  <option value="1">竖向 75×100</option>
-                  <option value="2">横向校正</option>
-                </select>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_offset_x">X偏移</label>
-                <input id="print_offset_x" type="number" min="-20" max="20" step="0.5" value="0" class="manual-input" name="print_offset_x" data-printer-setting>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_offset_y">Y偏移</label>
-                <input id="print_offset_y" type="number" min="-20" max="20" step="0.5" value="0" class="manual-input" name="print_offset_y" data-printer-setting>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_font_scale">字体</label>
-                <input id="print_font_scale" type="number" min="85" max="115" step="1" value="100" class="manual-input" name="print_font_scale" data-printer-setting>
-              </div>
-              <div class="printer-row">
-                <label class="printer-label" for="print_template_scale">整体缩放</label>
-                <input id="print_template_scale" type="number" min="94" max="106" step="0.5" value="100" class="manual-input" name="print_template_scale" data-printer-setting>
-              </div>
-              <div class="printer-actions">
-                <button class="ghost-btn printer-mini-btn" type="button" data-printer-calibration>校准页</button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <button class="ghost-btn printer-trigger" type="button" data-manual-preview>
-          <i data-feather="eye"></i> 打印预览
-        </button>
-        <button class="ghost-btn printer-trigger" type="button" data-address-parser-trigger>
-          <i data-feather="map-pin"></i> 地址解析
-        </button>
-        {% if not is_boyi_frame %}
         <div class="mode-switch" aria-label="录入方式">
           <a href="/ocr" data-mode-link="manual" aria-pressed="{{ 'true' if is_manual else 'false' }}">博益</a>
           <a href="/ocr?mode=ocr" data-mode-link="ocr" aria-pressed="{{ 'true' if is_ocr_mode else 'false' }}"><i data-feather="image"></i> 图片识别</a>
         </div>
-        {% endif %}
       </div>
     </div>
+    {% endif %}
     <div class="manual-feedback" data-manual-feedback aria-live="polite" hidden></div>
     {% if saved_manual_waybill|default(none) %}
     <div class="manual-saved-print-actions">
@@ -828,7 +775,10 @@
               </div>
             </div>
             <div class="manual-party-block">
-              <div class="manual-subsection-title">收货信息</div>
+              <div class="manual-subsection-title manual-subsection-title--tools">
+                <span>收货信息</span>
+                <button type="button" class="manual-inline-link" data-address-parser-trigger><i data-feather="map-pin"></i> 地址解析</button>
+              </div>
               <div class="manual-grid manual-grid--party">
                 {{ render_manual_field('receiver_name', '收货人', required=True) }}
                 {{ render_manual_field('receiver_phone', '收货电话', required=True) }}
@@ -899,6 +849,7 @@
         {% endif %}
         <div class="manual-action-group">
           <label class="manual-toggle"><input type="checkbox" name="auto_print" checked data-printer-setting> 保存后打印</label>
+          <button class="ghost-btn action-btn" type="button" data-manual-preview>打印预览</button>
           <button class="ghost-btn action-btn" type="button" data-manual-edit hidden><i data-feather="edit-3"></i> 修改</button>
           <button class="ghost-btn action-btn" type="button" data-manual-cancel-edit hidden>取消修改</button>
           <button class="primary-btn action-btn" type="submit" data-manual-save name="action" value="confirm"{% if manual_preview_error|default('') %} disabled{% endif %}><i data-feather="check"></i> <span data-manual-save-label>保存</span></button>
@@ -1420,7 +1371,6 @@
 
     const printerKey = "shipnow.manual.printerSettings";
     const printerInputs = Array.from(document.querySelectorAll("[data-printer-setting]"));
-    const printerStatus = document.querySelector("[data-printer-service-status]");
     const readSavedPrinterSettings = () => {
       try {
         return JSON.parse(localStorage.getItem(printerKey) || "{}") || {};
@@ -1437,11 +1387,11 @@
       });
     };
     const persistPrinterSettings = () => {
-      const data = {};
+      const data = readSavedPrinterSettings();
       printerInputs.forEach((item) => {
         data[item.name] = item.type === "checkbox" ? item.checked : item.value;
       });
-      localStorage.setItem(printerKey, JSON.stringify(data));
+      try { localStorage.setItem(printerKey, JSON.stringify(data)); } catch { /* preference only */ }
     };
     applySavedPrinterSettings();
     printerInputs.forEach((input) => {
@@ -1479,55 +1429,6 @@
       if (!window.BoyiCLodop?.getInstance) throw new Error("C-Lodop loader not available");
       return window.BoyiCLodop.getInstance();
     };
-    const populateCLODOPPrinters = async () => {
-      const select = document.getElementById("printer_name");
-      if (!select) return;
-      let lodop;
-      try {
-        lodop = await getCLODOP();
-      } catch {
-        if (printerStatus) printerStatus.textContent = "C-Lodop未连接";
-        return;
-      }
-      if (!lodop) {
-        if (printerStatus) printerStatus.textContent = "C-Lodop未连接";
-        return;
-      }
-      const existing = new Set(Array.from(select.options).map((option) => option.value || option.textContent));
-      const count = Number(lodop.GET_PRINTER_COUNT?.() || 0);
-      for (let index = 0; index < count; index += 1) {
-        const name = String(lodop.GET_PRINTER_NAME(index) || "").trim();
-        if (!name || existing.has(name)) continue;
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        select.appendChild(option);
-        existing.add(name);
-      }
-      if (printerStatus) printerStatus.textContent = count > 0 ? "C-Lodop已连接" : "C-Lodop未检测到打印机";
-      applySavedPrinterSettings();
-    };
-    window.addEventListener("load", populateCLODOPPrinters);
-
-    const printerWrap = document.querySelector("[data-printer-popover]");
-    const printerToggle = document.querySelector("[data-printer-toggle]");
-    const printerPanel = document.querySelector("[data-printer-panel]");
-    const setPrinterPanelOpen = (open) => {
-      if (!printerToggle || !printerPanel) return;
-      printerPanel.hidden = !open;
-      printerToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    };
-    printerToggle?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      setPrinterPanelOpen(Boolean(printerPanel?.hidden));
-    });
-    document.addEventListener("click", (event) => {
-      if (!printerWrap || printerPanel?.hidden || printerWrap.contains(event.target)) return;
-      setPrinterPanelOpen(false);
-    });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") setPrinterPanelOpen(false);
-    });
 
     const manualMap = {
       AMap: null,
@@ -2152,25 +2053,6 @@
       lockSavedManualWaybill();
       previewSavedManualWaybill();
     }
-    const previewCalibrationPage = async () => {
-      persistPrinterSettings();
-      const settings = readSavedPrinterSettings();
-      try {
-        const lodop = await getCLODOP();
-        if (!lodop) throw new Error("C-Lodop service not found");
-        const printerIndex = window.BoyiWaybillPrint.findPrinterIndex(lodop, settings.printer_name);
-        lodop.PRINT_INIT("博益物流主单校准页");
-        if (printerIndex !== null) lodop.SET_PRINTER_INDEX(printerIndex);
-        lodop.SET_PRINT_COPIES(1);
-        if (!window.WaybillLabelLodop?.applyCalibration) throw new Error("Waybill Lodop renderer not loaded");
-        window.WaybillLabelLodop.applyCalibration(lodop, settings);
-        window.BoyiWaybillPrint.openPreview(lodop);
-      } catch (error) {
-        console.error("C-Lodop calibration failed", error);
-        setManualFeedback(formatManualPrintError(error), "error");
-      }
-    };
-    document.querySelector("[data-printer-calibration]")?.addEventListener("click", previewCalibrationPage);
     const setMapPlaceholder = (visible, text = "暂无地图信息") => {
       if (!mapPanel) return;
       mapPanel.hidden = !visible;

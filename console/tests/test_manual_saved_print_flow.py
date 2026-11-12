@@ -287,7 +287,6 @@ def test_save_opens_native_preview_once_and_refresh_keeps_new_draft(app, browser
     assert frame.locator("[data-manual-edit]").is_visible()
     assert frame.locator("[data-manual-new]").is_visible()
     assert not frame.locator("[data-manual-save]").is_visible()
-    assert frame.locator("[data-manual-state-chip]").inner_text() == "已保存"
     assert "合成运单已保存" not in frame.locator("body").inner_text()
     payload = page.evaluate("window.__printPayloads[0]")
     assert payload["waybill_no"] == "BY00041"
@@ -367,7 +366,6 @@ def test_edit_after_save_updates_same_waybill_and_reprints(app, browser_page):
     frame.locator("[data-manual-edit]").click()
     assert not frame.locator("#field_receiver_name").is_disabled()
     assert frame.locator("[data-manual-save-label]").inner_text() == "保存修改"
-    assert frame.locator("[data-manual-state-chip]").inner_text() == "修改中"
     frame.locator("#field_receiver_name").fill("修改后收件人")
     frame.locator("[data-manual-save]").click()
     page.wait_for_function("window.__printEvents.length === 2")

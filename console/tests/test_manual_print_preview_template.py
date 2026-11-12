@@ -15,8 +15,8 @@ class ManualPrintPreviewTemplateTests(unittest.TestCase):
     def test_printer_status_does_not_report_connected_without_printers(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
 
-        self.assertIn('count > 0 ? "C-Lodop已连接" : "C-Lodop未检测到打印机"', template)
-        self.assertNotIn('count > 0 ? "C-Lodop已连接" : "C-Lodop已连接"', template)
+        # 打印机设置面板已移除，页面不再展示 C-Lodop 连接状态；不得误报已连接。
+        self.assertNotIn('"C-Lodop已连接"', template)
 
     def test_manual_preview_validation_feedback_is_in_card_and_marks_fields(self):
         template = (CONSOLE_DIR / "templates" / "document.html").read_text(encoding="utf-8")
