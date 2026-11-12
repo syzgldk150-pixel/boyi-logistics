@@ -78,7 +78,7 @@ def test_renderer_identity_is_required_by_mapping_and_direct_reader(monkeypatch,
     renderer["Logistics_Id"] = renderer_identity
     with pytest.raises(ValueError, match="renderer identity"):
         normalize_record(row, detail, original, renderer, target_date="2026-08-15")
-    monkeypatch.setattr(runtime, "fetch_waybill_detail", lambda *_: detail)
+    monkeypatch.setattr(runtime, "fetch_waybill_details", lambda _session, codes, _params: {code: detail for code in codes})
     monkeypatch.setattr(runtime, "fetch_original_data", lambda *_: original)
     monkeypatch.setattr(runtime, "fetch_send_waybill_renderer", lambda *_: renderer)
     tagged = {**row, runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SEND_WAYBILL}
@@ -308,37 +308,54 @@ def test_parallel_detail_reads_keep_list_order_and_fail_as_a_whole(monkeypatch):
     import threading
     import time as time_module
 
-    calls, active, peak, lock = [], [0], [0], threading.Lock()
+    active, peak, lock = [0], [0], threading.Lock()
 
-    def enrich_parts(*args, **_kwargs):
+    def original_data(_session, bill_code, _params):
         with lock:
             active[0] += 1
             peak[0] = max(peak[0], active[0])
         time_module.sleep(0.01)
         with lock:
             active[0] -= 1
-        calls.append(args[1])
+        if bill_code == "W05" and failing[0]:
+            raise ValueError("original failed")
         return {}
 
-    monkeypatch.setattr(runtime, "fetch_waybill_detail", enrich_parts)
-    monkeypatch.setattr(runtime, "fetch_original_data", lambda *_: {})
-    monkeypatch.setattr(runtime, "fetch_send_waybill_renderer", lambda *_: {})
+    failing = [False]
+    monkeypatch.setattr(runtime, "fetch_waybill_details", lambda _s, codes, _p: {code: {} for code in codes})
+    monkeypatch.setattr(runtime, "fetch_original_data", original_data)
     monkeypatch.setattr(runtime, "normalize_record", lambda row, *_a, **_k: {"no": row["Logistics_Id"]})
+    monkeypatch.setattr(runtime, "ENRICH_MAX_WORKERS", 4)
     rows = [{"Logistics_Id": f"W{index:02d}", runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE} for index in range(12)]
     rows.insert(3, {"Logistics_Id": "", runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE})
-    monkeypatch.setattr(runtime, "ENRICH_MAX_WORKERS", 4)
     records = runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15))
     assert [item["no"] for item in records] == [f"W{index:02d}" for index in range(12)]
-    assert 1 < peak[0] <= runtime.ENRICH_MAX_WORKERS
-
-    def failing(_session, bill_code, _params):
-        if bill_code == "W05":
-            raise ValueError("detail failed")
-        return {}
-
-    monkeypatch.setattr(runtime, "fetch_waybill_detail", failing)
-    with pytest.raises(ValueError, match="detail failed"):
+    assert 1 < peak[0] <= 4
+    failing[0] = True
+    with pytest.raises(ValueError, match="original failed"):
         runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15))
+
+
+def test_mail_details_are_requested_five_at_a_time_and_a_missing_one_is_read_alone(monkeypatch):
+    requests = []
+
+    def node(code):
+        return {code: {"logistics": {"Logistics_Id": code, "COD": "0"}, "smi": {"info": {"scanFlag": {"send": 1}}}}}
+
+    def post(_session, codes, _params, *, referer):
+        requests.append(list(codes))
+        merged = {}
+        for code in codes:
+            if not (code == "W03" and len(codes) > 1):
+                merged.update(node(code))
+        return {"rows": [merged]}
+
+    monkeypatch.setattr(runtime, "_post_mail_detail", post)
+    codes = [f"W{index:02d}" for index in range(7)]
+    details = runtime.fetch_waybill_details(None, codes, {})
+    assert requests == [codes[:5], ["W03"], codes[5:]]
+    assert list(details) == codes and details["W03"]["Logistics_Id"] == "W03"
+    assert details["W06"]["Scan_Flag_Keys"] == ["send"]
 
 
 def test_list_pages_above_100_rows_are_read_as_100_row_upstream_pages():

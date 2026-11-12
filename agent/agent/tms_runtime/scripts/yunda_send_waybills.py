@@ -423,23 +423,51 @@ def _extract_logistics(payload: Any, bill_code: str) -> dict[str, Any]:
     return result
 
 
-def fetch_waybill_detail(session: Any, bill_code: str, params: dict[str, Any]) -> dict[str, Any]:
+# Mail detail accepts several Ids[] at once; verified 2026-11-11 on the live
+# account (5 waybills in one request matched 5 single requests exactly).
+DETAIL_BATCH_SIZE = 5
+
+
+def _post_mail_detail(session: Any, bill_codes: list[str], params: dict[str, Any], *, referer: str) -> Any:
     headers = {
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Origin": YUNDA_INMS_ORIGIN,
-        "Referer": f"{MAIL_INDEX_URL}?state={bill_code}&all=1",
+        "Referer": referer,
         "X-Requested-With": "XMLHttpRequest",
     }
     response = session.post(
         MAIL_LIST_URL,
-        data={"Ids[]": bill_code, "bringSub": "true", "page": 1, "history": "extra"},
+        data={"Ids[]": bill_codes if len(bill_codes) > 1 else bill_codes[0],
+              "bringSub": "true", "page": 1, "history": "extra"},
         headers=headers,
         allow_redirects=False,
         timeout=_coerce_int(params.get("request_timeout_sec"), 30),
     )
-    payload = _decode_json_response(response, label="快件跟踪详情")
+    return _decode_json_response(response, label="快件跟踪详情")
+
+
+def fetch_waybill_detail(session: Any, bill_code: str, params: dict[str, Any]) -> dict[str, Any]:
+    payload = _post_mail_detail(session, [bill_code], params, referer=f"{MAIL_INDEX_URL}?state={bill_code}&all=1")
     return _extract_logistics(payload, bill_code)
+
+
+def fetch_waybill_details(session: Any, bill_codes: list[str], params: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Mail details for many waybills, ``DETAIL_BATCH_SIZE`` per request.
+
+    Each waybill is still matched by its exact object key. One the batch answer
+    does not contain exactly once is read again on its own, never guessed.
+    """
+    details: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(bill_codes), DETAIL_BATCH_SIZE):
+        chunk = bill_codes[start:start + DETAIL_BATCH_SIZE]
+        payload = _post_mail_detail(session, chunk, params, referer=f"{MAIL_INDEX_URL}?all=1")
+        for code in chunk:
+            try:
+                details[code] = _extract_logistics(payload, code)
+            except ValueError:
+                details[code] = fetch_waybill_detail(session, code, params)
+    return details
 
 
 def fetch_original_data(session: Any, bill_code: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -481,9 +509,12 @@ def enrich_records(
     *,
     target_date: dt.date,
 ) -> list[dict[str, Any]]:
+    wanted = [row for row in rows if _clean_str(row.get("Logistics_Id"))]
+    details = fetch_waybill_details(session, [_clean_str(row.get("Logistics_Id")) for row in wanted], params)
+
     def enrich(row: dict[str, Any]) -> dict[str, Any]:
         bill_code = _clean_str(row.get("Logistics_Id"))
-        detail = fetch_waybill_detail(session, bill_code, params)
+        detail = details[bill_code]
         original = fetch_original_data(session, bill_code, params)
         renderer = (
             fetch_send_waybill_renderer(session, bill_code, row, params)
@@ -495,7 +526,6 @@ def enrich_records(
             source=str(row[INTERNAL_SOURCE_FIELD]),
         )
 
-    wanted = [row for row in rows if _clean_str(row.get("Logistics_Id"))]
     if len(wanted) <= 1 or ENRICH_MAX_WORKERS <= 1:
         return [enrich(row) for row in wanted]
     # Results keep the list order; any failed waybill fails the whole read.

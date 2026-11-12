@@ -1717,7 +1717,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                 if url.endswith("/business/specialLine/specialLineManage/getList.html"):
                     return Response({"total": 0, "rows": []})
                 if url.endswith("/system/mail/list.html"):
-                    bill_code = data["Ids[]"]
+                    requested = data["Ids[]"] if isinstance(data["Ids[]"], list) else [data["Ids[]"]]
                     return Response(
                         {
                             "rows": [
@@ -1731,6 +1731,7 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
                                             "COD": "115.00" if bill_code == "978284775" else "0.00",
                                         }
                                     }
+                                    for bill_code in requested
                                 }
                             ]
                         }
@@ -1783,6 +1784,8 @@ class TmsWaybillRuntimeTests(unittest.TestCase):
         self.assertEqual({"send_waybill": 2, "special_line": 0}, result["source_counts"])
         self.assertEqual([1, 2], [call["data"]["page"] for call in session.calls if "sendwaybill/list" in call["url"]])
         self.assertEqual([1], [call["data"]["page"] for call in session.calls if "specialLine/specialLineManage/getList" in call["url"]])
+        self.assertEqual([["978284775", "978281237"]],
+                         [call["data"]["Ids[]"] for call in session.calls if call["url"].endswith("/system/mail/list.html")])
         first = result["records"][0]
         self.assertEqual("978284775", first["运单编号"])
         self.assertEqual("湖南省长沙市岳麓区梅溪湖街道金茂梅溪湖29栋3902", first["收件地址"])
