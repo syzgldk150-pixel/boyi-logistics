@@ -1091,6 +1091,28 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertEqual("吨袋", result["waybill_stub"]["goods_name"])
         self.assertEqual("邵阳集配站", result["waybill_stub"]["disp_site"])
 
+    def test_track_waybill_tool_reads_yunda_recipient_decrypted_in_the_same_query(self):
+        tracking_params: list[dict] = []
+
+        def _fake_call_http_service(endpoint, params):
+            if endpoint != "/tms/tracking_query":
+                raise AssertionError(endpoint)
+            tracking_params.append(params["params"])
+            return {"ok": True, "data": {
+                "ok": True, "type": "yunda", "tracking_number": "622720231", "route_rows": [],
+                "waybill_stub": {"recipient_name": "田**", "recipient_phone": "18400000069-7593"},
+            }}
+
+        with (
+            patch("tools.track_waybill_tool.call_http_service", side_effect=_fake_call_http_service),
+            patch("tools.track_waybill_tool.get_waybill_tracking_cache", return_value={}),
+        ):
+            result = track_waybill_tool.run_track_waybill({"tracking_number": "622720231"})
+
+        self.assertEqual("yunda", tracking_params[0]["provider"])
+        self.assertNotIn("decrypt_masked", tracking_params[0])  # Agent default: decrypt
+        self.assertEqual("18400000069-7593", result["waybill_stub"]["recipient_phone"])
+
     def test_track_waybill_tool_uses_feishu_arrival_sheet_when_db_cache_missing(self):
         sheet_values = [
             [

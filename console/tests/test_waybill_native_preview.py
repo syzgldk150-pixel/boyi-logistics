@@ -123,7 +123,7 @@ def query_page(app, browser):
                 result = json.dumps({"ok": True, "data": {
                     "refreshed": True, "complete": state.source_complete, "messages": [],
                     "warnings": [] if state.source_complete else ["原平台数据未完整更新，当前为服务器快照。"],
-                    "refreshed_at": "12:30", "reused": len(state.source_requests) > 1,
+                    "refreshed_at": "12:30", "date_from": "2026-01-02", "date_to": "2026-01-02", "reused": len(state.source_requests) > 1,
                 }})
                 if state.defer_refresh:
                     state.source_pending.append((route, result))
@@ -385,4 +385,50 @@ def test_link_platform_waybill_from_details_updates_tracking(query_page):
     detail = page.locator("[data-waybill-detail-dialog]")
     assert "韵达 4321098765" in detail.locator("[data-waybill-link]").inner_text()
     assert detail.locator("a", has_text="轨迹跟踪").get_attribute("href") == "/tracking?tracking_number=4321098765&provider=yunda"
+    assert not query_page.errors
+
+
+def test_save_after_auto_query_rereads_the_queried_range_not_an_undated_list(query_page, app):
+    """A tab opened without dates runs today's live query; saving must reload that same list."""
+    page = query_page.page
+    lists = []
+
+    def serve_list(route):
+        ajax = route.request.headers.get("x-requested-with") == "WaybillAjaxSearch"
+        lists.append((ajax, urlparse(route.request.url).query))
+        html = render_query(app, query_page)
+        if not ajax:
+            html = html.replace("data-waybill-ajax-panel", "data-waybill-ajax-panel data-waybill-live-pending", 1)
+        elif "date_from" not in route.request.url and "q=" not in route.request.url:
+            html = html.replace('data-waybill-select="', 'data-undated-row="')
+        route.fulfill(content_type="text/html", body=html)
+
+    page.context.route(lambda url: urlparse(url).path == "/waybills", serve_list)
+    page.goto(ORIGIN + "/waybills")
+    page.wait_for_function("location.search.includes('date_from=2026-01-02')")
+    assert query_page.source_requests[-1] == {"source": "all", "date_from": "", "date_to": ""}
+    detail = open_detail(page)
+    detail.locator("[data-waybill-edit]").click()
+    form = detail.locator("[data-waybill-edit-form]")
+    form.wait_for(state="visible")
+    form.locator('[name="field_receiver_name"]').fill("修改后的合成收件人")
+    form.get_by_role("button", name="保存修改", exact=True).click()
+    page.wait_for_function("document.querySelector('[data-waybill-detail-dialog] [data-waybill-detail-message]')?.textContent.includes('已修改')")
+    assert lists[-1] == (True, "date_from=2026-01-02&date_to=2026-01-02")
+    assert page.locator('[data-waybill-select="yunda:41"]').count() >= 1
+    assert page.locator('[data-undated-row]').count() == 0
+    assert len(query_page.source_requests) == 1
+    assert not query_page.errors
+
+
+def test_tracking_link_in_details_leaves_no_modal_blocking_the_new_tab(query_page, app):
+    """The detail dialog is modal; switching tabs must close it or the whole page stays inert."""
+    page = query_page.page
+    page.context.route(lambda url: urlparse(url).path == "/tracking",
+                       lambda route: route.fulfill(content_type="text/html", body=render_query(app, query_page)))
+    detail = open_detail(page)
+    detail.locator("a", has_text="轨迹跟踪").click()
+    page.wait_for_function("location.pathname === '/tracking'")
+    page.wait_for_function("document.querySelectorAll('dialog:modal').length === 0")
+    assert not page.evaluate("document.body.classList.contains('has-modal')")
     assert not query_page.errors

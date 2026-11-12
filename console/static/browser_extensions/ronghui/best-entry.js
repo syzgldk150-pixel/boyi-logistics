@@ -2,7 +2,7 @@
   // Select the native entry form tab once, leaving subsequent choices untouched.
   if (location.origin !== 'https://v5.800best.com' ||
       location.pathname !== '/baseService/transOrder/networkProductOrder' ||
-      window.parent === window || location.ancestorOrigins?.[0] !== 'https://boyi.homes') return;
+      window.parent === window || !['https://boyi.homes', 'https://100.107.181.3:8443'].includes(location.ancestorOrigins?.[0])) return;
   let attempted = false, complete = false;
   function check() {
     if (complete || location.pathname !== '/baseService/transOrder/networkProductOrder') return;
@@ -24,17 +24,17 @@
   observer.observe(document, {subtree:true, childList:true});
   const deadline = setTimeout(() => {
     observer.disconnect();
-    if (!complete) window.parent.postMessage({type:'boyi-best-entry-unavailable'}, 'https://boyi.homes');
+    if (!complete) window.parent.postMessage({type:'boyi-best-entry-unavailable'}, location.ancestorOrigins[0]);
   }, 30000);
   window.navigation?.addEventListener('navigatesuccess', check);
   check();
 })();
 
 (() => {
-  const BOYI = 'https://boyi.homes';
+  const BOYI = location.ancestorOrigins?.[0];
   const ENTRY = '/baseService/transOrder/networkProductOrder';
   if (location.origin !== 'https://v5.800best.com' || location.pathname !== ENTRY ||
-      window.parent === window || location.ancestorOrigins?.[0] !== BOYI) return;
+      window.parent === window || !['https://boyi.homes', 'https://100.107.181.3:8443'].includes(BOYI)) return;
   const root = document.documentElement;
   const focusedClass = 'boyi-best-entry-focus';
   const layoutClass = 'boyi-best-entry-layout';

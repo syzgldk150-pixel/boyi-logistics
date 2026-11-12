@@ -1,6 +1,7 @@
 (() => {
   // The Console changes modules without a document navigation.
-  if (location.origin !== 'https://boyi.homes') return;
+  // The Console host: the public domain, or its Tailscale address while the domain is offline.
+  if (!['https://boyi.homes', 'https://100.107.181.3:8443'].includes(location.origin)) return;
   const pending = new WeakSet();
   const mounted = new WeakSet();
   async function prepare(frame) {
@@ -18,7 +19,7 @@
       const result = await chrome.runtime.sendMessage({type:'prepare-' + provider + '-embed'});
       if (!result?.ok) throw new Error('Preparation failed');
       if (!frame.isConnected) return;
-      frame.dataset[statusKey] = '0.4.12';
+      frame.dataset[statusKey] = '0.4.13';
       delete frame.dataset.entryPendingSrc;
       frame.dispatchEvent(new Event('console:original-page-reload'));
       if (provider === 'best') frame.sandbox.add('allow-storage-access-by-user-activation');

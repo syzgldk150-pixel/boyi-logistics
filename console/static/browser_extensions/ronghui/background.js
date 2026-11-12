@@ -1,3 +1,5 @@
+// The Console host: the public domain, or its Tailscale address while the domain is offline.
+const BOYI_ORIGINS = ['https://boyi.homes', 'https://100.107.181.3:8443'];
 const HOST = 'tms.ronghuiwl.com';
 const BEST_HOST = 'v5.800best.com';
 const activeTabs = new Set();
@@ -76,7 +78,7 @@ chrome.webRequest.onHeadersReceived.addListener(async response => {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (!['prepare-ronghui-embed', 'prepare-best-embed'].includes(message?.type)) return;
   const origin = new URL(sender.url || 'https://invalid.local');
-  if (origin.origin !== 'https://boyi.homes' || sender.frameId !== 0 || !sender.tab) {
+  if (!BOYI_ORIGINS.includes(origin.origin) || sender.frameId !== 0 || !sender.tab) {
     reply({ok:false}); return;
   }
   (async () => {
@@ -137,7 +139,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   const source = new URL(sender.url || 'https://invalid.local');
   (async () => {
     if (message.type === 'open-original-login') {
-      if (source.origin !== 'https://boyi.homes' || !/^entry-\d+$/.test(message.entryId)) return {ok:false};
+      if (!BOYI_ORIGINS.includes(source.origin) || !/^entry-\d+$/.test(message.entryId)) return {ok:false};
       // Store the destination before navigation, including an already logged-in page.
       const login = await chrome.tabs.create({url:'about:blank', openerTabId:sender.tab.id});
       const key = 'original-login-' + login.id;

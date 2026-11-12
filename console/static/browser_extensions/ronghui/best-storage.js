@@ -1,7 +1,7 @@
 (() => {
   if (location.origin !== 'https://v5.800best.com' ||
       location.pathname !== '/baseService/transOrder/networkProductOrder' ||
-      window.parent === window || location.ancestorOrigins?.[0] !== 'https://boyi.homes') return;
+      window.parent === window || !['https://boyi.homes', 'https://100.107.181.3:8443'].includes(location.ancestorOrigins?.[0])) return;
   // BEST keeps its native profile and site catalogue in localStorage/IndexedDB.
   // Use the browser's same-origin storage handle, without reading or copying data.
   // Its bundles bind localStorage/indexedDB when they evaluate, so a cached
@@ -37,6 +37,6 @@
     Object.defineProperty(window, 'localStorage', {configurable:true, get:() => handle.localStorage});
     Object.defineProperty(window, 'indexedDB', {configurable:true, get:() => handle.indexedDB});
   })().catch(() => {
-    window.parent.postMessage({type:'boyi-best-storage-unavailable'}, 'https://boyi.homes');
+    window.parent.postMessage({type:'boyi-best-storage-unavailable'}, location.ancestorOrigins[0]);
   }).finally(release);
 })();

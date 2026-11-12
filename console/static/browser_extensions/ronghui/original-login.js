@@ -1,12 +1,13 @@
 (() => {
-  const BOYI = 'https://boyi.homes';
+  const BOYI_ORIGINS = ['https://boyi.homes', 'https://100.107.181.3:8443'];
+  const BOYI = location.ancestorOrigins?.[0];
   const YUNDA = 'https://kyinms.yunda56.com';
   const YUNDA_SSO = 'https://ky-sso.yunda56.com';
   const YUNDA_HOME = '/ky_inms/public/index.php/index/index.html';
   const YUNDA_ENTRY = '/ky_inms/public/index.php/business/waybill/entry/indexNew.html';
   const BEST = 'https://v5.800best.com';
   const BEST_ENTRY = '/baseService/transOrder/networkProductOrder';
-  if (location.origin === BOYI && window.parent === window) {
+  if (BOYI_ORIGINS.includes(location.origin) && window.parent === window) {
     window.addEventListener('message', event => {
       if (event.origin !== BEST || !['boyi-best-entry-unavailable', 'boyi-best-storage-unavailable'].includes(event.data?.type)) return;
       const frame = Array.from(document.querySelectorAll('iframe[data-best-live-frame]'))
@@ -95,7 +96,7 @@
     return;
   }
   if (location.origin === YUNDA_SSO && location.pathname === '/login') {
-    if (window.parent !== window && location.ancestorOrigins?.[0] === BOYI) {
+    if (window.parent !== window && BOYI_ORIGINS.includes(BOYI)) {
       window.parent.postMessage({type:'boyi-yunda-login-required'}, BOYI);
     }
     return;
@@ -110,7 +111,7 @@
         path = location.pathname;
         generation++;
         attempted = false;
-        if (path === '/login' && window.parent !== window && location.ancestorOrigins?.[0] === BOYI) {
+        if (path === '/login' && window.parent !== window && BOYI_ORIGINS.includes(BOYI)) {
           window.parent.postMessage({type:'boyi-best-login-required'}, BOYI);
         }
       }
@@ -158,7 +159,7 @@
     if (window.parent === window) {
       // Only the background's explicitly opened login tab can complete a return.
       chrome.runtime.sendMessage({type:'original-login-ready', provider:ronghui?'ronghui':'yunda'}).catch(() => {});
-    } else if (yunda && location.pathname === YUNDA_HOME && location.ancestorOrigins?.[0] === BOYI) {
+    } else if (yunda && location.pathname === YUNDA_HOME && BOYI_ORIGINS.includes(BOYI)) {
       location.replace(YUNDA + YUNDA_ENTRY + '?page=tab&p=nil');
     }
   }

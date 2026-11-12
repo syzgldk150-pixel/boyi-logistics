@@ -4,7 +4,7 @@
   // Boyi embed, so the entry init later reads no profile. Standalone tabs stay native.
   const ancestors = location.ancestorOrigins;
   if (location.origin !== 'https://tms.ronghuiwl.com' || window.top === window ||
-      ancestors?.[ancestors.length - 1] !== 'https://boyi.homes') return;
+      !['https://boyi.homes', 'https://100.107.181.3:8443'].includes(ancestors?.[ancestors.length - 1])) return;
   const cookie = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
   Object.defineProperty(Document.prototype, 'cookie', {...cookie, set(value) {
     // Keep the native name, value, path, expiry and domain; replace only the

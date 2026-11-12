@@ -108,7 +108,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", template)
-        self.assertIn("/static/console_ui.js?v=20261111-norefresh", template)
+        self.assertIn("/static/console_ui.js?v=20261112-tabmodal", template)
         self.assertIn(
             "/static/style.css?v=20261112-type13",
             login_template,
@@ -116,7 +116,7 @@ class NavigationPerformanceTests(unittest.TestCase):
         self.assertIn("/static/assets/fonts/InterVariable-Latin.woff2", login_template)
         self.assertIn("/static/assets/fonts/SourceHanSansCN-UI.woff2", login_template)
         self.assertIn("/static/vendor/feather-4.29.2.min.js", login_template)
-        self.assertIn("/static/console_ui.js?v=20261111-norefresh", login_template)
+        self.assertIn("/static/console_ui.js?v=20261112-tabmodal", login_template)
         self.assertNotIn("unpkg.com", template)
         self.assertNotIn("unpkg.com", login_template)
         self.assertNotIn("api.dicebear.com", template)

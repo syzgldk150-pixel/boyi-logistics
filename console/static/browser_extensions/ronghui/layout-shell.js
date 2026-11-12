@@ -1,8 +1,8 @@
 (() => {
-  const BOYI = 'https://boyi.homes';
+  const BOYI = location.ancestorOrigins?.[0];
   if (location.origin !== 'https://tms.ronghuiwl.com' ||
       location.pathname !== '/module/index' || window.parent === window ||
-      location.ancestorOrigins?.[0] !== BOYI || window.__boyiRonghuiLayout) return;
+      !['https://boyi.homes', 'https://100.107.181.3:8443'].includes(BOYI) || window.__boyiRonghuiLayout) return;
   window.__boyiRonghuiLayout = true;
   const root = document.documentElement;
   const style = document.createElement('style');

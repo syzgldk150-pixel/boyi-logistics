@@ -466,12 +466,15 @@ def run_track_waybill(params: dict[str, Any]) -> dict[str, Any]:
 
     request_params = dict(params)
     request_params["tracking_number"] = tracking_number
+    if validation.provider and not request_params.get("provider"):
+        request_params["provider"] = validation.provider
     # Routes must not depend on customer decryption, which Ronghui refuses when
     # the login site has not scanned the bill; the masked recipient is filled
     # afterwards from the cache or query_waybill_detail (kept masked if refused).
-    request_params.setdefault("decrypt_masked", False)
-    if validation.provider and not request_params.get("provider"):
-        request_params["provider"] = validation.provider
+    # Yunda decrypts with getOriginalData and keeps the route when that fails,
+    # so its recipient phone and address are read decrypted in the same query.
+    if str(request_params.get("provider") or "").strip().lower() != "yunda":
+        request_params.setdefault("decrypt_masked", False)
     request_body = {
         "params": request_params,
         "timeout_sec": int(params.get("timeout_sec") or 180),

@@ -3,7 +3,7 @@
   const ancestors = location.ancestorOrigins;
   if (location.origin !== RONGHUI || location.pathname !== '/widget/home' ||
       ancestors?.length !== 2 || ancestors[0] !== RONGHUI ||
-      ancestors[1] !== 'https://boyi.homes') return;
+      !['https://boyi.homes', 'https://100.107.181.3:8443'].includes(ancestors[1])) return;
 
   function install() {
     const address = window.mini?.get('ACCEPT_MAN_ADDRESS');

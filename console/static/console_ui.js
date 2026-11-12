@@ -431,6 +431,13 @@
     document.title = tab.documentTitle || tab.title;
   }
 
+  // A modal dialog left open in a hidden tab would keep the whole page inert.
+  function closeModalDialogs(root) {
+    root.querySelectorAll("dialog[open]").forEach((dialog) => {
+      if (dialog.matches(":modal")) dialog.close();
+    });
+  }
+
   function activateTab(tabKey, options = {}) {
     const tab = openTabs.get(tabKey);
     if (!tab) {
@@ -446,6 +453,10 @@
         return;
       }
       const active = item.key === tabKey;
+      if (!active) {
+        closeModalDialogs(item.main);
+        if (item.aside) closeModalDialogs(item.aside);
+      }
       item.main.hidden = !active;
       if (item.aside) {
         item.aside.hidden = !active;

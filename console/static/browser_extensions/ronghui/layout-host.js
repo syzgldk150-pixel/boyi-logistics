@@ -1,5 +1,5 @@
 (() => {
-  if (location.origin !== 'https://boyi.homes' ||
+  if (!['https://boyi.homes', 'https://100.107.181.3:8443'].includes(location.origin) ||
       window.__boyiRonghuiLayoutHost) return;
   window.__boyiRonghuiLayoutHost = true;
   const providers = [

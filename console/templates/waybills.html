@@ -1331,7 +1331,9 @@
       if (sequence !== loadNumber || !currentPanel || window.location.pathname !== "/waybills") return false;
       closeWaybillDetail(currentPanel);
       currentPanel.replaceWith(document.importNode(nextPanel, true));
+      // The address always names the list on screen, so a reload after saving reads the same query.
       if (pushState) window.history.pushState({ waybillAjax: true }, "", url.href);
+      else if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url.href);
       bindWaybillSearch();
       window.ConsoleUI?.initPage?.(panel() || document);
       window.ConsoleUI?.refreshIcons?.();
