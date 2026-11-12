@@ -35,6 +35,23 @@ def _finish_waybill_refresh_flight(key: tuple[str, str, str], flight: dict[str, 
         flight["done"].set()
 
 
+
+def waybill_page_links(page: int, total_pages: int) -> list[int | None]:
+    """Page numbers to show: first, last, the current page and its neighbours; None marks a gap."""
+    total_pages = max(1, total_pages)
+    shown = {1, total_pages, page - 1, page, page + 1}
+    if page <= 3:
+        shown.update({2, 3})
+    if page >= total_pages - 2:
+        shown.update({total_pages - 1, total_pages - 2})
+    links: list[int | None] = []
+    for number in sorted(n for n in shown if 1 <= n <= total_pages):
+        if links and number - (links[-1] or 0) > 1:
+            links.append(None)
+        links.append(number)
+    return links
+
+
 class WaybillsReceiptsServiceMixin:
     def _render_dispatch(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         dispatch_config = {
@@ -388,6 +405,7 @@ class WaybillsReceiptsServiceMixin:
         if pagination["has_next"]:
             next_url = "/waybills?" + urlencode({**base_query, "page": pagination["page"] + 1})
         current_url = "/waybills?" + urlencode({**base_query, "page": pagination["page"]})
+        page_url_base = "/waybills?" + urlencode(base_query) + ("&" if base_query else "") + "page="
 
         template = self.template_env.get_template("waybills.html")
         body = template.render(
@@ -399,6 +417,8 @@ class WaybillsReceiptsServiceMixin:
             prev_url=prev_url,
             next_url=next_url,
             current_url=current_url,
+            page_links=waybill_page_links(int(pagination["page"]), int(pagination["total_pages"])),
+            page_url_base=page_url_base,
             status_options=status_options,
             source_options=source_options,
             payment_options=payment_options,

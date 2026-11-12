@@ -108,7 +108,7 @@ isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests
 
 ## 签收与回单缩略图（2026-11-12）
 
-寄件运单查询中已签收的融辉/韵达行（含已绑定平台单的博益单）显示签收图片与回单图片缩略图，点开看大图。行进入可视区后才读取，不影响列表本身的查询速度。Agent 只读接口 `waybill-photos`（`agent/agent/tms_runtime/waybill_photos.py`）只接受平台和运单号，来源均于当日在生产账号只读核实：
+寄件运单查询的“签收 / 回单”列为已签收的融辉/韵达行（含已绑定平台单的博益单）显示签收照片与回单照片，点开“签收凭证”弹窗分页查看大图（页面规格见 `console/CLAUDE.md`）。行进入可视区后才读取，不影响列表本身的查询速度。Agent 只读接口 `waybill-photos`（`agent/agent/tms_runtime/waybill_photos.py`）只接受平台和运单号，来源均于当日在生产账号只读核实：
 
 | 图片 | 融辉 | 韵达 |
 | --- | --- | --- |

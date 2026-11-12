@@ -188,12 +188,12 @@ class WaybillPhotoTemplateTest(unittest.TestCase):
     def _render_rows(self, rows):
         env = Environment(loader=FileSystemLoader(CONSOLE_DIR / "templates"), autoescape=select_autoescape(["html"]))
         source = (CONSOLE_DIR / "templates" / "waybills.html").read_text(encoding="utf-8")
-        start = source.index("{% macro photo_strip(row) -%}")
+        start = source.index("{% macro photo_slots(row) -%}")
         end = source.index("{%- endmacro %}", start) + len("{%- endmacro %}")
-        template = env.from_string(source[start:end] + "{% for row in rows %}<i>{{ photo_strip(row) }}</i>{% endfor %}")
+        template = env.from_string(source[start:end] + "{% for row in rows %}<i>{{ photo_slots(row) }}</i>{% endfor %}")
         return template.render(rows=rows)
 
-    def test_only_signed_platform_or_linked_rows_get_a_photo_strip(self):
+    def test_only_signed_platform_or_linked_rows_read_photos(self):
         html = self._render_rows([
             {"source": "yunda", "waybill_no": "900000001", "status": "signed"},
             {"source": "ronghui", "waybill_no": "R900000002", "status": "in_transit"},
@@ -206,6 +206,8 @@ class WaybillPhotoTemplateTest(unittest.TestCase):
         self.assertNotIn("R900000002", html)
         self.assertIn('data-platform="ronghui" data-waybill-no="R900000003"', html)
         self.assertEqual(2, html.count("data-waybill-photos"))
+        self.assertEqual(4, html.count("<i>"))
+        self.assertEqual(8, html.count('class="waybill-photo-slot"'))  # every row keeps two slots
 
 
 if __name__ == "__main__":
