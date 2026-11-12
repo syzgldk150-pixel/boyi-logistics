@@ -232,6 +232,27 @@
     .waybill-detail-message, .waybill-print-status { margin: 12px 16px; }
   }
   @media (prefers-reduced-motion: reduce) { .waybill-page * { scroll-behavior: auto; transition: none; } }
+  /* Sign-for and receipt thumbnails of signed platform waybills. */
+  /* An empty strip stays rendered (zero height) so the visibility observer can see it. */
+  .waybill-photo-strip { display: flex; flex-wrap: wrap; gap: 4px; min-height: 0; }
+  .waybill-photo-strip:not(:empty) { margin-top: 4px; }
+  .waybill-photo-thumb { position: relative; width: 36px; height: 36px; padding: 0; border: 1px solid var(--line-default); border-radius: var(--r-small-button); background: var(--bg-subtle); overflow: hidden; cursor: zoom-in; }
+  .waybill-photo-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .waybill-photo-thumb span { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .55); color: #fff; font-size: 10px; line-height: 13px; text-align: center; }
+  .waybill-photo-note { color: var(--text-muted); font-size: var(--fs-caption); }
+  .waybill-photo-dialog { width: min(920px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); }
+  .waybill-photo-dialog:not([open]) { display: none; }
+  .waybill-photo-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line-subtle); }
+  .waybill-photo-dialog-body { max-height: calc(100dvh - 120px); overflow: auto; padding: 12px 16px 16px; }
+  .waybill-photo-dialog-body h3 { margin: 4px 0 8px; font-size: var(--fs-section); }
+  .waybill-photo-dialog-body h3:not(:first-child) { margin-top: 16px; }
+  .waybill-photo-dialog-body a { display: block; margin-bottom: 12px; }
+  .waybill-photo-dialog-body img { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: var(--r-small-button); }
+  @media (max-width: 760px) {
+    .waybill-photo-strip { justify-content: flex-end; }
+    .waybill-photo-thumb { width: 44px; height: 44px; }
+    .waybill-photo-dialog { width: 100%; max-height: calc(100dvh - 16px); margin: auto 0 0; }
+  }
 </style>
 
 {% macro status_pill(row) -%}
@@ -244,6 +265,14 @@
   {%- else %}
   <span class="waybill-status-pill" data-tone="{{ 'info' if row.status == 'in_transit' else row.status_tone | default('info') }}"{% if scan_status %} title="{{ scan_status }}"{% endif %}>{{ display_text }}</span>
   {%- endif %}
+{%- endmacro %}
+
+{% macro photo_strip(row) -%}
+  {% set platforms = ['ronghui', 'yunda'] %}
+  {% if row.source in platforms %}{% set photo_platform, photo_no = row.source, row.waybill_no %}
+  {% elif row.linked_platform in platforms and row.linked_waybill_no %}{% set photo_platform, photo_no = row.linked_platform, row.linked_waybill_no %}
+  {% else %}{% set photo_platform, photo_no = '', '' %}{% endif %}
+  {% if row.status == 'signed' and photo_platform and photo_no %}<div class="waybill-photo-strip" data-waybill-photos data-platform="{{ photo_platform }}" data-waybill-no="{{ photo_no }}"></div>{% endif %}
 {%- endmacro %}
 
 {% macro empty_dash(value) -%}
@@ -510,7 +539,7 @@
               <td class="waybill-col-fee" data-col="fee" data-label="费用">
                 <div class="waybill-fee">{% if row.opening_cost and ((row.source in ['ronghui', 'yunda']) or row.freight_fee) %}¥{{ row.opening_cost }}{% else %}无数据{% endif %}</div>
               </td>
-              <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}{% if row.scan_status and not row.linked_status_note %}<div class="waybill-cell-sub" title="{{ row.scan_status }}">{{ row.scan_status }}</div>{% endif %}</td>
+              <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}{% if row.scan_status and not row.linked_status_note %}<div class="waybill-cell-sub" title="{{ row.scan_status }}">{{ row.scan_status }}</div>{% endif %}{{ photo_strip(row) }}</td>
               <td class="waybill-col-actions"><div class="waybill-row-actions"><button type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情">详情</button><a href="{{ row.tracking_url }}" data-console-navigate aria-label="跟踪 {{ row.waybill_no }} 轨迹">轨迹</a></div></td>
             </tr>
             {% endfor %}
@@ -566,6 +595,13 @@
       <div class="waybill-detail-slot" data-waybill-detail-slot>
         <div class="waybill-detail-empty">选择一条运单查看详情</div>
       </div>
+    </dialog>
+    <dialog class="extension-install-dialog waybill-photo-dialog" data-waybill-photo-dialog aria-label="签收与回单图片">
+      <div class="waybill-photo-dialog-head">
+        <strong data-waybill-photo-title>签收与回单图片</strong>
+        <button class="extension-dialog-close" type="button" data-waybill-photo-close aria-label="关闭图片"><i data-feather="x"></i></button>
+      </div>
+      <div class="waybill-photo-dialog-body" data-waybill-photo-body></div>
     </dialog>
   </div>
 </section>
@@ -1398,6 +1434,141 @@
     }
   }
 
+  // Signed 融辉/韵达 rows: sign-for and receipt thumbnails, read when the row is on screen.
+  const photoLists = new Map();
+  const photoQueue = [];
+  let photoActive = 0;
+
+  function fetchPhotoList(platform, waybillNo) {
+    const key = `${platform}:${waybillNo}`;
+    if (!photoLists.has(key)) {
+      const url = `/waybills/photos?${new URLSearchParams({ platform, waybill_no: waybillNo })}`;
+      const request = requestJSON(url, {}, 70000).then((result) => {
+        if (result.ok !== true || !result.data) throw new Error(result.message || "签收图片读取失败");
+        return result.data;
+      });
+      request.catch(() => photoLists.delete(key));  // a failure is retried on the next render
+      photoLists.set(key, request);
+    }
+    return photoLists.get(key);
+  }
+
+  function renderPhotoStrip(strip, data) {
+    const items = [];
+    const add = (kind, label, urls) => urls.forEach((src, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "waybill-photo-thumb";
+      button.dataset.waybillPhotoOpen = `${kind}:${index}`;
+      button.setAttribute("aria-label", `查看${label}图片 ${index + 1}`);
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "";
+      img.loading = "lazy";
+      img.decoding = "async";
+      const tag = document.createElement("span");
+      tag.textContent = label;
+      button.append(img, tag);
+      items.push(button);
+    });
+    add("sign", "签收", data.sign || []);
+    add("receipt", "回单", data.receipt || []);
+    if (!items.length) {
+      const note = document.createElement("span");
+      note.className = "waybill-photo-note";
+      note.textContent = "无签收图片";
+      items.push(note);
+    }
+    if (data.receipt_error) {
+      const note = document.createElement("span");
+      note.className = "waybill-photo-note";
+      note.textContent = "回单读取失败";
+      note.title = data.receipt_error;
+      items.push(note);
+    }
+    strip.photoData = data;
+    strip.replaceChildren(...items);
+  }
+
+  function pumpPhotoQueue() {
+    while (photoActive < 3 && photoQueue.length) {
+      const strip = photoQueue.shift();
+      if (!strip.isConnected) continue;
+      photoActive += 1;
+      fetchPhotoList(strip.dataset.platform, strip.dataset.waybillNo)
+        .then((data) => { if (strip.isConnected) renderPhotoStrip(strip, data); })
+        .catch((error) => {
+          if (!strip.isConnected) return;
+          const note = document.createElement("span");
+          note.className = "waybill-photo-note";
+          note.textContent = "图片读取失败";
+          note.title = error.message || "";
+          strip.replaceChildren(note);
+        })
+        .finally(() => { photoActive -= 1; pumpPhotoQueue(); });
+    }
+  }
+
+  function openPhotoViewer(scope, strip, focus) {
+    const dialog = scope.querySelector("[data-waybill-photo-dialog]");
+    const body = dialog?.querySelector("[data-waybill-photo-body]");
+    const data = strip.photoData;
+    if (!(dialog instanceof HTMLDialogElement) || !body || !data) return;
+    dialog.querySelector("[data-waybill-photo-title]").textContent = `${strip.dataset.waybillNo} 签收与回单图片`;
+    const nodes = [];
+    let target = null;
+    for (const [kind, label, urls] of [["sign", "签收图片", data.sign || []], ["receipt", "回单图片", data.receipt || []]]) {
+      if (!urls.length) continue;
+      const title = document.createElement("h3");
+      title.textContent = label;
+      nodes.push(title);
+      urls.forEach((src, index) => {
+        const link = document.createElement("a");
+        link.href = src;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.title = "在新窗口打开原图";
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = `${label} ${index + 1}`;
+        link.append(img);
+        nodes.push(link);
+        if (focus === `${kind}:${index}`) target = link;
+      });
+    }
+    body.replaceChildren(...nodes);
+    if (!dialog.open) dialog.showModal();
+    target?.scrollIntoView({ block: "start" });
+    target?.focus({ preventScroll: true });
+  }
+
+  function bindPhotoStrips(scope) {
+    const strips = scope.querySelectorAll("[data-waybill-photos]");
+    if (strips.length) {
+      const queue = (strip) => { photoQueue.push(strip); pumpPhotoQueue(); };
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            observer.unobserve(entry.target);
+            queue(entry.target);
+          });
+        }, { rootMargin: "200px 0px" });
+        strips.forEach((strip) => observer.observe(strip));
+      } else {
+        strips.forEach(queue);
+      }
+    }
+    const dialog = scope.querySelector("[data-waybill-photo-dialog]");
+    scope.addEventListener("click", (event) => {
+      const thumb = event.target instanceof Element ? event.target.closest("[data-waybill-photo-open]") : null;
+      if (thumb) openPhotoViewer(scope, thumb.closest("[data-waybill-photos]"), thumb.dataset.waybillPhotoOpen);
+    });
+    dialog?.addEventListener("click", (event) => {
+      if (event.target === dialog || (event.target instanceof Element && event.target.closest("[data-waybill-photo-close]"))) dialog.close();
+    });
+  }
+
   function bindWaybillSearch() {
     const current = panel();
     if (!current || current.dataset.ajaxBound === "true") return;
@@ -1408,6 +1579,7 @@
     bindPopovers(current);
     bindColumnSettings(current);
     bindDetail(current);
+    bindPhotoStrips(current);
     const moreFilters = current.querySelector('[data-popover-panel="filters"]');
     moreFilters?.addEventListener("change", () => {
       current.querySelector("[data-waybill-filter-count]").textContent = String(Array.from(moreFilters.querySelectorAll("select")).filter((item) => item.value).length);

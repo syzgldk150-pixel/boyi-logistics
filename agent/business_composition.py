@@ -5,6 +5,7 @@ from __future__ import annotations
 from agent.tms_runtime.direct_business import DirectBusinessService
 from agent.tms_runtime.direct_execution import call_blocking
 from agent.tms_runtime.receipts_query import fetch_receipt_image_async, query_receipts_async
+from agent.tms_runtime.waybill_photos import query_waybill_photos_async
 from agent.send_waybills_business import build_direct_waybill_query_service
 from tools.phase7_mysql_store import list_scan_times_for_tracking
 from plugin_core_adapters.waybill_query import prepare_waybill_sources, waybill_connection
@@ -14,6 +15,8 @@ def build_business_service(*, catalog, plugin_catalog, invocations):
     service = DirectBusinessService(registry=catalog, invocation_service=invocations)
     service.register_read("receipts-query", lambda params, timeout_sec: query_receipts_async(params, timeout_sec, read_lifecycle=invocations))
     service.register_read("receipt-attachment-image", lambda params, timeout_sec: fetch_receipt_image_async(
+        params, timeout_sec, read_lifecycle=invocations))
+    service.register_read("waybill-photos", lambda params, timeout_sec: query_waybill_photos_async(
         params, timeout_sec, read_lifecycle=invocations))
     service.register_read("send-waybills-query", build_direct_waybill_query_service(
         connection_factory=waybill_connection,

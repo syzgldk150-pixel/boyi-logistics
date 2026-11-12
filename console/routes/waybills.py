@@ -19,6 +19,12 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/line-haul-contacts":
         app._render_line_haul_contacts(handler, query)
         return True
+    if path == "/waybills/photos":
+        app._handle_waybill_photos(handler, query)
+        return True
+    if path == "/waybills/photo-image":
+        app._handle_waybill_photo_image(handler, query)
+        return True
     if path.startswith("/waybills/") and path.endswith(("/edit-data", "/edit-history")):
         waybill_id = app._parse_document_id(path)
         if waybill_id is None:

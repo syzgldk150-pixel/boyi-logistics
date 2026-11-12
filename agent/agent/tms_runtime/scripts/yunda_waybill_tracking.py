@@ -644,7 +644,9 @@ def _build_waybill_stub(detail: dict[str, Any], bill_code: str) -> dict[str, str
         "delivery_method": shipping_method,
         "payment_type": _detail_value(detail, "Payment_Type", "PaymentType"),
         "insurance_amount": _detail_value(detail, "Insured_Amount", "InsuredAmount", "Insurance_Amount", "InsuranceAmount"),
-        "cod_amount": _detail_value(detail, "COD", "CollectionMoney"),
+        # Yunda COD is the to-pay amount (到付款); Collection_Money is the goods payment (verified 2026-11-12).
+        "cod_amount": _detail_value(detail, "Collection_Money", "CollectionMoney"),
+        "to_pay_amount": _detail_value(detail, "COD"),
         "remark": _detail_value(detail, "Remarks", "Remark"),
         "sender_name": _detail_value(detail, "Sender_Name", "SenderName"),
         "sender_phone": _detail_value(detail, "Sender_Mobile", "SenderMobile", "Sender_Phone", "SenderPhone"),
@@ -762,7 +764,8 @@ def _build_waybill_info(detail: dict[str, Any], bill_code: str) -> list[dict[str
                     _kv("\u4ed8\u6b3e\u65b9\u5f0f", _detail_value(detail, "Payment_Type", "PaymentType")),
                     _kv("\u8fd0\u8d39", _detail_value(detail, "Freight", "Special_Freight", "SpecialFreight")),
                     _kv("\u4fdd\u4ef7\u91d1\u989d", _detail_value(detail, "Insured_Amount", "InsuredAmount", "Insurance_Amount", "InsuranceAmount")),
-                    _kv("\u4ee3\u6536\u8d27\u6b3e", _detail_value(detail, "COD", "CollectionMoney")),
+                    _kv("\u5230\u4ed8\u6b3e", _detail_value(detail, "COD")),
+                    _kv("\u4ee3\u6536\u8d27\u6b3e", _detail_value(detail, "Collection_Money", "CollectionMoney")),
                     _kv("\u4e2d\u8f6c\u8fd0\u8d39", _detail_value(detail, "Transfer_Cost", "TransferCost", "Total_Cost_Money", "TotalCostMoney")),
                 ]
             ),

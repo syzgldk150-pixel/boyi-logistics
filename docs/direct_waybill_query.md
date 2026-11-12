@@ -2,7 +2,7 @@
 module: 寄件查询
 type: 业务说明
 status: active
-updated: 2026-11-11
+updated: 2026-11-12
 ---
 
 # 寄件数据查询与覆盖范围（架构 V1 / P4）
@@ -105,3 +105,16 @@ isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests
 ## 更新与回退
 
 本次包含共享表迁移和宿主接口更新，属于核心更新。先备份、隔离迁移和验收，再按项目发布流程更新；本文件不授权 ECS 发布。迁移只新增列/表，不删除旧业务字段。回退代码不能撤销外部业务写入；保留新增列及新来源数据，回退版本不得继续旧的按平台整日删除路径。发布前必须完成生产 scope 核验及全量适用验收，未完成不得标记为可发布。
+
+## 签收与回单缩略图（2026-11-12）
+
+寄件运单查询中已签收的融辉/韵达行（含已绑定平台单的博益单）显示签收图片与回单图片缩略图，点开看大图。行进入可视区后才读取，不影响列表本身的查询速度。Agent 只读接口 `waybill-photos`（`agent/agent/tms_runtime/waybill_photos.py`）只接受平台和运单号，来源均于当日在生产账号只读核实：
+
+| 图片 | 融辉 | 韵达 |
+| --- | --- | --- |
+| 签收图片 | 快件跟踪页“查看图片”的 `FIND_PIC_SCAN_BY_BILL_CODE`（`BILL_CODE`、`PIC_TYPE=1`），`SAVE_POS` 为 TMS 主机 `/unauth/download/` 免登录地址 | 快件跟踪 `list.html` 结果的 `monitoring.signedPic`，`https://kyscan.yunda56.com/ws/` 免登录图片 |
+| 回单图片 | `receipts_sync` 按 `BILL_CODE` 读取回单处理记录附件 | `receipts_sync` 按 `LogisticsId` 读取寄件回单附件（INMS 图片需韵达登录态） |
+
+回单读取失败时签收图片照常返回，并写明回单读取失败的原因，不当作“无回单”。Console 经 `/waybills/photos` 取列表（成功结果复用 10 分钟），图片经 `/waybills/photo-image` 只从上述来源读取，其他地址既不下载也不转给 Agent，下载后按地址缓存在运行目录 `waybill_photos/`。
+
+韵达快件跟踪的 `COD` 是到付款，`Collection_Money` 才是代收货款（与上表“到付款/代收货款”一致）；轨迹结果此前把 `COD` 标成“代收货款”，已改正，并新增 `waybill_stub.to_pay_amount`。融辉轨迹详情同样新增 `TOPAYMENT` 到付款。

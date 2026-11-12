@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-11-09
+updated: 2026-11-12
 ---
 
 # 物流 Agent 项目总览
@@ -121,7 +121,7 @@ updated: 2026-11-09
 - `sync_arrival_stats_v2` 在包内通过同源 `split_rules.py` 生成未齐快照和 19 列表格行，Host 原样保存、写表并核验；现行链路不使用旧 `tools/split_pending_snapshot.py` 重算分类。合法空结果或全部到齐时清除未齐快照和目标旧行、保留表头；来源失败不得冒充空结果，自动刷新不触发融辉问题件上报。
 - `sync_arrival_stats` archive snapshots in `phase7.stats_archive_sheet` are idempotent by date tab. The tool reuses an existing `YYYY-MM-DD` sheet, clears that tab's configured `default_write_range` expanded to cover previous rows, and rewrites the latest stats instead of creating duplicate tabs or failing on `sheet already exists`.
 - `query_waybill_detail` 查询主单详情时默认带 `isView=true` 获取解密视图；若接口结果仍缺失或加密，再回退到快件跟踪页 MiniUI 解密按钮补齐。控制台 `/tracking/query` 的融辉运单详情在 `decrypt_masked=true` 且收寄件人姓名/电话缺失或带星号时，也会复用该详情补齐链路覆盖展示字段。`sync_arrival_stats` 会把历史缓存中收件人/电话仍带星号的主单重新纳入补抓。
-- 飞书单号查询（`tools/track_waybill_tool.py`）只对融辉关闭随查解密（融辉在登录网点未扫描时拒绝解密，收货人随后由缓存或 `query_waybill_detail` 补齐）；韵达在同一次查询中经 `getOriginalData` 读取完整收货电话与地址，解密失败不影响轨迹。韵达本身返回的收货人姓名可能仍带掩码（2026-11-12 实测 622720231：电话、地址为明文，姓名为“田**”）。
+- 飞书单号查询（`tools/track_waybill_tool.py`）只对融辉关闭随查解密（融辉在登录网点未扫描时拒绝解密，收货人随后由缓存或 `query_waybill_detail` 补齐）；韵达在同一次查询中经 `getOriginalData` 读取完整收货电话与地址，解密失败不影响轨迹。韵达本身返回的收货人姓名可能仍带掩码：2026-11-12 核实，本网点开单的运单解密后姓名完整，其他网点开单、派到本网点的运单（如 622720231，上海松江开单）`getOriginalData` 只给完整电话和地址，姓名仍是“田**”，系统无其他可读来源。回复的货物信息包含付款方式，有到付款（大于 0）时另起一行“到付金额”：融辉取详情 `PAYMENT_TYPE`/`TOPAYMENT`，韵达取 `Payment_Type`/`COD`（韵达 `COD` 是到付款，`Collection_Money` 才是代收货款；同日以库中到付单逐单核对一致），两平台轨迹结果的 `waybill_stub.to_pay_amount` 与“费用信息”中的“到付款”同源。
 - TMS 底层 HTTP / 浏览器脚本已并入 `agent/tms_runtime/`，不再依赖 ECS `root` 账户下的 `/root/http_service`。
 - Phase 7 运行期 MySQL 当前承载共享配置表 `workflow_resources`、`scheduled_tasks`、到货统计所需的快照表 / 视图，以及给控制台 `/waybills` 运单查询使用的 `waybills` 同步记录。
 - ECS 上的控制台已独立部署为 `console.service`，仅监听 `127.0.0.1:8765`；公网入口固定为 `https://boyi.homes`，由 Nginx 终止 TLS 并反向代理，HTTP 和 `www.boyi.homes` 统一跳转到根域名 HTTPS。

@@ -4,7 +4,7 @@ type: 索引文档
 tags: [代码定位, 修改入口, 路由, 文档索引, Agent, Console]
 related: [project_overview.md, database_migrations.md, rules_and_definitions.md]
 status: active
-updated: 2026-11-09
+updated: 2026-11-12
 ---
 
 # 物流 Agent 代码定位索引
@@ -64,6 +64,7 @@ updated: 2026-11-09
 | 博益本地录单、只读比价与本机打印 | `../console/templates/document.html` `../console/templates/waybills.html` `../console/static/js/waybill_print_preview.js` `../console/services/waybill_printing.py` `../console/routes/waybills.py` | `/ocr` 与 `/ocr/boyi/frame` 保留本地手工录单 CRUD；`/ocr?mode=ocr` 保留 OCR 队列。价格仍来自真实只读接口，韵达/融辉原页预填固定禁用；旧独立打印页已删除，保存后打印和查询补打共用原生 C-Lodop 预览；查询补打通过 `/waybills/{id}/print-data?source=...` 按来源和 ID 读取最新运单。 |
 | 博益热敏主单打印（75×100 标签、底图、字号与点阵） | `../console/static/js/waybill_label_html.js` `../console/static/js/waybill_label_lodop.js` `../console/static/js/waybill_print_preview.js` `../console/static/js/clodop_loader.js` `../console/static/assets/waybill_label_75x100.png` `../console/static/assets/waybill_label_75x100_receipt.png` | `waybill_label_html.js` 单点维护分区坐标、字号、数据归一化与排版，`waybill_label_lodop.js` 按打印精度生成纯黑白点阵 PNG 后以 `ADD_PRINT_IMAGE` 输出；“需要回单”选择回单勾选版底图。底图、字号与校准规则见 `../console/CLAUDE.md`“运单录入与打印”。 |
 | 博益开单修改、修改记录与绑定平台运单 | `../console/services/documents.py` `../console/routes/waybills.py` `../console/database.py` `../console/templates/waybills.html` `migrations/057_boyi_waybill_edit_logs.sql` `migrations/059_boyi_waybill_platform_link.sql` | `/waybills/{id}/manual-update` 与 `/waybills/{id}/platform-link` 共用同源管理员、`waybill.write`、浏览器 UUID 幂等和原值 CAS，并写同一修改记录；已绑定融辉/韵达的博益单在列表中取平台唯一未作废同号记录的状态（`database.py` 的 `_boyi_linked_route_columns`），百世轨迹未接入。 |
+| 寄件运单查询的签收与回单缩略图 | `../console/services/waybill_photos.py` `../console/templates/waybills.html` `../console/routes/waybills.py` `agent/tms_runtime/waybill_photos.py` `agent/business_composition.py` | 已签收融辉/韵达行可视时经 `/waybills/photos` 调 Agent 只读 `waybill-photos`：融辉签收图 `FIND_PIC_SCAN_BY_BILL_CODE`（`PIC_TYPE=1`），韵达签收图 `monitoring.signedPic`，回单图复用 `receipts_sync` 单票读取；图片经 `/waybills/photo-image` 只从允许来源读取并按地址缓存。 |
 | 统一回单管理、回单照片与控制平面审核 | `../console/templates/receipts.html` `../console/services/waybills_receipts.py` `../console/services/agent_api.py` `agent/tms_runtime/scripts/receipts_sync.py` `agent/tms_runtime/scripts/receipts_audit.py` `tools/receipts_sync_tool.py` `tools/receipts_audit_tool.py` `agent/tms_runtime/receipts_query.py` | 后台入口 `/receipts`；未缓存的韵达照片经 `receipt-attachment-image` 用韵达登录态只读取图后缓存；同步与审核提交持久化计划，审核要求 `super_admin`、精确 plan hash 和读后核验。详情缺失明细时先读本地运单，仍缺则按平台查原平台运单详情（融辉 `query_waybill_detail`、韵达 `yunda_waybill_tracking`，运单号须一致），不查飞书。页面不加载活动原页 iframe；两个回单活动原页前缀所有方法返回 410。 |
 | OCR 工作区、上传、识别、复核、模板配置 | `console/templates/document.html` `console/app.py` `console/ocr_providers.py` `console/task_queue.py` `console/template_store.py` | 页面在模板，OCR 能力在 `ocr_providers.py`，异步队列在 `task_queue.py` |
 | 车辆调度页面、地图、路线可视化 | `console/templates/dispatch.html` `console/app.py` `console/static/style.css` | 调度页基本都在模板与公共样式 |

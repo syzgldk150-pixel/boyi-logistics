@@ -626,6 +626,25 @@ class ToolPriceAndRoutingTests(unittest.TestCase):
         self.assertIn("收货人：张三 13800000000", reply)
         self.assertNotIn("开单件数：", reply)
 
+    def test_track_waybill_reply_shows_payment_type_and_to_pay_amount_only_when_due(self):
+        def reply_for(stub):
+            return direct_tool_router.format_tool_reply(
+                "track_waybill",
+                {"success": True, "data": {
+                    "type": "yunda", "tracking_number": "900000001",
+                    "route_rows": [{"scan_time": "2026-05-10 17:28:54", "status": "揽收",
+                                    "description": "已揽件开单", "scan_station": "示例网点"}],
+                    "waybill_stub": stub,
+                }},
+            )
+
+        due = reply_for({"payment_type": "到付", "to_pay_amount": "90.00", "cod_amount": "0.00"})
+        self.assertIn("付款方式：到付\n到付金额：90.00 元", due)
+        cash = reply_for({"payment_type": "现金", "to_pay_amount": "0.00"})
+        self.assertIn("付款方式：现金", cash)
+        self.assertNotIn("到付金额", cash)
+        self.assertIn("付款方式：无数据", reply_for({}))
+
     def test_track_waybill_reply_replaces_yunda_voucher_segment_with_contact(self):
         reply = direct_tool_router.format_tool_reply(
             "track_waybill",

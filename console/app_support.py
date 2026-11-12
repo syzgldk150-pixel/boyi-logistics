@@ -229,6 +229,9 @@ RONGHUI_DIRECT_ATTACHMENT_HOSTS = {"rhk13.obs.cn-east-3.myhuaweicloud.com"}
 # its TMS host; only this path prefix is public, so only it is fetched.
 RONGHUI_PUBLIC_DOWNLOAD_HOST = "tms.ronghuiwl.com"
 RONGHUI_PUBLIC_DOWNLOAD_PREFIX = "/unauth/download/"
+# Yunda sign-for photos (tracking `monitoring.signedPic`) are login-free under this path.
+YUNDA_SIGN_PHOTO_HOST = "kyscan.yunda56.com"
+YUNDA_SIGN_PHOTO_PREFIX = "/ws/"
 RECEIPT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 RECEIPT_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 RECEIPT_REMARK_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})-(\d{10})(?!\d)")

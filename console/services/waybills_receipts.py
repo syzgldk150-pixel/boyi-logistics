@@ -1277,7 +1277,9 @@ class WaybillsReceiptsServiceMixin:
         host = str(parsed.hostname or "").strip().lower()
         public_download = host == RONGHUI_PUBLIC_DOWNLOAD_HOST and (parsed.path or "").startswith(
             RONGHUI_PUBLIC_DOWNLOAD_PREFIX)
-        if parsed.scheme.lower() != "https" or not (host in RONGHUI_DIRECT_ATTACHMENT_HOSTS or public_download):
+        yunda_sign_photo = host == YUNDA_SIGN_PHOTO_HOST and (parsed.path or "").startswith(YUNDA_SIGN_PHOTO_PREFIX)
+        if parsed.scheme.lower() != "https" or not (
+                host in RONGHUI_DIRECT_ATTACHMENT_HOSTS or public_download or yunda_sign_photo):
             return None
         suffix = Path(parsed.path or "").suffix.lower()
         if suffix not in RECEIPT_IMAGE_SUFFIXES:

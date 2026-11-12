@@ -1006,6 +1006,23 @@ def _ronghui_arrived_pieces(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _payment_type_text(payload: dict[str, Any]) -> str:
+    stub = _waybill_stub(payload)
+    return _clean_reply_text(stub.get("payment_type")) or _waybill_info_value(payload, "付款方式", "支付类型")
+
+
+def _to_pay_amount_text(payload: dict[str, Any]) -> str:
+    """The to-pay amount, or empty when the waybill has none (blank or zero)."""
+    stub = _waybill_stub(payload)
+    text = _clean_reply_text(stub.get("to_pay_amount")) or _waybill_info_value(payload, "到付款", "到付金额")
+    try:
+        if Decimal(text.removesuffix("元").strip()) <= 0:
+            return ""
+    except (InvalidOperation, ValueError):
+        return text
+    return text if text.endswith("元") else f"{text} 元"
+
+
 def _is_daxiang_opening_route(opening_route: dict[str, Any]) -> bool:
     station = _route_station(opening_route)
     return station in DAXIANG_OPENING_STATIONS
@@ -1016,12 +1033,15 @@ def _format_waybill_summary(payload: dict[str, Any], opening_route: dict[str, An
     pieces = _pieces_text(payload)
     recipient = _recipient_text(payload)
 
+    to_pay_amount = _to_pay_amount_text(payload)
     lines = [
         "货物信息：",
         f"货物名称：{_goods_name_text(payload) or '无数据'}",
         f"货物件数：{pieces or '无数据'}",
         f"目的站点：{_destination_site_text(payload) or '无数据'}",
         f"派送方式：{_delivery_method_text(payload) or '无数据'}",
+        f"付款方式：{_payment_type_text(payload) or '无数据'}",
+        *([f"到付金额：{to_pay_amount}"] if to_pay_amount else []),
         f"收货人：{recipient or '无数据'}",
         f"收货地址：{_recipient_address_text(payload) or '无数据'}",
     ]

@@ -714,6 +714,8 @@ def _normalize_api_detail_row(row: dict[str, Any], tracking_number: str) -> dict
         "payment_type": _first_value(row, ("PAYMENT_TYPE", "PAYMENT_SIDE", "payment_type")),
         "insurance_amount": _first_value(row, ("INSURANCE", "INSURE_MONEY", "REAL_VALUE", "insurance_amount")),
         "pay_on_arrival": _first_value(row, ("GOODS_PAYMENT", "AGENCY_FUND", "cod_amount", "pay_on_arrival")),
+        # TOPAYMENT is the amount collected on delivery for a "到付" waybill (verified 2026-11-12).
+        "to_pay_amount": _first_value(row, ("TOPAYMENT", "to_pay_amount")),
         "remark": _first_value(row, ("REMARK", "INSURE_REMARK", "remark")),
         "sender_name": _first_value(row, ("SEND_MAN", "sender_name")),
         "sender_phone": _first_value(row, ("SEND_MAN_PHONE", "SEND_MAN_TEL", "sender_phone")),
@@ -907,6 +909,7 @@ def _build_waybill_stub(detail: dict[str, Any], tracking_number: str) -> dict[st
         "payment_type": _clean_str(detail.get("payment_type")),
         "insurance_amount": _clean_str(detail.get("insurance_amount")),
         "cod_amount": _clean_str(detail.get("pay_on_arrival") or detail.get("cod_amount")),
+        "to_pay_amount": _clean_str(detail.get("to_pay_amount")),
         "remark": _clean_str(detail.get("remarks") or detail.get("remark")),
         "sender_name": _clean_str(detail.get("sender_name")),
         "sender_phone": _clean_str(detail.get("sender_phone")),
@@ -983,6 +986,7 @@ def _build_waybill_info(detail: dict[str, Any], tracking_number: str) -> list[di
                     _kv("付款方式", stub.get("payment_type")),
                     _kv("运费", stub.get("shipping_fee")),
                     _kv("保价金额", stub.get("insurance_amount")),
+                    _kv("到付款", stub.get("to_pay_amount")),
                     _kv("代收货款", stub.get("cod_amount")),
                 ]
             ),

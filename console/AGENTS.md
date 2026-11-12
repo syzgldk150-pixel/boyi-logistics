@@ -280,6 +280,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 移动端导航与视觉壳层
 
+- 寄件运单查询中已签收的融辉/韵达行（含已绑定融辉/韵达平台单的博益单）在状态列显示签收图片与回单图片缩略图，行进入可视区后才读取（同时最多 3 个）；点缩略图打开大图弹窗。列表经 `GET /waybills/photos` 以真实管理员签名调 Agent 只读 `waybill-photos`（`agent/agent/tms_runtime/waybill_photos.py`），成功结果进程内复用 10 分钟、回单读取失败不缓存且显示“回单读取失败”；图片经 `GET /waybills/photo-image` 只从回单模块允许的来源读取（融辉 `/unauth/download/` 与 OBS、韵达签收图 `https://kyscan.yunda56.com/ws/`、韵达回单图 `https://kyinms.yunda56.com` 经 Agent `receipt-attachment-image`），其他地址不读取、不转发，按地址缓存到运行目录 `waybill_photos/`。实现见 `services/waybill_photos.py`，回归见 `tests/test_waybill_photos.py` 与 `tests/test_waybill_photos_browser.py`。
 - 切换页签时 `console_ui.js` 的 `activateTab` 关闭被隐藏页签中仍打开的模态 `dialog`，否则整页保持 inert、无法点击（2026-11-12：寄件查询详情里点“轨迹跟踪”后物流跟踪页点不动）。
 - 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
 - 桌面侧栏分组只由 `navigation.py` 的 `NAVIGATION_GROUPS` 与注册项 `group` 字段决定（当前“运单业务”收纳运单录入、寄件运单查询、物流跟踪、回单管理）；模板按连续同组项渲染可折叠分组，移动底栏和更多面板仍为平铺。侧栏“搜索页面（⌘K）”只在浏览器内过滤已有导航项；收起侧栏与分组展开状态是浏览器本地便利偏好，不进入 `ui_preferences_json`。视觉令牌与组件尺寸以根目录 `DESIGN.md` 为准。
