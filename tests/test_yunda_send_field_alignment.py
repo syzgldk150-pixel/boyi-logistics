@@ -432,13 +432,23 @@ def test_changed_or_incomplete_waybill_is_decrypted_again(listed, stored):
 
 def test_enrich_skips_decryption_only_for_reusable_waybills(monkeypatch):
     calls = []
-    monkeypatch.setattr(runtime, "fetch_waybill_details", lambda _s, codes, _p: {code: {} for code in codes})
+    monkeypatch.setattr(runtime, "fetch_waybill_details", lambda _s, codes, _p: calls.append(("details", tuple(codes))) or {code: {} for code in codes})
     monkeypatch.setattr(runtime, "fetch_original_data", lambda _s, code, _p: calls.append(("original", code)) or {})
     monkeypatch.setattr(runtime, "fetch_send_waybill_renderer", lambda _s, code, _r, _p: calls.append(("renderer", code)) or {})
     monkeypatch.setattr(runtime, "normalize_record", lambda row, _d, original, renderer, **_k: {"no": row["Logistics_Id"], "phone": original.get("Buyer_Mobile")})
     rows = [_listed(Logistics_Id="W01"), _listed(Logistics_Id="W02"), _listed(Logistics_Id="W03", Modify_Date="2026-11-11 10:00:00")]
     records = runtime.enrich_records(None, rows, {}, target_date=date(2026, 8, 15),
-                                     known={"W01": _stored(), "W03": _stored()})
+                                     known={"W01": _stored(to_pay_amount="", weight_volume=""), "W03": _stored()})
     assert [item["no"] for item in records] == ["W01", "W02", "W03"]
     assert records[0]["phone"] == "18874714321"
-    assert calls == [("original", "W02"), ("renderer", "W02"), ("original", "W03"), ("renderer", "W03")]
+    assert calls == [("details", ("W02", "W03")), ("original", "W02"), ("renderer", "W02"),
+                     ("original", "W03"), ("renderer", "W03")]
+
+
+def test_reused_send_waybill_takes_to_pay_and_volumetric_weight_from_stored_row():
+    stored = _stored(to_pay_amount="35.00", weight_volume="实际重量 12 / 体积 0.1 / 结算重量 30 / 体积重 30")
+    assert runtime.stored_detail(_listed(), stored) == {"Logistics_Id": "W01", "COD": "35.00", "Extend_Field1": "30"}
+    assert runtime.stored_detail(_listed(), _stored(to_pay_amount="", weight_volume="实际重量 12 / 体积 0.1"))["Extend_Field1"] == ""
+    assert runtime.stored_detail(_listed(), _stored()) is None  # columns missing: read the detail
+    special = _listed(**{runtime.INTERNAL_SOURCE_FIELD: runtime.SOURCE_SPECIAL_LINE})
+    assert runtime.stored_detail(special, stored) is None  # signing state comes from detail scan flags

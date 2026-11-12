@@ -527,8 +527,8 @@ def reuse_decrypted(row: dict[str, Any], stored: Mapping[str, Any] | None) -> tu
 
     Only when Yunda shows no modification (empty ``Modify_Date``), the stored
     values are complete and unmasked, the masked list phones agree with them
-    and the freight is unchanged. Otherwise the caller decrypts again. Scan,
-    signing and to-pay values always come from the current read.
+    and the freight is unchanged. Otherwise the caller decrypts again.
+    Scan and signing values always come from the current list read.
     """
     if not stored or _clean_str(row.get("Modify_Date")):
         return None
@@ -559,6 +559,26 @@ def reuse_decrypted(row: dict[str, Any], stored: Mapping[str, Any] | None) -> tu
     return original, renderer
 
 
+_STORED_VOLUMETRIC_WEIGHT = re.compile(r"(?:^| / )体积重 ([^ /]+)")
+
+
+def stored_detail(row: dict[str, Any], stored: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Mail-detail values of an unchanged send waybill, taken from the stored row.
+
+    For send waybills the list already carries the live scan and signing
+    state; the detail call only adds to-pay (COD) and volumetric weight, which
+    change only when the waybill is modified. Special-line waybills still read
+    the detail because their signing state comes from its scan flags.
+    """
+    if not stored or row.get(INTERNAL_SOURCE_FIELD) != SOURCE_SEND_WAYBILL:
+        return None
+    if "to_pay_amount" not in stored or "weight_volume" not in stored:
+        return None
+    match = _STORED_VOLUMETRIC_WEIGHT.search(_clean_str(stored.get("weight_volume")))
+    return {"Logistics_Id": _clean_str(row.get("Logistics_Id")), "COD": _clean_str(stored.get("to_pay_amount")),
+            "Extend_Field1": match.group(1) if match else ""}
+
+
 def enrich_records(
     session: Any,
     rows: list[dict[str, Any]],
@@ -568,14 +588,27 @@ def enrich_records(
     known: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     wanted = [row for row in rows if _clean_str(row.get("Logistics_Id"))]
-    details = fetch_waybill_details(session, [_clean_str(row.get("Logistics_Id")) for row in wanted], params)
+    reused: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    details: dict[str, dict[str, Any]] = {}
+    for row in wanted:
+        bill_code = _clean_str(row.get("Logistics_Id"))
+        stored = (known or {}).get(bill_code)
+        values = reuse_decrypted(row, stored)
+        if values is not None:
+            reused[bill_code] = values
+            detail = stored_detail(row, stored)
+            if detail is not None:
+                details[bill_code] = detail
+    missing = [_clean_str(row.get("Logistics_Id")) for row in wanted
+               if _clean_str(row.get("Logistics_Id")) not in details]
+    if missing:
+        details.update(fetch_waybill_details(session, missing, params))
 
     def enrich(row: dict[str, Any]) -> dict[str, Any]:
         bill_code = _clean_str(row.get("Logistics_Id"))
         detail = details[bill_code]
-        reused = reuse_decrypted(row, (known or {}).get(bill_code))
-        if reused is not None:
-            original, renderer = reused
+        if bill_code in reused:
+            original, renderer = reused[bill_code]
         else:
             original = fetch_original_data(session, bill_code, params)
             renderer = (
