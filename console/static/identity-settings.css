@@ -37,7 +37,7 @@
 .identity-role-row strong { color: var(--text-primary); font-size: var(--fs-body); font-weight: 500; }
 .identity-role-meta { color: var(--text-muted); font-size: var(--fs-caption); }
 .identity-role-edit-btn { margin-left: auto; }
-.identity-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-caption); }
+.identity-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-tiny); }
 .identity-chip--green { background: var(--status-success-soft); color: var(--status-success); }
 .identity-chip--dark { background: var(--text-primary); color: var(--text-on-dark); }
 .identity-role-item.is-editing > .identity-role-row { background: var(--fill-nodata); }
@@ -58,13 +58,13 @@
 .identity-active-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: var(--fs-label); font-weight: 400 !important; }
 .account-admin-panel .account-table-wrap { border: 0; border-top: 1px solid var(--line-subtle); border-radius: 0; }
 .account-admin-panel .account-table { min-width: 860px; table-layout: fixed; }
-.account-admin-panel .account-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); }
+.account-admin-panel .account-table th { height: 38px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); }
 .account-admin-panel .account-table th:nth-child(1) { width: 24.5%; }
 .account-admin-panel .account-table th:nth-child(2) { width: 28.2%; }
 .account-admin-panel .account-table th:nth-child(3) { width: 11.3%; }
 .account-admin-panel .account-table th:nth-child(4) { width: 22.5%; }
 .account-admin-panel .account-table th:nth-child(5) { width: 13.5%; }
-.account-admin-panel .account-table td { height: 56px; padding: 8px 16px; border-bottom-color: var(--line-row); font-size: var(--fs-body); color: var(--text-primary); }
+.account-admin-panel .account-table td { height: 58px; padding: 8px 16px; border-bottom-color: var(--line-row); font-size: var(--fs-body); color: var(--text-primary); }
 .account-admin-panel .account-table tr:last-child td { border-bottom: 0; }
 .account-admin-panel .account-identity strong { font-weight: 500; }
 .account-admin-panel .account-identity span, .account-admin-panel .muted-copy { margin-top: 2px; color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400; }
@@ -75,7 +75,7 @@
 .identity-status--ok { color: var(--status-success); }
 .identity-status--warn { color: var(--status-warn); }
 .identity-time { color: var(--text-primary); font-family: var(--font-num); }
-td > .identity-time { margin-top: 2px; color: var(--text-muted); font-size: var(--fs-caption); }
+td > .identity-time { margin-top: 2px; color: var(--text-muted); font-size: var(--fs-tiny); }
 .account-row-actions { display: flex; align-items: center; gap: 12px; }
 .account-row-actions form { margin: 0; }
 .account-row-actions button:not(.ghost-btn) { padding: 0; border: 0; background: none; color: var(--text-secondary); font-size: var(--fs-body); cursor: pointer; }

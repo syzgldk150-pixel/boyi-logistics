@@ -151,7 +151,7 @@
     color: var(--muted); font-size: var(--fs-body); font-weight: 500;
   }
   .manual-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; }
-  .manual-grid--goods { grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 1fr)); }
+  .manual-grid--goods { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .manual-party-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 16px; }
   .manual-party-block { display: grid; align-content: start; min-width: 0; }
   .manual-grid--party { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
@@ -504,7 +504,7 @@
   .manual-card, .manual-side-card { border-color: var(--line-default); border-radius: var(--r-card); box-shadow: none; }
   .manual-head { min-height: 48px; padding: 8px 16px; border-bottom-color: var(--line-subtle); background: var(--bg-surface); }
   .manual-title h3 { font-size: var(--fs-section); }
-  .manual-chip { height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-caption); font-weight: 400; }
+  .manual-chip { height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-tiny); font-weight: 400; }
   .manual-head-tools :is(.ghost-btn, .primary-btn, button) { height: 30px; min-height: 30px; }
   .manual-scroll { padding: 14px 16px; }
   .manual-section { margin-bottom: 14px; }
@@ -541,15 +541,7 @@
   @media (min-width: 1200px) {
     body.boyi-frame-page .manual-workbench { grid-template-columns: minmax(0, 1fr) clamp(420px, 32vw, 560px); }
   }
-  /* 运单录入页单独放大一档字号（其它页面仍用全局令牌）。 */
-  body.entry-tabs-page .entry-tabs-shell,
-  body.boyi-frame-page {
-    --fs-section: 15px;
-    --fs-card-title: 14.5px;
-    --fs-body: 14px;
-    --fs-label: 13.5px;
-    --fs-caption: 12.5px;
-  }
+  /* 字号统一走全局令牌（frontend-spec 2026-11：正文/标签 13）；本页只放宽控件。 */
   body.entry-tabs-page .entry-tab { font-size: var(--fs-body); }
   body.boyi-frame-page .manual-row { grid-template-columns: 80px minmax(0, 1fr); }
   body.boyi-frame-page .manual-label { line-height: 34px; }
@@ -557,7 +549,9 @@
   body.boyi-frame-page .manual-textarea { height: auto; }
   body.boyi-frame-page .action-btn { height: 36px; min-height: 36px; font-size: var(--fs-body); }
   body.boyi-frame-page .manual-toggle { font-size: var(--fs-body); }
-  body.boyi-frame-page .manual-input[type="date"] { padding: 0 6px 0 10px; }
+  body.boyi-frame-page .manual-input[type="date"] { padding: 0 4px 0 8px; font-family: var(--font-num); }
+  body.boyi-frame-page .manual-row { column-gap: 6px; }
+  body.boyi-frame-page .manual-grid { column-gap: 14px; }
   @media (min-width: 1200px) {
     body.boyi-frame-page .manual-workbench { grid-template-columns: minmax(0, 1fr) clamp(320px, 27vw, 480px); }
   }

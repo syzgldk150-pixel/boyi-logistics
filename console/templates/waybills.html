@@ -63,7 +63,7 @@
   .waybill-filter-actions, .waybill-toolbar-actions, .waybill-pager, .waybill-page-size-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .waybill-filter-actions { margin-left: auto; }
   .waybill-filter-actions :is(.ghost-btn, .primary-btn) { height: 30px; min-height: 30px; }
-  .waybill-filter-count { min-width: 18px; padding: 0 4px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font: 400 var(--fs-caption)/16px var(--font-num); text-align: center; }
+  .waybill-filter-count { min-width: 18px; padding: 0 4px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font: 400 var(--fs-tiny)/16px var(--font-num); text-align: center; }
   .waybill-popover { top: calc(100% + 6px); right: 0; width: 240px; max-width: calc(100vw - 32px); }
   .waybill-popover-title { margin: 0 0 10px; font-size: var(--fs-section); font-weight: 500; }
   .waybill-popover-grid { display: grid; gap: 10px; }
@@ -76,11 +76,11 @@
   .waybill-toolbar-actions .ghost-btn { height: 30px; min-height: 30px; }
   .waybill-meta-count { font-size: var(--fs-body); color: var(--text-muted); white-space: nowrap; }
   .waybill-meta-count strong, .waybill-total { color: var(--text-primary); font-weight: 500; }
-  .waybill-refresh-status { flex: 0 1 auto; margin: 0; padding: 0 8px; height: 20px; display: inline-flex; align-items: center; border: 0; border-radius: var(--r-chip); background: var(--status-warn-soft); color: var(--status-warn); font-size: var(--fs-caption); }
+  .waybill-refresh-status { flex: 0 1 auto; margin: 0; padding: 0 8px; height: 20px; display: inline-flex; align-items: center; border: 0; border-radius: var(--r-chip); background: var(--status-warn-soft); color: var(--status-warn); font-size: var(--fs-tiny); }
   .waybill-notice { margin: 0 16px 10px; }
   .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; }
   .waybill-table { width: 100%; min-width: 1062px; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-body); text-align: left; }
-  .waybill-table th { position: sticky; top: 0; z-index: 1; height: 36px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; white-space: nowrap; border-bottom: 1px solid var(--line-default); }
+  .waybill-table th { position: sticky; top: 0; z-index: 1; height: 38px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; white-space: nowrap; border-bottom: 1px solid var(--line-default); }
   .waybill-table td { padding: 0 0 0 16px; border-bottom: 1px solid var(--line-row); vertical-align: middle; overflow: hidden; }
   .waybill-table tbody tr:last-child td { border-bottom: 0; }
   .waybill-table th[data-col="no"] { width: 124px; }
@@ -94,7 +94,7 @@
   .waybill-table th[data-col="status"] { width: 234px; }
   .waybill-table th[data-w="actions"] { width: 74px; }
   .waybill-table :is(th, td).waybill-col-fee { padding: 0 16px 0 0; text-align: right; }
-  .waybill-table tbody tr { height: 56px; cursor: pointer; }
+  .waybill-table tbody tr { height: 58px; cursor: pointer; }
   .waybill-table tbody tr:hover, .waybill-table tbody tr.is-selected { background: var(--bg-subtle); }
   .waybill-no-link { padding: 0; font: 500 var(--fs-body)/16px var(--font-num); color: var(--text-primary); cursor: pointer; white-space: nowrap; }
   .waybill-no-link:hover { color: var(--brand-red); }
@@ -110,7 +110,7 @@
   .waybill-row-actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
   .waybill-row-actions :is(button, a) { display: inline-flex; align-items: center; min-height: 24px; padding: 0; line-height: 1; color: var(--text-secondary); font-size: var(--fs-body); cursor: pointer; }
   .waybill-row-actions :is(button, a):hover { color: var(--text-primary); }
-  .waybill-status-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-caption); line-height: 1; white-space: nowrap; }
+  .waybill-status-pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-tiny); line-height: 1; white-space: nowrap; }
   .waybill-status-pill::before { content: ""; width: 5px; height: 5px; border-radius: 999px; background: currentColor; }
   .waybill-status-pill[data-tone="info"] { background: var(--status-info-soft); color: var(--status-info); }
   .waybill-status-pill[data-tone="success"] { background: var(--status-success-soft); color: var(--status-success); }

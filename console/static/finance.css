@@ -74,28 +74,28 @@
 .finance-field .review-input, .finance-toolbar .review-input { height: 30px; min-height: 30px; padding: 0 10px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); font-size: var(--fs-body); font-weight: 400; }
 .finance-toolbar :is(.ghost-btn, .primary-btn) { height: 30px; min-height: 30px; }
 .finance-panel > .table-wrap, .finance-panel .table-wrap { overflow: auto; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); }
-.finance-subhead { display: flex; align-items: center; height: 48px; margin: 0; padding: 0 16px; border: 1px solid var(--line-default); border-bottom: 0; border-radius: var(--r-card) var(--r-card) 0 0; background: var(--bg-surface); font-size: var(--fs-section); font-weight: 500 !important; }
+.finance-subhead { display: flex; align-items: center; height: 50px; margin: 0; padding: 0 16px; border: 1px solid var(--line-default); border-bottom: 0; border-radius: var(--r-card) var(--r-card) 0 0; background: var(--bg-surface); font-size: var(--fs-section); font-weight: 500 !important; }
 .finance-subhead + .table-wrap, .finance-subhead + * > .table-wrap:first-child { margin-top: calc(var(--card-gap) * -1); border-top-left-radius: 0; border-top-right-radius: 0; }
 .finance-table { min-width: 1062px; font-size: var(--fs-body); }
 .finance-table th, .finance-table td { padding: 0 16px; }
-.finance-table thead th { height: 36px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; border-bottom: 1px solid var(--line-default); }
-.finance-table tbody td { height: 48px; border-bottom: 1px solid var(--line-row); color: var(--text-primary); }
+.finance-table thead th { height: 38px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; border-bottom: 1px solid var(--line-default); }
+.finance-table tbody td { height: 50px; border-bottom: 1px solid var(--line-row); color: var(--text-primary); }
 .finance-table tbody tr:last-child td { border-bottom: 0; }
 .finance-table tbody tr:hover td { background: var(--bg-subtle); }
 .finance-table .num { font-family: var(--font-num); }
-.finance-table tfoot td { height: 48px; background: var(--bg-surface); border-top: 1.5px solid var(--line-total); font-weight: 500; }
+.finance-table tfoot td { height: 50px; background: var(--bg-surface); border-top: 1.5px solid var(--line-total); font-weight: 500; }
 .finance-row--group td { font-weight: 500; }
 .finance-row--first td { border-top: 1px solid var(--line-group); }
 .finance-row--cancelled td { color: var(--text-disabled); }
 .finance-empty { height: 120px; color: var(--text-muted); font-size: var(--fs-label); }
 .finance-link { color: var(--text-primary); text-decoration: none; font-weight: 500; }
 .finance-link:hover { color: var(--brand-red); }
-.finance-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-caption); font-weight: 400; }
+.finance-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-tiny); font-weight: 400; }
 /* 账页（科目余额表 / 明细账 / 序时账）画竖线并给行留呼吸。 */
 :is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table :is(th, td) { border-right: 1px solid var(--line-row); }
 :is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table :is(th, td):last-child { border-right: 0; }
 :is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table tbody tr:hover td { background: transparent; }
-#finance-panel-trial .finance-table tbody td { height: 64px; }
+#finance-panel-trial .finance-table tbody td { height: 65px; }
 #finance-panel-trial .finance-table thead tr + tr th { border-top: 1px solid var(--line-default); }
 /* Dialogs: radius 14, head 60, body 16/20, foot 60. */
 .finance-dialog { padding: 0; border: 0; border-radius: var(--r-modal); }

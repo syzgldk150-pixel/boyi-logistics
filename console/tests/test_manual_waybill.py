@@ -469,7 +469,7 @@ class ManualWaybillTemplateTests(unittest.TestCase):
         self.assertNotIn("AMap.Driving", html)
         self.assertNotIn('name="manual-route-origin"', html)
         self.assertIn(".manual-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; }", html)
-        self.assertIn(".manual-grid--goods { grid-template-columns: minmax(0, 1.4fr) repeat(4, minmax(0, 1fr)); }", html)
+        self.assertIn(".manual-grid--goods { grid-template-columns: repeat(4, minmax(0, 1fr)); }", html)
         self.assertIn(".manual-party-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 16px; }", html)
         self.assertIn(".manual-grid--party .manual-textarea { min-height: calc(4.2em + 16px); }", html)
         self.assertIn('class="manual-grid manual-grid--goods"', html)

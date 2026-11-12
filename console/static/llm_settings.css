@@ -111,7 +111,7 @@
 .llm-section h2, .llm-readonly h2 { margin: 2px 0 0; font-size: var(--fs-section); line-height: 1.4; }
 .llm-settings .eyebrow { color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400; }
 .llm-status-hero p, .llm-section-heading p, .llm-readonly p { color: var(--text-muted); font-size: var(--fs-label); }
-.llm-health, .llm-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-caption); font-weight: 400; }
+.llm-health, .llm-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-tiny); font-weight: 400; }
 .llm-feedback { border-radius: var(--r-block); font-size: var(--fs-label); }
 .llm-section { padding: 12px 16px 16px; }
 .llm-section-heading { align-items: center; min-height: 40px; margin-bottom: 12px; }
@@ -125,8 +125,8 @@
 .llm-form label { gap: var(--field-gap); color: var(--text-secondary); font-size: var(--fs-label); }
 .llm-form input, .llm-form select { border-color: var(--line-default); border-radius: var(--r-control); font-size: var(--fs-body); }
 .llm-table-wrap { margin: 0 -16px; }
-.llm-table th { height: 36px; padding: 0 16px; background: var(--fill-nodata); border-bottom-color: var(--line-default); color: var(--text-secondary); font-size: var(--fs-label); }
-.llm-table td { height: 56px; padding: 8px 16px; border-bottom-color: var(--line-row); vertical-align: middle; }
+.llm-table th { height: 38px; padding: 0 16px; background: var(--fill-nodata); border-bottom-color: var(--line-default); color: var(--text-secondary); font-size: var(--fs-label); }
+.llm-table td { height: 58px; padding: 8px 16px; border-bottom-color: var(--line-row); vertical-align: middle; }
 .llm-action { height: 30px; min-height: 30px; border-color: var(--line-default); border-radius: var(--r-control); font-size: var(--fs-body); font-weight: 500; }
 .llm-action[data-danger="true"] { color: var(--status-danger); border-color: var(--line-default); }
 .audit-row { min-height: 34px; padding: 8px 0; border-bottom-color: var(--line-row); font: 400 var(--fs-body)/1.5 var(--font-ui); }
