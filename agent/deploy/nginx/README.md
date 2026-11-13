@@ -15,3 +15,5 @@ updated: 2026-10-29
 测试或 reload 失败时恢复备份并再次测试。
 
 其他配置文件：`reload-nginx.sh` 为证书续期后的 reload 钩子。
+
+`r.boyi.homes.conf` 是客户共享链接的独立站点：只把 `/r/` 反代到只读共享服务 `127.0.0.1:8766`，其余路径 404，不转发到 Console 或 Agent，且不记访问日志（链接码在路径中）。首次启用需先为 `r.boyi.homes` 签发证书，见 [客户共享说明](../../../docs/receipt_share.md)。

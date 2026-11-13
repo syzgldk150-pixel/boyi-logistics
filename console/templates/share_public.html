@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>回单共享 · 博益物流</title>
+<style nonce="{{ nonce }}">
+  :root { --ink: #14171c; --ink2: #2e333b; --mute: #767d88; --sub: #565c66; --line: #e7e9ed; --soft: #f2f3f5; --bg: #f7f8fa; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.5 "Inter", "Source Han Sans CN", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  .top { display: flex; align-items: center; gap: 12px; height: 64px; padding: 0 max(16px, calc((100% - 1152px) / 2)); background: #fff; border-bottom: 1px solid var(--line); }
+  .logo { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; background: #a8322a; color: #fff; font-weight: 600; font-size: 16px; }
+  .top strong { font-size: 15px; font-weight: 500; }
+  .top .sep { width: 1px; height: 16px; background: var(--line); }
+  .top .sub { color: var(--sub); }
+  .top .right { margin-left: auto; color: var(--mute); font-size: 12px; }
+  main { width: min(1152px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 24px; }
+  .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 20px; font-weight: 500; }
+  .meta { margin: 6px 0 0; color: var(--mute); }
+  .primary { display: inline-flex; align-items: center; justify-content: center; height: 36px; min-width: 116px; padding: 0 16px; border: 0; border-radius: 8px; background: var(--ink); color: #fff; text-decoration: none; cursor: pointer; }
+  .tabs { display: flex; gap: 24px; margin-top: 20px; border-bottom: 1px solid var(--line); }
+  .tabs button { height: 38px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--sub); font-size: 14px; cursor: pointer; }
+  .tabs button[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 500; }
+  .tools { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .tools input, .tools select { height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .tools .q { width: 300px; max-width: 100%; }
+  .tools .naming { margin-left: auto; display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 6px; background: var(--soft); color: var(--sub); font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; background: #fff; overflow: hidden; }
+  .holder { position: relative; }
+  .thumb { position: relative; display: flex; align-items: center; justify-content: center; aspect-ratio: 276 / 208; background: var(--soft); border: 0; width: 100%; padding: 0; cursor: zoom-in; }
+  .thumb img { max-width: 72%; max-height: 88%; object-fit: contain; box-shadow: 0 1px 4px rgb(13 17 23 / 16%); background: #fff; }
+  .thumb .fail { color: var(--mute); font-size: 12px; }
+  .dl { position: absolute; right: 8px; bottom: 8px; height: 26px; padding: 0 10px; border-radius: 6px; background: rgb(20 23 28 / 86%); color: #fff; font-size: 12px; line-height: 26px; text-decoration: none; opacity: 0; transition: opacity .12s; }
+  .card:hover .dl, .card:focus-within .dl { opacity: 1; }
+  .info { height: 56px; padding: 9px 12px 0; }
+  .name { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub2 { margin-top: 2px; font-size: 11px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty { margin-top: 12px; padding: 64px 16px; border: 1px dashed var(--line); border-radius: 10px; background: #fff; text-align: center; color: var(--sub); }
+  .pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; color: var(--mute); }
+  .pager button { height: 30px; min-width: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; }
+  .pager button:disabled { color: #b4b9c2; cursor: default; }
+  footer { margin: 28px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line); color: var(--mute); font-size: 12px; text-align: center; }
+  .notice { width: min(420px, calc(100% - 32px)); margin: 96px auto; padding: 32px 28px; border: 1px solid var(--line); border-radius: 14px; background: #fff; text-align: center; }
+  .notice h1 { font-size: 17px; }
+  .notice p { margin: 10px 0 0; color: var(--sub); }
+  .notice form { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
+  .notice input { width: 132px; height: 36px; border: 1px solid var(--line); border-radius: 8px; text-align: center; font-size: 16px; letter-spacing: 4px; }
+  .notice .err { color: #a8322a; }
+  dialog { max-width: min(96vw, 1100px); max-height: 94vh; padding: 0; border: 0; border-radius: 12px; background: #fff; }
+  dialog::backdrop { background: rgb(13 17 23 / 70%); }
+  dialog .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  dialog .bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  dialog .bar a, dialog .bar button { height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; text-decoration: none; color: var(--ink); line-height: 28px; cursor: pointer; }
+  dialog img { display: block; max-width: min(96vw, 1100px); max-height: calc(94vh - 52px); margin: 0 auto; }
+  @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tools .naming { margin-left: 0; } .dl { opacity: 1; } }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } .top .right { display: none; } .tools .q, .tools input, .tools select { flex: 1 1 100%; width: 100%; height: 44px; } .primary { height: 44px; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="logo" aria-hidden="true">B</span><strong>博益物流</strong><span class="sep"></span><span class="sub">回单共享</span>
+  <span class="right">只读访问 · 由博益物流提供</span>
+</header>
+{% if state == "gone" %}
+<section class="notice"><h1>链接已失效</h1><p>这条共享链接已过期、已停用或不存在。请联系博益物流获取新的链接。</p></section>
+{% elif state == "code" %}
+<section class="notice">
+  <h1>请输入访问码</h1>
+  <p{% if wrong %} class="err"{% endif %}>{% if wrong %}访问码不正确，请重新输入。{% else %}这条链接设置了访问码，请向博益物流索取。{% endif %}</p>
+  <form method="post" action="/r/{{ token }}/code">
+    <input name="code" maxlength="4" autocomplete="off" inputmode="latin" aria-label="访问码" required autofocus>
+    <button class="primary" type="submit">进入</button>
+  </form>
+</section>
+{% else %}
+<main data-root data-token="{{ token }}">
+  <div class="head">
+    <div><h1>{{ customer }}</h1>
+      <p class="meta"><span data-total>共 {{ listing.total }} 张图片</span>{% if updated %} · 更新至 {{ updated }}{% endif %}</p></div>
+    <a class="primary" href="#" data-zip>下载全部</a>
+  </div>
+  <div class="tabs" role="tablist">
+    {% for tab in tabs %}<button type="button" role="tab" data-tab="{{ tab.key }}" aria-selected="{{ 'true' if tab.key == listing.tab else 'false' }}">{{ tab.label }}</button>{% endfor %}
+  </div>
+  <div class="tools">
+    <input class="q" type="search" placeholder="搜索运单号" maxlength="40" aria-label="搜索运单号" data-q>
+    <input type="date" aria-label="开始日期" data-from> <span>至</span> <input type="date" aria-label="结束日期" data-to>
+    <select aria-label="图片类型" data-kind></select>
+    <span class="naming" title="文件名规则">命名：{{ naming }}</span>
+  </div>
+  <div class="grid" data-grid></div>
+  <div class="empty" data-empty hidden>当前条件下没有图片</div>
+  <div class="pager"><span data-page-text></span><button type="button" data-prev>上一页</button><button type="button" data-next>下一页</button></div>
+  <footer>仅限 {{ customer }} 查看 · {{ expires }}</footer>
+</main>
+<dialog data-viewer><div class="bar"><span data-viewer-name></span><a data-viewer-download>下载</a><button type="button" data-viewer-close>关闭</button></div><img alt="" data-viewer-image></dialog>
+<script nonce="{{ nonce }}" type="application/json" id="boot">{{ {"listing": listing, "tabs": tabs} | tojson }}</script>
+<script nonce="{{ nonce }}">
+(() => {
+  "use strict";
+  const root = document.querySelector("[data-root]");
+  const base = `/r/${root.dataset.token}`;
+  const boot = JSON.parse(document.getElementById("boot").textContent);
+  const $ = (selector) => document.querySelector(selector);
+  const state = { tab: boot.listing.tab, kind: "", q: "", from: "", to: "", page: 1 };
+  let data = boot.listing;
+  let timer = 0;
+
+  function params(withPage = true) {
+    const result = new URLSearchParams({ tab: state.tab });
+    for (const key of ["kind", "q", "from", "to"]) if (state[key]) result.set(key, state[key]);
+    if (withPage) result.set("page", String(state.page));
+    return result;
+  }
+
+  function fillKinds() {
+    const select = $("[data-kind]");
+    const tab = boot.tabs.find((item) => item.key === state.tab);
+    select.replaceChildren(new Option("全部类型", ""));
+    for (const kind of tab ? tab.kinds : []) select.append(new Option(kind.label, kind.value));
+    select.hidden = !tab || tab.kinds.length < 2;
+    select.value = "";
+  }
+
+  function render() {
+    const grid = $("[data-grid]");
+    grid.replaceChildren();
+    for (const item of data.items) {
+      const card = document.createElement("article");
+      card.className = "card";
+      const thumb = document.createElement("button");
+      thumb.type = "button";
+      thumb.className = "thumb";
+      thumb.setAttribute("aria-label", `查看 ${item.name}`);
+      const image = document.createElement("img");
+      image.loading = "lazy";
+      image.alt = item.name;
+      image.src = `${base}/img/${item.id}?thumb=1`;
+      image.addEventListener("error", () => {
+        const fail = document.createElement("span");
+        fail.className = "fail";
+        fail.textContent = "图片暂时无法显示";
+        image.replaceWith(fail);
+      });
+      thumb.append(image);
+      thumb.addEventListener("click", () => openViewer(item));
+      const download = document.createElement("a");
+      download.className = "dl";
+      download.textContent = "下载";
+      download.href = `${base}/file/${item.id}`;
+      const holder = document.createElement("div");
+      holder.className = "holder";
+      holder.append(thumb, download);
+      const info = document.createElement("div");
+      info.className = "info";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = item.name;
+      name.title = item.name;
+      const sub = document.createElement("div");
+      sub.className = "sub2";
+      sub.textContent = [item.waybill_no, item.kind, item.date].filter(Boolean).join(" · ");
+      info.append(name, sub);
+      card.append(holder, info);
+      grid.append(card);
+    }
+    $("[data-empty]").hidden = data.items.length > 0;
+    $("[data-total]").textContent = `共 ${data.total} 张图片`;
+    $("[data-page-text]").textContent = `第 ${data.page} / ${data.pages} 页`;
+    $("[data-prev]").disabled = data.page <= 1;
+    $("[data-next]").disabled = data.page >= data.pages;
+    $("[data-zip]").href = `${base}/zip?${params(false)}`;
+    document.querySelectorAll("[data-tab]").forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.tab === state.tab)));
+  }
+
+  async function load() {
+    try {
+      const response = await fetch(`${base}/data?${params()}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (response.status === 404 || response.status === 403) { window.location.reload(); return; }
+      const payload = await response.json();
+      if (payload.ok) { data = payload.data; render(); }
+    } catch (_error) { /* keep the current page */ }
+  }
+
+  function changed() { state.page = 1; window.clearTimeout(timer); timer = window.setTimeout(load, 250); }
+
+  function openViewer(item) {
+    $("[data-viewer-name]").textContent = item.name;
+    $("[data-viewer-image]").src = `${base}/img/${item.id}`;
+    $("[data-viewer-image]").alt = item.name;
+    $("[data-viewer-download]").href = `${base}/file/${item.id}`;
+    $("[data-viewer]").showModal();
+  }
+
+  document.querySelectorAll("[data-tab]").forEach((tab) => tab.addEventListener("click", () => {
+    state.tab = tab.dataset.tab; state.kind = ""; fillKinds(); changed();
+  }));
+  $("[data-q]").addEventListener("input", (event) => { state.q = event.target.value.trim().replace(/[^A-Za-z0-9-]/g, ""); changed(); });
+  $("[data-from]").addEventListener("change", (event) => { state.from = event.target.value; changed(); });
+  $("[data-to]").addEventListener("change", (event) => { state.to = event.target.value; changed(); });
+  $("[data-kind]").addEventListener("change", (event) => { state.kind = event.target.value; changed(); });
+  $("[data-prev]").addEventListener("click", () => { state.page -= 1; load(); });
+  $("[data-next]").addEventListener("click", () => { state.page += 1; load(); });
+  $("[data-viewer-close]").addEventListener("click", () => $("[data-viewer]").close());
+  $("[data-viewer]").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+  fillKinds();
+  render();
+})();
+</script>
+{% endif %}
+</body>
+</html>

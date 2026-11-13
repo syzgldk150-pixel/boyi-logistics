@@ -195,6 +195,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 链接码由部署期共享配置文件中的密钥推导（`RECEIPT_SHARE_TOKEN_SECRET`，文件路径见 `../shared/receipt_share_settings.py`），库里只存链接码与访问码的摘要；未配置密钥时不能生成或复制链接。访问码只在生成时显示一次，之后“复制”只复制链接。
   - 写请求要求真实 MySQL 后台账号、同源、`X-Browser-Request-UUID` 与请求体一致；生成按请求 UUID 幂等，停用／启用／续期／重置按 `record_version` 做 CAS 并写 `receipt_share_events`。生成、启用、续期后经签名请求让 Agent 立即刷新该链接，失败不影响保存（每日定时仍会刷新）。
   - 回归：`../tests/test_receipt_share_console_mysql.py`（真实 MySQL）、`tests/test_receipt_shares_browser.py`。
+  - 对外客户页（⑩c）是独立进程 `receipt_share_server.py`（`receipt-share.service`，`127.0.0.1:8766`，模板 `templates/share_public.html`）：不导入 Console 代码、不加载 Console/Agent 环境，只读自己的 `public.env`；只有 `/r/{链接码}` 路径，其余 404。边界、部署期配置与上线顺序见 [客户共享说明](../docs/receipt_share.md)。发布脚本不会重启它，改动后需手动重启。
 - 改财务模块（复式记账总账，P1–P5 已完成）：
   - `templates/finance.html`、`static/finance.js`、`static/finance.css`
   - `routes/finance.py`、`services/finance_ledger.py`（总账接口）、`services/monitoring_finance.py`（`_render_finance`）

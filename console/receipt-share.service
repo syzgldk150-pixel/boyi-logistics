@@ -1,0 +1,22 @@
+[Unit]
+Description=Boyi customer receipt share (public, read-only)
+After=network.target
+
+[Service]
+Type=simple
+User=boyce
+WorkingDirectory=/home/boyce/console
+# Deliberately no EnvironmentFile: this public service must not see the Console
+# or Agent environment. Its own settings are read from the file below.
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/boyce
+Environment=BOYI_RECEIPT_SHARE_PUBLIC_ENV_FILE=/home/boyce/.boyi-receipt-share/public.env
+ExecStart=/home/boyce/console/.venv/bin/python /home/boyce/console/receipt_share_server.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

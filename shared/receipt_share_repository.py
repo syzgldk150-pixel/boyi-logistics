@@ -334,3 +334,81 @@ def update_share(connection, share_id: int, *, expected_version: int, **changes:
         if cursor.rowcount != 1:
             raise ShareConflict("这条链接已被修改，请刷新后重试。")
     return get_share(connection, share_id)
+
+
+# ---------------------------------------------------------------------------
+# Public share service: read-only, always scoped to one share id.
+
+def public_share(connection, token_digest: str) -> dict[str, Any] | None:
+    """The share a link code digest belongs to, whatever its state; the service decides what to show."""
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT s.id, s.token_version, s.access_code_sha256, s.image_types_json, s.naming_template, s.expires_at, "
+            "s.status, s.last_refreshed_at, c.name AS customer_name, c.short_name AS customer_short_name, "
+            "c.is_active AS customer_active FROM receipt_shares s JOIN receipt_share_customers c ON c.id = s.customer_id "
+            "WHERE s.token_sha256 = %s", (token_digest,))
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    chosen = _json(result.pop("image_types_json")) or []
+    result["image_types"] = [kind for kind in IMAGE_KINDS if kind in chosen]
+    return result
+
+
+def _public_filter(share_id: int, kinds: Sequence[str], keyword: str, date_from: str, date_to: str) -> tuple[str, list[Any]]:
+    wanted = [kind for kind in IMAGE_KINDS if kind in kinds]
+    if not wanted:
+        return "1 = 0", []
+    where = ["i.share_id = %s", f"i.kind IN ({','.join(['%s'] * len(wanted))})"]
+    params: list[Any] = [int(share_id), *wanted]
+    if keyword:
+        where.append("i.waybill_no LIKE %s ESCAPE '!'")
+        params.append("%" + keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%")
+    if date_from:
+        where.append("i.doc_date >= %s")
+        params.append(date_from)
+    if date_to:
+        where.append("i.doc_date <= %s")
+        params.append(date_to)
+    return " AND ".join(where), params
+
+
+def public_items(connection, share_id: int, *, kinds: Sequence[str], keyword: str = "", date_from: str = "",
+                 date_to: str = "", limit: int = 24, offset: int = 0) -> tuple[int, list[dict[str, Any]]]:
+    """One page of a share's pictures with how many of the same kind each waybill has (for file names)."""
+
+    where, params = _public_filter(share_id, kinds, keyword, date_from, date_to)
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT COUNT(*) AS n FROM receipt_share_items i WHERE {where}", params)
+        total = int(cursor.fetchone()["n"])
+        cursor.execute(
+            "SELECT i.image_id, i.waybill_no, i.kind, i.seq, i.doc_date, "
+            "(SELECT COUNT(*) FROM receipt_share_items o WHERE o.share_id = i.share_id AND o.waybill_no = i.waybill_no "
+            " AND o.kind = i.kind) AS same_kind FROM receipt_share_items i "
+            f"WHERE {where} ORDER BY i.doc_date DESC, i.waybill_no DESC, i.kind, i.seq, i.image_id LIMIT %s OFFSET %s",
+            (*params, int(limit), int(offset)))
+        return total, [dict(row) for row in cursor.fetchall()]
+
+
+def public_image(connection, share_id: int, image_id: int) -> dict[str, Any] | None:
+    """A picture only if this share lists it; the archive path never leaves the server."""
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT i.image_id, i.waybill_no, i.kind, i.seq, i.doc_date, m.nas_path, m.mime_type, m.content_sha256, "
+            "(SELECT COUNT(*) FROM receipt_share_items o WHERE o.share_id = i.share_id AND o.waybill_no = i.waybill_no "
+            " AND o.kind = i.kind) AS same_kind FROM receipt_share_items i JOIN receipt_share_images m ON m.id = i.image_id "
+            "WHERE i.share_id = %s AND i.image_id = %s", (int(share_id), int(image_id)))
+        row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def record_access(connection, share_id: int, *, action: str, client_ip: str, user_agent: str, now: datetime) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute("INSERT INTO receipt_share_access_logs (share_id, action, client_ip, user_agent) VALUES (%s, %s, %s, %s)",
+                       (int(share_id), action, client_ip[:64], user_agent[:255]))
+        if action == "view":
+            cursor.execute("UPDATE receipt_shares SET view_count = view_count + 1, last_viewed_at = %s WHERE id = %s",
+                           (now, int(share_id)))

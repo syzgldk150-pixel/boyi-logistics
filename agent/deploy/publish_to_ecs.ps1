@@ -56,7 +56,7 @@ $AgentDirs = @(
 )
 $ConsoleFiles = @(
     "AGENTS.md", "CLAUDE.md", "README.md", "app.py", "app_support.py", "check_syntax.py", "config.py",
-    "console.service", "database.py", "known_issues.md",
+    "console.service", "receipt-share.service", "receipt_share_server.py", "database.py", "known_issues.md",
     "line_haul_contacts.py", "navigation.py", "ocr_providers.py", "preprocessing.py", "requirements.txt",
     "requirements.lock", "runtime_config.py", "start_backend.sh", "stop_backend.sh", "task_queue.py",
     "template_store.py"
