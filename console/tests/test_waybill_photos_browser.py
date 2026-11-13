@@ -78,6 +78,12 @@ def test_signed_row_thumbnails_open_the_photo_viewer(app, browser):
         assert [{"platform": ["yunda"], "waybill_no": ["900000001"]}] == photo_requests
         assert holder.locator("button.waybill-photo-slot").evaluate_all("els => els.map(e => e.dataset.kind)") == ["sign", "receipt"]
         assert holder.locator(".waybill-photo-count").all_inner_texts() == ["2"]
+        # Each slot shows its first photo as the thumbnail, not a generic icon.
+        page.wait_for_function("""() => [...document.querySelectorAll('[data-waybill-no="900000001"] .waybill-photo-thumb')]
+            .filter((img) => img.complete && img.naturalWidth > 0).length === 2""")
+        assert [src.split("url=")[1] for src in holder.locator(".waybill-photo-thumb").evaluate_all(
+            "els => els.map(e => e.getAttribute('src'))")] == ["s1", "r1"]
+        assert holder.locator(".feather").count() == 0
         unsigned = page.locator('tr[data-waybill-row="ronghui:41"] .waybill-photo-slot')
         assert unsigned.count() == 2 and page.locator('tr[data-waybill-row="ronghui:41"] button.waybill-photo-slot').count() == 0
         assert page.locator(".waybill-page-link[aria-current=page]").inner_text() == "1"
