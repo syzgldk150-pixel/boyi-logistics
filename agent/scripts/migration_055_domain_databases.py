@@ -32,7 +32,12 @@ NEW_TABLES = (
     "yunda_receipts", "ronghui_receipts", "boyi_receipts",
 )
 # Entity tables created by later migrations; projected once they exist.
-LATER_WAYBILL_TABLES = ("boyi_waybill_edit_logs",)
+LATER_WAYBILL_TABLES = (
+    "boyi_waybill_edit_logs",
+    # 078: customer share links.
+    "receipt_share_customers", "receipt_shares", "receipt_share_images",
+    "receipt_share_items", "receipt_share_events", "receipt_share_access_logs",
+)
 # Migration 067 retired every finance table listed above and those of 062/063;
 # the general-ledger tables of later migrations are added here as they land.
 LATER_FINANCE_TABLES = (
