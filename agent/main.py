@@ -31,6 +31,7 @@ from agent.customer_service_ai import CustomerServiceAIService
 from agent.plugin_flow_editor import PluginFlowEditor, PluginFlowEditorError
 from shared.customer_service_ai import CustomerServiceAIRepository
 from customer_service_ai_composition import build_customer_service_ai
+from receipt_share_composition import ReceiptShareRuntime, build_receipt_share_runtime
 from plugin_core_adapters.customer_auto_reply import bind_customer_service_ai
 from shared.customer_service_ai import CustomerServiceAIError
 from shared.ai_tasks.audit import AITaskAuditRepository
@@ -243,6 +244,7 @@ agent_core: AgentCore | None = None
 finance_review_advisor: "FinanceReviewAdvisor | None" = None
 customer_service_ai: "CustomerServiceAIService | None" = None
 plugin_flow_editor: "PluginFlowEditor | None" = None
+receipt_share_runtime: "ReceiptShareRuntime | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
@@ -677,7 +679,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
-    global plugin_flow_editor
+    global plugin_flow_editor, receipt_share_runtime
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -781,6 +783,11 @@ async def lifespan(app: FastAPI):
     business_service = build_business_service(
         catalog=core_catalog, plugin_catalog=plugin_runtime.catalog, invocations=direct_invocations)
     bind_direct_business_service(business_service)
+    # Customer share links: off unless the deployment's share settings file exists.
+    receipt_share_runtime = build_receipt_share_runtime(
+        connect=orchestration_connections.unpooled, read_lifecycle=direct_invocations, loop=loop)
+    if receipt_share_runtime is not None:
+        receipt_share_runtime.start()
     project_policy_service = AutomationProjectPolicyService(
         repository,
         plugin_runtime.catalog,
@@ -937,6 +944,9 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Agent service shutting down instance_id=%s", INSTANCE_ID)
+    if receipt_share_runtime is not None:
+        await receipt_share_runtime.stop()
+        receipt_share_runtime = None
     process_service_v2_runtime.stop()
     if tms_session_alert_task is not None:
         tms_session_alert_stop.set()
@@ -1876,6 +1886,24 @@ _CUSTOMER_SERVICE_AI_STATUS = {"PROBLEM_NOT_FOUND": 404, "TEMPLATE_NOT_FOUND": 4
 def _customer_service_ai_failure(exc: CustomerServiceAIError) -> JSONResponse:
     return JSONResponse(status_code=_CUSTOMER_SERVICE_AI_STATUS.get(exc.code, 409),
                         content=api_failure(exc.code, redact_text(exc.message)))
+
+
+class ReceiptShareRefreshRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    share_id: int = Field(ge=1)
+
+
+@app.post("/internal/v1/admin/receipt-shares/refresh")
+async def internal_receipt_share_refresh(req: ReceiptShareRefreshRequest, request: Request):
+    """Start one share link's refresh in the background; the link row reports the result."""
+
+    _require_console_admin_request(request)
+    if receipt_share_runtime is None:
+        return JSONResponse(status_code=503, content=api_failure(
+            "RECEIPT_SHARE_UNAVAILABLE", "客户共享尚未配置图片存储，暂时不能刷新。"))
+    receipt_share_runtime.request_refresh(req.share_id)
+    return api_success({"share_id": req.share_id, "accepted": True})
 
 
 @app.post("/internal/v1/admin/customer-service/ai/suggest")

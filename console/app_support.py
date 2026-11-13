@@ -224,16 +224,11 @@ RECEIPT_DETAIL_KEYS = (
     "waybill_no",
 )
 RONGHUI_LIVE_ALLOWED_PREFIXES = RONGHUI_MANUAL_PROXY_ALLOWED_PREFIXES
-RONGHUI_DIRECT_ATTACHMENT_HOSTS = {"rhk13.obs.cn-east-3.myhuaweicloud.com"}
-# Since 2026-11 Ronghui returns receipt images as login-free download links on
-# its TMS host; only this path prefix is public, so only it is fetched.
-RONGHUI_PUBLIC_DOWNLOAD_HOST = "tms.ronghuiwl.com"
-RONGHUI_PUBLIC_DOWNLOAD_PREFIX = "/unauth/download/"
-# Yunda sign-for photos (tracking `monitoring.signedPic`) are login-free under this path.
-YUNDA_SIGN_PHOTO_HOST = "kyscan.yunda56.com"
-YUNDA_SIGN_PHOTO_PREFIX = "/ws/"
-RECEIPT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
-RECEIPT_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+from shared.receipt_image_sources import (  # noqa: E402,F401 - the allow-list lives once, in shared
+    RECEIPT_ATTACHMENT_MAX_BYTES, RECEIPT_IMAGE_SUFFIXES, RONGHUI_DIRECT_ATTACHMENT_HOSTS,
+    RONGHUI_PUBLIC_DOWNLOAD_HOST, RONGHUI_PUBLIC_DOWNLOAD_PREFIX, YUNDA_SIGN_PHOTO_HOST, YUNDA_SIGN_PHOTO_PREFIX,
+    fetch_public_receipt_image, image_mime_type,
+)
 RECEIPT_REMARK_TOKEN_RE = re.compile(r"(?<!\d)(\d{4})-(\d{10})(?!\d)")
 RECEIPT_REMARK_KEY_FRAGMENTS = ("note", "remark", "memo", "comment", "备注")
 

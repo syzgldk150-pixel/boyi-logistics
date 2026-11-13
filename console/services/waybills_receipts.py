@@ -1252,15 +1252,7 @@ class WaybillsReceiptsServiceMixin:
 
     @staticmethod
     def _receipt_image_mime_type(payload: bytes) -> str:
-        if payload.startswith(b"\xff\xd8"):
-            return "image/jpeg"
-        if payload.startswith(b"\x89PNG"):
-            return "image/png"
-        if payload.startswith((b"GIF87a", b"GIF89a")):
-            return "image/gif"
-        if len(payload) >= 12 and payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
-            return "image/webp"
-        return ""
+        return image_mime_type(payload)
 
     @classmethod
     def _looks_like_receipt_image(cls, payload: bytes) -> bool:
@@ -1299,49 +1291,8 @@ class WaybillsReceiptsServiceMixin:
         return raw
 
     def _fetch_direct_receipt_attachment(self, source_url: str) -> tuple[bytes, str] | None:
-        parsed = urlparse(source_url)
-        host = str(parsed.hostname or "").strip().lower()
-        public_download = host == RONGHUI_PUBLIC_DOWNLOAD_HOST and (parsed.path or "").startswith(
-            RONGHUI_PUBLIC_DOWNLOAD_PREFIX)
-        yunda_sign_photo = host == YUNDA_SIGN_PHOTO_HOST and (parsed.path or "").startswith(YUNDA_SIGN_PHOTO_PREFIX)
-        if parsed.scheme.lower() != "https" or not (
-                host in RONGHUI_DIRECT_ATTACHMENT_HOSTS or public_download or yunda_sign_photo):
-            return None
-        suffix = Path(parsed.path or "").suffix.lower()
-        if suffix not in RECEIPT_IMAGE_SUFFIXES:
-            return None
-        request = Request(source_url, headers={"Accept": "image/*,*/*", "User-Agent": "Mozilla/5.0"})
-        context = None
-        if public_download:
-            # The Ronghui TMS host only negotiates legacy ciphers (as in the
-            # Agent's Ronghui session); the certificate is still verified.
-            context = ssl.create_default_context()
-            context.set_ciphers("DEFAULT:@SECLEVEL=1")
-        try:
-            with urlopen(request, timeout=180, context=context) as response:
-                status_code = int(getattr(response, "status", 200) or 200)
-                if status_code < 200 or status_code >= 300:
-                    return None
-                content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-                if content_type and not content_type.startswith("image/"):
-                    return None
-                chunks: list[bytes] = []
-                total = 0
-                while True:
-                    chunk = response.read(256 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > RECEIPT_ATTACHMENT_MAX_BYTES:
-                        return None
-                    chunks.append(chunk)
-        except (HTTPError, URLError, OSError, TimeoutError, ValueError):
-            return None
-        payload = b"".join(chunks)
-        if not self._looks_like_receipt_image(payload):
-            return None
-        safe_content_type = self._receipt_image_mime_type(payload)
-        return (payload, safe_content_type) if safe_content_type else None
+        # The allow-list and fetch are shared with the Agent share refresh.
+        return fetch_public_receipt_image(source_url, opener=urlopen)
 
     def _fetch_receipt_attachment_source(
         self,
