@@ -172,5 +172,42 @@ def serialize_mobile_bottom_nav(existing_preferences: object, routes: object) ->
     return json.dumps(preferences, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+# 自动化「快捷执行」条: each admin pins up to eight automation instances, in order.
+AUTOMATION_QUICK_PLUGINS_KEY = "automation_quick_plugins"
+AUTOMATION_QUICK_PLUGINS_LIMIT = 8
+_AUTOMATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+class AutomationQuickPluginsValidationError(ValueError):
+    pass
+
+
+def validate_automation_quick_plugins(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise AutomationQuickPluginsValidationError("快捷插件必须是列表。")
+    ids = tuple(str(item).strip() if isinstance(item, str) else "" for item in value)
+    if len(ids) > AUTOMATION_QUICK_PLUGINS_LIMIT:
+        raise AutomationQuickPluginsValidationError(f"快捷插件最多 {AUTOMATION_QUICK_PLUGINS_LIMIT} 个。")
+    if any(not _AUTOMATION_ID.fullmatch(item) for item in ids):
+        raise AutomationQuickPluginsValidationError("快捷插件标识无效。")
+    if len(set(ids)) != len(ids):
+        raise AutomationQuickPluginsValidationError("每个插件只能固定一次。")
+    return ids
+
+
+def automation_quick_plugins_for_user(user: Mapping[str, Any] | None) -> tuple[str, ...]:
+    preferences = parse_ui_preferences((user or {}).get("ui_preferences_json", "{}"))
+    try:
+        return validate_automation_quick_plugins(preferences.get(AUTOMATION_QUICK_PLUGINS_KEY, []))
+    except AutomationQuickPluginsValidationError:
+        return ()
+
+
+def serialize_automation_quick_plugins(existing_preferences: object, ids: object) -> str:
+    preferences = parse_ui_preferences(existing_preferences)
+    preferences[AUTOMATION_QUICK_PLUGINS_KEY] = list(validate_automation_quick_plugins(ids))
+    return json.dumps(preferences, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
 if validate_mobile_bottom_nav(DEFAULT_MOBILE_BOTTOM_NAV) != DEFAULT_MOBILE_BOTTOM_NAV:
     raise RuntimeError("default mobile navigation must be a valid registered menu selection")

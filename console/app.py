@@ -13,6 +13,7 @@ from console.services.monitoring_finance import MonitoringFinanceServiceMixin
 from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.customer_service import CustomerServiceMixin
 from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
+from console.services.waybill_export import WaybillExportServiceMixin
 from console.services.waybill_photos import WaybillPhotosServiceMixin
 from console.services.tms_proxy import TmsProxyServiceMixin
 from console.services.automation import AutomationServiceMixin
@@ -54,6 +55,7 @@ class LocalDocFlowApp(
     CustomerServiceMixin,
     WaybillsReceiptsServiceMixin,
     WaybillPhotosServiceMixin,
+    WaybillExportServiceMixin,
     TmsProxyServiceMixin,
     AutomationServiceMixin,
     WaybillEntryExtensionsServiceMixin,

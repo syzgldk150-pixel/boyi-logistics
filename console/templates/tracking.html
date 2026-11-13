@@ -813,6 +813,64 @@
   .tracking-table tr.is-latest td:first-child { font-weight: 500; }
   .route-latest-tag { height: 18px; line-height: 18px; padding: 0 6px; border-radius: var(--r-chip); background: var(--brand-accent-soft); color: var(--brand-red); font-size: var(--fs-tiny); }
   .tracking-empty { color: var(--text-muted); font-weight: 400; }
+  /* ⑥a 签收与回单 (rules §14): fields 170 wide, 80×80 thumbnails of the real photos. */
+  .shipment-sign { border-top: 1px solid var(--line-default); }
+  .shipment-sign-head { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line-default); }
+  .shipment-sign-head .feather { width: 14px; height: 14px; }
+  .shipment-sign-head h3 { margin: 0; font-size: 13.5px; font-weight: 500; color: var(--text-primary); }
+  .shipment-sign-pill { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 4px; background: #eaf3ee; color: #2f7d5a; font-size: var(--fs-tiny); }
+  .shipment-sign-tip { margin-left: auto; color: var(--text-muted); font-size: var(--fs-caption); }
+  .shipment-sign-body { display: flex; align-items: center; gap: 16px; min-height: 80px; padding: 0 16px; }
+  .shipment-sign-fields { display: flex; flex-wrap: wrap; flex: 1; min-width: 0; }
+  .shipment-sign-field { width: 170px; padding: 10px 12px 10px 0; }
+  .shipment-sign-field dt { margin: 0 0 5px; color: #565c66; font-size: var(--fs-caption); font-weight: 500; }
+  .shipment-sign-field dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); font-size: 13.5px; }
+  .shipment-sign-thumbs { display: flex; gap: 8px; flex: none; }
+  .shipment-sign-thumb { position: relative; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; width: 80px; height: 80px; padding: 0; overflow: hidden; border: 1px solid transparent; border-radius: 6px; background: #f4f5f7; color: #aeb6c2; cursor: zoom-in; }
+  .shipment-sign-thumb:hover { border-color: var(--line-strong); }
+  .shipment-sign-thumb:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
+  .shipment-sign-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .shipment-sign-thumb .feather { width: 26px; height: 26px; }
+  .shipment-sign-thumb span { position: absolute; right: 0; bottom: 0; left: 0; padding: 2px 0; background: rgb(255 255 255 / 88%); color: var(--text-secondary); font-size: 11px; text-align: center; }
+  .shipment-sign-state { color: var(--text-muted); font-size: var(--fs-caption); }
+  .shipment-sign-state[data-tone="error"] { color: var(--status-danger); }
+  /* ⑥b 签收凭证: 900×660, tabs 签收单 / 回单 with counts, 360×458 image, round side buttons. */
+  .sign-viewer { width: min(900px, calc(100vw - 32px)); height: min(660px, calc(100dvh - 32px)); margin: auto; padding: 0; border: 0; border-radius: 14px; background: var(--bg-surface); color: var(--text-primary); overflow: hidden; }
+  .sign-viewer[open] { display: flex; flex-direction: column; }
+  .sign-viewer::backdrop { background: rgb(13 17 23 / 55%); }
+  .sign-viewer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 64px; padding: 14px 20px 0; }
+  .sign-viewer-head h2 { margin: 0; font-size: 15px; font-weight: 500; }
+  .sign-viewer-sub { margin-top: 4px; color: var(--text-muted); font-size: var(--fs-caption); }
+  .sign-viewer-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 0 20px; }
+  .sign-viewer-tabs { display: inline-flex; gap: 8px; }
+  .sign-viewer-tab { height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: var(--bg-subtle); color: var(--text-secondary); font-size: var(--fs-body); cursor: pointer; }
+  .sign-viewer .sign-viewer-tab[aria-selected="true"] { border: 0; background: var(--text-primary); color: var(--text-on-dark); font-weight: 500; }
+  .sign-viewer-tab[hidden] { display: none; }
+  .sign-viewer-counter { color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+  .sign-viewer-stage { position: relative; display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; padding: 16px 72px; background: var(--bg-subtle); }
+  .sign-viewer-stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; background: var(--bg-surface); }
+  .sign-viewer-state { display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-muted); font-size: var(--fs-body); }
+  .sign-viewer-nav { position: absolute; top: 50%; display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin-top: -20px; border: 1px solid var(--line-default); border-radius: 999px; background: var(--bg-surface); color: var(--text-secondary); cursor: pointer; }
+  .sign-viewer-nav[data-step="-1"] { left: 20px; }
+  .sign-viewer-nav[data-step="1"] { right: 20px; }
+  .sign-viewer-nav:disabled { opacity: .4; cursor: default; }
+  .sign-viewer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 60px; padding: 0 20px; border-top: 1px solid var(--line-subtle, var(--line-default)); }
+  .sign-viewer-hint { color: var(--text-muted); font-size: 11.5px; }
+  .sign-viewer-actions { display: flex; gap: 8px; }
+  @media (max-width: 1023px) {
+    .shipment-sign-body { flex-direction: column; align-items: stretch; padding-bottom: 12px; }
+  }
+  @media (max-width: 639px) {
+    .shipment-sign-field { width: 50%; }
+    .shipment-sign-tip { display: none; }
+    .sign-viewer { width: 100%; height: calc(100dvh - 16px); margin: auto 0 0; border-radius: 14px 14px 0 0; }
+    .sign-viewer-stage { padding: 12px 52px; }
+    .sign-viewer-nav[data-step="-1"] { left: 8px; }
+    .sign-viewer-nav[data-step="1"] { right: 8px; }
+    .sign-viewer-hint { display: none; }
+    .sign-viewer-nav, .sign-viewer-tab { min-height: 44px; min-width: 44px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .shipment-sign-thumb { transition: none; } }
 </style>
 
 <section class="tracking-page">
@@ -906,6 +964,34 @@
       </div>
       <div id="contactCard"></div>
     </div>
+    <dialog class="sign-viewer" id="signViewer" aria-labelledby="signViewerTitle">
+      <div class="sign-viewer-head">
+        <div>
+          <h2 id="signViewerTitle">签收凭证</h2>
+          <div class="sign-viewer-sub" data-sign-viewer-sub></div>
+        </div>
+        <button class="extension-dialog-close" type="button" data-sign-viewer-close aria-label="关闭"><i data-feather="x"></i></button>
+      </div>
+      <div class="sign-viewer-bar">
+        <div class="sign-viewer-tabs" role="tablist" aria-label="凭证类型">
+          <button class="sign-viewer-tab" type="button" role="tab" data-sign-viewer-tab="sign">签收单 <span data-count>0</span></button>
+          <button class="sign-viewer-tab" type="button" role="tab" data-sign-viewer-tab="receipt">回单 <span data-count>0</span></button>
+        </div>
+        <div class="sign-viewer-counter" data-sign-viewer-counter aria-live="polite"></div>
+      </div>
+      <div class="sign-viewer-stage">
+        <button class="sign-viewer-nav" type="button" data-step="-1" aria-label="上一张"><i data-feather="chevron-left"></i></button>
+        <div class="sign-viewer-state" data-sign-viewer-view></div>
+        <button class="sign-viewer-nav" type="button" data-step="1" aria-label="下一张"><i data-feather="chevron-right"></i></button>
+      </div>
+      <div class="sign-viewer-foot">
+        <span class="sign-viewer-hint">← → 翻页 · Esc 关闭</span>
+        <div class="sign-viewer-actions">
+          <a class="ghost-btn" data-sign-viewer-download href="#" download><i data-feather="download"></i> 下载原图</a>
+          <button class="primary-btn" type="button" data-sign-viewer-close>关闭</button>
+        </div>
+      </div>
+    </dialog>
   </div>
 </section>
 {% endblock %}
@@ -1588,6 +1674,207 @@
     '</div>';
   }
 
+  // ⑥a 签收与回单: only for a waybill with a sign-for scan. Time and site come from that
+  // scan; the receipt number from the platform detail; photos from the same read as 寄件运单查询.
+  var SIGN_KINDS = { sign: '签收单', receipt: '回单' };
+  var signPhotoLists = {};
+
+  function shipmentPlatform(data) {
+    if (data && (data.type === 'ronghui_tms' || data.type === 'ronghui')) return 'ronghui';
+    if (data && data.type === 'yunda') return 'yunda';
+    return '';
+  }
+
+  function signScanRow(data) {
+    var best = null;
+    (data.route_rows || []).forEach(function(row) {
+      var kind = String((row && (row.scan_type || row.status)) || '');
+      var text = String((row && row.description) || '');
+      var signed = /签收/.test(kind) ? !/未签收/.test(kind) : /已签收|完成签收|签收扫描/.test(text) && !/未签收/.test(text);
+      if (signed && (!best || String(row.scan_time || '') >= String(best.scan_time || ''))) best = row;
+    });
+    return best;
+  }
+
+  function signSectionHtml(data) {
+    var platform = shipmentPlatform(data);
+    var row = platform ? signScanRow(data) : null;
+    if (!row) return '';
+    var stub = data.waybill_stub || {};
+    var fields = [
+      { label: '签收时间', value: row.scan_time },
+      { label: '签收网点', value: row.scan_station },
+      { label: platform === 'yunda' ? '回单号' : '回单编号', value: stub.receipt_number }
+    ];
+    return '<section class="shipment-sign" data-sign-section data-platform="' + platform + '" data-waybill-no="' + escapeHtml(data.tracking_number || stub.waybill_no || '') + '" data-sign-date="' + escapeHtml(String(row.scan_time || '').slice(0, 10)) + '">' +
+      '<div class="shipment-sign-head"><i data-feather="check"></i><h3>签收与回单</h3><span class="shipment-sign-pill">已签收</span>' +
+      '<span class="shipment-sign-tip">点击图片查看大图</span></div>' +
+      '<div class="shipment-sign-body"><dl class="shipment-sign-fields">' +
+      fields.map(function(field) {
+        return '<div class="shipment-sign-field"><dt>' + escapeHtml(field.label) + '</dt><dd>' + escapeHtml(displayValue(field.value)) + '</dd></div>';
+      }).join('') +
+      '</dl><div class="shipment-sign-thumbs" data-sign-thumbs><span class="shipment-sign-state">正在读取签收与回单照片…</span></div></div>' +
+    '</section>';
+  }
+
+  function loadSignPhotos(section) {
+    var key = section.dataset.platform + ':' + section.dataset.waybillNo;
+    if (!signPhotoLists[key]) {
+      var url = '/waybills/photos?' + new URLSearchParams({ platform: section.dataset.platform, waybill_no: section.dataset.waybillNo });
+      signPhotoLists[key] = fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+        .then(function(response) {
+          return response.json().catch(function() { return {}; }).then(function(result) {
+            if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || '签收照片读取失败');
+            return result.data;
+          });
+        });
+      signPhotoLists[key].catch(function() { delete signPhotoLists[key]; });
+    }
+    signPhotoLists[key].then(function(photos) {
+      if (section.isConnected) renderSignThumbs(section, photos);
+    }, function(error) {
+      if (!section.isConnected) return;
+      var holder = section.querySelector('[data-sign-thumbs]');
+      holder.innerHTML = '<span class="shipment-sign-state" data-tone="error"></span>';
+      holder.firstChild.textContent = error.message || '签收照片读取失败';
+    });
+  }
+
+  function renderSignThumbs(section, photos) {
+    section.signPhotos = photos;
+    var holder = section.querySelector('[data-sign-thumbs]');
+    var items = [];
+    ['sign', 'receipt'].forEach(function(kind) {
+      (photos[kind] || []).forEach(function(src, index) { items.push({ kind: kind, index: index, src: src }); });
+    });
+    holder.replaceChildren();
+    if (!items.length) {
+      var empty = document.createElement('span');
+      empty.className = 'shipment-sign-state';
+      empty.textContent = photos.receipt_error ? '暂无签收照片；' + photos.receipt_error : '原平台暂无签收与回单照片';
+      holder.append(empty);
+      return;
+    }
+    items.slice(0, 3).forEach(function(item) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'shipment-sign-thumb';
+      button.dataset.signOpen = item.kind;
+      button.dataset.signIndex = String(item.index);
+      var label = SIGN_KINDS[item.kind] + ' ' + (item.index + 1);
+      button.setAttribute('aria-label', '查看' + label);
+      button.innerHTML = '<i data-feather="file-text" aria-hidden="true"></i>';
+      var img = document.createElement('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.addEventListener('error', function() { img.remove(); }, { once: true });
+      img.src = item.src;
+      var caption = document.createElement('span');
+      caption.textContent = label;
+      button.append(img, caption);
+      holder.append(button);
+    });
+    if (photos.receipt_error && !(photos.receipt || []).length) {
+      var note = document.createElement('span');
+      note.className = 'shipment-sign-state';
+      note.dataset.tone = 'error';
+      note.textContent = photos.receipt_error;
+      holder.append(note);
+    }
+    feather.replace();
+  }
+
+  // ⑥b 签收凭证: tabs with counts, one image at a time, ← → / Esc / backdrop.
+  var signViewer = { section: null, kind: 'sign', index: 0 };
+
+  function showSignPhoto() {
+    var dialog = document.getElementById('signViewer');
+    var photos = (signViewer.section && signViewer.section.signPhotos) || {};
+    var urls = photos[signViewer.kind] || [];
+    dialog.querySelectorAll('[data-sign-viewer-tab]').forEach(function(tab) {
+      var kind = tab.getAttribute('data-sign-viewer-tab');
+      var count = (photos[kind] || []).length;
+      tab.querySelector('[data-count]').textContent = String(count);
+      tab.setAttribute('aria-selected', String(kind === signViewer.kind));
+      tab.hidden = count === 0;
+    });
+    var date = signViewer.section ? signViewer.section.dataset.signDate : '';
+    dialog.querySelector('[data-sign-viewer-counter]').textContent = urls.length ? '第 ' + (signViewer.index + 1) + ' / ' + urls.length + ' 张' : '';
+    dialog.querySelectorAll('.sign-viewer-nav').forEach(function(nav) {
+      var next = signViewer.index + Number(nav.getAttribute('data-step'));
+      nav.disabled = next < 0 || next >= urls.length;
+    });
+    var view = dialog.querySelector('[data-sign-viewer-view]');
+    var download = dialog.querySelector('[data-sign-viewer-download]');
+    var src = urls[signViewer.index];
+    if (!src) { view.textContent = '暂无' + SIGN_KINDS[signViewer.kind]; download.hidden = true; return; }
+    download.hidden = false;
+    download.href = src;
+    download.setAttribute('download', (signViewer.section.dataset.waybillNo || '运单') + '-' + SIGN_KINDS[signViewer.kind] + '-' + (signViewer.index + 1) + '.jpg');
+    view.textContent = '正在加载…';
+    var expected = signViewer.kind + ':' + signViewer.index;
+    var img = new Image();
+    img.alt = SIGN_KINDS[signViewer.kind] + ' ' + (signViewer.index + 1);
+    img.decoding = 'async';
+    img.onload = function() { if (signViewer.kind + ':' + signViewer.index === expected) view.replaceChildren(img); };
+    img.onerror = function() {
+      if (signViewer.kind + ':' + signViewer.index !== expected) return;
+      var text = document.createElement('span');
+      text.textContent = '图片加载失败';
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'ghost-btn';
+      retry.textContent = '重试';
+      retry.addEventListener('click', showSignPhoto);
+      view.replaceChildren(text, retry);
+    };
+    img.src = src;
+    if (date) dialog.querySelector('[data-sign-viewer-counter]').textContent += ' · ' + date;
+  }
+
+  function openSignViewer(section, kind, index) {
+    var dialog = document.getElementById('signViewer');
+    if (!(dialog instanceof HTMLDialogElement) || !section.signPhotos) return;
+    signViewer = { section: section, kind: kind, index: index };
+    var platformLabel = section.dataset.platform === 'yunda' ? '韵达' : '融辉 TMS';
+    var parts = [section.dataset.waybillNo, platformLabel, section.dataset.signDate ? section.dataset.signDate + ' 签收' : ''].filter(Boolean);
+    dialog.querySelector('[data-sign-viewer-sub]').textContent = parts.join(' · ');
+    showSignPhoto();
+    if (!dialog.open) dialog.showModal();
+    feather.replace();
+  }
+
+  function stepSignPhoto(step) {
+    var urls = ((signViewer.section && signViewer.section.signPhotos) || {})[signViewer.kind] || [];
+    var next = signViewer.index + step;
+    if (next < 0 || next >= urls.length) return;
+    signViewer.index = next;
+    showSignPhoto();
+  }
+
+  (function bindSignViewer() {
+    var dialog = document.getElementById('signViewer');
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    document.getElementById('shipmentDetails').addEventListener('click', function(event) {
+      var thumb = event.target instanceof Element ? event.target.closest('[data-sign-open]') : null;
+      if (!thumb) return;
+      openSignViewer(thumb.closest('[data-sign-section]'), thumb.dataset.signOpen, Number(thumb.dataset.signIndex) || 0);
+    });
+    dialog.addEventListener('click', function(event) {
+      var target = event.target instanceof Element ? event.target : null;
+      if (event.target === dialog || (target && target.closest('[data-sign-viewer-close]'))) { dialog.close(); return; }
+      var tab = target && target.closest('[data-sign-viewer-tab]');
+      if (tab) { signViewer.kind = tab.getAttribute('data-sign-viewer-tab'); signViewer.index = 0; showSignPhoto(); return; }
+      var nav = target && target.closest('.sign-viewer-nav');
+      if (nav && !nav.disabled) stepSignPhoto(Number(nav.getAttribute('data-step')));
+    });
+    dialog.addEventListener('keydown', function(event) {
+      if (event.key === 'ArrowLeft') { event.preventDefault(); stepSignPhoto(-1); }
+      if (event.key === 'ArrowRight') { event.preventDefault(); stepSignPhoto(1); }
+    });
+  })();
+
   function renderShipmentDetails(data, decrypt) {
     var model = buildShipmentDetailSections(data);
     var detailsTab = document.getElementById('shipmentDetailsTab');
@@ -1603,7 +1890,10 @@
     }
     details.innerHTML = note + '<div class="shipment-details">' +
       renderShipmentDetailLayout(model) +
+      signSectionHtml(data) +
     '</div>';
+    var signSection = details.querySelector('[data-sign-section]');
+    if (signSection) loadSignPhotos(signSection);
     return model;
   }
 

@@ -1870,6 +1870,24 @@ class DocumentRepository:
             },
         }
 
+    def get_waybill_rows_by_keys(self, keys: list[tuple[str, int]]) -> list[dict[str, Any]]:
+        """List rows of exactly these (source, id) keys, mapped like ``search_waybills``.
+
+        Rows come from the same all-source query table, so a Boyi row carries the
+        status of its linked platform waybill exactly as the list shows it. The
+        result keeps the order of ``keys``; a key with no row is left out.
+        """
+        if not keys:
+            return []
+        table = self._waybill_query_table("all")
+        match = " OR ".join(f"(source = {self.placeholder} AND id = {self.placeholder})" for _ in keys)
+        params = [value for source, row_id in keys for value in (source, int(row_id))]
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(f"SELECT * FROM {table} WHERE waybill_no <> '' AND ({match})", params)
+            found = {(str(row["source"]), int(row["id"])): self._row_to_waybill(row) for row in cursor.fetchall()}
+        return [found[key] for key in ((source, int(row_id)) for source, row_id in keys) if key in found]
+
     def _build_waybill_search_where(self, filters: dict[str, Any]) -> tuple[str, list[Any]]:
         conditions = ["waybill_no <> ''"]
         params: list[Any] = []

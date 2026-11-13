@@ -31,3 +31,10 @@ def test_ronghui_topayment_is_the_to_pay_amount():
     assert stub["payment_type"] == "到付"
     assert stub["to_pay_amount"] == "649"
     assert items["到付款"] == "649"
+
+
+def test_receipt_number_reaches_both_tracking_stubs():
+    ronghui_detail = ronghui._normalize_api_detail_row({"BILL_CODE": "R900000001", "R_BILLCODE": "hd0000001"}, "R900000001")
+    assert ronghui._build_waybill_stub(ronghui_detail, "R900000001")["receipt_number"] == "hd0000001"
+    assert yunda._build_waybill_stub({"Logistics_Id": "900000001", "ReturnLogisticsId": "900000009"}, "900000001")["receipt_number"] == "900000009"
+    assert ronghui._build_waybill_stub(ronghui._normalize_api_detail_row({"BILL_CODE": "R900000001"}, "R900000001"), "R900000001")["receipt_number"] == ""

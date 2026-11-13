@@ -30,6 +30,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/settings/profile/mobile-navigation":
         app._handle_mobile_navigation_save(handler)
         return True
+    if path == "/settings/profile/automation-quick-plugins":
+        app._handle_automation_quick_plugins_save(handler)
+        return True
     if path == "/settings/accounts/create":
         app._handle_admin_account_create(handler)
         return True

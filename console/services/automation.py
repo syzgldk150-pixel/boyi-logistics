@@ -21,6 +21,7 @@ from console.services.automation_preview_support import (
     scan_preview_error_message,
     selection_preview_error_message,
 )
+from console.navigation import automation_quick_plugins_for_user
 from shared.plugin_invocation_repository import ACTIVE_INVOCATION_STATUSES, TERMINAL_INVOCATION_STATUSES
 from console.services.automation_invocation_output import invocation_output_lines, invocation_start_feedback
 from console.services.automation_invocation_history import AutomationInvocationHistoryMixin
@@ -716,6 +717,7 @@ class AutomationServiceMixin(AutomationInvocationHistoryMixin, AutomationProject
             automation_catalog_snapshot_notice=automation_catalog_snapshot_notice,
             can_manage_plugins=can_manage_plugins,
             automation_plugin_filter=plugin_filter,
+            automation_quick_ids=list(automation_quick_plugins_for_user(getattr(handler, "current_admin_user", None))) if module == "automation" else [],
         )
         self._send_html(handler, body)
 

@@ -19,8 +19,117 @@
 {% endblock %}
 
 {% block content %}
+<style>
+  /* ㊲ 快捷执行 (rules §13): 44 high bar, 30 high pills, dashed 添加, hint pinned right. */
+  .auto-quickbar { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-bottom: 10px; padding: 6px 15px; border: 1px solid var(--line-default); border-radius: 10px; background: var(--bg-surface); }
+  .auto-quickbar-badge { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; border-radius: 7px; background: #fbeaeb; color: #be1b22; }
+  .auto-quickbar-badge .feather { width: 16px; height: 16px; }
+  .auto-quickbar-title { margin-left: -2px; color: var(--text-primary); font-size: var(--fs-body); font-weight: 500; white-space: nowrap; }
+  .auto-quickbar-divider { flex: none; width: 1px; height: 18px; background: var(--line-default); }
+  .auto-quickbar-pills { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .auto-quickbar-pills:empty { display: none; }
+  .auto-quick-pill, .auto-quick-add { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 8px; border: 1px solid var(--line-default); border-radius: 8px; background: var(--bg-surface); color: var(--text-primary); font-size: var(--fs-body); white-space: nowrap; cursor: pointer; }
+  .auto-quick-pill .feather { width: 16px; height: 16px; color: #565c66; }
+  .auto-quick-pill:hover { border-color: var(--line-strong); }
+  .auto-quick-add { border: 1px dashed var(--line-strong); color: var(--text-muted); }
+  .auto-quick-add .feather { width: 12px; height: 12px; }
+  .auto-quick-add:hover { color: var(--text-primary); }
+  .auto-quickbar-hint { margin-left: auto; overflow: hidden; color: var(--text-muted); font-size: var(--fs-caption); text-overflow: ellipsis; white-space: nowrap; }
+  .auto-quickbar-hint.is-warning { color: var(--status-warn); }
+  /* ㊲a 添加快捷插件: 560 wide, 48 high rows, at most eight pinned. */
+  .auto-quick-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); margin: auto; padding: 0; border: 0; border-radius: 14px; background: var(--bg-surface); color: var(--text-primary); box-shadow: var(--shadow-overlay); overflow: hidden; }
+  .auto-quick-dialog[open] { display: flex; flex-direction: column; }
+  .auto-quick-dialog::backdrop { background: rgb(13 17 23 / 55%); }
+  .auto-quick-head, .auto-quick-foot { display: flex; align-items: center; gap: 8px; flex: none; min-height: 62px; padding: 0 20px; }
+  .auto-quick-head { justify-content: space-between; border-bottom: 1px solid #f0f1f4; }
+  .auto-quick-head h2 { margin: 0; font-size: 15px; font-weight: 500; }
+  .auto-quick-head .extension-dialog-close { width: 30px; height: 30px; }
+  .auto-quick-body { min-height: 0; overflow-y: auto; padding: 16px 20px; }
+  .auto-quick-note { margin: 0 0 10px; color: var(--text-muted); font-size: var(--fs-caption); }
+  .auto-quick-options { margin: 0; padding: 0; list-style: none; }
+  .auto-quick-option + .auto-quick-option { border-top: 1px solid #f0f1f4; }
+  .auto-quick-option label { display: flex; align-items: center; gap: 10px; min-height: 48px; cursor: pointer; }
+  .auto-quick-option .feather { width: 20px; height: 20px; flex: none; color: #565c66; }
+  .auto-quick-name { overflow: hidden; color: var(--text-primary); font-size: 13.5px; text-overflow: ellipsis; white-space: nowrap; }
+  .auto-quick-mode, .auto-quick-pinned { display: inline-flex; align-items: center; flex: none; height: 20px; padding: 0 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
+  .auto-quick-mode { background: #f2f3f5; color: #6b7280; }
+  .auto-quick-pinned { margin-left: auto; background: #eaf3ee; color: #2f7d5a; }
+  .auto-quick-pinned[hidden] { display: none; }
+  .auto-quick-option.is-disabled label { cursor: not-allowed; }
+  .auto-quick-option.is-disabled .auto-quick-name { color: var(--text-muted); }
+  .auto-quick-option.is-disabled input { border-color: var(--line-strong); }
+  .auto-quick-count { margin: 10px 0 0; color: var(--text-muted); font-size: 11px; }
+  .auto-quick-foot { justify-content: flex-end; border-top: 1px solid #f0f1f4; }
+  .auto-quick-error { margin: 0 auto 0 0; color: var(--status-danger); font-size: var(--fs-caption); }
+  /* Shared 16×16 checkbox (same set as the waybill table's first column). */
+  .waybill-pick { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; }
+  .waybill-pick input { appearance: none; display: grid; place-content: center; width: 16px; height: 16px; margin: 0; border: 1px solid #c8ccd4; border-radius: 4px; background: var(--bg-surface); cursor: pointer; }
+  .waybill-pick input::before { content: ""; width: 10px; height: 8px; background: var(--text-on-dark); clip-path: polygon(14% 44%, 0 62%, 40% 100%, 100% 18%, 86% 2%, 39% 66%); transform: scale(0); }
+  .waybill-pick input:checked { border-color: var(--text-primary); background: var(--text-primary); }
+  .waybill-pick input:checked::before { transform: scale(1); }
+  .waybill-pick input:disabled { cursor: not-allowed; }
+  @media (max-width: 639px) {
+    .auto-quickbar { flex-wrap: wrap; }
+    .auto-quickbar-hint { flex-basis: 100%; margin-left: 0; }
+    .auto-quick-pill, .auto-quick-add { height: 44px; }
+    .auto-quick-dialog { width: 100%; max-height: calc(100dvh - 16px); margin: auto 0 0; border-radius: 14px 14px 0 0; }
+  }
+</style>
 {% include "_module_source_history.html" %}
+{% macro quick_mode_label(task) -%}
+{%- set times = task.schedule_time_values | default([], true) -%}
+{%- if task.task_mode == 'scheduled' and times -%}定时 每天 {{ times[0] }}{% if times | length > 1 %} 等 {{ times | length }} 个{% endif %}
+{%- elif task.task_mode == 'scheduled' -%}定时任务
+{%- elif task.task_mode == 'webhook' -%}外部调用
+{%- else -%}手动执行{%- endif -%}
+{%- endmacro %}
 <section class="auto-page" data-reveal="tasks" data-management-module="{{ management_module|default('automation') }}">
+  {% if management_module|default('automation') == 'automation' and scheduled_tasks %}
+  {# ㊲ 快捷执行: this admin's pinned instances; a pill runs the card's own start button. #}
+  <div class="auto-quickbar" data-quickbar data-quick-ids='{{ automation_quick_ids | default([], true) | tojson }}'>
+    <span class="auto-quickbar-badge" aria-hidden="true"><i data-feather="sliders"></i></span>
+    <span class="auto-quickbar-title">快捷执行</span>
+    <span class="auto-quickbar-divider" aria-hidden="true"></span>
+    <div class="auto-quickbar-pills" data-quick-pills>
+      {% for quick_id in automation_quick_ids | default([], true) %}
+      {% set quick_task = scheduled_tasks | selectattr('task_id', 'equalto', quick_id) | first %}
+      {% if quick_task %}
+      <button class="auto-quick-pill" type="button" data-quick-run="{{ quick_task.task_id }}" title="执行「{{ quick_task.name_value }}」"><i data-feather="box" aria-hidden="true"></i><span>{{ quick_task.name_value }}</span></button>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <button class="auto-quick-add" type="button" data-quick-add><i data-feather="plus" aria-hidden="true"></i><span>添加</span></button>
+    <span class="auto-quickbar-hint" data-quick-hint aria-live="polite">点 + 添加常用插件，之后一键执行</span>
+  </div>
+  <dialog class="auto-quick-dialog" data-quick-dialog aria-labelledby="autoQuickTitle">
+    <div class="auto-quick-head">
+      <h2 id="autoQuickTitle">添加快捷插件</h2>
+      <button class="extension-dialog-close" type="button" data-quick-close aria-label="关闭"><i data-feather="x"></i></button>
+    </div>
+    <div class="auto-quick-body">
+      <p class="auto-quick-note">勾选要固定在顶部快捷栏的插件，每个插件只会出现一次</p>
+      <ul class="auto-quick-options">
+        {% for task in scheduled_tasks %}
+        <li class="auto-quick-option">
+          <label>
+            <span class="waybill-pick auto-quick-check"><input type="checkbox" value="{{ task.task_id }}" data-quick-option data-quick-name="{{ task.name_value }}"></span>
+            <i data-feather="box" aria-hidden="true"></i>
+            <span class="auto-quick-name">{{ task.name_value }}</span>
+            <span class="auto-quick-mode">{{ quick_mode_label(task) }}</span>
+            <span class="auto-quick-pinned" data-quick-pinned hidden>已固定</span>
+          </label>
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="auto-quick-count" data-quick-count aria-live="polite"></p>
+    </div>
+    <div class="auto-quick-foot">
+      <p class="auto-quick-error" data-quick-error role="alert" hidden></p>
+      <button class="ghost-btn" type="button" data-quick-close>取消</button>
+      <button class="primary-btn" type="button" data-quick-save>保存</button>
+    </div>
+  </dialog>
+  {% endif %}
   {% if automation_plugin_filter %}
   <div class="automation-filter-notice" role="status">
     <span>正在查看对应扩展的自动化实例</span>
@@ -2480,6 +2589,128 @@
     ? Array.from(pageRoot.querySelectorAll("[data-automation-task-row]")).find(row => row.dataset.taskId === requestedTask)
     : null;
   setAutomationProvider(requestedRow?.dataset.automationProvider || readAutomationProvider(), false);
+
+  /* ── ㊲ 快捷执行 ── */
+  const quickbar = pageRoot.querySelector("[data-quickbar]");
+  const quickDialog = pageRoot.querySelector("[data-quick-dialog]");
+  if (quickbar && quickDialog instanceof HTMLDialogElement) {
+    const QUICK_LIMIT = 8;
+    const QUICK_HINT = "点 + 添加常用插件，之后一键执行";
+    const hint = quickbar.querySelector("[data-quick-hint]");
+    const options = Array.from(quickDialog.querySelectorAll("[data-quick-option]"));
+    const known = new Set(options.map((box) => box.value));
+    let pinned = [];
+    try { pinned = JSON.parse(quickbar.dataset.quickIds || "[]").filter((id) => known.has(id)); } catch { pinned = []; }
+    let draft = [];
+
+    const setHint = (text, warning = false) => {
+      hint.textContent = text || QUICK_HINT;
+      hint.classList.toggle("is-warning", Boolean(warning));
+    };
+
+    function renderPills() {
+      const holder = quickbar.querySelector("[data-quick-pills]");
+      holder.replaceChildren(...pinned.map((id) => {
+        const box = options.find((item) => item.value === id);
+        const name = box?.dataset.quickName || id;
+        const pill = document.createElement("button");
+        pill.type = "button";
+        pill.className = "auto-quick-pill";
+        pill.dataset.quickRun = id;
+        pill.title = `执行「${name}」`;
+        const icon = document.createElement("i");
+        icon.dataset.feather = "box";
+        icon.setAttribute("aria-hidden", "true");
+        const label = document.createElement("span");
+        label.textContent = name;
+        pill.append(icon, label);
+        return pill;
+      }));
+      window.ConsoleUI?.refreshIcons?.(quickbar);
+    }
+
+    function renderDraft() {
+      options.forEach((box) => {
+        box.checked = draft.includes(box.value);
+        box.disabled = !box.checked && draft.length >= QUICK_LIMIT;
+        const row = box.closest(".auto-quick-option");
+        row?.classList.toggle("is-disabled", box.disabled);
+        row?.querySelector("[data-quick-pinned]")?.toggleAttribute("hidden", !pinned.includes(box.value));
+      });
+      quickDialog.querySelector("[data-quick-count]").textContent = `已选 ${draft.length} / ${QUICK_LIMIT}`;
+    }
+
+    quickbar.querySelector("[data-quick-add]")?.addEventListener("click", () => {
+      draft = pinned.slice();
+      quickDialog.querySelector("[data-quick-error]").hidden = true;
+      renderDraft();
+      quickDialog.showModal();
+      window.ConsoleUI?.refreshIcons?.(quickDialog);
+    });
+    quickDialog.addEventListener("change", (event) => {
+      const box = event.target instanceof HTMLInputElement && event.target.matches("[data-quick-option]") ? event.target : null;
+      if (!box) return;
+      // Pills keep the order in which they were ticked.
+      draft = box.checked ? [...draft.filter((id) => id !== box.value), box.value] : draft.filter((id) => id !== box.value);
+      renderDraft();
+    });
+    quickDialog.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.target === quickDialog || target?.closest("[data-quick-close]")) quickDialog.close();
+    });
+    quickDialog.querySelector("[data-quick-save]")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const error = quickDialog.querySelector("[data-quick-error]");
+      button.disabled = true;
+      error.hidden = true;
+      try {
+        const response = await fetch("/settings/profile/automation-quick-plugins", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ automation_ids: draft }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result.ok !== true) throw new Error(result.error?.message || "快捷插件未保存，请重试。");
+        pinned = (result.data?.automation_ids || draft).filter((id) => known.has(id));
+        quickbar.dataset.quickIds = JSON.stringify(pinned);
+        renderPills();
+        setHint("");
+        quickDialog.close();
+      } catch (failure) {
+        error.textContent = failure.message || "快捷插件未保存，请重试。";
+        error.hidden = false;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    // A pill does exactly what the card's own start button does (执行 / 生成预览 / 读取候选).
+    quickbar.addEventListener("click", (event) => {
+      const pill = event.target instanceof Element ? event.target.closest("[data-quick-run]") : null;
+      if (!pill) return;
+      const row = Array.from(pageRoot.querySelectorAll("[data-automation-task-row]")).find((item) => item.dataset.taskId === pill.dataset.quickRun);
+      if (!row) { setHint("这个插件已不在列表中，请重新添加。", true); return; }
+      const name = pill.textContent.trim();
+      if ((row.dataset.automationProvider || "ronghui") !== currentAutomationProvider()) {
+        setAutomationProvider(row.dataset.automationProvider || "ronghui");
+      }
+      const search = pageRoot.querySelector("[data-automation-search]");
+      if (row.hidden && search instanceof HTMLInputElement && search.value) { search.value = ""; applyListState(); }
+      row.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+      const run = row.querySelector("[data-run-now]");
+      if (!(run instanceof HTMLButtonElement) || run.disabled) {
+        setHint(`「${name}」${run?.title || run?.dataset.startDisabled || "当前不可执行"}`, true);
+        return;
+      }
+      if (run.dataset.runMode && run.dataset.runMode !== "start") {
+        setHint(`「${name}」正在执行，结果见下方卡片`);
+        return;
+      }
+      setHint(`已执行「${name}」，结果见下方卡片`);
+      run.click();
+    });
+    renderPills();
+  }
 
 
   window.ConsoleUI.refreshIcons(pageRoot);

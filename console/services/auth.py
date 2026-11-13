@@ -4,7 +4,9 @@ from collections.abc import Mapping
 
 from console.app_support import *  # noqa: F403
 from console.navigation import (
+    AutomationQuickPluginsValidationError,
     MobileNavigationValidationError,
+    serialize_automation_quick_plugins,
     serialize_mobile_bottom_nav,
     validate_mobile_bottom_nav,
 )
@@ -289,6 +291,39 @@ class AuthServiceMixin:
             "/login?message=%E5%B7%B2%E9%80%80%E5%87%BA%E5%90%8E%E5%8F%B0%E3%80%82&kind=success",
             headers=[("Set-Cookie", self._clear_session_cookie_header())],
         )
+
+    def _handle_automation_quick_plugins_save(self, handler: BaseHTTPRequestHandler) -> None:
+        """Save this admin's 自动化「快捷执行」 pins (order kept, at most eight)."""
+
+        def fail(status: HTTPStatus, code: str, message: str) -> None:
+            self._send_json(handler, status, {"ok": False, "data": None, "error": {"code": code, "message": message}})
+
+        if not self._require_same_origin_write(handler):
+            return
+        user = current_admin_user()
+        if not user or bool(user.get("is_legacy_basic_auth")) or int(user.get("id") or 0) <= 0:
+            fail(HTTPStatus.FORBIDDEN, "QUICK_PLUGINS_SYNC_UNAVAILABLE", "应急 Basic Auth 没有管理员账号标识，无法保存快捷插件。")
+            return
+        body = self._parse_json_body(handler)
+        stored_user = self.repository.get_admin_user(int(user["id"]))
+        if not stored_user:
+            fail(HTTPStatus.UNAUTHORIZED, "ADMIN_USER_NOT_FOUND", "当前管理员账号不可用。")
+            return
+        try:
+            preferences_json = serialize_automation_quick_plugins(
+                stored_user.get("ui_preferences_json"), body.get("automation_ids") if isinstance(body, dict) else None,
+            )
+        except AutomationQuickPluginsValidationError as exc:
+            fail(HTTPStatus.BAD_REQUEST, "INVALID_QUICK_PLUGINS", str(exc))
+            return
+        if not self.repository.update_admin_ui_preferences(int(user["id"]), preferences_json):
+            fail(HTTPStatus.CONFLICT, "QUICK_PLUGINS_SAVE_FAILED", "快捷插件未保存，请重试。")
+            return
+        updated_user = dict(user)
+        updated_user["ui_preferences_json"] = preferences_json
+        self._set_current_admin_user(handler, updated_user)
+        ids = json.loads(preferences_json)["automation_quick_plugins"]
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {"automation_ids": ids}, "error": None})
 
     def _handle_mobile_navigation_save(self, handler: BaseHTTPRequestHandler) -> None:
         user = current_admin_user()

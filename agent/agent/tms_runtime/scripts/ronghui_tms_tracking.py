@@ -717,6 +717,8 @@ def _normalize_api_detail_row(row: dict[str, Any], tracking_number: str) -> dict
         # TOPAYMENT is the amount collected on delivery for a "到付" waybill (verified 2026-11-12).
         "to_pay_amount": _first_value(row, ("TOPAYMENT", "to_pay_amount")),
         "remark": _first_value(row, ("REMARK", "INSURE_REMARK", "remark")),
+        # 回单编号: getBillByCode's R_BILLCODE, as query_waybill_detail reads it.
+        "receipt_number": _first_value(row, ("R_BILLCODE", "receipt_number")),
         "sender_name": _first_value(row, ("SEND_MAN", "sender_name")),
         "sender_phone": _first_value(row, ("SEND_MAN_PHONE", "SEND_MAN_TEL", "sender_phone")),
         "recipient_name": _first_value(row, ("ACCEPT_MAN", "recipient_name")),
@@ -911,6 +913,7 @@ def _build_waybill_stub(detail: dict[str, Any], tracking_number: str) -> dict[st
         "cod_amount": _clean_str(detail.get("pay_on_arrival") or detail.get("cod_amount")),
         "to_pay_amount": _clean_str(detail.get("to_pay_amount")),
         "remark": _clean_str(detail.get("remarks") or detail.get("remark")),
+        "receipt_number": _clean_str(detail.get("receipt_number")),
         "sender_name": _clean_str(detail.get("sender_name")),
         "sender_phone": _clean_str(detail.get("sender_phone")),
         "recipient_name": _clean_str(detail.get("recipient_name")),

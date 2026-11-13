@@ -165,6 +165,10 @@ def test_boyi_and_provider_same_id_have_independent_print_and_status(manual_repo
     assert repo.update_waybill_status(boyi_id, "cancelled", source="manual")
     assert repo.get_waybill(provider_id, source="yunda")["status"] == "in_transit"
     assert repo.get_waybill(boyi_id, source="manual")["status"] == "cancelled"
+    # 导出 reads exactly the checked (source, id) keys, in their order, as the list maps them.
+    exported = repo.get_waybill_rows_by_keys([("yunda", provider_id), ("manual", boyi_id), ("ronghui", provider_id)])
+    assert [(row["source"], row["waybill_no"]) for row in exported] == [("yunda", "provider"), ("manual", number)]
+    assert exported[1]["status_label"] == "已取消" and exported[0]["source_label"]
 
 
 def test_failed_save_rolls_back_sequence_and_parallel_saves_do_not_duplicate(manual_repository):

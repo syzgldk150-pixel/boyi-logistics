@@ -13,6 +13,8 @@ def console_permission(method: str, path: str) -> str:
     read = method.upper() in {"GET", "HEAD"}
     if path in {"/logout", "/settings/profile/avatar", "/settings/profile/mobile-navigation"} or path.startswith("/runtime/avatars/"):
         return ""
+    if path == "/settings/profile/automation-quick-plugins":
+        return "plugins.execute"  # this admin's own pins on the automation page
     if _under(path, "/harness"):
         return "ai.chat"
     if _under(path, "/automation-accounts"):

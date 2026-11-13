@@ -22,6 +22,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/waybills/photos":
         app._handle_waybill_photos(handler, query)
         return True
+    if path == "/waybills/export.xlsx":
+        app._handle_waybill_export(handler, query)
+        return True
     if path == "/waybills/photo-image":
         app._handle_waybill_photo_image(handler, query)
         return True

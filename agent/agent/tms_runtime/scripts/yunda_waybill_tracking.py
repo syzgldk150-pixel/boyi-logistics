@@ -610,6 +610,8 @@ def _build_waybill_stub(detail: dict[str, Any], bill_code: str) -> dict[str, str
     )
     return {
         "waybill_no": waybill_no,
+        # 回单号: the same INMS mail-list column the send sync reads (shared/yunda_console_waybill.py).
+        "receipt_number": _detail_value(detail, "ReturnLogisticsId", "Return_Logistics_Id"),
         "send_site": _detail_value(
             detail,
             "Sender_Dot_Name",

@@ -84,6 +84,7 @@
   /* ③: every cell is top-aligned so the first lines share one baseline (12 + 16 + 2 + 14 + 14 = 58). */
   .waybill-table td { padding: 12px 0 0 16px; border-bottom: 1px solid var(--line-row); vertical-align: top; overflow: hidden; }
   .waybill-table tbody tr:last-child td { border-bottom: 0; }
+  .waybill-table th[data-col="pick"] { width: 40px; }
   .waybill-table th[data-col="no"] { width: 124px; }
   .waybill-table th[data-col="date"] { width: 92px; }
   .waybill-table th[data-col="receiver"] { width: 94px; }
@@ -94,11 +95,29 @@
   .waybill-table th[data-col="fee"] { width: 84px; }
   .waybill-table th[data-col="status"] { width: 142px; }
   .waybill-table th[data-col="photos"] { width: 86px; }
-  .waybill-table th[data-w="actions"] { width: 68px; }
+  .waybill-table th[data-w="actions"] { width: 28px; }
   .waybill-table th.waybill-col-fee { padding: 0 16px 0 0; text-align: right; }
   .waybill-table td.waybill-col-fee { padding: 12px 16px 0 0; text-align: right; }
   .waybill-table tbody tr { height: 58px; cursor: pointer; }
-  .waybill-table tbody tr:hover, .waybill-table tbody tr.is-selected { background: var(--bg-subtle); }
+  .waybill-table tbody tr:hover { background: var(--bg-subtle); }
+  .waybill-table tbody tr.is-selected, .waybill-table tbody tr.is-picked { background: var(--bg-selected); }
+  /* ③ 复选框列: 16×16, radius 4; the header is tri-state (none / some / all). */
+  .waybill-table :is(th, td).waybill-col-pick { padding: 0 0 0 16px; overflow: visible; }
+  .waybill-table td.waybill-col-pick { vertical-align: middle; }
+  .waybill-pick { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin: 0; cursor: pointer; }
+  .waybill-pick input { appearance: none; display: grid; place-content: center; width: 16px; height: 16px; margin: 0; border: 1px solid #c8ccd4; border-radius: 4px; background: var(--bg-surface); cursor: pointer; }
+  .waybill-pick input::before { content: ""; width: 10px; height: 8px; background: var(--text-on-dark); clip-path: polygon(14% 44%, 0 62%, 40% 100%, 100% 18%, 86% 2%, 39% 66%); transform: scale(0); }
+  .waybill-pick input:checked, .waybill-pick input:indeterminate { border-color: var(--text-primary); background: var(--text-primary); }
+  .waybill-pick input:checked::before { transform: scale(1); }
+  .waybill-pick input:indeterminate::before { width: 8px; height: 2px; clip-path: none; border-radius: 1px; transform: scale(1); }
+  .waybill-pick input:focus-visible { outline: 2px solid var(--focus-ring, var(--text-primary)); outline-offset: 2px; }
+  /* 列表头批量操作: 已选 N 条 + 导出, then a divider before the view tools. */
+  .waybill-bulk { display: inline-flex; align-items: center; gap: 10px; }
+  .waybill-bulk-count { color: var(--text-secondary); font-size: var(--fs-body); white-space: nowrap; }
+  .waybill-bulk-count[hidden] { display: none; }
+  .waybill-toolbar-actions .waybill-export-btn { height: 28px; min-height: 28px; padding: 0 10px; gap: 4px; }
+  .waybill-export-btn .feather { width: 13px; height: 13px; }
+  .waybill-toolbar-divider { width: 1px; height: 18px; background: var(--line-default); }
   .waybill-no-link { padding: 0; font: 500 var(--fs-body)/16px var(--font-num); color: var(--text-primary); cursor: pointer; white-space: nowrap; }
   .waybill-no-link:hover { color: var(--brand-red); }
   .waybill-source-label { display: block; margin-top: 2px; font-size: var(--fs-caption); color: var(--text-muted); }
@@ -109,7 +128,7 @@
   .waybill-col-date .waybill-cell-main { font-family: var(--font-num); font-variant-numeric: normal; overflow: visible; }
   .waybill-fee { font-family: var(--font-num); font-weight: 500; white-space: nowrap; color: var(--text-primary); }
   .waybill-col-status .waybill-cell-sub { padding-right: 12px; font-family: var(--font-ui); }
-  .waybill-table td.waybill-col-actions { padding-left: 12px; }
+  .waybill-table :is(th, td).waybill-col-actions { padding-left: 0; overflow: visible; white-space: nowrap; }
   .waybill-table td.waybill-col-status { padding-top: 10px; }
   .waybill-table td.waybill-col-photos { padding-top: 8px; }
   .waybill-row-actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
@@ -146,7 +165,7 @@
     .waybill-table th[data-col="status"] { width: 120px; }
     .waybill-table th[data-col="photos"] { width: 72px; }
     .waybill-table :is(th, td)[data-col="photos"] { padding-left: 8px; }
-    .waybill-table th[data-w="actions"] { width: 84px; }
+    .waybill-table th[data-w="actions"] { width: 44px; }
   }
   .waybill-detail-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
   .waybill-detail-dialog:not([open]) { display: none; }
@@ -220,7 +239,10 @@
     .waybill-table-shell { max-height: none; overflow: visible; }
     .waybill-table, .waybill-table tbody { display: block; }
     .waybill-table thead { display: none; }
-    .waybill-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; padding: 12px 16px; gap: 8px 12px; border-bottom: 1px solid var(--line); }
+    .waybill-table tbody tr { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; padding: 12px 16px; gap: 8px 12px; border-bottom: 1px solid var(--line); }
+    .waybill-table .waybill-col-pick { position: absolute; top: 0; right: 0; }
+    .waybill-table .waybill-col-pick .waybill-pick { width: 44px; height: 44px; }
+    .waybill-table .waybill-col-no { padding-right: 44px; }
     .waybill-table td { display: block; padding: 0; border: 0; min-width: 0; }
     .waybill-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: var(--fs-body); }
     .waybill-table .waybill-col-no { grid-column: 1 / -1; }
@@ -514,6 +536,11 @@
         <div class="waybill-meta-count"><span class="waybill-total">共 {{ pagination.total }} 条</span>&nbsp;&nbsp;显示 {{ pagination.offset + 1 if pagination.total else 0 }}–{{ pagination.offset + rows|length }}</div>
         <p class="waybill-refresh-status notice" data-waybill-refresh-status aria-live="polite" role="status" hidden></p>
         <div class="waybill-toolbar-actions">
+          <div class="waybill-bulk" data-waybill-bulk>
+            <span class="waybill-bulk-count" data-waybill-pick-count aria-live="polite" hidden></span>
+            <button class="ghost-btn waybill-export-btn" type="button" data-waybill-export disabled title="勾选运单后导出"><i data-feather="download"></i> 导出</button>
+          </div>
+          <span class="waybill-toolbar-divider" aria-hidden="true"></span>
           <select class="waybill-select" name="sort" form="waybillFilterForm" data-waybill-sort aria-label="排序方式">
             {% for item in sort_options %}
             <option value="{{ item.value }}" {% if filters.sort == item.value %}selected{% endif %}>{{ item.label }}</option>
@@ -556,6 +583,7 @@
         <table class="waybill-table">
           <thead>
             <tr>
+              <th class="waybill-col-pick" data-col="pick"><label class="waybill-pick"><input type="checkbox" data-waybill-pick-all aria-label="勾选本页全部运单"></label></th>
               <th class="waybill-col-no" data-col="no">运单号</th>
               <th class="waybill-col-date" data-col="date">开单日期</th>
               <th class="waybill-col-party" data-col="receiver">收货人</th>
@@ -572,6 +600,7 @@
           <tbody>
             {% for row in rows %}
             <tr data-waybill-row="{{ row.source }}:{{ row.id }}">
+              <td class="waybill-col-pick" data-col="pick"><label class="waybill-pick"><input type="checkbox" data-waybill-pick="{{ row.source }}:{{ row.id }}" aria-label="勾选 {{ row.waybill_no }}"></label></td>
               <td class="waybill-col-no" data-col="no">
                 <button class="waybill-no-link" type="button" data-waybill-select="{{ row.source }}:{{ row.id }}">{{ row.waybill_no }}</button>
                 <div class="waybill-source-label">{{ row.source_label }}</div>
@@ -598,7 +627,7 @@
               </td>
               <td class="waybill-col-status" data-col="status">{{ status_pill(row) }}{% if row.scan_status and not row.linked_status_note %}<div class="waybill-cell-sub" title="{{ row.scan_status }}">{{ row.scan_status }}</div>{% endif %}</td>
               <td class="waybill-col-photos" data-col="photos" data-label="签收 / 回单">{{ photo_slots(row) }}</td>
-              <td class="waybill-col-actions"><div class="waybill-row-actions"><button type="button" data-waybill-select="{{ row.source }}:{{ row.id }}" aria-label="查看 {{ row.waybill_no }} 详情">详情</button><a href="{{ row.tracking_url }}" data-console-navigate aria-label="跟踪 {{ row.waybill_no }} 轨迹">轨迹</a></div></td>
+              <td class="waybill-col-actions"><div class="waybill-row-actions"><a href="{{ row.tracking_url }}" data-console-navigate aria-label="跟踪 {{ row.waybill_no }} 轨迹">轨迹</a></div></td>
             </tr>
             {% endfor %}
           </tbody>
@@ -949,7 +978,7 @@
     const visible = new Set(selectedColumns());
     scope.querySelectorAll("[data-col]").forEach((cell) => {
       const key = cell.getAttribute("data-col");
-      if (!key || key === "no") return;
+      if (!key || key === "no" || key === "pick") return;
       cell.hidden = !visible.has(key);
     });
     scope.querySelectorAll("[data-col-toggle]").forEach((input) => {
@@ -1376,7 +1405,7 @@
     scope.querySelectorAll("[data-waybill-row]").forEach((row) => {
       row.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("a, button, form, input, select")) return;
+        if (target?.closest("a, button, form, input, select, label, .waybill-col-pick")) return;
         selectWaybill(scope, row.getAttribute("data-waybill-row"));
       });
     });
@@ -1733,6 +1762,94 @@
     input.addEventListener("change", go);
   }
 
+  // ③ 勾选与导出: checks survive paging and sorting of one query; a new query starts empty.
+  const picked = new Map();
+  let pickedQuery = "";
+
+  function waybillQueryKey() {
+    const params = new URLSearchParams(window.location.search);
+    ["page", "page_size", "sort", "message", "kind"].forEach((name) => params.delete(name));
+    params.sort();
+    return params.toString();
+  }
+
+  function renderPicks(scope) {
+    const boxes = Array.from(scope.querySelectorAll("[data-waybill-pick]"));
+    boxes.forEach((box) => {
+      box.checked = picked.has(box.dataset.waybillPick);
+      box.closest("tr")?.classList.toggle("is-picked", box.checked);
+    });
+    const all = scope.querySelector("[data-waybill-pick-all]");
+    if (all instanceof HTMLInputElement) {
+      const checkedOnPage = boxes.filter((box) => box.checked).length;
+      all.checked = boxes.length > 0 && checkedOnPage === boxes.length;
+      all.indeterminate = checkedOnPage > 0 && checkedOnPage < boxes.length;
+    }
+    const count = scope.querySelector("[data-waybill-pick-count]");
+    if (count) {
+      count.hidden = picked.size === 0;
+      count.textContent = `已选 ${picked.size} 条`;
+    }
+    const exportButton = scope.querySelector("[data-waybill-export]");
+    if (exportButton instanceof HTMLButtonElement && exportButton.dataset.busy !== "true") {
+      exportButton.disabled = picked.size === 0;
+      exportButton.title = picked.size ? `导出已勾选的 ${picked.size} 条运单` : "勾选运单后导出";
+    }
+  }
+
+  async function exportPicked(scope, button) {
+    if (!picked.size) return;
+    button.dataset.busy = "true";
+    button.disabled = true;
+    try {
+      const keys = Array.from(picked.keys()).join(",");
+      const response = await fetch(`/waybills/export.xlsx?${new URLSearchParams({ keys })}`, { credentials: "same-origin" });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.message || "导出失败，请稍后重试。");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = encoded ? decodeURIComponent(encoded) : "寄件运单.xlsx";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    } catch (error) {
+      setRefreshNotice(error.message || "导出失败，请稍后重试。", "warning");
+    } finally {
+      delete button.dataset.busy;
+      renderPicks(scope);
+    }
+  }
+
+  function bindPicks(scope) {
+    const queryKey = waybillQueryKey();
+    if (queryKey !== pickedQuery) { picked.clear(); pickedQuery = queryKey; }
+    renderPicks(scope);
+    scope.addEventListener("change", (event) => {
+      const box = event.target instanceof HTMLInputElement ? event.target : null;
+      if (!box) return;
+      if (box.matches("[data-waybill-pick-all]")) {
+        scope.querySelectorAll("[data-waybill-pick]").forEach((item) => {
+          const label = item.closest("tr")?.querySelector(".waybill-no-link")?.textContent?.trim() || "";
+          if (box.checked) picked.set(item.dataset.waybillPick, label);
+          else picked.delete(item.dataset.waybillPick);
+        });
+      } else if (box.matches("[data-waybill-pick]")) {
+        if (box.checked) picked.set(box.dataset.waybillPick, box.closest("tr")?.querySelector(".waybill-no-link")?.textContent?.trim() || "");
+        else picked.delete(box.dataset.waybillPick);
+      } else {
+        return;
+      }
+      renderPicks(scope);
+    });
+    scope.querySelector("[data-waybill-export]")?.addEventListener("click", (event) => exportPicked(scope, event.currentTarget));
+  }
+
   function bindWaybillSearch() {
     const current = panel();
     if (!current || current.dataset.ajaxBound === "true") return;
@@ -1744,6 +1861,7 @@
     bindColumnSettings(current);
     bindDetail(current);
     bindPhotoSlots(current);
+    bindPicks(current);
     bindPageJump(current);
     const moreFilters = current.querySelector('[data-popover-panel="filters"]');
     moreFilters?.addEventListener("change", () => {
