@@ -93,9 +93,11 @@ class ProblemBrowser:
     def upgrade(self, automation_id, artifact):
         self.open()
         card = self.card(automation_id)
-        card.locator('[data-extension-upgrade]').set_input_files({'name':'decision-update.zip','mimeType':'application/zip','buffer':artifact['bytes']})
+        card.locator('[data-extension-action="upgrade"]').click()
+        dialog = self.page.locator('[data-extension-upgrade-dialog]')
+        dialog.locator('[data-extension-upgrade]').set_input_files({'name':'decision-update.zip','mimeType':'application/zip','buffer':artifact['bytes']})
         with self.page.expect_response(lambda response:urlparse(response.url).path == f'/automations/plugins/{automation_id}/upgrade') as response:
-            card.locator('[data-extension-action="upgrade"]').click()
+            dialog.locator('[data-extension-upgrade-confirm]').click()
         body = response.value.json()
         if response.value.status != 200 or body.get('ok') is not True:
             raise AssertionError(f'actual plugin upgrade or rollback rejected: {body}')

@@ -84,10 +84,13 @@
               <div class="customer-service-calendar-grid" data-cs-calendar-grid></div>
             </div>
             <div class="customer-service-quick-ranges" aria-label="快捷日期范围">
-              <button class="customer-service-range-btn" type="button" data-cs-quick-range="1">今天</button>
-              <button class="customer-service-range-btn" type="button" data-cs-quick-range="3">近3天</button>
-              <button class="customer-service-range-btn" type="button" data-cs-quick-range="7">近7天</button>
-              <button class="customer-service-range-btn" type="button" data-cs-quick-range="clear">清空</button>
+              <button class="customer-service-range-btn" type="button" data-cs-quick-range="today">今天</button>
+              <button class="customer-service-range-btn" type="button" data-cs-quick-range="yesterday">昨天</button>
+              <button class="customer-service-range-btn" type="button" data-cs-quick-range="month">当月</button>
+            </div>
+            <div class="date-range-foot">
+              <button class="ghost-btn" type="button" data-cs-quick-range="clear">清空日期</button>
+              <button class="primary-btn" type="button" data-cs-date-done>完成</button>
             </div>
           </div>
         </div>
@@ -333,5 +336,5 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/customer_service.js?v=20261111-live-only"></script>
+<script src="/static/customer_service.js?v=20261113-range"></script>
 {% endblock %}

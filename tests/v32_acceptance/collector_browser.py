@@ -150,11 +150,13 @@ class CollectorBrowser:
     def upgrade(self, automation_id, artifact, *, expect_success=True):
         self.open_sources()
         card = self.card(automation_id)
-        card.locator("[data-extension-upgrade]").set_input_files(
+        card.locator('[data-extension-action="upgrade"]').click()
+        dialog = self.page.locator("[data-extension-upgrade-dialog]")
+        dialog.locator("[data-extension-upgrade]").set_input_files(
             {"name": "collector-update.zip", "mimeType": "application/zip", "buffer": artifact["bytes"]})
         with self.page.expect_response(lambda response: urlparse(response.url).path
                 == f"/automations/plugins/{automation_id}/upgrade") as response:
-            card.locator('[data-extension-action="upgrade"]').click()
+            dialog.locator("[data-extension-upgrade-confirm]").click()
         body = response.value.json()
         success = response.value.status == 200 and body.get("ok") is True
         if success != expect_success:

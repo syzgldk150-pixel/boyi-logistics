@@ -270,14 +270,14 @@ class WaybillQueryTemplateTests(unittest.TestCase):
         self.assertIn("data-date-range-picker", html)
         self.assertIn('type="hidden" name="date_from"', html)
         self.assertIn("data-calendar-grid", html)
-        self.assertIn('data-date-quick-range="1"', html)
-        self.assertIn('data-date-quick-range="3"', html)
-        self.assertIn('data-date-quick-range="7"', html)
-        self.assertIn("今天", html)
-        self.assertIn("3天", html)
-        self.assertIn("7天", html)
-        self.assertNotIn("commitRange(rangeStart, rangeEnd, { submit: true })", html)
-        self.assertIn("commitRange(rangeStart, rangeEnd);", html)
+        self.assertIn('data-date-quick-range="today"', html)
+        self.assertIn('data-date-quick-range="yesterday"', html)
+        self.assertIn('data-date-quick-range="month"', html)
+        self.assertIn("昨天", html)
+        self.assertIn("当月", html)
+        self.assertNotIn("3天</button>", html)
+        self.assertIn("BoyiDateRange?.bindMonthWheel(popover", html)
+        self.assertIn("commitRange(range[0], range[1]);", html)
         self.assertNotIn("waybill-summary-strip", html)
         self.assertIn("waybill-detail-dialog", html)
         self.assertIn("data-waybill-detail-template", html)
@@ -512,17 +512,24 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertEqual("2026/05/12", repository.calls[0]["filters"]["date_from"])
         self.assertEqual("2026/05/13", repository.calls[0]["filters"]["date_to"])
 
-    def test_keyword_without_dates_queries_today_for_platform_sources(self):
+    def test_keyword_searches_every_date_without_platform_query(self):
+        for list_read in (True, False):
+            with self.subTest(list_read=list_read):
+                self._assert_keyword_searches_every_date(list_read)
+
+    def _assert_keyword_searches_every_date(self, list_read):
         repository = _WaybillRepo()
         app = _build_waybill_app(repository)
-        handler = _RenderHandler(admin=True, list_read=True)
-        app._agent_request = lambda *args, **kwargs: self.fail("list read must not call Agent")
+        handler = _RenderHandler(admin=True, list_read=list_read)
+        app._agent_request = lambda *args, **kwargs: self.fail("keyword search must not call Agent")
 
         with patch.object(type(app), "_waybill_default_date", staticmethod(lambda: "2026/06/22")):
             app._render_waybills(
                 handler,
                 {
                     "q": ["2003441361"],
+                    "date_from": ["2026-06-22"],
+                    "date_to": ["2026-06-22"],
                     "page_size": ["50"],
                     "source": ["yunda"],
                     "payment_method": ["到付"],
@@ -531,11 +538,12 @@ class WaybillQueryRenderTests(unittest.TestCase):
             )
 
         self.assertEqual(1, len(repository.calls))
+        self.assertNotIn("data-waybill-ajax-panel data-waybill-live-pending", handler.wfile.getvalue().decode("utf-8"))
         self.assertEqual(
             {
                 "q": "2003441361",
-                "date_from": "2026/06/22",
-                "date_to": "2026/06/22",
+                "date_from": "",
+                "date_to": "",
                 "status": "all",
                 "source": "yunda",
                 "payment_method": "到付",

@@ -473,9 +473,9 @@
               </div>
               <div class="waybill-calendar-grid" data-calendar-grid></div>
               <div class="waybill-calendar-presets" aria-label="快捷日期范围">
-                <button class="waybill-calendar-preset" type="button" data-date-quick-range="1">今天</button>
-                <button class="waybill-calendar-preset" type="button" data-date-quick-range="3">3天</button>
-                <button class="waybill-calendar-preset" type="button" data-date-quick-range="7">7天</button>
+                <button class="waybill-calendar-preset" type="button" data-date-quick-range="today">今天</button>
+                <button class="waybill-calendar-preset" type="button" data-date-quick-range="yesterday">昨天</button>
+                <button class="waybill-calendar-preset" type="button" data-date-quick-range="month">当月</button>
               </div>
               <div class="waybill-calendar-foot">
                 <button class="ghost-btn" type="button" data-date-clear>清空日期</button>
@@ -900,6 +900,10 @@
         state.view = new Date(state.view.getFullYear(), state.view.getMonth() + 1, 1);
         renderCalendar();
       });
+      window.BoyiDateRange?.bindMonthWheel(popover, (step) => {
+        state.view = new Date(state.view.getFullYear(), state.view.getMonth() + step, 1);
+        renderCalendar();
+      });
       grid?.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target.closest("[data-date-value]") : null;
         if (!(target instanceof HTMLElement)) return;
@@ -923,10 +927,9 @@
       });
       picker.querySelectorAll("[data-date-quick-range]").forEach((button) => {
         button.addEventListener("click", () => {
-          const days = Math.max(Number(button.getAttribute("data-date-quick-range") || "1"), 1);
-          const rangeEnd = new Date();
-          const rangeStart = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate() - days + 1);
-          commitRange(rangeStart, rangeEnd);
+          const range = window.BoyiDateRange?.quickRange(button.getAttribute("data-date-quick-range") || "");
+          if (!range) return;
+          commitRange(range[0], range[1]);
           setOpen(false);
         });
       });
@@ -1875,11 +1878,16 @@
       const params = new URLSearchParams(new FormData(form));
       const pageSize = current.querySelector("[data-waybill-page-size]");
       if (pageSize instanceof HTMLSelectElement) params.set(pageSize.name, pageSize.value);
+      // A keyword searches every open date, so the date range is not sent.
+      const keywordSearch = Boolean((params.get("q") || "").trim());
+      if (keywordSearch) { params.delete("date_from"); params.delete("date_to"); }
       normalizeParams(params);
       url.search = params.toString();
       const activeQuery = event.submitter?.matches("[data-waybill-query]") === true;
-      if (activeQuery) queryLive(url);
-      else loadWaybills(url);
+      if (activeQuery && !keywordSearch) queryLive(url);
+      else loadWaybills(url, keywordSearch && activeQuery
+        ? { notice: { message: "已按关键词搜索全部日期（融辉、韵达为已同步的记录）", kind: "success" } }
+        : {});
     });
 
     current.querySelector("[data-waybill-page-size]")?.addEventListener("change", () => {

@@ -394,6 +394,7 @@
           data-project-configuration-version="{{ plugin.project_configuration_version }}"
           {% if task.plugin_schedule_sha256 %}data-project-schedule-sha256="{{ task.plugin_schedule_sha256 }}"{% endif %}
           data-current-version="{{ plugin.version }}"
+          data-instance-name="{{ task.name_value }}"
           aria-label="{{ task.name_value }} 插件实例"
         >
           <div class="automation-plugin-instance-main">
@@ -409,7 +410,6 @@
             <div class="extension-instance__actions">
               {% if plugin.settings_mode in ["custom", "accounts", "none"] or plugin.settings_ui %}<a class="ghost-btn" data-console-navigate href="/automations/{{ task.task_id | urlencode }}/settings"><i data-feather="settings"></i>设置</a>{% endif %}
               {% if plugin.flow_editable %}<a class="ghost-btn" data-console-navigate href="/automations/{{ task.task_id | urlencode }}/flow"><i data-feather="git-branch"></i>处理流程</a>{% endif %}
-              <label class="ghost-btn extension-upgrade"><span>选择更新包</span><input type="file" accept=".zip,application/zip" data-extension-upgrade {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}></label>
               <button class="ghost-btn" type="button" data-extension-action="upgrade" {% if not plugin.lifecycle_actions_allowed %}disabled{% endif %}>升级</button>
               {% if plugin.enabled %}<button class="ghost-btn" type="button" data-extension-action="disable" {% if not plugin.disable_allowed %}disabled{% endif %}>暂停</button>{% else %}<button class="ghost-btn" type="button" data-extension-action="enable" {% if not plugin.enable_allowed %}disabled{% endif %}>启用</button>{% endif %}
               <button class="ghost-btn extension-action--danger" type="button" data-extension-action="uninstall" {% if not plugin.uninstall_allowed %}disabled{% endif %}>卸载</button>
@@ -626,12 +626,33 @@
   {% endif %}
 </section>
 {% if can_manage_plugins %}{% include "_automation_extension_install_dialog.html" %}{% endif %}
+{% if can_manage_plugins %}
+<dialog class="extension-install-dialog extension-upgrade-dialog" data-extension-upgrade-dialog aria-labelledby="extension-upgrade-title">
+  <section class="extension-install-wizard">
+    <header class="extension-dialog-header">
+      <div><h2 id="extension-upgrade-title">升级插件</h2><p data-extension-upgrade-target>把新版本压缩包拖进来，确认后直接升级。</p></div>
+      <button class="extension-dialog-close" type="button" data-extension-upgrade-close aria-label="关闭升级窗口"><i data-feather="x"></i></button>
+    </header>
+    <label class="extension-dropzone" data-extension-upgrade-dropzone>
+      <input class="extension-package-input" type="file" accept=".zip,application/zip" data-extension-upgrade>
+      <span class="extension-dropzone__icon" aria-hidden="true"><i data-feather="upload"></i></span>
+      <strong>把更新包拖到这里</strong><span>也可以点击选择文件</span>
+      <small data-extension-upgrade-file-name>仅支持 .zip 文件</small>
+    </label>
+    <div class="extension-dialog-actions">
+      <p class="automation-plugin-feedback" data-extension-upgrade-feedback role="status" aria-live="polite" hidden></p>
+      <button class="ghost-btn" type="button" data-extension-upgrade-close>取消</button>
+      <button class="primary-btn" type="button" data-extension-upgrade-confirm disabled>确认升级</button>
+    </div>
+  </section>
+</dialog>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
 <script src="/static/module_data_sources.js?v=v32"></script>
 {{ super() }}
-<script src="/static/extensions.js?v=fab2a897f8f7b145"></script>
+<script src="/static/extensions.js?v=775244666e88e549"></script>
 <script>
 (() => {
   const pageRoot = document.querySelector(".main-content:not([hidden])");

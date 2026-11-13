@@ -869,10 +869,13 @@
               <div class="receipt-calendar-grid" data-receipt-calendar-grid></div>
             </div>
             <div class="receipt-quick-ranges" aria-label="快捷日期范围">
-              <button class="receipt-range-btn" type="button" data-receipt-quick-range="1">今天</button>
-              <button class="receipt-range-btn" type="button" data-receipt-quick-range="3">近3天</button>
-              <button class="receipt-range-btn" type="button" data-receipt-quick-range="7">近7天</button>
-              <button class="receipt-range-btn" type="button" data-receipt-quick-range="clear">清空</button>
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="today">今天</button>
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="yesterday">昨天</button>
+              <button class="receipt-range-btn" type="button" data-receipt-quick-range="month">当月</button>
+            </div>
+            <div class="date-range-foot">
+              <button class="ghost-btn" type="button" data-receipt-quick-range="clear">清空日期</button>
+              <button class="primary-btn" type="button" data-receipt-date-done>完成</button>
             </div>
           </div>
         </div>
@@ -2689,7 +2692,7 @@
       setDateRange(dateKey, "");
       return;
     }
-    setDateRange(from, dateKey, {closeOnComplete: true, syncMonth: false});
+    setDateRange(from, dateKey, {syncMonth: false});
   };
 
   renderDateRangeLabel();
@@ -2721,6 +2724,19 @@
     renderCalendar();
   });
 
+  window.BoyiDateRange?.bindMonthWheel(datePopover, (step) => {
+    calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + step, 1);
+    renderCalendar();
+  });
+
+  form?.querySelector("[data-receipt-date-done]")?.addEventListener("click", () => {
+    const from = dateFromInput?.value || "";
+    const to = dateToInput?.value || "";
+    // A single clicked day is a one-day range.
+    if (from && !to) setDateRange(from, from, {syncMonth: false});
+    closeDatePopover();
+  });
+
   page.querySelectorAll("[data-receipt-quick-range]").forEach((button) => {
     button.addEventListener("click", () => {
       const range = button.dataset.receiptQuickRange || "";
@@ -2728,12 +2744,9 @@
         setDateRange("", "");
         return;
       }
-      const days = Number(range);
-      if (!Number.isFinite(days) || days < 1) return;
-      const end = new Date();
-      const start = new Date();
-      start.setDate(end.getDate() - days + 1);
-      setDateRange(formatDate(start), formatDate(end), {closeOnComplete: true});
+      const quick = window.BoyiDateRange?.quickRange(range);
+      if (!quick) return;
+      setDateRange(formatDate(quick[0]), formatDate(quick[1]), {closeOnComplete: true});
     });
   });
 

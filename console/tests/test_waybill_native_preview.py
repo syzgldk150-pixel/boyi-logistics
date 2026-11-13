@@ -302,6 +302,7 @@ def test_history_loads_once_on_demand_and_escapes_saved_changes(query_page):
 
 def test_query_asks_platforms_first_and_list_navigation_does_not(query_page):
     page = query_page.page
+    page.locator('[data-waybill-filter-form] [name="q"]').fill("")  # platforms are queried only without a keyword
     assert query_page.source_requests == []
     page.locator("[data-waybill-query]").click()
     page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台查询')")
@@ -314,6 +315,7 @@ def test_query_asks_platforms_first_and_list_navigation_does_not(query_page):
     page.get_by_role("link", name="下一页", exact=True).click()
     page.wait_for_function("location.search.includes('page=2')")
     assert len(query_page.source_requests) == 1
+    page.locator('[data-waybill-filter-form] [name="q"]').fill("")
     page.locator("[data-waybill-query]").click()
     page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台查询')")
     assert len(query_page.source_requests) == 2
@@ -323,6 +325,7 @@ def test_query_asks_platforms_first_and_list_navigation_does_not(query_page):
 def test_incomplete_platform_answer_shows_reason_and_no_stored_rows(query_page):
     query_page.source_complete = False
     page = query_page.page
+    page.locator('[data-waybill-filter-form] [name="q"]').fill("")  # platforms are queried only without a keyword
     page.locator("[data-waybill-query]").click()
     page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.classList.contains('notice--warning')")
     assert "原平台数据未完整更新" in page.locator("[data-waybill-refresh-status]").inner_text()
@@ -335,6 +338,7 @@ def test_incomplete_platform_answer_shows_reason_and_no_stored_rows(query_page):
 def test_rows_are_hidden_until_the_platforms_answer(query_page):
     query_page.defer_refresh = True
     page = query_page.page
+    page.locator('[data-waybill-filter-form] [name="q"]').fill("")  # platforms are queried only without a keyword
     page.locator("[data-waybill-query]").click()
     page.wait_for_function("document.querySelector('.waybill-table-shell')?.textContent.includes('正在查询原平台最新数据')")
     assert page.locator("[data-waybill-row]").count() == 0
@@ -343,6 +347,18 @@ def test_rows_are_hidden_until_the_platforms_answer(query_page):
     page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('已按原平台查询')")
     assert page.locator("[data-waybill-row]").count() > 0
     assert len(query_page.list_requests) == 2
+    assert not query_page.errors
+
+
+def test_keyword_query_searches_every_date_without_platforms(query_page):
+    page = query_page.page
+    page.locator('[data-waybill-filter-form] [name="q"]').fill("synthetic")
+    page.locator("[data-waybill-query]").click()
+    page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')?.textContent.includes('全部日期')")
+    assert query_page.source_requests == []
+    assert "date_from" not in page.evaluate("location.search")
+    assert "q=synthetic" in page.evaluate("location.search")
+    assert page.locator("[data-waybill-row]").count() > 0
     assert not query_page.errors
 
 

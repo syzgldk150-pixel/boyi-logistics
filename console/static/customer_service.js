@@ -178,7 +178,7 @@
         setDateRange(dateKey, "");
         return;
       }
-      setDateRange(from, dateKey, { closeOnComplete: true, syncMonth: false });
+      setDateRange(from, dateKey, { syncMonth: false });
     }
 
     function renderCalendar() {
@@ -1552,6 +1552,17 @@
       calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
       renderCalendar();
     });
+    window.BoyiDateRange?.bindMonthWheel(datePopover, (step) => {
+      calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + step, 1);
+      renderCalendar();
+    });
+    $("[data-cs-date-done]")?.addEventListener("click", () => {
+      const from = dateFromInput?.value || "";
+      const to = dateToInput?.value || "";
+      // A single clicked day is a one-day range.
+      if (from && !to) setDateRange(from, from, { syncMonth: false });
+      closeDatePopover();
+    });
     $$("[data-cs-quick-range]").forEach((button) => {
       button.addEventListener("click", () => {
         const range = button.dataset.csQuickRange || "";
@@ -1559,12 +1570,9 @@
           setDateRange("", "");
           return;
         }
-        const days = Number(range);
-        if (!Number.isFinite(days) || days < 1) return;
-        const end = new Date();
-        const start = new Date();
-        start.setDate(end.getDate() - days + 1);
-        setDateRange(formatDate(start), formatDate(end), { closeOnComplete: true });
+        const quick = window.BoyiDateRange?.quickRange(range);
+        if (!quick) return;
+        setDateRange(formatDate(quick[0]), formatDate(quick[1]), { closeOnComplete: true });
       });
     });
     updateAccountSummary();

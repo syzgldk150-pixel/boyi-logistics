@@ -299,7 +299,13 @@ class WaybillsReceiptsServiceMixin:
             filters["sort"] = "open_date_desc"
         page = positive_int("page", 1)
         page_size = min(max(positive_int("page_size", 50), 10), 100)
-        if self._waybill_sync_providers(filters["source"]) and not (requested_date_from or requested_date_to) and (
+        # A keyword (运单号/电话/收货人/发货人) searches every open date: the date range is
+        # dropped and the stored records are read directly, since 融辉/韵达 are only queried by date.
+        keyword_search = bool(filters["q"])
+        if keyword_search:
+            requested_date_from = requested_date_to = ""
+            filters["date_from"] = filters["date_to"] = ""
+        if not keyword_search and self._waybill_sync_providers(filters["source"]) and not (requested_date_from or requested_date_to) and (
             filters["q"] or filters["payment_method"] or filters["delivery_method"]
             or filters["status"] != "all" or filters["source"] != "all"
         ):
@@ -370,12 +376,12 @@ class WaybillsReceiptsServiceMixin:
         # asks /waybills/source-refresh to backfill providers asynchronously.
         sync_status: dict[str, list[str]] = {"messages": [], "warnings": []}
         source_refresh: dict[str, str] | None = None
-        if has_active_filters:
+        if has_active_filters and not keyword_search:
             source_refresh, sync_status["warnings"] = self._waybill_source_refresh_plan(handler, filters)
         # Rows of 融辉/韵达 are shown only right after a live query (the browser's own list read).
         # A full page or tab load waits for that query instead of showing stored rows.
         list_read = str(getattr(handler, "headers", {}).get("X-Requested-With") or "") == "WaybillAjaxSearch"
-        provider_query = has_active_filters and bool(self._waybill_sync_providers(filters["source"]))
+        provider_query = has_active_filters and not keyword_search and bool(self._waybill_sync_providers(filters["source"]))
         live_pending = provider_query and source_refresh is not None and not list_read
 
         if has_active_filters and not live_pending and not (provider_query and source_refresh is None):

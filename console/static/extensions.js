@@ -433,11 +433,104 @@
     });
   };
 
+  // One page-level upgrade dialog: the card's 升级 button opens it for that card,
+  // the package is dropped or picked inside, and 确认升级 posts the same upgrade request.
+  const upgradeDialog = (() => {
+    const dialog = document.querySelector("[data-extension-upgrade-dialog]");
+    if (typeof HTMLDialogElement === "undefined" || !(dialog instanceof HTMLDialogElement)) return null;
+    const input = dialog.querySelector("[data-extension-upgrade]");
+    const dropzone = dialog.querySelector("[data-extension-upgrade-dropzone]");
+    const fileName = dialog.querySelector("[data-extension-upgrade-file-name]");
+    const target = dialog.querySelector("[data-extension-upgrade-target]");
+    const dialogFeedback = dialog.querySelector("[data-extension-upgrade-feedback]");
+    const confirmButton = dialog.querySelector("[data-extension-upgrade-confirm]");
+    const state = {file: null, requestId: "", submit: null, busy: false};
+
+    const setFile = (file) => {
+      state.file = file instanceof File && /\.zip$/i.test(file.name || "") ? file : null;
+      state.requestId = "";
+      if (fileName instanceof HTMLElement) {
+        fileName.textContent = state.file ? state.file.name : (file ? "仅支持 .zip 文件，请重新选择" : "仅支持 .zip 文件");
+      }
+      setFeedback(dialogFeedback, file && !state.file ? "请选择 .zip 格式的更新包。" : "", file && !state.file ? "error" : "");
+      if (confirmButton instanceof HTMLButtonElement) confirmButton.disabled = !state.file || state.busy;
+    };
+
+    const close = () => {
+      if (state.busy) return;
+      dialog.close();
+    };
+
+    input?.addEventListener("change", () => setFile(input instanceof HTMLInputElement ? input.files?.[0] || null : null));
+    if (dropzone instanceof HTMLElement) {
+      ["dragenter", "dragover"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          if (!state.busy) dropzone.classList.add("is-dragging");
+        });
+      });
+      ["dragleave", "drop"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, () => dropzone.classList.remove("is-dragging"));
+      });
+      dropzone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        if (state.busy) return;
+        const file = event.dataTransfer?.files?.[0] || null;
+        if (input instanceof HTMLInputElement && event.dataTransfer?.files) {
+          try { input.files = event.dataTransfer.files; } catch (_error) { /* read-only in old browsers */ }
+        }
+        setFile(file);
+      });
+    }
+    dialog.querySelectorAll("[data-extension-upgrade-close]").forEach((button) => button.addEventListener("click", close));
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) close(); });
+    dialog.addEventListener("cancel", (event) => { if (state.busy) event.preventDefault(); });
+
+    confirmButton?.addEventListener("click", async () => {
+      if (!(confirmButton instanceof HTMLButtonElement) || !state.file || !state.submit || state.busy) return;
+      // Keep the same request id when retrying the same file.
+      state.requestId = state.requestId || secureRequestId();
+      if (!state.requestId) {
+        setFeedback(dialogFeedback, "浏览器未提供安全请求标识，操作未提交。", "error");
+        return;
+      }
+      state.busy = true;
+      confirmButton.disabled = true;
+      confirmButton.textContent = "升级中…";
+      setFeedback(dialogFeedback);
+      try {
+        await state.submit(state.file, state.requestId);
+        state.busy = false;
+        state.requestId = "";
+        dialog.close();
+      } catch (error) {
+        setFeedback(dialogFeedback, error instanceof Error ? error.message : "升级失败，请重试。", "error");
+      } finally {
+        state.busy = false;
+        confirmButton.textContent = "确认升级";
+        confirmButton.disabled = !state.file;
+      }
+    });
+
+    return {
+      open(card, submit) {
+        state.submit = submit;
+        state.busy = false;
+        if (input instanceof HTMLInputElement) input.value = "";
+        setFile(null);
+        if (target instanceof HTMLElement) {
+          const name = card.dataset.instanceName || "当前插件";
+          const version = card.dataset.currentVersion || "";
+          target.textContent = `${name}${version ? `（当前版本 ${version}）` : ""}：把新版本压缩包拖进来，确认后直接升级。`;
+        }
+        dialog.showModal();
+      },
+    };
+  })();
+
   document.querySelectorAll("[data-extension-instance]").forEach((card) => {
     const feedback = card.querySelector("[data-extension-feedback]");
     const automationId = encodeURIComponent(card.dataset.automationId || "");
-    const upgradeInput = card.querySelector("[data-extension-upgrade]");
-    const upgradeButton = card.querySelector('[data-extension-action="upgrade"]');
 
     const updateLifecycleCard = (action, payload) => {
       const projection = payload?.data && typeof payload.data === "object" ? payload.data : {};
@@ -484,18 +577,45 @@
       setFeedback(feedback, payload?.message || "项目状态已更新。", "success");
     };
 
-    upgradeInput?.addEventListener("change", () => {
-      if (upgradeButton instanceof HTMLButtonElement) delete upgradeButton.dataset.requestId;
-      setFeedback(feedback);
-    });
+    const submitUpgrade = async (packageFile, requestId) => {
+      const recordVersion = Number(card.dataset.recordVersion || "0");
+      if (!automationId || !Number.isInteger(recordVersion) || recordVersion < 1) {
+        throw new Error("项目状态已失效，请刷新后重试。");
+      }
+      const body = new FormData();
+      body.set("package", packageFile);
+      body.set("request_id", requestId);
+      body.set("expected_record_version", String(recordVersion));
+      const response = await fetch(`/automations/plugins/${automationId}/upgrade`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "X-Browser-Request-UUID": requestId,
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(responseMessage(payload, "升级失败，请重试。"));
+      }
+      updateLifecycleCard("upgrade", payload);
+    };
 
     card.querySelectorAll("[data-extension-action]").forEach((button) => {
       button.addEventListener("click", async () => {
         if (!(button instanceof HTMLButtonElement)) return;
         const action = button.dataset.extensionAction || "";
+        if (action === "upgrade") {
+          setFeedback(feedback);
+          if (upgradeDialog) upgradeDialog.open(card, submitUpgrade);
+          else setFeedback(feedback, "升级窗口未加载，请刷新后重试。", "error");
+          return;
+        }
         const recordVersion = Number(card.dataset.recordVersion || "0");
         if (
-          !["upgrade", "enable", "disable", "uninstall"].includes(action)
+          !["enable", "disable", "uninstall"].includes(action)
           || !automationId
           || !Number.isInteger(recordVersion)
           || recordVersion < 1
@@ -516,40 +636,20 @@
           return;
         }
         button.dataset.requestId = requestId;
-        let body;
-        let headers;
-        if (action === "upgrade") {
-          const packageFile = upgradeInput?.files?.[0];
-          if (!(packageFile instanceof File) || !/\.zip$/i.test(packageFile.name || "")) {
-            delete button.dataset.requestId;
-            setFeedback(feedback, "请先选择扩展压缩包。", "error");
-            return;
-          }
-          body = new FormData();
-          body.set("package", packageFile);
-          body.set("request_id", requestId);
-          body.set("expected_record_version", String(recordVersion));
-          headers = {
-            Accept: "application/json",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          };
-        } else {
-          body = JSON.stringify(action === "uninstall"
-            ? {
-                request_id: requestId,
-                expected_record_version: recordVersion,
-                current_version: card.dataset.currentVersion || "",
-                confirm: true,
-              }
-            : {request_id: requestId, expected_record_version: recordVersion});
-          headers = {
-            Accept: "application/json",
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Browser-Request-UUID": requestId,
-            "X-Requested-With": "XMLHttpRequest",
-          };
-        }
+        const body = JSON.stringify(action === "uninstall"
+          ? {
+              request_id: requestId,
+              expected_record_version: recordVersion,
+              current_version: card.dataset.currentVersion || "",
+              confirm: true,
+            }
+          : {request_id: requestId, expected_record_version: recordVersion});
+        const headers = {
+          Accept: "application/json",
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Browser-Request-UUID": requestId,
+          "X-Requested-With": "XMLHttpRequest",
+        };
 
         button.disabled = true;
         try {
