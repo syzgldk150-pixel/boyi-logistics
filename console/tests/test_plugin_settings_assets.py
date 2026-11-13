@@ -96,11 +96,13 @@ def test_console_composition_reuses_authenticated_principal_and_fails_atomically
 
     app = SimpleNamespace(
         _automation_project_id=lambda value: value,
-        _control_plane_read_context=lambda handler: {"_console_principal": principal},
+        _control_plane_read_context=lambda handler: {"_console_principal": principal, "actor_roles": ["super_admin"]},
         _agent_binary_request=read,
         _control_plane_error=lambda *args: errors.append(args),
         _send_bytes=lambda *args, **kwargs: sent.append((args, kwargs)),
     )
+    app._settings_cache_lock = lambda: AutomationPluginManagementServiceMixin._settings_cache_lock(app)
+    app._settings_asset_bytes = lambda *args: AutomationPluginManagementServiceMixin._settings_asset_bytes(app, *args)
     AutomationPluginManagementServiceMixin._handle_automation_plugin_settings_asset(app, object(), "clockin", "index.html")
     assert len(reads) == 2
     if asset_available:

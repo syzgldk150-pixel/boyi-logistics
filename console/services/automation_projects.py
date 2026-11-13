@@ -113,6 +113,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Aut
         with lock:
             self._automation_catalog_cache = {}
             self._automation_catalog_cache_epoch = getattr(self, "_automation_catalog_cache_epoch", 0) + 1
+        self._clear_plugin_settings_caches()
 
     def _load_automation_plugin_catalog(
         self,

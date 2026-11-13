@@ -311,7 +311,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 插件管理不是固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的 `SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
 - `/settings/modules` 只重定向到 `/settings/accounts`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。原 `/settings/system-status` 页面、菜单与 `console.menu.system_status.view` 权限已删除（返回 404）。
 
-- 专属设置页桥接 `context` 只读 Agent `/internal/v1/automation/instances/{id}/settings-resources` 取资源池（2026-11-13 起），不再请求整个插件目录；后者要编译全部实例并解析飞书名称，曾使每次打开设置等待数秒。设置框加载期间显示“正在打开插件设置…”。桌面 `.main-content > * + *` 的间距重置不作用于 `dialog`，否则模态框贴顶（回归见 `tests/test_date_range_and_upgrade_browser.py`）。
+- 专属设置页桥接 `context` 只读 Agent `/internal/v1/automation/instances/{id}/settings-resources` 取资源池（2026-11-13 起），不再请求整个插件目录；后者要编译全部实例并解析飞书名称，曾使每次打开设置等待数秒。设置包文件（html/css/js）按（实例, 路径）在 Console 进程内缓存 10 分钟，安装、升级、启停、卸载等清目录缓存时一并清除；命中缓存时 Console 自行要求超级管理员。页面渲染取到的 settings-context 供同一桥接会话首次 `context` 复用一次（120 秒内），iframe 重载仍重读。2026-11-13 线上实测改前一次打开约 16 秒（整个目录 9.5 秒、其余 5 次 Agent 调用各 1.2–1.8 秒）。设置框加载期间显示“正在打开插件设置…”。桌面 `.main-content > * + *` 的间距重置不作用于 `dialog`，否则模态框贴顶（回归见 `tests/test_date_range_and_upgrade_browser.py`）。
 - 插件专属设置页必须先安装宿主消息监听器，再给隔离 iframe 设置 `src`，防止缓存子页的首次配置请求丢失；时序回归见 `tests/test_plugin_settings_initialization.py`，真实保存／改绑／历史恢复验收见 `../tests/v32_acceptance/custom_settings.py`。
 
 ## 架构 V1：寄件查询与验收

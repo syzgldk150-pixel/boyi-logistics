@@ -1,5 +1,7 @@
 """Console-side ZIP plugin upload and lifecycle management helpers."""
 
+import copy
+
 from shared.plugin_management import MODULE_PATHS, management_for
 
 from console.app_support import *  # noqa: F403
@@ -9,6 +11,13 @@ from shared.service_identity import (
     build_console_identity_headers,
 )
 
+
+# Settings package files are immutable for an installed version; install, upgrade and
+# uninstall clear this cache together with the catalog snapshot.
+_SETTINGS_ASSET_CACHE_SECONDS = 600.0
+_SETTINGS_ASSET_CACHE_MAX_ENTRIES = 256
+# The page render's settings-context is reused once by the frame's first bridge read.
+_SETTINGS_CONTEXT_REUSE_SECONDS = 120.0
 
 _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
     {
@@ -156,6 +165,7 @@ class AutomationPluginManagementServiceMixin:
             automation_id,
             actor_id,
         )
+        self._remember_settings_context(bridge_session, automation_id, result)
         template = self.template_env.get_template("automation_plugin_settings.html")
         body = template.render(
             app_title=self.settings.app_title,
@@ -175,6 +185,55 @@ class AutomationPluginManagementServiceMixin:
             ],
         )
         self._send_html(handler, body)
+
+    def _settings_cache_lock(self) -> threading.RLock:
+        lock = getattr(self, "_plugin_settings_cache_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._plugin_settings_cache_lock = lock
+        return lock
+
+    def _clear_plugin_settings_caches(self) -> None:
+        with self._settings_cache_lock():
+            self._plugin_settings_asset_cache = {}
+            self._plugin_settings_context_cache = {}
+
+    def _remember_settings_context(self, bridge_session: str, automation_id: str, result: dict[str, Any]) -> None:
+        with self._settings_cache_lock():
+            cache = getattr(self, "_plugin_settings_context_cache", {})
+            now = time.monotonic()
+            cache = {key: value for key, value in cache.items() if value[0] > now}
+            cache[bridge_session] = (now + _SETTINGS_CONTEXT_REUSE_SECONDS, automation_id, copy.deepcopy(result))
+            self._plugin_settings_context_cache = cache
+
+    def _take_settings_context(self, bridge_session: str, automation_id: str) -> dict[str, Any] | None:
+        with self._settings_cache_lock():
+            cached = getattr(self, "_plugin_settings_context_cache", {}).pop(bridge_session, None)
+        if cached is None or cached[0] <= time.monotonic() or cached[1] != automation_id:
+            return None
+        return cached[2]
+
+    def _settings_asset_bytes(self, automation_id: str, path: str, principal: Any) -> dict[str, Any]:
+        key = (automation_id, path)
+        now = time.monotonic()
+        with self._settings_cache_lock():
+            cached = getattr(self, "_plugin_settings_asset_cache", {}).get(key)
+            if cached is not None and cached[0] > now:
+                return {"ok": True, "data": cached[1], "content_type": cached[2]}
+        result = self._agent_binary_request(
+            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
+            f"/settings-assets/{quote(path, safe='/')}",
+            timeout=15,
+            console_principal=principal,
+        )
+        if result.get("ok") and isinstance(result.get("data"), bytes):
+            with self._settings_cache_lock():
+                cache = getattr(self, "_plugin_settings_asset_cache", {})
+                if len(cache) >= _SETTINGS_ASSET_CACHE_MAX_ENTRIES:
+                    cache = {}
+                cache[key] = (now + _SETTINGS_ASSET_CACHE_SECONDS, result["data"], str(result.get("content_type") or ""))
+                self._plugin_settings_asset_cache = cache
+        return result
 
     def _handle_automation_plugin_settings_asset(
         self,
@@ -200,15 +259,13 @@ class AutomationPluginManagementServiceMixin:
                 "插件设置资源地址无效。",
             )
             return
-        endpoint = (
-            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
-            f"/settings-assets/{quote(raw_path, safe='/')}"
-        )
-        result = self._agent_binary_request(
-            endpoint,
-            timeout=15,
-            console_principal=trusted_context["_console_principal"],
-        )
+        if "super_admin" not in list(trusted_context.get("actor_roles") or []):
+            # Cached files skip the Agent, so the page's own role rule is applied here.
+            self._control_plane_error(
+                handler, HTTPStatus.FORBIDDEN, "SUPER_ADMIN_REQUIRED", "只有超级管理员可以打开插件设置。",
+            )
+            return
+        result = self._settings_asset_bytes(automation_id, raw_path, trusted_context["_console_principal"])
         if not result.get("ok") or not isinstance(result.get("data"), bytes):
             self._control_plane_error(
                 handler,
@@ -242,11 +299,8 @@ class AutomationPluginManagementServiceMixin:
         nonce = secrets.token_urlsafe(24)
         if content_type == "text/html":
             def read_package_asset(path: str) -> tuple[bytes, str]:
-                asset_result = self._agent_binary_request(
-                    f"/internal/v1/automation/instances/{quote(automation_id, safe='')}"
-                    f"/settings-assets/{quote(path, safe='/')}",
-                    timeout=15,
-                    console_principal=trusted_context["_console_principal"],
+                asset_result = self._settings_asset_bytes(
+                    automation_id, path, trusted_context["_console_principal"],
                 )
                 if not asset_result.get("ok") or not isinstance(asset_result.get("data"), bytes):
                     raise SettingsAssetError("authenticated settings asset read failed")
@@ -400,7 +454,7 @@ class AutomationPluginManagementServiceMixin:
                 "读取设置上下文时不能提交业务参数。",
             )
             return
-        settings_result = self._agent_request(
+        settings_result = self._take_settings_context(values["bridge_session"], automation_id) or self._agent_request(
             "GET",
             f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/settings-context",
             timeout=15,
