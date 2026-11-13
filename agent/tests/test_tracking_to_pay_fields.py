@@ -38,3 +38,8 @@ def test_receipt_number_reaches_both_tracking_stubs():
     assert ronghui._build_waybill_stub(ronghui_detail, "R900000001")["receipt_number"] == "hd0000001"
     assert yunda._build_waybill_stub({"Logistics_Id": "900000001", "ReturnLogisticsId": "900000009"}, "900000001")["receipt_number"] == "900000009"
     assert ronghui._build_waybill_stub(ronghui._normalize_api_detail_row({"BILL_CODE": "R900000001"}, "R900000001"), "R900000001")["receipt_number"] == ""
+
+
+def test_yunda_latest_sign_deadline_notice_is_not_a_sign_scan():
+    assert yunda._infer_status("快件最晚应签收时间:2026-11-14 23:59:59") == ""
+    assert yunda._infer_status("快件已签收，签收人：本人") == "签收"

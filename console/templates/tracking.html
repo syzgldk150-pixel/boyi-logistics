@@ -527,6 +527,7 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+  .shipment-value-pill--signed { background: var(--status-success-soft) !important; color: var(--status-success) !important; }
   .shipment-value-pill {
     display: inline-flex;
     align-items: center;
@@ -1593,7 +1594,7 @@
       }
       var value = escapeHtml(displayValue(item.value)).replace(/\n/g, '<br>');
       if (item.badge) {
-        value = '<span class="shipment-value-pill">' + value + '</span>';
+        value = '<span class="shipment-value-pill' + (isSignedStatus(item.value) ? ' shipment-value-pill--signed' : '') + '">' + value + '</span>';
       }
       return '<div class="' + metricItemClassName(item) + '">' +
         '<div class="shipment-metric-label">' + escapeHtml(item.label) + '</div>' +
@@ -1685,20 +1686,27 @@
     return '';
   }
 
+  // 签收 / 已签收 count as signed; 未签收 and 应签收 (a deadline notice) do not.
+  function isSignedStatus(value) {
+    var text = String(value || '');
+    return /签收/.test(text) && !/未签收|应签收/.test(text);
+  }
+
   function signScanRow(data) {
     var best = null;
     (data.route_rows || []).forEach(function(row) {
       var kind = String((row && (row.scan_type || row.status)) || '');
       var text = String((row && row.description) || '');
-      var signed = /签收/.test(kind) ? !/未签收/.test(kind) : /已签收|完成签收|签收扫描/.test(text) && !/未签收/.test(text);
-      if (signed && (!best || String(row.scan_time || '') >= String(best.scan_time || ''))) best = row;
+      var signed = isSignedStatus(kind) || (/已签收|完成签收|签收扫描/.test(text) && !/未签收|应签收/.test(text));
+      if (signed && row.scan_time && (!best || String(row.scan_time || '') >= String(best.scan_time || ''))) best = row;
     });
     return best;
   }
 
-  function signSectionHtml(data) {
+  function signSectionHtml(data, model) {
     var platform = shipmentPlatform(data);
-    var row = platform ? signScanRow(data) : null;
+    // Only a waybill whose current status is signed, with a real sign-for scan, gets the block.
+    var row = platform && model && isSignedStatus(model.statusText) ? signScanRow(data) : null;
     if (!row) return '';
     var stub = data.waybill_stub || {};
     var fields = [
@@ -1890,7 +1898,7 @@
     }
     details.innerHTML = note + '<div class="shipment-details">' +
       renderShipmentDetailLayout(model) +
-      signSectionHtml(data) +
+      signSectionHtml(data, model) +
     '</div>';
     var signSection = details.querySelector('[data-sign-section]');
     if (signSection) loadSignPhotos(signSection);
@@ -1937,6 +1945,20 @@
     feather.replace();
   }
 
+  // Scans newest first; rows without a time (platform notices) go last, original order kept otherwise.
+  function newestFirst(rows) {
+    return rows.map(function(row, index) { return { row: row, index: index }; }).sort(function(a, b) {
+      var left = String((a.row && a.row.scan_time) || '');
+      var right = String((b.row && b.row.scan_time) || '');
+      if (left !== right) {
+        if (!left) return 1;
+        if (!right) return -1;
+        return left < right ? 1 : -1;
+      }
+      return b.index - a.index;
+    }).map(function(item) { return item.row; });
+  }
+
   // Index of the newest scan; times are "YYYY-MM-DD HH:MM:SS" and compare as text.
   function latestRouteIndex(rows) {
     var latest = -1;
@@ -1953,7 +1975,7 @@
 
   function renderShipmentResult(data, options) {
     options = options || {};
-    var routeRows = data.route_rows || [];
+    var routeRows = newestFirst(data.route_rows || []);
     renderTable(document.getElementById('shipmentRoutes'), routeColumnsForShipment(data), routeRows, '暂无路由信息', {
       latestIndex: routeRows.length > 1 ? latestRouteIndex(routeRows) : -1
     });

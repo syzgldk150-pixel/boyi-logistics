@@ -31,6 +31,18 @@
   .auto-quick-pill, .auto-quick-add { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 8px; border: 1px solid var(--line-default); border-radius: 8px; background: var(--bg-surface); color: var(--text-primary); font-size: var(--fs-body); white-space: nowrap; cursor: pointer; }
   .auto-quick-pill .feather { width: 16px; height: 16px; color: #565c66; }
   .auto-quick-pill:hover { border-color: var(--line-strong); }
+  /* Pill feedback: the icon turns while the card's own run works; the pill then says how it ended. */
+  .auto-quick-pill.is-running { cursor: progress; }
+  .auto-quick-pill.is-running .feather { color: var(--text-primary); animation: auto-quick-spin 1s linear infinite; }
+  .auto-quick-pill.is-done { border-color: var(--status-success); color: var(--status-success); }
+  .auto-quick-pill.is-done .feather { color: var(--status-success); }
+  .auto-quick-pill.is-pending { border-color: var(--status-warn); color: var(--status-warn); }
+  .auto-quick-pill.is-pending .feather { color: var(--status-warn); }
+  .auto-quick-pill.is-failed { border-color: var(--status-danger); color: var(--status-danger); }
+  .auto-quick-pill.is-failed .feather { color: var(--status-danger); }
+  @keyframes auto-quick-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .auto-quick-pill.is-running .feather { animation: auto-quick-pulse 1.4s ease-in-out infinite; } }
+  @keyframes auto-quick-pulse { 50% { opacity: .35; } }
   .auto-quick-add { border: 1px dashed var(--line-strong); color: var(--text-muted); }
   .auto-quick-add .feather { width: 12px; height: 12px; }
   .auto-quick-add:hover { color: var(--text-primary); }
@@ -1035,7 +1047,8 @@
       if (scanPreviewConfirm) scanPreviewConfirm.disabled = !canConfirm;
       if (scanPreviewRegenerate) scanPreviewRegenerate.hidden = canConfirm;
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      scanPreviewPanel.scrollIntoView({
+      // A 快捷执行 run stays where the user is; its pill says 待确认 and leads here.
+      if (form.closest("[data-automation-task-row]")?.dataset.quickRunning !== "true") scanPreviewPanel.scrollIntoView({
         behavior: reduceMotion ? "auto" : "smooth",
         block: "nearest",
       });
@@ -1192,7 +1205,7 @@
       if (selectionPreviewRegenerate) selectionPreviewRegenerate.hidden = canConfirm;
       syncSelectionPreviewCount();
       syncRunButtonVisual();
-      selectionPreviewPanel.scrollIntoView({
+      if (form.closest("[data-automation-task-row]")?.dataset.quickRunning !== "true") selectionPreviewPanel.scrollIntoView({
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
         block: "nearest",
       });
@@ -2684,29 +2697,109 @@
       }
     });
 
-    // A pill does exactly what the card's own start button does (执行 / 生成预览 / 读取候选).
+    // A pill does exactly what the card's own start button does (执行 / 生成预览 / 读取候选),
+    // in place: the page does not move; the pill animates and then shows how the run ended.
+    const PILL_STATES = {
+      running: { icon: "loader", label: "执行中" },
+      done: { icon: "check", label: "完成" },
+      pending: { icon: "alert-circle", label: "待确认" },  // stays until clicked
+      failed: { icon: "x-circle", label: "失败" },
+    };
+    const pillTimers = new Map();
+
+    function setPillState(pill, state, name) {
+      window.clearTimeout(pillTimers.get(pill.dataset.quickRun));
+      pill.classList.remove("is-running", "is-done", "is-pending", "is-failed");
+      const look = PILL_STATES[state] || { icon: "box", label: name };
+      if (state !== "pending") delete pill.dataset.quickPending;
+      if (state) pill.classList.add(`is-${state}`);
+      pill.toggleAttribute("aria-busy", state === "running");
+      pill.disabled = state === "running";
+      const icon = document.createElement("i");
+      icon.dataset.feather = look.icon;
+      icon.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = state ? look.label : name;
+      pill.replaceChildren(icon, label);
+      window.ConsoleUI?.refreshIcons?.(quickbar);
+      if (state && state !== "running" && state !== "pending") {
+        // The outcome stays on the pill for a moment, then the name comes back.
+        pillTimers.set(pill.dataset.quickRun, window.setTimeout(() => setPillState(pill, "", name), 6000));
+      }
+    }
+
+    function runOutcome(row) {
+      const visible = (selector) => Array.from(row.querySelectorAll(selector)).some((item) => !item.hidden);
+      if (visible("[data-scan-preview-panel], [data-selection-preview-panel]")) return "pending";
+      const feedback = Array.from(row.querySelectorAll("[data-run-feedback], [data-runtime-feedback-box]")).find((item) => !item.hidden);
+      const kind = /auto-feedback--(\w+)/.exec(feedback?.className || "")?.[1] || "";
+      if (/error|danger/.test(kind)) return "failed";
+      if (kind === "warning") return "pending";
+      return "done";
+    }
+
+    function watchRun(pill, row, run, name) {
+      let active = false;
+      row.dataset.quickRunning = "true";
+      const finish = (state, message) => {
+        delete row.dataset.quickRunning;
+        if (state === "pending") pill.dataset.quickPending = "true";
+        observer.disconnect();
+        window.clearTimeout(startGuard);
+        setPillState(pill, state, name);
+        setHint(message, state === "failed" || state === "pending");
+      };
+      const observer = new MutationObserver(() => {
+        const mode = run.dataset.runMode || "start";
+        if (mode !== "start") { active = true; return; }
+        if (!active) return;
+        const state = runOutcome(row);
+        finish(state, state === "done" ? `「${name}」已完成` : state === "pending" ? `「${name}」已生成预览，点「待确认」去确认` : `「${name}」执行失败，详情见卡片`);
+      });
+      observer.observe(run, { attributes: true, attributeFilter: ["data-run-mode"] });
+      // A request refused before any run starts never flips the button; read the card's answer instead.
+      const startGuard = window.setTimeout(() => {
+        if (active) return;
+        const state = runOutcome(row);
+        finish(state === "done" ? "failed" : state, state === "pending" ? `「${name}」需要在卡片中确认` : `「${name}」没有开始执行，详情见卡片`);
+      }, 15000);
+    }
+
     quickbar.addEventListener("click", (event) => {
       const pill = event.target instanceof Element ? event.target.closest("[data-quick-run]") : null;
-      if (!pill) return;
+      if (!pill || pill.disabled) return;
       const row = Array.from(pageRoot.querySelectorAll("[data-automation-task-row]")).find((item) => item.dataset.taskId === pill.dataset.quickRun);
+      const name = options.find((box) => box.value === pill.dataset.quickRun)?.dataset.quickName || pill.textContent.trim();
       if (!row) { setHint("这个插件已不在列表中，请重新添加。", true); return; }
-      const name = pill.textContent.trim();
-      if ((row.dataset.automationProvider || "ronghui") !== currentAutomationProvider()) {
-        setAutomationProvider(row.dataset.automationProvider || "ronghui");
+      if (pill.dataset.quickPending === "true") {
+        // 待确认: take the user to the card, where the preview is confirmed.
+        delete pill.dataset.quickPending;
+        setPillState(pill, "", name);
+        setHint("");
+        if ((row.dataset.automationProvider || "ronghui") !== currentAutomationProvider()) setAutomationProvider(row.dataset.automationProvider || "ronghui");
+        row.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+        return;
       }
-      const search = pageRoot.querySelector("[data-automation-search]");
-      if (row.hidden && search instanceof HTMLInputElement && search.value) { search.value = ""; applyListState(); }
-      row.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
       const run = row.querySelector("[data-run-now]");
+      const form = run?.form;
       if (!(run instanceof HTMLButtonElement) || run.disabled) {
+        setPillState(pill, "failed", name);
         setHint(`「${name}」${run?.title || run?.dataset.startDisabled || "当前不可执行"}`, true);
         return;
       }
       if (run.dataset.runMode && run.dataset.runMode !== "start") {
-        setHint(`「${name}」正在执行，结果见下方卡片`);
+        setHint(`「${name}」正在执行`);
         return;
       }
-      setHint(`已执行「${name}」，结果见下方卡片`);
+      if (form instanceof HTMLFormElement && !form.checkValidity()) {
+        setPillState(pill, "pending", name);
+        pill.dataset.quickPending = "true";
+        setHint(`「${name}」需要先在卡片中填写参数，点「待确认」前往`, true);
+        return;
+      }
+      setPillState(pill, "running", name);
+      setHint(`正在执行「${name}」`);
+      watchRun(pill, row, run, name);
       run.click();
     });
     renderPills();

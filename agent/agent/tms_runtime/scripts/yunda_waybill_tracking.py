@@ -413,6 +413,9 @@ def _description_from_row(row: dict[str, Any]) -> str:
 
 
 def _infer_status(description: str) -> str:
+    # "快件最晚应签收时间:…" is a deadline notice, not a sign-for scan.
+    if "\u5e94\u7b7e\u6536" in description:
+        return ""
     checks = (
         ("\u7b7e\u6536", "\u7b7e\u6536"),
         ("\u6b63\u5728\u6d3e\u4ef6", "\u6d3e\u4ef6"),

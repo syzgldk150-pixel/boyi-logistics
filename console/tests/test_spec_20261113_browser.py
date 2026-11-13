@@ -125,9 +125,12 @@ def test_signed_tracking_shows_sign_block_and_viewer(app, browser):
         page.goto(f"{ORIGIN}/tracking")
         page.fill("#trackingInput", "R900000003")
         page.click("#searchBtn")
+        # 扫描轨迹: newest scan on top.
+        assert page.locator("#shipmentRoutes tbody tr td:nth-child(2)").all_inner_texts()[:2] == ["2026-01-02 10:16:19最新", "2026-01-01 08:00:00"]
         page.locator('[data-shipment-tab="details"]').click()
         section = page.locator("[data-sign-section]")
         section.wait_for()
+        assert page.locator(".shipment-value-pill").evaluate("pill => pill.classList.contains('shipment-value-pill--signed')")
 
         fields = section.locator(".shipment-sign-field").evaluate_all(
             "els => els.map(el => [el.querySelector('dt').textContent, el.querySelector('dd').textContent])")
@@ -154,8 +157,15 @@ def test_signed_tracking_shows_sign_block_and_viewer(app, browser):
 
 
 def test_unsigned_tracking_has_no_sign_block(app, browser):
-    unsigned = json.loads(json.dumps(SIGNED_RONGHUI))
-    unsigned["data"]["route_rows"] = unsigned["data"]["route_rows"][:1]
+    # A Yunda waybill that has only arrived: its "最晚应签收时间" notice is not a sign-for scan.
+    unsigned = {"data": {
+        "type": "yunda", "tracking_number": "900000004", "summary": {"status": "到达"},
+        "waybill_stub": {"waybill_no": "900000004"},
+        "route_rows": [
+            {"scan_time": "", "status": "", "description": "快件最晚应签收时间:2026-01-04 23:59:59"},
+            {"scan_time": "2026-01-02 10:00:00", "status": "到达", "description": "快件到达【合成分拨中心】"},
+        ],
+    }}
     with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
         page = context.new_page()
         page.set_default_timeout(5000)
@@ -173,11 +183,13 @@ def test_unsigned_tracking_has_no_sign_block(app, browser):
 
         context.route("**/*", serve)
         page.goto(f"{ORIGIN}/tracking")
-        page.fill("#trackingInput", "R900000003")
+        page.fill("#trackingInput", "900000004")
         page.click("#searchBtn")
+        assert page.locator("#shipmentRoutes tbody tr td:first-child").all_inner_texts() == ["2026-01-02 10:00:00最新", "无数据"]
         page.locator('[data-shipment-tab="details"]').click()
         page.locator(".shipment-details").wait_for()
         assert page.locator("[data-sign-section]").count() == 0
+        assert not page.locator(".shipment-value-pill").evaluate("pill => pill.classList.contains('shipment-value-pill--signed')")
 
 
 QUICK_TASKS = [
@@ -242,7 +254,11 @@ def test_quick_bar_pins_and_runs_plugins(app, browser):
         assert saves == [{"automation_ids": ["receipt_demo", "quote_demo"]}]
         assert pills.all_inner_texts() == ["合成回单归集", "合成报价"]
 
+        # The pill runs the card in place: no scrolling, the icon animates, then the pill shows the outcome.
+        page.evaluate("window.scrollTo(0, 0)")
         pills.nth(1).click()
-        page.wait_for_function("document.querySelector('[data-quick-hint]').textContent.includes('合成报价')")
+        page.wait_for_function("document.querySelector('[data-quick-run=\"quote_demo\"]').textContent.trim() !== '执行中'", timeout=20000)
         assert runs == ["/automations/tasks/run-now"]
+        assert pills.nth(1).inner_text().strip() == "失败"
+        assert page.evaluate("window.scrollY") == 0
         assert not errors
