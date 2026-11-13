@@ -173,6 +173,7 @@ from agent.phase7_resource_import import (
 )
 from agent.runtime_config import load_agent_environment
 from harness_composition import build_read_only_harness_gateway, build_chat_text_queries
+from shared.connection_pool import PooledConnectionFactory
 from shared.identity_repository import IdentityRepository
 from agent.identity_access import authorize_console_request
 from agent.service_v2_process_runtime import (
@@ -700,7 +701,11 @@ async def lifespan(app: FastAPI):
     logger.info("Agent service starting instance_id=%s pid=%s", INSTANCE_ID, os.getpid())
 
     await runtime.init()
-    repository = OrchestrationRepository(_orchestration_connection)
+    # Identity checks and catalog/configuration transactions reuse idle connections:
+    # each fresh cross-region TLS connection costs about 0.27 s. Named locks still
+    # take the unpooled factory (see shared/connection_pool.py).
+    orchestration_connections = PooledConnectionFactory(_orchestration_connection)
+    repository = OrchestrationRepository(orchestration_connections)
     mysql_version = await asyncio.to_thread(repository.validate_mysql8)
     await asyncio.to_thread(repository.validate_schema)
     logger.info("Orchestration persistence ready mysql=%s", mysql_version)
@@ -824,7 +829,7 @@ async def lifespan(app: FastAPI):
         default_full_auto.get("changed", 0),
     )
     automation_project_policy_service = project_policy_service
-    project_policy_service.identity_access = IdentityRepository(_orchestration_connection)
+    project_policy_service.identity_access = IdentityRepository(orchestration_connections)
     agent_core.identity_access = project_policy_service.identity_access
     feishu_binding_service = FeishuBindingService(
         repository,
@@ -952,6 +957,7 @@ async def lifespan(app: FastAPI):
     bind_direct_business_service(None)
     await plugin_runtime.stop()
     await runtime.close()
+    orchestration_connections.close()
     automation_plugin_runtime = None
     automation_project_entrypoints = None
     feishu_binding_service = None

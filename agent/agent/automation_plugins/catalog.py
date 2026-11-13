@@ -623,6 +623,22 @@ class PluginCatalog:
         self._contribution_backend_status = contribution_backend_status
         self._connectors = connector_registry or ConnectorRegistry()
 
+    def require_in_one_snapshot(self, automation_id: str) -> PluginCatalogEntry:
+        """Fully verify one instance from a single batched snapshot read.
+
+        ``require`` alone opens separate transactions for the instance and its
+        configuration (each a new cross-region connection); a settings page
+        needs one entry, so its rows are read together in one transaction.
+        Nothing is kept after the call.
+        """
+
+        safe_automation_id = str(automation_id or "").strip()
+        with self.read_scope():
+            prefetch = getattr(self._repository, "prefetch_catalog_instances", None)
+            if callable(prefetch):
+                prefetch((safe_automation_id,))
+            return self.require(safe_automation_id)
+
     @staticmethod
     def _project_data_failure(
         exc: AutomationPluginError | ValueError | None = None,

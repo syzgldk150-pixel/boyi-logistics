@@ -112,7 +112,7 @@ V3.2 维护边界以 [docs/low_maintenance_v32.md](docs/low_maintenance_v32.md) 
 ## 安全与数据规则
 
 - MySQL 目标迁移与 TLS 连接统一由 `shared/mysql_connection.py` 管理；非敏感运行态目标配置同时覆盖 Agent/Console/迁移器，保留既有凭据加载方式。切换、核验和回退见 [RDS 迁移说明](docs/mysql_rds_migration.md)。
-- 生产库是跨地域 RDS（ECS 北京→RDS 杭州公网 TLS，单次往返约 35ms，新建连接约 0.27s）：批量写入的 VALUES 只用占位符，热路径不为不变数据重复建连接或事务；写入回执与写后核验不因性能省略。约束与实测见 [跨地域访问的性能约束](docs/mysql_rds_migration.md#跨地域访问的性能约束)。
+- 生产库是跨地域 RDS（ECS 北京→RDS 杭州公网 TLS，单次往返约 35ms，新建连接约 0.27s）：批量写入的 VALUES 只用占位符，热路径不为不变数据重复建连接或事务；写入回执与写后核验不因性能省略。Agent 编排事务与身份检查复用 `shared/connection_pool.py` 的空闲连接；命名锁仍用独立原始连接。约束与实测见 [跨地域访问的性能约束](docs/mysql_rds_migration.md#跨地域访问的性能约束)。
 
 - 永远不要读取、打印或提交 `.env`、凭据文件、私钥或其他敏感内容。
 - 密码、Token、Cookie、Authorization 和原始请求体不得写入日志、审计记录或异常输出。

@@ -197,8 +197,9 @@ class OrchestrationRepository:
         credential file or broker is changed without losing serialization.
         """
 
+        # Closing the connection is the lock fail-safe: never a pooled connection.
         return _acquire_account_execution_locks(
-            self._connection_factory,
+            getattr(self._connection_factory, "unpooled", self._connection_factory),
             self._cursor_factory,
             account_ids,
             timeout_seconds=timeout_seconds,

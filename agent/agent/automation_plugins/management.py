@@ -517,8 +517,14 @@ class AutomationPluginManagementService:
         """
 
         self._require_console_actor(actor, super_admin=True)
-        self._catalog.require(automation_id)
+        self._display_entry(automation_id)
         return self._managed_resource_projection()
+
+    def _display_entry(self, automation_id: str) -> Any:
+        """Settings pages verify their one instance from a single snapshot read."""
+
+        reader = getattr(self._catalog, "require_in_one_snapshot", None)
+        return reader(automation_id) if callable(reader) else self._catalog.require(automation_id)
 
     def _managed_resource_projection(self) -> dict[str, Any]:
         resources: list[dict[str, str]] = []
@@ -1367,7 +1373,7 @@ class AutomationPluginManagementService:
         """Return only the plugin-owned, credential-free settings projection."""
 
         self._require_console_actor(actor, super_admin=True)
-        entry = self._catalog.require(automation_id)
+        entry = self._display_entry(automation_id)
         code_owned_fields = set(
             code_owned_config_fields(
                 plugin_id=entry.plugin_id,
@@ -1633,7 +1639,7 @@ class AutomationPluginManagementService:
         """Read one verified package settings asset without exposing its path."""
 
         self._require_console_actor(actor, super_admin=True)
-        entry = self._catalog.require(automation_id)
+        entry = self._display_entry(automation_id)
         if entry.settings_ui is None or not entry.install_root:
             raise PluginNotFoundError("plugin settings asset is unavailable")
         raw_path = str(relative_path or "").replace("\\", "/").strip("/")
