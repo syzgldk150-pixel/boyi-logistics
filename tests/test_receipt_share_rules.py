@@ -71,7 +71,7 @@ def test_file_names_follow_the_template_exactly():
     second = rs.render_file_name(template, short_name="融辉", waybill_no="R00024388425", kind="sign",
                                  doc_date=None, seq=2, of=3)
     assert second == "融辉-R00024388425-签收图(2).jpg"  # several pictures of one kind never collide
-    dated = rs.render_file_name("{签收日期}_{运单号}_{单据类型}_{序号}.png", short_name="a/b", waybill_no="BY00025",
+    dated = rs.render_file_name("{开单日期}_{运单号}_{单据类型}_{序号}.png", short_name="a/b", waybill_no="BY00025",
                                 kind="sender_label", doc_date="2026-11-13", seq=2, of=3)
     assert dated == "20261113_BY00025_寄件单_2.png"
     assert "/" not in rs.render_file_name(template, short_name="a/b", waybill_no="X1", kind="receipt", doc_date=None, seq=1)

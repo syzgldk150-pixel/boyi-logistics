@@ -199,3 +199,138 @@ def mark_share_refresh(connection, share_id: int, *, state: str, message: str, n
         cursor.execute(
             "UPDATE receipt_shares SET refresh_state = %s, refresh_message = %s, last_refreshed_at = %s WHERE id = %s",
             (state, message[:500], now, int(share_id)))
+
+
+# ---------------------------------------------------------------------------
+# Management (Console): customers and links.
+
+class ShareConflict(RuntimeError):
+    """The row changed since the administrator loaded it, or a unique value is taken."""
+
+
+def list_customers(connection) -> list[dict[str, Any]]:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT id, code, name, short_name, match_json, is_active FROM receipt_share_customers "
+                       "ORDER BY is_active DESC, name")
+        rows = cursor.fetchall()
+    return [{**{key: row[key] for key in ("id", "code", "name", "short_name")}, "is_active": bool(row["is_active"]),
+             "match": normalize_match_rules(_json(row["match_json"]))} for row in rows]
+
+
+def get_customer(connection, customer_id: int) -> dict[str, Any] | None:
+    return next((item for item in list_customers(connection) if item["id"] == int(customer_id)), None)
+
+
+def save_customer(connection, *, customer_id: int | None, name: str, short_name: str, match: Mapping[str, Any],
+                  actor_id: str) -> int:
+    """Create or update a customer; the code is assigned once and never changes."""
+
+    match_text = json.dumps(normalize_match_rules(match), ensure_ascii=False)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT id FROM receipt_share_customers WHERE name = %s AND id <> %s", (name, int(customer_id or 0)))
+        if cursor.fetchone():
+            raise ShareConflict("已有同名客户。")
+        if customer_id is None:
+            cursor.execute(
+                "INSERT INTO receipt_share_customers (code, name, short_name, match_json, created_by) "
+                "VALUES (%s, %s, %s, %s, %s)", (f"tmp-{name}"[:32], name, short_name, match_text, actor_id))
+            cursor.execute("SELECT LAST_INSERT_ID() AS id")
+            customer_id = int(cursor.fetchone()["id"])
+            cursor.execute("UPDATE receipt_share_customers SET code = %s WHERE id = %s", (f"KH{customer_id:05d}", customer_id))
+        else:
+            cursor.execute("UPDATE receipt_share_customers SET name = %s, short_name = %s, match_json = %s WHERE id = %s",
+                           (name, short_name, match_text, int(customer_id)))
+            if cursor.rowcount == 0:
+                cursor.execute("SELECT id FROM receipt_share_customers WHERE id = %s", (int(customer_id),))
+                if not cursor.fetchone():
+                    raise ShareConflict("客户不存在。")
+    return int(customer_id)
+
+
+def sender_candidates(connection, keyword: str, *, limit: int = 30) -> list[dict[str, Any]]:
+    """Sender names containing ``keyword`` with how many waybills each has, to help write a rule."""
+
+    escaped = keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    counts: dict[tuple[str, str], int] = {}
+    for table in _WAYBILL_TABLES.values():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT sender_name, sender_phone, COUNT(*) AS n FROM {table} WHERE sender_name LIKE %s ESCAPE '!' "
+                "AND status <> 'cancelled' GROUP BY sender_name, sender_phone ORDER BY n DESC LIMIT %s",
+                (f"%{escaped}%", int(limit)))
+            for row in cursor.fetchall():
+                key = (str(row["sender_name"] or ""), str(row["sender_phone"] or ""))
+                counts[key] = counts.get(key, 0) + int(row["n"])
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    return [{"sender_name": name, "sender_phone": phone, "waybills": count} for (name, phone), count in ranked]
+
+
+def add_event(connection, *, share_id: int | None, customer_id: int | None, action: str, actor_id: str,
+              actor_name: str, detail: Mapping[str, Any]) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO receipt_share_events (share_id, customer_id, action, actor_id, actor_name, detail_json) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (share_id, customer_id, action, actor_id, actor_name[:128], json.dumps(dict(detail), ensure_ascii=False)))
+
+
+_LIST_COLUMNS = _SHARE_COLUMNS + ", (SELECT COUNT(*) FROM receipt_share_items i WHERE i.share_id = s.id) AS item_count"
+
+
+def list_shares(connection) -> list[dict[str, Any]]:
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT {_LIST_COLUMNS} FROM receipt_shares s JOIN receipt_share_customers c "
+                       "ON c.id = s.customer_id ORDER BY c.name, s.id DESC")
+        return [_share(row) for row in cursor.fetchall()]
+
+
+def get_share(connection, share_id: int, *, for_update: bool = False) -> dict[str, Any] | None:
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT {_SHARE_COLUMNS} FROM receipt_shares s JOIN receipt_share_customers c "
+                       "ON c.id = s.customer_id WHERE s.id = %s" + (" FOR UPDATE" if for_update else ""), (int(share_id),))
+        return _share(cursor.fetchone())
+
+
+def share_by_request(connection, request_id: str) -> dict[str, Any] | None:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT id FROM receipt_shares WHERE request_id = %s", (request_id,))
+        row = cursor.fetchone()
+    return get_share(connection, int(row["id"])) if row else None
+
+
+def create_share(connection, *, request_id: str, customer_id: int, scope: str, date_from: Any, date_to: Any,
+                 image_types: Sequence[str], naming_template: str, expires_at: datetime | None, actor_id: str,
+                 token_digest: Any, access_code_digest: Any) -> dict[str, Any]:
+    """Insert a link; ``token_digest(share_id, version)`` and ``access_code_digest(share_id)`` see the new id.
+
+    The link code depends on the row id, so the row is inserted with a
+    placeholder digest and completed before the caller commits.
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO receipt_shares (customer_id, request_id, token_sha256, scope, date_from, date_to, "
+            "image_types_json, naming_template, expires_at, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (int(customer_id), request_id, ("pending-" + request_id).ljust(64, "0")[:64], scope, date_from or None,
+             date_to or None, json.dumps(list(image_types)), naming_template, expires_at, actor_id))
+        cursor.execute("SELECT LAST_INSERT_ID() AS id")
+        share_id = int(cursor.fetchone()["id"])
+        cursor.execute("UPDATE receipt_shares SET token_sha256 = %s, access_code_sha256 = %s WHERE id = %s",
+                       (token_digest(share_id, 1), access_code_digest(share_id), share_id))
+    return get_share(connection, share_id)
+
+
+def update_share(connection, share_id: int, *, expected_version: int, **changes: Any) -> dict[str, Any]:
+    """Compare-and-set a link's status, expiry or code; unknown columns are refused."""
+
+    allowed = {"status", "expires_at", "token_version", "token_sha256", "access_code_sha256"}
+    if not changes or not set(changes) <= allowed:
+        raise ValueError("unsupported share change")
+    assignments = ", ".join(f"{column} = %s" for column in changes)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"UPDATE receipt_shares SET {assignments}, record_version = record_version + 1 "
+            "WHERE id = %s AND record_version = %s", (*changes.values(), int(share_id), int(expected_version)))
+        if cursor.rowcount != 1:
+            raise ShareConflict("这条链接已被修改，请刷新后重试。")
+    return get_share(connection, share_id)

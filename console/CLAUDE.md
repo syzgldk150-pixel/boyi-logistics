@@ -188,6 +188,13 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `app.py`
   - `database.py`
   - 页面入口 `/receipts` 使用本地 `receipt_records/receipt_attachments/receipt_audit_logs`。查询走普通 receipts-query，审核走 receipts-audit 直接业务动作；独立读回核验成功后才更新本地审核状态，未知结果不得伪造成功。不创建旧 Command/Run 或隐式写 iframe。
+- 改回单客户共享（规格 ⑩a/⑩b，对外页面 ⑩c 由独立共享服务承载）：
+  - `templates/receipt_shares.html`、`static/receipt_shares.js`、`static/receipt_shares.css`、`services/receipt_shares.py`、`routes/receipts.py`
+  - 入口 `/receipts/shares`，回单页卡头“客户共享”按钮只对持有 `receipt.share` 权限（`shared/identity_permissions.py`，可在身份管理中分配；超级管理员自带）的账号显示；应急 Basic Auth 明确拒绝。
+  - 规则只在 `../shared/receipt_share.py`，SQL 只在 `../shared/receipt_share_repository.py`；页面不自行拼文件名，命名示例经 `GET /receipts/shares/naming-example` 由与真实下载相同的函数生成。客户按发货人规则（名称／电话／地址，等于或包含）认定，“客户与规则”弹窗可查找发货人并试算匹配运单数。
+  - 链接码由部署期共享配置文件中的密钥推导（`RECEIPT_SHARE_TOKEN_SECRET`，文件路径见 `../shared/receipt_share_settings.py`），库里只存链接码与访问码的摘要；未配置密钥时不能生成或复制链接。访问码只在生成时显示一次，之后“复制”只复制链接。
+  - 写请求要求真实 MySQL 后台账号、同源、`X-Browser-Request-UUID` 与请求体一致；生成按请求 UUID 幂等，停用／启用／续期／重置按 `record_version` 做 CAS 并写 `receipt_share_events`。生成、启用、续期后经签名请求让 Agent 立即刷新该链接，失败不影响保存（每日定时仍会刷新）。
+  - 回归：`../tests/test_receipt_share_console_mysql.py`（真实 MySQL）、`tests/test_receipt_shares_browser.py`。
 - 改财务模块（复式记账总账，P1–P5 已完成）：
   - `templates/finance.html`、`static/finance.js`、`static/finance.css`
   - `routes/finance.py`、`services/finance_ledger.py`（总账接口）、`services/monitoring_finance.py`（`_render_finance`）

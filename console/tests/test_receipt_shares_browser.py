@@ -1,0 +1,172 @@
+"""Customer share page (spec ⑩a / ⑩b) in a real browser against stubbed endpoints."""
+import json
+from urllib.parse import parse_qs, urlparse
+
+from console.tests.test_manual_saved_print_flow import CONSOLE_DIR, ORIGIN, app as app, browser as browser
+
+SHARE = {
+    "id": 3, "record_version": 2, "customer_id": 1, "customer_name": "勇胜贸易有限公司", "customer_code": "KH00001",
+    "url": "https://r.example.test/r/AbCdEfGhIjKlMnOpQrStUv", "naming_template": "{客户简称}-{运单号}-{单据类型}.jpg",
+    "naming_label": "默认规则", "image_types": ["sign", "receipt"], "image_types_text": "签收图·回单图", "scope": "all",
+    "expires_text": "至 2026-12-31", "view_count": 128, "last_viewed_text": "11-13 14:02", "state": "active",
+    "state_label": "生效中", "has_access_code": False, "item_count": 12, "refresh_state": "ok",
+    "refresh_message": "运单 5 张，图片 12 张", "last_refreshed_text": "11-13 18:00",
+}
+CUSTOMER = {"id": 1, "code": "KH00001", "name": "勇胜贸易有限公司", "short_name": "勇胜", "is_active": True,
+            "match": {"mode": "any", "conditions": [{"field": "sender_name", "op": "eq", "value": "勇胜"}]}}
+DEFAULTS = {"naming_template": "{客户简称}-{运单号}-{单据类型}.jpg",
+            "naming_fields": ["客户简称", "运单号", "单据类型", "开单日期", "序号"],
+            "image_kinds": [{"value": "sender_label", "label": "寄件单"}, {"value": "sign", "label": "签收图"},
+                            {"value": "receipt", "label": "回单图"}],
+            "match_fields": [{"value": "sender_name", "label": "发货人"}, {"value": "sender_phone", "label": "发货电话"},
+                             {"value": "sender_address", "label": "发货地址"}]}
+
+
+def _listing(shares):
+    return {"configured": True, "shares": shares, "customers": [CUSTOMER], "defaults": DEFAULTS}
+
+
+def test_list_create_and_disable(app, browser):
+    state = {"shares": [dict(SHARE)], "posts": [], "errors": []}
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        context.grant_permissions(["clipboard-read", "clipboard-write"], origin=ORIGIN)
+        page = context.new_page()
+        page.set_default_timeout(5000)
+        page.on("pageerror", lambda error: state["errors"].append(str(error)))
+        page.on("dialog", lambda dialog: dialog.accept())
+
+        def serve(route):
+            parsed, request = urlparse(route.request.url), route.request
+            if parsed.netloc != "console.test":
+                return route.abort()
+            if parsed.path == "/receipts/shares" and request.method == "GET":
+                body = app.template_env.get_template("receipt_shares.html").render(app_title="测试", listing=_listing(state["shares"]))
+                return route.fulfill(content_type="text/html", body=body)
+            if parsed.path == "/receipts/shares/data":
+                return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": _listing(state["shares"])}))
+            if parsed.path == "/receipts/shares/naming-example":
+                template = parse_qs(parsed.query)["template"][0]
+                if "{运单号}" not in template:
+                    return route.fulfill(status=400, content_type="application/json",
+                                         body=json.dumps({"ok": False, "message": "命名规则必须包含 {运单号} 和 {单据类型}"}))
+                return route.fulfill(content_type="application/json", body=json.dumps(
+                    {"ok": True, "data": {"example": "勇胜-R00024388425-签收图.jpg"}}))
+            if request.method == "POST":
+                payload = request.post_data_json
+                state["posts"].append((parsed.path, payload, request.headers.get("x-browser-request-uuid")))
+                if parsed.path == "/receipts/shares":
+                    created = {**SHARE, "id": 4, "url": "https://r.example.test/r/NewLinkCodeNewLinkCode1", "has_access_code": True}
+                    state["shares"].insert(0, created)
+                    return route.fulfill(content_type="application/json", body=json.dumps(
+                        {"ok": True, "data": {"share": created, "access_code": payload["access_code"]}}))
+                if parsed.path.endswith("/disable"):
+                    state["shares"][-1].update(state="disabled", state_label="已停用", record_version=3)
+                    return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"share": state["shares"][-1]}}))
+            path = CONSOLE_DIR / parsed.path.lstrip("/")
+            if parsed.path.startswith("/static/") and path.is_file():
+                return route.fulfill(path=str(path))
+            return route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        page.goto(f"{ORIGIN}/receipts/shares")
+        row = page.locator("[data-share-rows] tr").first
+        cells = row.locator("td").all_inner_texts()
+        assert cells[0].split("\n") == ["勇胜贸易有限公司", "KH00001"] and cells[1] == "r.example.test/r/AbCdEfGhIjKlMnOpQrStUv"
+        assert cells[3:8] == ["签收图·回单图", "至 2026-12-31", "128 次", "生效中", "11-13 14:02"]
+        assert page.locator("[data-share-count]").inner_text() == "共 1 条"
+        widths = page.locator(".share-table col").evaluate_all("cols => cols.map(c => parseInt(c.style.width))")
+        assert widths == [168, 168, 156, 152, 104, 64, 76, 92, 82] and sum(widths) == 1062
+
+        row.get_by_role("button", name="复制").click()
+        assert page.evaluate("navigator.clipboard.readText()") == SHARE["url"]
+
+        page.locator(".share-card-head [data-share-open-create]").click()
+        dialog = page.locator("[data-share-create-dialog]")
+        box = dialog.bounding_box()
+        assert abs(box["x"] + box["width"] / 2 - 720) < 4 and abs(box["y"] + box["height"] / 2 - 450) < 4 and box["width"] == 720
+        page.wait_for_function("document.querySelector('[data-share-example]').textContent === '勇胜-R00024388425-签收图.jpg'")
+        kinds = dialog.locator("[data-share-kind]")
+        # A previous link of this customer pre-fills its image types.
+        assert kinds.evaluate_all("boxes => boxes.map(b => [b.value, b.checked])") == [["sender_label", False], ["sign", True], ["receipt", True]]
+        submit = dialog.locator("[data-share-create-submit]")
+        kinds.nth(1).uncheck(); kinds.nth(2).uncheck()
+        assert submit.is_disabled()  # at least one image type
+        kinds.nth(2).check()
+        dialog.locator("[data-share-template]").fill("{客户简称}.jpg")
+        page.wait_for_function("document.querySelector('[data-share-create-feedback]').dataset.kind === 'error'")
+        dialog.locator("[data-share-template]").fill(DEFAULTS["naming_template"])
+        dialog.locator("[data-share-code-random]").click()
+        code = dialog.locator("[data-share-code]").input_value()
+        assert len(code) == 4 and code.isdigit()
+        dialog.get_by_text("90 天").click()
+        submit.click()
+        page.wait_for_function("!document.querySelector('[data-share-create-dialog]').open")
+        path, body, uuid = state["posts"][-1]
+        assert path == "/receipts/shares" and uuid == body["request_id"]
+        assert {key: body[key] for key in ("customer_id", "scope", "image_types", "expires_days", "access_code", "naming_template")} == {
+            "customer_id": 1, "scope": "all", "image_types": ["receipt"], "expires_days": 90, "access_code": code,
+            "naming_template": DEFAULTS["naming_template"]}
+        assert page.evaluate("navigator.clipboard.readText()") == f"https://r.example.test/r/NewLinkCodeNewLinkCode1\n访问码：{code}"
+        assert page.locator("[data-share-rows] tr").count() == 2
+
+        page.locator("[data-share-rows] tr").nth(1).get_by_role("button", name="停用").click()
+        page.wait_for_function("document.querySelectorAll('.share-state--disabled').length === 1")
+        assert state["posts"][-1][0] == "/receipts/shares/3/disable" and state["posts"][-1][1]["record_version"] == 2
+        assert page.locator("[data-share-rows] tr").nth(1).get_by_role("button", name="启用").count() == 1
+
+        page.locator("[data-share-state-filter]").select_option("disabled")
+        assert page.locator("[data-share-rows] tr").count() == 1
+        assert state["errors"] == []
+
+
+def test_customer_rules_dialog_and_empty_state(app, browser):
+    posts, errors = [], []
+    with browser.new_context(viewport={"width": 1280, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+        page.on("pageerror", lambda error: errors.append(str(error)))
+
+        def serve(route):
+            parsed, request = urlparse(route.request.url), route.request
+            if parsed.netloc != "console.test":
+                return route.abort()
+            if parsed.path == "/receipts/shares" and request.method == "GET":
+                return route.fulfill(content_type="text/html", body=app.template_env.get_template("receipt_shares.html").render(
+                    app_title="测试", listing={**_listing([]), "customers": []}))
+            if parsed.path == "/receipts/shares/data":
+                return route.fulfill(content_type="application/json", body=json.dumps(
+                    {"ok": True, "data": _listing([]) if posts else {**_listing([]), "customers": []}}))
+            if parsed.path == "/receipts/shares/senders":
+                return route.fulfill(content_type="application/json", body=json.dumps(
+                    {"ok": True, "data": [{"sender_name": "勇胜", "sender_phone": "07315186128", "waybills": 26}]}))
+            if request.method == "POST":
+                posts.append((parsed.path, request.post_data_json))
+                data = {"matching_waybills": 26, "capped": False, "sample": ["R00024852187"]} if parsed.path.endswith("/preview") \
+                    else {"customer_id": 1, "matching_waybills": 26}
+                return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": data}))
+            path = CONSOLE_DIR / parsed.path.lstrip("/")
+            if parsed.path.startswith("/static/") and path.is_file():
+                return route.fulfill(path=str(path))
+            return route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        page.goto(f"{ORIGIN}/receipts/shares")
+        assert page.locator("[data-share-empty]").is_visible() and "还没有共享链接" in page.locator("[data-share-empty]").inner_text()
+        page.locator(".share-card-head [data-share-open-customers]").click()
+        dialog = page.locator("[data-share-customer-dialog]")
+        dialog.locator("[data-share-customer-name]").fill("勇胜贸易有限公司")
+        dialog.locator("[data-share-customer-short]").fill("勇胜")
+        dialog.locator("[data-share-sender-keyword]").fill("勇胜")
+        dialog.locator("[data-share-sender-search]").click()
+        dialog.get_by_role("button", name="按名称加规则").click()
+        dialog.locator(".share-rule").first.get_by_role("button", name="删除这条规则").click()  # the empty starter rule
+        dialog.locator("[data-share-rule-preview]").click()
+        page.wait_for_function("document.querySelector('[data-share-customer-feedback]').textContent.includes('26 张运单')")
+        dialog.get_by_role("button", name="保存客户").click()
+        page.wait_for_function("document.querySelector('[data-share-customer-feedback]').textContent.includes('已保存')")
+        path, body = posts[-1]
+        assert path == "/receipts/shares/customers"
+        assert {key: body[key] for key in ("customer_id", "name", "short_name", "match")} == {
+            "customer_id": None, "name": "勇胜贸易有限公司", "short_name": "勇胜",
+            "match": {"mode": "any", "conditions": [{"field": "sender_name", "op": "eq", "value": "勇胜"}]}}
+        assert errors == []

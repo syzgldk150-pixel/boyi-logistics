@@ -910,6 +910,7 @@
         </div>
       </div>
       <div class="receipt-toolbar-actions">
+        {% if can_share %}<a class="ghost-btn" href="/receipts/shares" data-console-navigate><i data-feather="share-2"></i> 客户共享</a>{% endif %}
         <button class="ghost-btn" type="button" data-receipt-download-images>
           <i data-feather="download"></i> <span data-receipt-download-label>下载图片</span>
         </button>

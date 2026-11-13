@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block body_class %}receipts-page-body{% endblock %}
+{% block title %}客户共享 | {{ app_title }}{% endblock %}
+{% block breadcrumb %}客户共享{% endblock %}
+{% block subtitle %}回单管理 / 按客户单位生成只读的图片共享链接{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="/static/receipt_shares.css?v=20261114-a">
+<div class="share-page" data-share-page>
+  <div class="share-notice">
+    <span class="share-notice-icon" aria-hidden="true">i</span>
+    <span>链接是只读的：客户只能看到自己单位的图片，不能进入后台。停用或重置后，旧链接立即失效。</span>
+    <a class="share-notice-link" href="/receipts" data-console-navigate>返回回单管理</a>
+  </div>
+  <p class="share-warning" data-share-unconfigured {% if listing.configured %}hidden{% endif %}>
+    服务器还没有配置共享链接密钥，暂时不能生成或复制链接。
+  </p>
+
+  <section class="share-card" aria-label="客户共享链接">
+    <header class="share-card-head">
+      <div class="share-card-title"><strong>客户共享链接</strong><span data-share-count>共 0 条</span></div>
+      <div class="share-card-actions">
+        <label class="share-search"><i data-feather="search"></i>
+          <input type="search" placeholder="搜索客户或链接" aria-label="搜索客户或链接" data-share-search></label>
+        <select class="share-filter" aria-label="按状态筛选" data-share-state-filter>
+          <option value="">全部状态</option><option value="active">生效中</option>
+          <option value="expired">已过期</option><option value="disabled">已停用</option>
+        </select>
+        <button class="ghost-btn" type="button" data-share-open-customers>客户与规则</button>
+        <button class="primary-btn" type="button" data-share-open-create><i data-feather="plus"></i>新建共享链接</button>
+      </div>
+    </header>
+    <div class="share-table-wrap">
+      <table class="share-table">
+        <colgroup><col style="width:168px"><col style="width:168px"><col style="width:156px"><col style="width:152px">
+          <col style="width:104px"><col style="width:64px"><col style="width:76px"><col style="width:92px"><col style="width:82px"></colgroup>
+        <thead><tr><th>客户单位</th><th>共享链接</th><th>命名规则</th><th>图片类型</th><th>有效期</th><th>访问</th>
+          <th>状态</th><th>最近访问</th><th>操作</th></tr></thead>
+        <tbody data-share-rows></tbody>
+      </table>
+      <div class="share-empty" data-share-empty hidden>
+        <p class="share-empty-title">还没有共享链接</p>
+        <button class="primary-btn" type="button" data-share-open-create>新建共享链接</button>
+      </div>
+    </div>
+  </section>
+  <p class="share-toast" role="status" aria-live="polite" data-share-toast hidden></p>
+</div>
+
+<dialog class="share-dialog" data-share-create-dialog aria-labelledby="share-create-title">
+  <form class="share-dialog-box" data-share-create-form novalidate>
+    <header class="share-dialog-head"><h2 id="share-create-title">新建客户共享链接</h2>
+      <button class="share-dialog-close" type="button" aria-label="关闭" data-share-close><i data-feather="x"></i></button></header>
+    <div class="share-dialog-body">
+      <div class="share-field">
+        <label for="share-customer">客户单位 <em>*</em></label>
+        <select id="share-customer" data-share-customer required></select>
+        <p class="share-hint">链接只展示该客户单位下的图片 <button class="share-link-btn" type="button" data-share-open-customers>维护客户与规则</button></p>
+      </div>
+      <fieldset class="share-field share-inline">
+        <legend>共享范围</legend>
+        <label><input type="radio" name="scope" value="all" checked> 全部回单</label>
+        <label><input type="radio" name="scope" value="approved"> 仅审核通过</label>
+        <label><input type="radio" name="scope" value="by_date"> 按发货日期</label>
+        <span class="share-dates" data-share-dates hidden>
+          <input type="date" aria-label="开始日期" data-share-date-from> 至 <input type="date" aria-label="结束日期" data-share-date-to>
+        </span>
+      </fieldset>
+      <fieldset class="share-field share-inline">
+        <legend>图片类型</legend>
+        <span data-share-kinds></span>
+        <span class="share-hint share-hint-right">至少选一项，客户按类型筛选</span>
+      </fieldset>
+      <fieldset class="share-field share-inline">
+        <legend>链接有效期</legend>
+        <span class="share-pills" data-share-expiry>
+          <label><input type="radio" name="expires_days" value="7"><span>7 天</span></label>
+          <label><input type="radio" name="expires_days" value="30" checked><span>30 天</span></label>
+          <label><input type="radio" name="expires_days" value="90"><span>90 天</span></label>
+          <label><input type="radio" name="expires_days" value="0"><span>长期有效</span></label>
+        </span>
+      </fieldset>
+      <div class="share-field">
+        <label for="share-code">访问码（可选）</label>
+        <div class="share-code-row">
+          <input id="share-code" maxlength="4" autocomplete="off" inputmode="latin" data-share-code>
+          <button class="ghost-btn" type="button" data-share-code-random>随机生成</button>
+          <span class="share-hint">不设置则凭链接直接访问</span>
+        </div>
+      </div>
+      <div class="share-field">
+        <label for="share-template">命名规则 <em>*</em></label>
+        <div class="share-naming">
+          <span class="share-naming-label">文件名模板</span>
+          <input id="share-template" maxlength="160" autocomplete="off" data-share-template>
+          <div class="share-chips" data-share-chips></div>
+          <p class="share-example"><span>示例</span><strong data-share-example></strong><span>（客户下载时按此命名）</span></p>
+        </div>
+      </div>
+    </div>
+    <footer class="share-dialog-foot">
+      <span class="share-foot-note" data-share-create-feedback>生成后可在列表随时停用或重置</span>
+      <button class="ghost-btn" type="button" data-share-close>取消</button>
+      <button class="primary-btn" type="submit" data-share-create-submit>生成链接</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog class="share-dialog share-dialog--customers" data-share-customer-dialog aria-labelledby="share-customer-title">
+  <form class="share-dialog-box" data-share-customer-form novalidate>
+    <header class="share-dialog-head"><h2 id="share-customer-title">客户与发货人规则</h2>
+      <button class="share-dialog-close" type="button" aria-label="关闭" data-share-close><i data-feather="x"></i></button></header>
+    <div class="share-dialog-body">
+      <div class="share-field">
+        <label for="share-customer-pick">客户</label>
+        <select id="share-customer-pick" data-share-customer-pick></select>
+      </div>
+      <div class="share-field share-two">
+        <label>客户全称 <em>*</em><input maxlength="160" data-share-customer-name></label>
+        <label>客户简称 <em>*</em><input maxlength="40" placeholder="用于文件名" data-share-customer-short></label>
+      </div>
+      <div class="share-field">
+        <label>发货人匹配规则 <em>*</em></label>
+        <p class="share-hint">运单的发货人符合规则，就算这个客户的单。
+          <label class="share-mode"><input type="radio" name="match_mode" value="any" checked> 满足任意一条</label>
+          <label class="share-mode"><input type="radio" name="match_mode" value="all"> 同时满足全部</label></p>
+        <div class="share-rules" data-share-rules></div>
+        <button class="ghost-btn" type="button" data-share-rule-add>添加一条规则</button>
+      </div>
+      <div class="share-field">
+        <label for="share-sender-search">查找发货人（帮助填写规则）</label>
+        <div class="share-code-row">
+          <input id="share-sender-search" placeholder="输入发货人名称的一部分" data-share-sender-keyword>
+          <button class="ghost-btn" type="button" data-share-sender-search>查找</button>
+        </div>
+        <ul class="share-senders" data-share-senders></ul>
+      </div>
+    </div>
+    <footer class="share-dialog-foot">
+      <span class="share-foot-note" data-share-customer-feedback></span>
+      <button class="ghost-btn" type="button" data-share-rule-preview>试算匹配运单</button>
+      <button class="ghost-btn" type="button" data-share-close>关闭</button>
+      <button class="primary-btn" type="submit">保存客户</button>
+    </footer>
+  </form>
+</dialog>
+<script id="share-listing" type="application/json">{{ listing | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/receipt_shares.js?v=20261114-a"></script>
+{% endblock %}

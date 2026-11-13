@@ -26,7 +26,7 @@ MATCH_OPS: tuple[str, ...] = ("eq", "contains")
 MAX_MATCH_CONDITIONS = 20
 
 DEFAULT_NAMING_TEMPLATE = "{客户简称}-{运单号}-{单据类型}.jpg"
-NAMING_FIELDS: tuple[str, ...] = ("客户简称", "运单号", "单据类型", "签收日期", "序号")
+NAMING_FIELDS: tuple[str, ...] = ("客户简称", "运单号", "单据类型", "开单日期", "序号")
 _TEMPLATE_FIELD = re.compile(r"\{([^{}]*)\}")
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{22}")
@@ -166,7 +166,7 @@ def render_file_name(template: str, *, short_name: str, waybill_no: str, kind: s
     else:
         date_text = re.sub(r"\D", "", str(doc_date or ""))[:8]
     values = {"客户简称": short_name, "运单号": waybill_no, "单据类型": IMAGE_KIND_LABELS[kind],
-              "签收日期": date_text, "序号": str(int(seq))}
+              "开单日期": date_text, "序号": str(int(seq))}
     name = _TEMPLATE_FIELD.sub(lambda match: _UNSAFE_FILENAME.sub("_", str(values[match.group(1)])), template)
     if int(of) > 1 and "{序号}" not in template:
         stem, dot, extension = name.rpartition(".")

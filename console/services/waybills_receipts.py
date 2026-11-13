@@ -538,6 +538,7 @@ class WaybillsReceiptsServiceMixin:
             db_error=db_error,
             message=query.get("message", [""])[0],
             message_kind=query.get("kind", ["info"])[0],
+            can_share=self._can_manage_receipt_shares(handler),
         )
         self._send_html(handler, body)
 

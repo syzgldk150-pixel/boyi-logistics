@@ -11,9 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -22,31 +20,16 @@ from agent.tms_runtime.receipts_query import fetch_receipt_image_async
 from agent.tms_runtime.waybill_photos import query_waybill_photos_async
 from shared.receipt_image_sources import fetch_public_receipt_image
 from shared.receipt_nas_store import ReceiptNasStore
+from shared.receipt_share_settings import SETTINGS_FILE_ENV, load_share_settings  # noqa: F401
 
 logger = logging.getLogger("agent.receipt_share")
 
-SETTINGS_FILE_ENV = "BOYI_RECEIPT_SHARE_ENV_FILE"
-DEFAULT_SETTINGS_FILE = "~/.boyi-receipt-share/nas.env"
 NAS_FOLDER = "/团队文件-物流共享资料/回单归档"
 CHINA = ZoneInfo("Asia/Shanghai")
 DAILY_RUNS = ((12, 0), (18, 0), (23, 0))
 # While waybills are still waiting to be read, continue this soon instead of at the next daily run.
 BACKLOG_INTERVAL_SECONDS = 600
 PLATFORM_READ_TIMEOUT_SECONDS = 60
-
-
-def load_share_settings(path: str | None = None) -> dict[str, str] | None:
-    """Read ``KEY=value`` lines of the share settings file; ``None`` when it does not exist."""
-
-    target = Path(path or os.environ.get(SETTINGS_FILE_ENV) or DEFAULT_SETTINGS_FILE).expanduser()
-    if not target.is_file():
-        return None
-    settings: dict[str, str] = {}
-    for line in target.read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.partition("=")
-        if separator and key.strip() and not key.lstrip().startswith("#"):
-            settings[key.strip()] = value
-    return settings
 
 
 def nas_store_from_settings(settings: Mapping[str, str], *, role: str) -> ReceiptNasStore:

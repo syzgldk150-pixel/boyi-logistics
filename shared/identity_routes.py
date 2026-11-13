@@ -30,6 +30,8 @@ def console_permission(method: str, path: str) -> str:
         return "finance.read" if read else "finance.manage"
     if _under(path, "/customer-service") or _under(path, "/modules/customer-service") or path == "/module-data-sources/customer_service":
         return "customer_service"
+    if _under(path, "/receipts/shares"):
+        return "receipt.share"  # customer share links expose customer data outside the company
     if _under(path, "/tracking") or _under(path, "/receipts"):
         return "customer_service" if path.endswith("/audit") else "business.query"
     if path == "/waybills/source-refresh":
@@ -82,6 +84,8 @@ def agent_permission(method: str, path: str) -> str:
         return "accounts.manage"
     if _under(path, "/internal/v1/admin/customer-service"):
         return "customer_service"
+    if _under(path, "/internal/v1/admin/receipt-shares"):
+        return "receipt.share"
     if _under(path, "/internal/v1/admin/finance"):
         return "finance.read" if read else "finance.manage"
     if path.startswith("/internal/v1/automation-projects/module-slots/waybill-entry"):
