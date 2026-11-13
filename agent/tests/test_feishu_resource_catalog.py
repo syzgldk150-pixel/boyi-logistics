@@ -578,3 +578,48 @@ class FeishuResourceCatalogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FeishuResourceCatalogParallelReadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        catalog._reset_caches_for_tests()
+
+    def tearDown(self) -> None:
+        catalog._reset_caches_for_tests()
+
+    def test_distinct_documents_are_read_once_each_and_in_parallel(self) -> None:
+        import threading
+        import time as time_module
+
+        resources = [
+            (f"sheet-{index}-{child}", {"resource_kind": "feishu_sheet",
+                                        "spreadsheet_token": f"doc-{index}", "sheet_id": child})
+            for index in range(4) for child in ("a", "b")
+        ]
+        calls: list[str] = []
+        active = {"now": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def names(_token: str, document_token: str):
+            with lock:
+                calls.append(document_token)
+                active["now"] += 1
+                active["peak"] = max(active["peak"], active["now"])
+            time_module.sleep(0.05)
+            with lock:
+                active["now"] -= 1
+            if document_token == "doc-3":
+                raise catalog.FeishuResourceCatalogError("denied", code="RESOURCE_PERMISSION_DENIED")
+            return f"文档{document_token}", {"a": "甲", "b": "乙"}
+
+        with patch.object(catalog, "_tenant_access_token", return_value="token"), \
+                patch.object(catalog, "_spreadsheet_names", side_effect=names):
+            result = catalog.resolve_live_feishu_resource_catalog(resources, now=100.0)
+
+        self.assertEqual(["doc-0", "doc-1", "doc-2", "doc-3"], sorted(calls))
+        self.assertGreater(active["peak"], 1)
+        self.assertEqual("available", result.resources["sheet-0-a"].status)
+        self.assertEqual("available", result.resources["sheet-2-b"].status)
+        for child in ("a", "b"):
+            self.assertEqual("unavailable", result.resources[f"sheet-3-{child}"].status)
+            self.assertEqual("RESOURCE_PERMISSION_DENIED", result.resources[f"sheet-3-{child}"].problem_code)

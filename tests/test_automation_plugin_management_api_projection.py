@@ -520,3 +520,31 @@ def test_catalog_projects_only_closed_managed_resource_descriptors() -> None:
     assert invalid_projection["resource_pool_available"] is False
     assert invalid_projection["resources"] == []
     assert "must-not-cross-boundary" not in repr(invalid_projection)
+
+
+def test_settings_resources_returns_only_the_resource_pool_for_super_admin() -> None:
+    catalog = _Catalog()
+    service = AutomationPluginManagementService(
+        catalog=catalog,  # type: ignore[arg-type]
+        lifecycle=SimpleNamespace(),
+        configuration=SimpleNamespace(),
+        target_service=SimpleNamespace(),
+        package_repository=SimpleNamespace(),
+        storage=SimpleNamespace(),
+        resource_catalog_provider=lambda: (
+            {"resource_id": "phase7.input_sheet", "name": "输入表格", "kind": "feishu_sheet", "status": "available"},
+        ),
+    )
+
+    result = service.settings_resources(catalog.current.automation_id, actor=_console_actor(super_admin=True))
+
+    assert result == {
+        "resources": [{
+            "resource_id": "phase7.input_sheet", "name": "输入表格", "kind": "feishu_sheet",
+            "status": "available", "purpose": "输入表格", "problem_code": "",
+        }],
+        "resource_pool_available": True,
+        "resource_pool_problem": "",
+    }
+    with pytest.raises(Exception):
+        service.settings_resources(catalog.current.automation_id, actor=_console_actor(super_admin=False))

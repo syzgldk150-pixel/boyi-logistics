@@ -3483,7 +3483,7 @@ body h1, body h2, body h3 { font-weight: 500 !important; }
   /* Main column: header 76, content padding 16 / 28 / 24. */
   .main-content { display: flex; flex-direction: column; gap: var(--card-gap); padding: 0 var(--content-x-pad) 24px; background: transparent; }
   .main-content > * { flex: 0 0 auto; min-width: 0; }
-  .main-content > section + section, .main-content > * + * { margin-top: 0; }
+  .main-content > section + section, .main-content > * + *:not(dialog) { margin-top: 0; }
   .top-header {
     position: relative; height: var(--header-h); min-height: var(--header-h);
     margin: 0 calc(var(--content-x-pad) * -1) 4px; padding: 0 var(--content-x-pad);

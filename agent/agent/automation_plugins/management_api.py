@@ -783,6 +783,19 @@ def create_automation_plugin_management_router(
             lambda: service_provider().settings_context(automation_id, actor=actor)
         )
 
+    @router.get(
+        "/internal/v1/automation/instances/{automation_id}/settings-resources",
+        response_model=None,
+    )
+    async def read_plugin_settings_resources(
+        automation_id: str,
+        request: Request,
+    ) -> dict[str, Any] | JSONResponse:
+        actor = actor_provider(request)
+        return await _service_response(
+            lambda: service_provider().settings_resources(automation_id, actor=actor)
+        )
+
     async def read_plugin_settings_asset(
         automation_id: str,
         asset_path: str,

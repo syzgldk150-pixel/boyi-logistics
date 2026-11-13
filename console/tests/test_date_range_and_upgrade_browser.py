@@ -88,12 +88,14 @@ def _upgrade_dialog_markup():
 
 UPGRADE_PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <link rel="stylesheet" href="/static/style.css"></head><body>
+<main class="main-content"><section>自动化</section>
 <div data-extension-instance data-automation-id="automation.demo" data-record-version="3"
      data-current-version="1.0.0" data-instance-name="示例插件">
   <button class="ghost-btn" type="button" data-extension-action="upgrade">升级</button>
   <p data-extension-feedback hidden></p>
 </div>
 {dialog}
+</main>
 <script src="/static/extensions.js"></script></body></html>"""
 
 
@@ -127,6 +129,10 @@ def test_upgrade_button_opens_dialog_and_confirm_posts_package(browser):
         page.locator('[data-extension-action="upgrade"]').click()
         dialog = page.locator("[data-extension-upgrade-dialog]")
         assert dialog.evaluate("node => node.open")
+        # Centred on screen: the page's sibling-spacing rule must not pin the modal to the top.
+        box = dialog.bounding_box()
+        assert abs((box["y"] + box["height"] / 2) - 900 / 2) < 4
+        assert abs((box["x"] + box["width"] / 2) - 1280 / 2) < 4
         assert "示例插件（当前版本 1.0.0）" in dialog.locator("[data-extension-upgrade-target]").inner_text()
         confirm = dialog.locator("[data-extension-upgrade-confirm]")
         assert confirm.is_disabled()

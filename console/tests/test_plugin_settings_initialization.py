@@ -61,7 +61,7 @@ const tasks = [];
 const calls = [];
 const responses = [];
 const navigationReady = [];
-class Element { constructor() { this.dataset = {}; } }
+class Element { constructor() { this.dataset = {}; } addEventListener() {} }
 class Frame extends Element {
   constructor() {
     super();

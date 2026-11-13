@@ -77,6 +77,8 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
 - 运行时健康检查同样按快照读取：`production.py` 的插件健康让目录、排除项和代次检查共用 `runtime_repository.read_scope()`，`generation.py` 用 `generation_lease_outcomes` 每个项目一次读取活动租约/未知写代次，仅对有活动租约的代次调用逐代次读取；不得恢复按历史代次逐条查询。
 - 插件目录展示同样按快照读取：`shared/automation_plugin_catalog_rows.py` 在同一只读事务内批量读取项目、配置、计划、当前代次、包版本（当前代次与目标版本），`runtime_repository.py` 优先使用这批数据，批外键才逐条读取；同一读取范围内已编译的目录条目直接复用，权限投影经 `catalog_read_transaction` 复用该快照连接。不得恢复逐项目的包版本查询。业务路径直接调用 `catalog.list()` 时必须包在 `catalog.read_scope()` 内：无快照时每个项目各开一次跨地域连接，2026-10-21 实测 21 个启用实例 36s/76 次连接，有快照 1.2s/1 次连接（寄件补查曾因此超过 30 秒准备上限）。
 
+- 插件设置页只读资源池：`/internal/v1/automation/instances/{automation_id}/settings-resources`（超级管理员）复用目录同一资源投影，不编译全部实例。飞书资源名称缓存（5 分钟）过期时，`feishu_resource_catalog.py` 对不同文档最多 6 路并行读取、每个文档只读一次，失败文档只影响其资源。
+
 ## HTTP 安全边界
 
 - Agent 固定默认监听 `127.0.0.1:9000`。

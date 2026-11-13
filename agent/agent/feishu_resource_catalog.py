@@ -11,6 +11,7 @@ import os
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -20,6 +21,7 @@ import requests
 
 _API_ROOT = "https://open.feishu.cn"
 _CACHE_TTL_SECONDS = 300.0
+_MAX_PARALLEL_DOCUMENT_READS = 6
 _REQUEST_TIMEOUT_SECONDS = 12
 _MAX_ATTEMPTS = 3
 _SPREADSHEET_DOCUMENT_CHILD = "@spreadsheet"
@@ -445,23 +447,34 @@ def resolve_live_feishu_resource_catalog(
         logger.warning("Feishu catalog unavailable code=%s", code)
         return FeishuResourceCatalogResult(resources=results, global_problem=code)
 
-    sheet_catalogs: dict[str, tuple[str, dict[str, str]]] = {}
-    bitable_catalogs: dict[str, tuple[str, dict[str, str]]] = {}
+    # Each document is read once, and distinct documents are read in parallel:
+    # serial reads made every expired-cache catalog wait for all of them in turn.
+    documents = sorted({(kind, document_token) for kind, document_token, _child in missing.values()})
+    document_catalogs: dict[tuple[str, str], tuple[str, dict[str, str]] | FeishuResourceCatalogError] = {}
+
+    def read_document(document: tuple[str, str]) -> tuple[str, dict[str, str]] | FeishuResourceCatalogError:
+        kind, document_token = document
+        try:
+            if kind == "feishu_sheet":
+                return _spreadsheet_names(access_token, document_token)
+            return _bitable_names(access_token, document_token)
+        except FeishuResourceCatalogError as exc:
+            return exc
+
+    if len(documents) == 1:
+        document_catalogs[documents[0]] = read_document(documents[0])
+    else:
+        with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_DOCUMENT_READS, len(documents)),
+                                thread_name_prefix="feishu-catalog") as pool:
+            document_catalogs.update(zip(documents, pool.map(read_document, documents)))
     refreshed: dict[tuple[str, str, str], str] = {}
     global_problem = ""
     for resource_id, locator in missing.items():
         kind, document_token, child_id = locator
         try:
-            if kind == "feishu_sheet":
-                catalog = sheet_catalogs.get(document_token)
-                if catalog is None:
-                    catalog = _spreadsheet_names(access_token, document_token)
-                    sheet_catalogs[document_token] = catalog
-            else:
-                catalog = bitable_catalogs.get(document_token)
-                if catalog is None:
-                    catalog = _bitable_names(access_token, document_token)
-                    bitable_catalogs[document_token] = catalog
+            catalog = document_catalogs[(kind, document_token)]
+            if isinstance(catalog, FeishuResourceCatalogError):
+                raise catalog
         except FeishuResourceCatalogError as exc:
             if exc.global_failure:
                 global_problem = exc.code

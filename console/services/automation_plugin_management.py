@@ -427,8 +427,9 @@ class AutomationPluginManagementServiceMixin:
                 return
             settings_data = {**settings_data, "default_config_fields": config_fields}
         if settings_data.get("resource_roles") and settings_data.get("settings_mode") == "custom":
+            # Only the resource pool is needed here; the full catalog compiles every instance.
             catalog_result = self._agent_request(
-                "GET", "/internal/v1/automation/plugins/catalog",
+                "GET", f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/settings-resources",
                 timeout=15, console_principal=trusted_context["_console_principal"],
             )
         raw_accounts, account_warning = [], ""

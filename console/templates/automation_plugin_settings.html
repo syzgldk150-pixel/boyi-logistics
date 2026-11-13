@@ -126,6 +126,12 @@
       respond(request, { ok: false, data: null, message });
     }
   });
+  // Say the page is loading until the plugin page itself is up (it then asks for its context).
+  const openingMessage = "正在打开插件设置…";
+  hostFeedback(openingMessage, "info");
+  iframe.addEventListener("load", () => {
+    if (feedback instanceof HTMLElement && feedback.textContent === openingMessage) hostFeedback("", "");
+  }, { once: true });
   // A cached package must not send its one-shot context request before this listener exists.
   iframe.src = iframe.dataset.settingsSrc;
 })();

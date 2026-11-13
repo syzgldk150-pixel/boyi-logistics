@@ -506,6 +506,21 @@ class AutomationPluginManagementService:
                 "resource_pool_problem": "", "resources_deferred": True,
             })
             return projection
+        projection.update(self._managed_resource_projection())
+        return projection
+
+    def settings_resources(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
+        """Return only the resource pool a settings page binds to.
+
+        The settings bridge needs the safe resource list, not the whole catalog:
+        compiling every instance for it made each settings page wait seconds.
+        """
+
+        self._require_console_actor(actor, super_admin=True)
+        self._catalog.require(automation_id)
+        return self._managed_resource_projection()
+
+    def _managed_resource_projection(self) -> dict[str, Any]:
         resources: list[dict[str, str]] = []
         resource_pool_available = self._resource_catalog_provider is not None
         resource_pool_problem = "" if resource_pool_available else "RESOURCE_CATALOG_UNAVAILABLE"
@@ -572,10 +587,11 @@ class AutomationPluginManagementService:
                     "Managed resource catalog unavailable code=%s",
                     resource_pool_problem,
                 )
-        projection["resources"] = sorted(resources, key=lambda item: item["resource_id"])
-        projection["resource_pool_available"] = resource_pool_available
-        projection["resource_pool_problem"] = resource_pool_problem
-        return projection
+        return {
+            "resources": sorted(resources, key=lambda item: item["resource_id"]),
+            "resource_pool_available": resource_pool_available,
+            "resource_pool_problem": resource_pool_problem,
+        }
 
     @staticmethod
     def _require_package_module(verified: Any, module: str | None, *, expected: Mapping[str, str] | None = None) -> None:
