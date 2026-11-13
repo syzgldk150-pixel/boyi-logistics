@@ -111,3 +111,16 @@ CREATE TABLE IF NOT EXISTS {{waybill_db}}.receipt_share_access_logs (
     PRIMARY KEY (id),
     KEY idx_receipt_share_access_share (share_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- When one waybill's platform photos were last read, so a refresh asks the
+-- platform again only for waybills that may still gain pictures.
+CREATE TABLE IF NOT EXISTS {{waybill_db}}.receipt_share_waybill_state (
+    platform VARCHAR(16) NOT NULL,
+    waybill_no VARCHAR(128) NOT NULL,
+    sign_count INT UNSIGNED NOT NULL DEFAULT 0,
+    receipt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    check_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_error VARCHAR(200) NOT NULL DEFAULT '',
+    last_checked_at DATETIME NOT NULL,
+    PRIMARY KEY (platform, waybill_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

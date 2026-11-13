@@ -37,6 +37,7 @@ LATER_WAYBILL_TABLES = (
     # 078: customer share links.
     "receipt_share_customers", "receipt_shares", "receipt_share_images",
     "receipt_share_items", "receipt_share_events", "receipt_share_access_logs",
+    "receipt_share_waybill_state",
 )
 # Migration 067 retired every finance table listed above and those of 062/063;
 # the general-ledger tables of later migrations are added here as they land.
