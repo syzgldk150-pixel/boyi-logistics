@@ -123,3 +123,11 @@ td > .identity-time { margin-top: 2px; color: var(--text-muted); font-size: var(
 .identity-matrix-row small { display: block; margin-top: 2px; color: var(--text-muted); font-size: var(--fs-caption); line-height: 1.5; }
 .identity-matrix-row select.review-input { flex: none; width: 112px; min-height: 30px; height: 30px; }
 @media (max-width: 1023px) { .identity-matrix { grid-template-columns: 1fr; } }
+.identity-matrix-row select.review-input { appearance: auto; padding-right: 6px; cursor: pointer; }
+/* The persons table has six columns (the shared account table has five). */
+.account-admin-panel .identity-person-table th:nth-child(1) { width: 20%; }
+.account-admin-panel .identity-person-table th:nth-child(2) { width: 20%; }
+.account-admin-panel .identity-person-table th:nth-child(3) { width: 13%; }
+.account-admin-panel .identity-person-table th:nth-child(4) { width: 19%; }
+.account-admin-panel .identity-person-table th:nth-child(5) { width: 12%; }
+.account-admin-panel .identity-person-table th:nth-child(6) { width: 16%; }

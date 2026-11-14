@@ -58,6 +58,7 @@
   <div data-wechat-limit-fields {% if allowed is none %}hidden{% endif %}>{{ permission_fields(allowed or []) }}</div>
 </div>
 {% endmacro %}
+{% macro when(value) %}{% if value is string or value is none %}{{ value or '' }}{% else %}{{ value.strftime('%Y-%m-%d %H:%M') }}{% endif %}{% endmacro %}
 {% macro dialog_foot(submit_label, danger=false) %}
   <footer class="identity-dialog-foot"><button class="ghost-btn" type="button" data-identity-dialog-close>取消</button><button class="{{ 'danger-btn' if danger else 'primary-btn' }}" type="submit">{{ submit_label }}</button></footer>
 {% endmacro %}
@@ -104,15 +105,15 @@
     <button class="ghost-btn" type="button" data-identity-dialog-open="identity-person-create-dialog"><i data-feather="plus"></i>新增人员</button>
   </header>
   <p class="identity-card-note">一个人员可以同时有后台账号、飞书账号和微信设备，身份设在人员上，各处一起生效。只用飞书或微信、不登录后台的人也建为人员。</p>
-  <div class="account-table-wrap"><table class="account-table">
+  <div class="account-table-wrap"><table class="account-table identity-person-table">
     <thead><tr><th>人员</th><th>身份</th><th>后台账号</th><th>飞书 / 微信</th><th>状态</th><th>操作</th></tr></thead>
     <tbody>{% for person in persons %}<tr>
-      <td class="account-identity"><strong>{{ person.name }}</strong></td>
+      <td class="account-identity"><strong>{{ person.name }}</strong><span>{{ '可登录后台' if person.account_id else '只用机器人' }}</span></td>
       <td><div class="identity-cell-main">{{ person.role_name }}</div>{% if not person.super_admin and person.access_role_id and not person.role_active %}<div class="muted-copy">身份已停用</div>{% endif %}</td>
       <td>{{ person.username or '—' }}</td>
       <td>{{ person.feishu_count }} 个飞书 · {{ person.wechat_count }} 台微信</td>
       <td><span class="identity-status {{ 'identity-status--ok' if person.effective else ('identity-status--warn' if person.is_active else '') }}">{{ '已生效' if person.effective else ('权限已停用' if person.is_active else '已停用') }}</span></td>
-      <td><div class="account-row-actions">{% if not person.super_admin %}<button type="button" data-identity-dialog-open="identity-person-edit-{{ person.person_id }}">修改</button>{% endif %}
+      <td><div class="account-row-actions">{% if person.super_admin %}<span class="muted-copy">内置全部权限</span>{% else %}<button type="button" data-identity-dialog-open="identity-person-edit-{{ person.person_id }}">修改</button>{% endif %}
         {% if not person.account_id %}<form action="/settings/accounts/persons/save" method="post"><input type="hidden" name="person_id" value="{{ person.person_id }}"><input type="hidden" name="name" value="{{ person.name }}"><input type="hidden" name="access_role_id" value="{{ person.access_role_id or '' }}"><input type="hidden" name="active" value="{{ 0 if person.is_active else 1 }}"><button class="{{ 'is-muted' if person.is_active else '' }}" type="submit">{{ '停用' if person.is_active else '启用' }}</button></form>{% endif %}
       </div></td>
     </tr>{% else %}<tr><td colspan="6" class="identity-empty">还没有人员。</td></tr>{% endfor %}</tbody>
@@ -155,11 +156,11 @@
       <td class="account-identity"><strong>{{ binding.identity_label or '未填写备注' }}</strong><span>{{ binding.identity_hint }}</span></td>
       <td>{{ binding.person_name }}{% if binding.username %}<div class="muted-copy">后台账号 {{ binding.username }}</div>{% endif %}</td>
       <td>{{ binding.role_name }}</td>
-      <td><span class="identity-status {{ 'identity-status--ok' if binding.effective else ('identity-status--warn' if binding.active else '') }}">{{ '已生效' if binding.effective else ('权限已停用' if binding.active else '已解绑') }}</span><div class="identity-time">{{ binding.bound_at }}</div></td>
+      <td><span class="identity-status {{ 'identity-status--ok' if binding.effective else ('identity-status--warn' if binding.active else '') }}">{{ '已生效' if binding.effective else ('权限已停用' if binding.active else '已解绑') }}</span><div class="identity-time">{{ when(binding.bound_at) }}</div></td>
       <td>{% if binding.active %}<div class="account-row-actions">
         <button type="button" data-identity-dialog-open="identity-feishu-edit-{{ binding.binding_id }}">修改</button>
         <form action="/settings/accounts/feishu/{{ binding.binding_id }}/revoke" method="post"><button class="ghost-btn btn--small" type="submit">解绑</button></form>
-      </div>{% else %}<span class="identity-time">{{ binding.revoked_at }}</span>{% endif %}</td>
+      </div>{% else %}<span class="identity-time">{{ when(binding.revoked_at) }}</span>{% endif %}</td>
     </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有飞书账号绑定。点击“生成绑定码”，选择人员后发给对方。</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>
@@ -176,11 +177,11 @@
       <td class="account-identity"><strong>{{ device.identity_label or '未填写备注' }}</strong><span>{{ device.owner_hint }}</span></td>
       <td>{{ device.person_name }}{% if device.username %}<div class="muted-copy">后台账号 {{ device.username }}</div>{% endif %}</td>
       <td><div class="identity-cell-main">{{ device.role_name }}</div><div class="muted-copy">{% if device.allowed_permissions is none %}不额外限制{% else %}限 {{ device.allowed_permissions | length }} 项功能{% endif %}</div></td>
-      <td>{% if device.active %}<span class="identity-status {{ 'identity-status--ok' if device.effective and device.connection_state == 'online' else 'identity-status--warn' }}">{{ device.connection_label if device.effective else '权限已停用' }}</span>{% else %}<span class="identity-status">已解绑</span>{% endif %}<div class="identity-time">{{ device.bound_at }}{% if device.last_message_at %} · 最近消息 {{ device.last_message_at }}{% endif %}</div></td>
+      <td>{% if device.active %}<span class="identity-status {{ 'identity-status--ok' if device.effective and device.connection_state == 'online' else 'identity-status--warn' }}">{{ device.connection_label if device.effective else '权限已停用' }}</span>{% else %}<span class="identity-status">已解绑</span>{% endif %}<div class="identity-time">{{ when(device.bound_at) }}{% if device.last_message_at %} · 最近消息 {{ when(device.last_message_at) }}{% endif %}</div></td>
       <td>{% if device.active %}<div class="account-row-actions">
         <button type="button" data-identity-dialog-open="identity-wechat-edit-{{ device.device_id }}">修改</button>
         <form action="/settings/accounts/wechat/{{ device.device_id }}/revoke" method="post"><button class="ghost-btn btn--small" type="submit">解绑</button></form>
-      </div>{% else %}<span class="identity-time">{{ device.revoked_at }}</span>{% endif %}</td>
+      </div>{% else %}<span class="identity-time">{{ when(device.revoked_at) }}</span>{% endif %}</td>
     </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有绑定微信设备。点击“扫码绑定微信”，选择人员后让对方用微信扫码。</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>

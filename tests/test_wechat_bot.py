@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
 import json
 import time
 import uuid
@@ -662,7 +663,7 @@ def test_accounts_template_renders_wechat_devices():
     base_device = {"device_id": DEVICE, "identity_label": "<司机>", "owner_hint": "owner-…", "access_role_id": "r1",
                    "person_id": PERSON, "person_name": "老王", "username": None, "role_name": "查询员", "active": True,
                    "effective": True, "connection_state": "online", "connection_label": "在线",
-                   "bound_at": "2026-11-14 10:00", "last_message_at": None, "revoked_at": None}
+                   "bound_at": datetime.datetime(2026, 11, 14, 10, 0, 7, 815733), "last_message_at": None, "revoked_at": None}
     html = template.render(
         identity_roles=[{"role_id": "r1", "name": "查询员", "console": {"business.query": "view"},
                          "agent": {"business.query": "direct", "plugins.execute": "confirm"}, "is_active": True}],
@@ -674,6 +675,7 @@ def test_accounts_template_renders_wechat_devices():
                         {**base_device, "device_id": str(uuid.uuid4()), "allowed_permissions": None}],
     )
     assert "微信设备" in html and "扫码绑定微信" in html
+    assert "2026-11-14 10:00" in html and "815733" not in html  # times to the minute
     assert "&lt;司机&gt;" in html and "<司机>" not in html
     assert "限 1 项功能" in html and "不额外限制" in html
     assert f"/settings/accounts/wechat/{DEVICE}/revoke" in html
@@ -692,3 +694,7 @@ def test_accounts_template_renders_wechat_devices():
     query = editor.split('name="agent_business.query"', 1)[1].split("</select>", 1)[0]
     assert '<option value="direct" selected>允许</option>' in query and "需确认" not in query
     assert 'name="permission_dispatch"' not in html  # device limits list agent capabilities only
+    persons = html.split('class="account-table identity-person-table"', 1)[1].split("</table>", 1)[0]
+    assert "<th>操作</th>" in persons and "只用机器人" in persons and "可登录后台" not in persons
+    finance = editor.split('name="agent_finance.read"', 1)[1].split("</select>", 1)[0]
+    assert "仅私聊" in finance and "私聊和群聊" in finance and "需确认" not in finance
