@@ -144,7 +144,8 @@
 
   function getTabKey(url) {
     const pathname = url.pathname || "/";
-    if (["/modules/finance/data-sources", "/modules/customer-service/data-sources"].includes(pathname)
+    // Sub-pages that open beside their module instead of replacing it (else a click only re-activates the module).
+    if (["/modules/finance/data-sources", "/modules/customer-service/data-sources", "/receipts/shares"].includes(pathname)
         || /^\/automations\/[^/]+\/settings$/.test(pathname)) return pathname;
     if (pathname === "/" || pathname === "/portal") {
       return "/";

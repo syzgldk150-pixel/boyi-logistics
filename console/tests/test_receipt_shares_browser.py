@@ -170,3 +170,44 @@ def test_customer_rules_dialog_and_empty_state(app, browser):
             "customer_id": None, "name": "勇胜贸易有限公司", "short_name": "勇胜",
             "match": {"mode": "any", "conditions": [{"field": "sender_name", "op": "eq", "value": "勇胜"}]}}
         assert errors == []
+
+
+def test_share_button_on_the_receipts_page_opens_its_own_tab(app, browser):
+    """Regression: /receipts/shares shared the receipts tab key, so the click only re-activated the receipts tab."""
+    from console.tests.test_receipts_management import _Handler, _ReceiptRepo, _build_app
+
+    receipts_app = _build_app(_ReceiptRepo())
+    handler = _Handler()
+    handler.current_admin_user = {"id": 1, "username": "admin", "role": "super_admin"}
+    receipts_app._render_receipts(handler, {})
+    receipts_html = handler.wfile.getvalue().decode("utf-8")
+    assert 'href="/receipts/shares" data-console-navigate' in receipts_html
+    share_html = app.template_env.get_template("receipt_shares.html").render(app_title="测试", listing=_listing([dict(SHARE)]))
+    errors = []
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+        page.on("pageerror", lambda error: errors.append(str(error)))
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                return route.abort()
+            if parsed.path == "/receipts":
+                return route.fulfill(content_type="text/html", body=receipts_html)
+            if parsed.path == "/receipts/shares":
+                return route.fulfill(content_type="text/html", body=share_html)
+            path = CONSOLE_DIR / parsed.path.lstrip("/")
+            if parsed.path.startswith("/static/") and path.is_file():
+                return route.fulfill(path=str(path))
+            return route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        page.goto(f"{ORIGIN}/receipts")
+        page.locator('a[href="/receipts/shares"]').click()
+        page.wait_for_function("location.pathname === '/receipts/shares'")
+        page.locator(".main-content:not([hidden]) [data-share-page]").wait_for()
+        assert page.locator(".main-content:not([hidden]) [data-share-rows] tr").count() == 1
+        # The receipts page stays open in its own tab beside it.
+        assert page.locator(".main-content [data-receipts-page]").count() == 1
+        assert errors == []
