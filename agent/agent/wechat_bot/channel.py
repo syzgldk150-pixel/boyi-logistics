@@ -22,6 +22,7 @@ from shared.wechat_bot import (
     MESSAGE_TYPE_USER,
     has_unsupported_media,
     inbound_text,
+    keep_line_breaks,
     parse_wechat_actor_id,
     split_text,
     wechat_actor_id,
@@ -293,7 +294,7 @@ class WeChatChannelRuntime:
             return
         to_user = context[0] if context else credentials["owner_user_id"]
         context_token = context[1] if context else None
-        for chunk in split_text(text):
+        for chunk in split_text(keep_line_breaks(text)):
             try:
                 await self._client.send_text(credentials["base_url"], credentials["token"], to_user_id=to_user,
                                              text=chunk, context_token=context_token)

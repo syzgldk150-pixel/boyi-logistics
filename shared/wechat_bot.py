@@ -115,6 +115,23 @@ def has_unsupported_media(message: Mapping[str, Any]) -> bool:
     )
 
 
+def keep_line_breaks(text: str) -> str:
+    """Keep the plain-text layout in WeChat, which renders replies as Markdown.
+
+    Since ClawBot 2.4 the WeChat client renders bot text as Markdown, where a
+    single line break inside a paragraph collapses into a space. Replies are
+    shared plain text (one field per line), so each such break becomes a
+    Markdown hard break (two trailing spaces); blank lines stay paragraphs.
+    """
+    lines = str(text or "").split("\n")
+    out = []
+    for index, line in enumerate(lines):
+        line = line.rstrip()
+        following = lines[index + 1] if index + 1 < len(lines) else ""
+        out.append(line + "  " if line and following.strip() else line)
+    return "\n".join(out)
+
+
 def split_text(text: str, limit: int = TEXT_CHUNK_LIMIT) -> list[str]:
     """Split on line breaks where possible; never drop text."""
     text = str(text or "")

@@ -512,6 +512,22 @@ def test_channel_replies_echo_context_token_and_split_long_text(tmp_path):
     assert len(ilink.sent) == 2
 
 
+def test_channel_keeps_one_field_per_line_in_wechat_markdown(tmp_path):
+    """WeChat renders bot text as Markdown; single line breaks must not merge."""
+    from shared.wechat_bot import keep_line_breaks
+
+    reply = "查询单号：R00000000001\n\n最新路由：\n网点信息：示例站\n扫描时间：2026-11-14 15:54:26\n\n货物信息：\n货物件数：1 件"
+    assert keep_line_breaks(reply) == (
+        "查询单号：R00000000001\n\n最新路由：  \n网点信息：示例站  \n扫描时间：2026-11-14 15:54:26\n\n"
+        "货物信息：  \n货物件数：1 件")
+    assert keep_line_breaks("单行") == "单行" and keep_line_breaks("") == ""
+    assert keep_line_breaks("a  \nb") == "a  \nb"  # existing hard breaks stay single
+    runtime, ilink = _channel(tmp_path, [])
+    runtime._contexts[DEVICE] = ("owner-1@im.wechat", "ctx-1")
+    asyncio.run(runtime.send(wechat_actor_id(DEVICE), reply))
+    assert ilink.sent == [("owner-1@im.wechat", keep_line_breaks(reply), "ctx-1")]
+
+
 def test_stale_session_marks_device_and_pauses(tmp_path, monkeypatch):
     import agent.wechat_bot.channel as channel_module
 
