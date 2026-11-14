@@ -42,6 +42,9 @@ updated: 2026-11-14
 - 响应带 `noindex`、`no-referrer`、禁止内嵌与逐响应 nonce 的内容安全策略；nginx 不记访问日志（链接码在路径里）。
 - 缩略图按内容摘要缓存在 `console/runtime/share_thumbs/`，上限 2G，超出删最旧的；原图每次从 NAS 读取。NAS 离线时页面照常打开，图片提示暂时无法读取。
 - 打包下载按当前筛选，一次最多 500 张，包内文件名与页面一致。
+- 对外服务与 Agent、Console 同为 `boyce` 用户运行，`receipt-share.service` 用 `InaccessiblePaths` 屏蔽 Agent／Console 的 `.env`、`nas.env`、`~/.ssh`、发布回滚目录、平台账号登录态与插件运行目录：即使该进程被攻破也读不到这些密钥。修改单元文件后需重新安装并 `daemon-reload`。
+- 数据库或 NAS 故障时返回不带细节的 503；未读取的请求体会关闭连接，避免被当成下一条请求解析。
+- 平台图片抓取（Agent 拉取与后台回单页共用 `shared/receipt_image_sources.py`）只跟随指向白名单图片地址的跳转，不会被跳转到内网或其他主机。
 
 ## 部署期配置（不进仓库）
 

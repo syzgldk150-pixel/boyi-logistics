@@ -142,7 +142,7 @@ class WaybillPhotoImageTest(unittest.TestCase):
         app = _build_app()
         url = "https://kyscan.yunda56.com/ws/sc/20261111/a.jpg"
         query = {"platform": ["yunda"], "url": [url]}
-        with patch("console.services.waybills_receipts.urlopen",
+        with patch("shared.receipt_image_sources._default_opener",
                    return_value=_ImageResponse(b"\xff\xd8sign-photo")) as mocked:
             first = _Handler()
             app._handle_waybill_photo_image(first, query)
@@ -157,7 +157,7 @@ class WaybillPhotoImageTest(unittest.TestCase):
     def test_addresses_outside_the_platform_image_hosts_are_not_fetched(self):
         app = _build_app()
         app._agent_request = lambda *_args, **_kwargs: self.fail("agent must not be called")
-        with patch("console.services.waybills_receipts.urlopen") as mocked:
+        with patch("shared.receipt_image_sources._default_opener") as mocked:
             for platform, url in (("yunda", "https://example.com/ws/a.jpg"),
                                   ("ronghui", "https://tms.ronghuiwl.com/login/a.jpg"),
                                   ("yunda", "http://kyscan.yunda56.com/ws/a.jpg")):

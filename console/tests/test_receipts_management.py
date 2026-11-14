@@ -1240,7 +1240,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("shared.receipt_image_sources._default_opener", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1254,7 +1254,7 @@ class ReceiptRouteTests(unittest.TestCase):
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
         url = "https://tms.ronghuiwl.com/unauth/download/k13/obs/20261101/179350808020121.jpg"
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("shared.receipt_image_sources._default_opener", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source({"platform": "ronghui"}, url)
 
         self.assertEqual((b"\xff\xd8receipt-image", "image/jpeg"), result)
@@ -1266,7 +1266,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_attachment_does_not_fetch_other_ronghui_tms_paths(self):
         app = _build_app(_ReceiptRepo())
 
-        with patch("console.services.waybills_receipts.urlopen") as mocked_urlopen:
+        with patch("shared.receipt_image_sources._default_opener") as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"}, "https://tms.ronghuiwl.com/file/k13/20261101/demo.jpg")
 
@@ -1277,7 +1277,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("shared.receipt_image_sources._default_opener", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1293,7 +1293,7 @@ class ReceiptRouteTests(unittest.TestCase):
         app = _build_app(_ReceiptRepo())
         response = _BinaryResponse(b"\xff\xd8receipt-image", content_type="image/jpeg")
 
-        with patch("console.services.waybills_receipts.urlopen", return_value=response) as mocked_urlopen:
+        with patch("shared.receipt_image_sources._default_opener", return_value=response) as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://tms.ronghuiwl.com/rhk13.obs.cn-east-3.myhuaweicloud.com/k13/20260604/demo.jpg",
@@ -1383,7 +1383,7 @@ class ReceiptRouteTests(unittest.TestCase):
     def test_receipt_attachment_rejects_non_whitelisted_direct_image_host(self):
         app = _build_app(_ReceiptRepo())
 
-        with patch("console.services.waybills_receipts.urlopen") as mocked_urlopen:
+        with patch("shared.receipt_image_sources._default_opener") as mocked_urlopen:
             result = app._fetch_receipt_attachment_source(
                 {"platform": "ronghui"},
                 "https://example.test/k13/demo.jpg",

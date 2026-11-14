@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 RONGHUI_DIRECT_ATTACHMENT_HOSTS = {"rhk13.obs.cn-east-3.myhuaweicloud.com"}
 # Since 2026-11 Ronghui returns receipt images as login-free download links on
@@ -38,20 +38,47 @@ def image_mime_type(payload: bytes) -> str:
     return ""
 
 
-def fetch_public_receipt_image(source_url: str, *, opener: Callable = urlopen,
-                               timeout: float = 180) -> tuple[bytes, str] | None:
-    """Fetch an allow-listed login-free image; ``None`` for any other address or a non-image answer."""
+def _allowed(source_url: str) -> tuple[bool, bool]:
+    """``(allowed, needs_legacy_tls)`` for one address; the single allow-list check."""
 
-    parsed = urlparse(source_url)
+    try:
+        parsed = urlparse(str(source_url or ""))
+        port = parsed.port
+    except ValueError:
+        return False, False
     host = str(parsed.hostname or "").strip().lower()
     public_download = host == RONGHUI_PUBLIC_DOWNLOAD_HOST and (parsed.path or "").startswith(
         RONGHUI_PUBLIC_DOWNLOAD_PREFIX)
     yunda_sign_photo = host == YUNDA_SIGN_PHOTO_HOST and (parsed.path or "").startswith(YUNDA_SIGN_PHOTO_PREFIX)
-    if parsed.scheme.lower() != "https" or not (
+    if parsed.scheme.lower() != "https" or parsed.username or parsed.password or port not in {None, 443} or not (
             host in RONGHUI_DIRECT_ATTACHMENT_HOSTS or public_download or yunda_sign_photo):
-        return None
-    suffix = Path(parsed.path or "").suffix.lower()
-    if suffix not in RECEIPT_IMAGE_SUFFIXES:
+        return False, False
+    if Path(parsed.path or "").suffix.lower() not in RECEIPT_IMAGE_SUFFIXES:
+        return False, False
+    return True, public_download
+
+
+class _AllowListedRedirects(HTTPRedirectHandler):
+    """Follow a redirect only to another allow-listed image address (no internal or other hosts)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _allowed(newurl)[0]:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_opener(request, *, timeout, context):
+    from urllib.request import HTTPSHandler
+
+    return build_opener(HTTPSHandler(context=context), _AllowListedRedirects).open(request, timeout=timeout)
+
+
+def fetch_public_receipt_image(source_url: str, *, opener: Callable | None = None,
+                               timeout: float = 180) -> tuple[bytes, str] | None:
+    """Fetch an allow-listed login-free image; ``None`` for any other address or a non-image answer."""
+
+    allowed, public_download = _allowed(source_url)
+    if not allowed:
         return None
     request = Request(source_url, headers={"Accept": "image/*,*/*", "User-Agent": "Mozilla/5.0"})
     context = None
@@ -61,7 +88,7 @@ def fetch_public_receipt_image(source_url: str, *, opener: Callable = urlopen,
         context = ssl.create_default_context()
         context.set_ciphers("DEFAULT:@SECLEVEL=1")
     try:
-        with opener(request, timeout=timeout, context=context) as response:
+        with (opener or _default_opener)(request, timeout=timeout, context=context) as response:
             status_code = int(getattr(response, "status", 200) or 200)
             if status_code < 200 or status_code >= 300:
                 return None

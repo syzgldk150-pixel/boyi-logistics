@@ -1293,7 +1293,7 @@ class WaybillsReceiptsServiceMixin:
 
     def _fetch_direct_receipt_attachment(self, source_url: str) -> tuple[bytes, str] | None:
         # The allow-list and fetch are shared with the Agent share refresh.
-        return fetch_public_receipt_image(source_url, opener=urlopen)
+        return fetch_public_receipt_image(source_url)
 
     def _fetch_receipt_attachment_source(
         self,

@@ -17,6 +17,11 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+# Runs as the same user as the Agent and Console: hide every secret it does not need,
+# so a compromise of this public process cannot read them ("-" = skip if absent).
+InaccessiblePaths=-/home/boyce/agent/.env -/home/boyce/console/.env -/home/boyce/.boyi-receipt-share/nas.env
+InaccessiblePaths=-/home/boyce/.ssh -/home/boyce/.boyi-deploy -/home/boyce/agent/agent/tms_runtime/state
+InaccessiblePaths=-/home/boyce/.boyi-automation-plugins -/home/boyce/agent/tools/state
 
 [Install]
 WantedBy=multi-user.target

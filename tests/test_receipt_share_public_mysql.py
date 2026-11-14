@@ -297,3 +297,19 @@ def test_customer_page_works_in_a_real_browser_under_its_security_policy(world):
         until(page, "document.body.textContent.includes('链接已失效')")
         browser.close()
     assert [item for item in problems if "404" not in item] == []
+
+
+def test_backend_failures_answer_plainly_and_other_methods_are_refused(world, monkeypatch):
+    for method in ("PUT", "DELETE", "PATCH", "OPTIONS"):
+        assert world.get(f"/r/{world.token}", method=method, body=b"x")[0] == 404
+
+    def broken():
+        raise OSError("database unreachable")
+
+    monkeypatch.setattr(world.service, "connect", broken)
+    status, headers, body = world.get(f"/r/{world.token}")
+    assert status == 503 and "暂时不可用" in body.decode("utf-8") and "Traceback" not in body.decode("utf-8")
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    big = world.get(f"/r/{world.token}/code", method="POST", body=b"code=" + b"1" * 400,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert big[0] in {403, 404, 503}

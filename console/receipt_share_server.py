@@ -101,7 +101,13 @@ class ThumbCache:
             self._trim()
 
     def _trim(self) -> None:
-        files = [(item.stat().st_mtime, item.stat().st_size, item) for item in self._directory.glob("*/*.jpg")]
+        files = []
+        for item in self._directory.glob("*/*.jpg"):
+            try:
+                stat = item.stat()
+            except OSError:  # removed meanwhile
+                continue
+            files.append((stat.st_mtime, stat.st_size, item))
         total = sum(size for _mtime, size, _item in files)
         for _mtime, size, item in sorted(files):
             if total <= self._max_bytes:
@@ -267,7 +273,34 @@ def build_handler(service: ShareService) -> type[BaseHTTPRequestHandler]:
         def do_HEAD(self) -> None:  # noqa: N802
             self._not_found()
 
+        def do_PUT(self) -> None:  # noqa: N802
+            self.close_connection = True
+            self._not_found()
+
+        do_DELETE = do_PATCH = do_OPTIONS = do_PUT
+
+        def _guarded(self, handle: Callable[[], None]) -> None:
+            # A database or NAS outage must answer plainly, never with a traceback or a dropped connection.
+            try:
+                handle()
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("share request failed error=%s", type(exc).__name__)
+                self.close_connection = True
+                try:
+                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, "服务暂时不可用，请稍后再试。".encode("utf-8"),
+                               "text/plain; charset=utf-8")
+                except Exception:  # noqa: BLE001 - headers may already be on the wire
+                    pass
+
         def do_GET(self) -> None:  # noqa: N802
+            self._guarded(self._get)
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._guarded(self._post)
+
+        def _get(self) -> None:
             parts = urlsplit(self.path)
             match = _PATH.fullmatch(parts.path)
             if match is None:
@@ -299,10 +332,11 @@ def build_handler(service: ShareService) -> type[BaseHTTPRequestHandler]:
             return self._picture(share, int(match.group(3) or match.group(4)), download=action.startswith("file/"),
                                  thumb=query.get("thumb") == ["1"])
 
-        def do_POST(self) -> None:  # noqa: N802
+        def _post(self) -> None:
             parts = urlsplit(self.path)
             match = _PATH.fullmatch(parts.path)
             if match is None or match.group(2) != "code":
+                self.close_connection = True  # the body is not read
                 return self._not_found()
             token = match.group(1)
             if self._limited("code"):
@@ -311,6 +345,8 @@ def build_handler(service: ShareService) -> type[BaseHTTPRequestHandler]:
                 length = int(self.headers.get("Content-Length") or "0")
             except ValueError:
                 length = -1
+            if not 0 <= length <= 256:
+                self.close_connection = True  # an unread body must not be parsed as the next request
             raw = self.rfile.read(length) if 0 <= length <= 256 else b""
             share, _state = service.load(token)
             code = (parse_qs(raw.decode("utf-8", "replace")).get("code") or [""])[0]
