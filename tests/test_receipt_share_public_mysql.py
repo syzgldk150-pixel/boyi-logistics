@@ -144,6 +144,21 @@ def test_page_lists_only_this_customer_in_two_separate_tabs(world):
         assert cursor.fetchone()["view_count"] == 1
 
 
+def test_delivery_note_names_and_search(world):
+    with world.connection.cursor() as cursor:
+        cursor.execute("UPDATE receipt_shares SET naming_template = %s WHERE id = %s", ("{发货单号}-{单据类型}.jpg", world.mine))
+        cursor.execute("UPDATE receipt_share_items SET shipment_no = %s, shipment_seq = seq, shipment_of = 2 "
+                       "WHERE share_id = %s AND waybill_no = 'R001' AND kind = 'receipt'", ("1001-2600000001", world.mine))
+        cursor.execute("UPDATE receipt_share_items SET shipment_no = %s WHERE share_id = %s AND waybill_no = 'R001' "
+                       "AND kind = 'sign'", ("1001-2600000001", world.mine))
+    world.connection.commit()
+    assert sorted(item["name"] for item in _data(world)["items"]) == [
+        "1001-2600000001-回单图(1).jpg", "1001-2600000001-回单图(2).jpg", "1001-2600000001-签收图.jpg"]
+    # No delivery note in the remark: the waybill number stands in.
+    assert [item["name"] for item in _data(world, "?tab=label")["items"]] == ["R002-寄件单.jpg"]
+    assert _data(world, "?q=2600000001")["total"] == 3 and _data(world, "?q=1001-2600000001")["total"] == 3
+
+
 def test_pictures_are_reachable_only_through_the_share_that_lists_them(world):
     status, headers, body = world.get(f"/r/{world.token}/img/{world.ids['sign']}")
     assert status == 200 and headers["Content-Type"] == "image/jpeg" and body.startswith(b"\xff\xd8")

@@ -262,6 +262,24 @@ class ReceiptShareRefresher:
                 seen.add(image["id"])
                 # The customer sees the number of the waybill they know (the Boyi number for a linked order).
                 items.append({"image_id": image["id"], "platform": row["platform"], "waybill_no": row["waybill_no"],
-                              "kind": image["kind"], "seq": image["seq"],
+                              "shipment_no": row.get("shipment_no") or "", "kind": image["kind"], "seq": image["seq"],
                               "doc_date": image["doc_date"] or row["open_day"] or None})
-        return items
+        return number_by_shipment(items)
+
+
+def number_by_shipment(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Number the pictures of one kind under one delivery note (the waybill number when there is none).
+
+    A file name made of {发货单号} without {运单号} uses these, so two waybills
+    of the same delivery note never get the same name. The order is fixed
+    (waybill, then picture), so names stay the same between refreshes.
+    """
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in items:
+        groups.setdefault((item["shipment_no"] or item["waybill_no"], item["kind"]), []).append(item)
+    for members in groups.values():
+        members.sort(key=lambda item: (item["waybill_no"], int(item["seq"]), int(item["image_id"])))
+        for index, item in enumerate(members, start=1):
+            item["shipment_seq"], item["shipment_of"] = index, len(members)
+    return items

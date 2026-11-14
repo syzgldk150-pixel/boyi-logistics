@@ -170,7 +170,7 @@ class ReceiptSharesServiceMixin:
         short_name = str((query.get("short_name") or [""])[0] or "").strip()[:40] or "客户简称"
         self._share_run(handler, lambda: {"example": share_rules.render_file_name(
             template, short_name=short_name, waybill_no="R00024388425", kind="sign",
-            doc_date=datetime.now(), seq=1)})
+            doc_date=datetime.now(), seq=1, shipment_no="1001-2600000001")})
 
     # -- POST --------------------------------------------------------------
     def _handle_receipt_share_customer(self, handler: BaseHTTPRequestHandler) -> None:

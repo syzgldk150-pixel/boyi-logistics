@@ -86,7 +86,33 @@ def test_file_names_follow_the_template_exactly():
     assert "/" not in rs.render_file_name(template, short_name="a/b", waybill_no="X1", kind="receipt", doc_date=None, seq=1)
 
 
-@pytest.mark.parametrize("bad", ["", "{运单号}.jpg", "{客户简称}-{运单号}-{单据类型}", "{运单号}-{单据类型}-{密码}.jpg",
+@pytest.mark.parametrize("remark, expected", [
+    ("某市某区某路/张三13800000000/送货上门签回单 出货单1001-2600000001", "1001-2600000001"),
+    ("出货单号：1001 2600000001", "1001-2600000001"),
+    ("10012600000001", "1001-2600000001"),
+    ("1001－2600000001号", "1001-2600000001"),
+    ("1001-2600000001，1001-2600000002；1001-2600000001", "1001-2600000001_1001-2600000002"),
+    ("订单S1002-2600000009", ""),            # an order number glued to a letter
+    ("电话13800000000/13900000000", ""),     # phone numbers
+    ("4312345678901234", ""),                # a longer number is not a note number
+    ("", ""), (None, ""),
+])
+def test_shipment_numbers_come_from_the_remark(remark, expected):
+    assert rs.shipment_numbers(remark) == expected
+
+
+def test_shipment_number_field_names_files_and_falls_back_to_the_waybill():
+    template = "{发货单号}-{单据类型}.jpg"
+    assert rs.names_by_shipment(template) and not rs.names_by_shipment("{发货单号}-{运单号}-{单据类型}.jpg")
+    assert rs.render_file_name(template, short_name="示例", waybill_no="R1", kind="receipt", doc_date=None, seq=1,
+                               shipment_no="1001-2600000001") == "1001-2600000001-回单图.jpg"
+    assert rs.render_file_name(template, short_name="示例", waybill_no="R1", kind="receipt", doc_date=None, seq=2, of=2,
+                               shipment_no="") == "R1-回单图(2).jpg"
+    assert "发货单号" in rs.NAMING_FIELDS and "序号" not in rs.NAMING_FIELDS
+    assert rs.normalize_naming_template("{运单号}-{单据类型}-{序号}.jpg")  # older links keep working
+
+
+@pytest.mark.parametrize("bad", ["", "{运单号}.jpg", "{发货单号}-{客户简称}.jpg", "{客户简称}-{运单号}-{单据类型}", "{运单号}-{单据类型}-{密码}.jpg",
                                  "../{运单号}-{单据类型}.jpg", "{运单号}-{单据类型}.exe", "{运单号-{单据类型}.jpg"])
 def test_invalid_naming_templates_are_rejected(bad):
     with pytest.raises(rs.ReceiptShareError):

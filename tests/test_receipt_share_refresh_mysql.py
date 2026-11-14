@@ -77,9 +77,10 @@ def world(repository):
     for number, sender, status, day in (("RS001", "勇胜", "signed", "2026-11-10"), ("RS002", "勇胜", "in_transit", "2026-11-12"),
                                         ("RS003", "别家公司", "signed", "2026-11-11"), ("RS004", "勇胜", "cancelled", "2026-11-09")):
         _insert(connection, "ronghui_waybills", {"waybill_no": number, "sender_name": sender, "status": status,
-                                                 "open_date": day, "source": "ronghui"})
+                                                 "open_date": day, "source": "ronghui",
+                                                 "remark": "送货上门签回单 出货单1001-2600000001" if number == "RS001" else ""})
     _insert(connection, "yunda_waybills", {"waybill_no": "YS001", "sender_name": "勇胜", "status": "signed",
-                                           "open_date": "2026/11/08", "source": "yunda"})
+                                           "open_date": "2026/11/08", "source": "yunda", "remark": "1001 2600000001/订单S1002-2600000009"})
     _insert(connection, "boyi_waybills", {"waybill_no": "BYS01", "sender_name": "勇胜二部", "status": "in_transit",
                                           "open_date": "2026-11-07", "source": "manual", "linked_platform": "ronghui",
                                           "linked_waybill_no": "RS900"})
@@ -133,6 +134,18 @@ def test_refresh_archives_and_lists_only_the_customers_signed_waybills(world):
     assert all(path.startswith(("ronghui/2026-11/", "yunda/2026-11/")) for path in world.nas.files) and len(world.nas.files) == 5
     row = _share_row(world)
     assert row["refresh_state"] == "ok" and row["last_refreshed_at"] == NOW and "图片 5 张" in row["refresh_message"]
+
+
+def test_items_carry_the_delivery_note_number_from_the_remark(world):
+    world.refresher.refresh()
+    with world.connection.cursor() as cursor:
+        cursor.execute("SELECT waybill_no, shipment_no, kind, seq, shipment_seq, shipment_of FROM receipt_share_items "
+                       "WHERE share_id = %s ORDER BY waybill_no, kind, seq", (world.share,))
+        rows = [tuple(row.values()) for row in cursor.fetchall()]
+    assert rows == [("BYS01", "", "sign", 1, 1, 1),
+                    ("RS001", "1001-2600000001", "receipt", 1, 1, 2), ("RS001", "1001-2600000001", "receipt", 2, 2, 2),
+                    # two waybills of one delivery note: numbered across both, waybill order
+                    ("RS001", "1001-2600000001", "sign", 1, 1, 2), ("YS001", "1001-2600000001", "sign", 1, 2, 2)]
 
 
 def test_second_refresh_reads_nothing_again_until_a_recheck_is_due_then_adds_only_new_pictures(world):

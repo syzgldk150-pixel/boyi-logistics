@@ -26,7 +26,15 @@ MATCH_OPS: tuple[str, ...] = ("eq", "contains")
 MAX_MATCH_CONDITIONS = 20
 
 DEFAULT_NAMING_TEMPLATE = "{客户简称}-{运单号}-{单据类型}.jpg"
-NAMING_FIELDS: tuple[str, ...] = ("客户简称", "运单号", "单据类型", "开单日期", "序号")
+# Buttons the dialog offers. {序号} is no longer offered but still accepted in older links.
+NAMING_FIELDS: tuple[str, ...] = ("客户简称", "运单号", "单据类型", "开单日期", "发货单号")
+_ACCEPTED_NAMING_FIELDS = NAMING_FIELDS + ("序号",)
+# The customer's own delivery-note number, written in the waybill remark at billing:
+# a 4-digit note type and a 10-digit number, e.g. "1001-2600000001". Anything glued
+# to a letter or another digit (order numbers like "S1002-2600000009", phone numbers)
+# is not a delivery-note number.
+_SHIPMENT_NO = re.compile(r"(?<![0-9A-Za-z])(\d{4})[ \t]*[-－—–_/ ]?[ \t]*(\d{10})(?![0-9A-Za-z])")
+MAX_SHIPMENT_NOS = 3
 _TEMPLATE_FIELD = re.compile(r"\{([^{}]*)\}")
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{22}")
@@ -224,11 +232,11 @@ def normalize_naming_template(value: Any) -> str:
     if not template or len(template) > 160:
         raise ReceiptShareError("命名规则不能为空，且不超过 160 个字。")
     fields = _TEMPLATE_FIELD.findall(template)
-    if any(field not in NAMING_FIELDS for field in fields) or "{" in _TEMPLATE_FIELD.sub("", template) \
+    if any(field not in _ACCEPTED_NAMING_FIELDS for field in fields) or "{" in _TEMPLATE_FIELD.sub("", template) \
             or "}" in _TEMPLATE_FIELD.sub("", template):
         raise ReceiptShareError("命名规则只能使用这些字段：" + "、".join(NAMING_FIELDS) + "。")
-    if "运单号" not in fields or "单据类型" not in fields:
-        raise ReceiptShareError("命名规则必须包含 {运单号} 和 {单据类型}，否则同一客户的文件会重名。")
+    if not {"运单号", "发货单号"} & set(fields) or "单据类型" not in fields:
+        raise ReceiptShareError("命名规则必须包含 {运单号} 或 {发货单号}，以及 {单据类型}，否则同一客户的文件会重名。")
     if _UNSAFE_FILENAME.search(_TEMPLATE_FIELD.sub("", template)):
         raise ReceiptShareError('命名规则不能包含 \\ / : * ? " < > | 这些字符。')
     if not re.search(r"\.(jpg|jpeg|png)$", template, re.IGNORECASE):
@@ -236,12 +244,31 @@ def normalize_naming_template(value: Any) -> str:
     return template
 
 
+def shipment_numbers(remark: Any) -> str:
+    """Delivery-note numbers found in a waybill remark, as "1001-2600000001" joined by "_"; "" when none."""
+
+    found: list[str] = []
+    for match in _SHIPMENT_NO.finditer(str(remark or "")):
+        number = f"{match.group(1)}-{match.group(2)}"
+        if number not in found:
+            found.append(number)
+    return "_".join(found[:MAX_SHIPMENT_NOS])
+
+
+def names_by_shipment(template: str) -> bool:
+    """True when a file is identified by its delivery-note number rather than its waybill number."""
+
+    return "{运单号}" not in template and "{发货单号}" in template
+
+
 def render_file_name(template: str, *, short_name: str, waybill_no: str, kind: str,
-                     doc_date: date | datetime | str | None, seq: int, of: int = 1) -> str:
+                     doc_date: date | datetime | str | None, seq: int, of: int = 1, shipment_no: str = "") -> str:
     """The one renderer of a shared file name: dialog example, list and downloads all use it.
 
-    Several pictures of the same kind for one waybill get ``(n)`` before the
-    extension unless the template already carries ``{序号}``.
+    Several pictures of the same kind for one waybill (or, for a template named by
+    {发货单号} only, one delivery note) get ``(n)`` before the extension unless the
+    template already carries ``{序号}``. A waybill whose remark has no delivery-note
+    number uses its waybill number in place of {发货单号}.
     """
 
     template = normalize_naming_template(template)
@@ -250,7 +277,7 @@ def render_file_name(template: str, *, short_name: str, waybill_no: str, kind: s
     else:
         date_text = re.sub(r"\D", "", str(doc_date or ""))[:8]
     values = {"客户简称": short_name, "运单号": waybill_no, "单据类型": IMAGE_KIND_LABELS[kind],
-              "开单日期": date_text, "序号": str(int(seq))}
+              "开单日期": date_text, "序号": str(int(seq)), "发货单号": shipment_no or waybill_no}
     name = _TEMPLATE_FIELD.sub(lambda match: _UNSAFE_FILENAME.sub("_", str(values[match.group(1)])), template)
     if int(of) > 1 and "{序号}" not in template:
         stem, dot, extension = name.rpartition(".")

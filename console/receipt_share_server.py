@@ -164,9 +164,14 @@ class ShareService:
 
     # -- data --------------------------------------------------------------
     def file_name(self, share: Mapping[str, Any], item: Mapping[str, Any]) -> str:
+        template = share["naming_template"]
+        if rules.names_by_shipment(template):  # unique per delivery note, not per waybill
+            seq, of = item.get("shipment_seq") or 1, item.get("shipment_of") or 1
+        else:
+            seq, of = item["seq"], item["same_kind"]
         return rules.render_file_name(
-            share["naming_template"], short_name=share["customer_short_name"], waybill_no=item["waybill_no"],
-            kind=item["kind"], doc_date=item["doc_date"], seq=item["seq"], of=item["same_kind"])
+            template, short_name=share["customer_short_name"], waybill_no=item["waybill_no"],
+            kind=item["kind"], doc_date=item["doc_date"], seq=seq, of=of, shipment_no=item.get("shipment_no") or "")
 
     def listing(self, share: Mapping[str, Any], query: Mapping[str, list[str]], *, limit: int = PAGE_SIZE,
                 all_pages: bool = False) -> dict[str, Any]:

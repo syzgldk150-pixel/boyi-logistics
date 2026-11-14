@@ -15,7 +15,7 @@ SHARE = {
 CUSTOMER = {"id": 1, "code": "KH00001", "name": "勇胜贸易有限公司", "short_name": "勇胜", "is_active": True,
             "match": {"mode": "any", "conditions": [{"field": "sender_name", "op": "eq", "value": "勇胜"}]}}
 DEFAULTS = {"naming_template": "{客户简称}-{运单号}-{单据类型}.jpg",
-            "naming_fields": ["客户简称", "运单号", "单据类型", "开单日期", "序号"],
+            "naming_fields": ["客户简称", "运单号", "单据类型", "开单日期", "发货单号"],
             "image_kinds": [{"value": "sender_label", "label": "寄件单"}, {"value": "sign", "label": "签收图"},
                             {"value": "receipt", "label": "回单图"}],
             "match_fields": [{"value": "sender_name", "label": "发货人"}, {"value": "sender_phone", "label": "发货电话"},

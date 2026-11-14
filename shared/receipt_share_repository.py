@@ -12,7 +12,7 @@ import json
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping, Sequence
 
-from shared.receipt_share import IMAGE_KINDS, match_rules_sql, normalize_match_rules
+from shared.receipt_share import IMAGE_KINDS, match_rules_sql, normalize_match_rules, shipment_numbers
 
 # Waybill tables a customer's sender rules are matched against.
 _WAYBILL_TABLES = {"ronghui": "ronghui_waybills", "yunda": "yunda_waybills", "boyi": "boyi_waybills"}
@@ -83,7 +83,7 @@ def matching_waybills(connection, share: Mapping[str, Any], *, limit: int = 5000
             link = "NULL AS linked_platform, NULL AS linked_waybill_no"
         with connection.cursor() as cursor:
             cursor.execute(
-                f"SELECT w.waybill_no, {_OPEN_DAY} AS open_day, w.status, {link} FROM {table} w "
+                f"SELECT w.waybill_no, {_OPEN_DAY} AS open_day, w.status, w.remark, {link} FROM {table} w "
                 f"WHERE {' AND '.join(where)} ORDER BY open_day DESC, w.waybill_no DESC LIMIT %s",
                 (*params, int(limit)))
             for row in cursor.fetchall():
@@ -92,7 +92,7 @@ def matching_waybills(connection, share: Mapping[str, Any], *, limit: int = 5000
                 photo_no = str(row["waybill_no"] if platform != "boyi" else (row.get("linked_waybill_no") or ""))
                 rows.append({
                     "platform": platform, "waybill_no": str(row["waybill_no"]), "open_day": str(row["open_day"] or ""),
-                    "signed": row["status"] == "signed",
+                    "signed": row["status"] == "signed", "shipment_no": shipment_numbers(row.get("remark")),
                     "photo_platform": photo_platform if photo_no else "", "photo_waybill_no": photo_no if photo_platform else "",
                 })
     rows.sort(key=lambda item: (item["open_day"], item["waybill_no"]), reverse=True)
@@ -188,10 +188,11 @@ def replace_share_items(connection, share_id: int, items: Sequence[Mapping[str, 
         cursor.execute("DELETE FROM receipt_share_items WHERE share_id = %s", (int(share_id),))
         if items:
             cursor.executemany(
-                "INSERT INTO receipt_share_items (share_id, image_id, platform, waybill_no, kind, seq, doc_date) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                [(int(share_id), int(item["image_id"]), item["platform"], item["waybill_no"], item["kind"],
-                  int(item["seq"]), item.get("doc_date") or None) for item in items])
+                "INSERT INTO receipt_share_items (share_id, image_id, platform, waybill_no, shipment_no, kind, seq, "
+                "shipment_seq, shipment_of, doc_date) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [(int(share_id), int(item["image_id"]), item["platform"], item["waybill_no"],
+                  str(item.get("shipment_no") or ""), item["kind"], int(item["seq"]), int(item.get("shipment_seq") or 1),
+                  int(item.get("shipment_of") or 1), item.get("doc_date") or None) for item in items])
 
 
 def mark_share_refresh(connection, share_id: int, *, state: str, message: str, now: datetime) -> None:
@@ -365,8 +366,9 @@ def _public_filter(share_id: int, kinds: Sequence[str], keyword: str, date_from:
     where = ["i.share_id = %s", f"i.kind IN ({','.join(['%s'] * len(wanted))})"]
     params: list[Any] = [int(share_id), *wanted]
     if keyword:
-        where.append("i.waybill_no LIKE %s ESCAPE '!'")
-        params.append("%" + keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%")
+        pattern = "%" + keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+        where.append("(i.waybill_no LIKE %s ESCAPE '!' OR i.shipment_no LIKE %s ESCAPE '!')")
+        params.extend([pattern, pattern])
     if date_from:
         where.append("i.doc_date >= %s")
         params.append(date_from)
@@ -385,7 +387,7 @@ def public_items(connection, share_id: int, *, kinds: Sequence[str], keyword: st
         cursor.execute(f"SELECT COUNT(*) AS n FROM receipt_share_items i WHERE {where}", params)
         total = int(cursor.fetchone()["n"])
         cursor.execute(
-            "SELECT i.image_id, i.waybill_no, i.kind, i.seq, i.doc_date, "
+            "SELECT i.image_id, i.waybill_no, i.shipment_no, i.kind, i.seq, i.shipment_seq, i.shipment_of, i.doc_date, "
             "(SELECT COUNT(*) FROM receipt_share_items o WHERE o.share_id = i.share_id AND o.waybill_no = i.waybill_no "
             " AND o.kind = i.kind) AS same_kind FROM receipt_share_items i "
             f"WHERE {where} ORDER BY i.doc_date DESC, i.waybill_no DESC, i.kind, i.seq, i.image_id LIMIT %s OFFSET %s",
@@ -398,7 +400,7 @@ def public_image(connection, share_id: int, image_id: int) -> dict[str, Any] | N
 
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT i.image_id, i.waybill_no, i.kind, i.seq, i.doc_date, m.nas_path, m.mime_type, m.content_sha256, "
+            "SELECT i.image_id, i.waybill_no, i.shipment_no, i.kind, i.seq, i.shipment_seq, i.shipment_of, i.doc_date, m.nas_path, m.mime_type, m.content_sha256, "
             "(SELECT COUNT(*) FROM receipt_share_items o WHERE o.share_id = i.share_id AND o.waybill_no = i.waybill_no "
             " AND o.kind = i.kind) AS same_kind FROM receipt_share_items i JOIN receipt_share_images m ON m.id = i.image_id "
             "WHERE i.share_id = %s AND i.image_id = %s", (int(share_id), int(image_id)))

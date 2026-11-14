@@ -88,7 +88,7 @@
     {% for tab in tabs %}<button type="button" role="tab" data-tab="{{ tab.key }}" aria-selected="{{ 'true' if tab.key == listing.tab else 'false' }}">{{ tab.label }}</button>{% endfor %}
   </div>
   <div class="tools">
-    <input class="q" type="search" placeholder="搜索运单号" maxlength="40" aria-label="搜索运单号" data-q>
+    <input class="q" type="search" placeholder="搜索运单号或发货单号" maxlength="40" aria-label="搜索运单号或发货单号" data-q>
     <input type="date" aria-label="开始日期" data-from> <span>至</span> <input type="date" aria-label="结束日期" data-to>
     <select aria-label="图片类型" data-kind></select>
     <span class="naming" title="文件名规则">命名：{{ naming }}</span>
