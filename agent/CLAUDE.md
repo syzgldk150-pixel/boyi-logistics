@@ -52,6 +52,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
   - `deploy/publish_to_ecs.ps1 -Target auto`；完整命令见 [ECS 发布手册](deploy/publish_to_ecs.md)。
 - 这个脚本是标准发布入口，默认 `auto` 模式按已提交变更选择 `agent`、`console` 或 `shared/migration` 路径，并只重启、检查本次路径负责的服务。只有共享代码、迁移、迁移运行器或任一依赖锁变化才协调 Agent 与 Console；`-Target all` 是 `shared` 的兼容别名。
 - 只有在用户明确要求显式目标、`-SkipRestart`、`-SkipHealthCheck` 等特殊参数时，才偏离 `auto`。
+- 用户说“紧急发布”即授权本次跳过定时写窗口：直接运行 `deploy/publish_to_ecs.ps1 -Target auto -EmergencyUserAuthorizedScheduledWindowOverride`，不再二次确认；该开关只跳过计划任务临近时间检查，受保护写为 0、备份、迁移、健康检查与回滚门禁照旧，详见 [ECS 发布手册](deploy/publish_to_ecs.md#紧急发布)。普通“发布/同步 ECS”仍走 `-Target auto`，被窗口拦下时告知用户。
 - 生产控制台固定入口为 `https://boyi.homes`；Nginx 配置、ACME 启动配置和续期 reload 钩子统一维护在 `deploy/nginx/`，公网不得直接暴露 Console `8765` 端口。
 - 数据库结构由 `migrations/` 的顺序 SQL 和 `scripts/run_migrations.py` 管理；运行期模块不得新增 `CREATE TABLE`、`ALTER TABLE` 或吞掉迁移异常，详见 `docs/database_migrations.md`。
 - V3.2 扫描未知写恢复使用 041 的原快照 journal 和日期所有者 CAS；核心/数据库更新、保留与回滚边界见 `../docs/scan_recovery_v32.md`。

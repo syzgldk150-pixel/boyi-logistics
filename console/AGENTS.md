@@ -30,6 +30,7 @@ V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v3
   - `powershell -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1"`
 - 这个脚本会统一处理 `agent` 与 `console` 的 ECS 发布，默认 `auto` 模式会自动判断同步范围并执行远端健康检查。
 - 只有在用户明确指定特殊参数时，才改用 `-Target all`、`-SkipRestart`、`-SkipHealthCheck` 等变体。
+- 用户说“紧急发布”即授权本次跳过定时写窗口：直接运行 `agent/deploy/publish_to_ecs.ps1 -Target auto -EmergencyUserAuthorizedScheduledWindowOverride`，不再二次确认；该开关只跳过计划任务临近时间检查，受保护写为 0、备份、迁移、健康检查与回滚门禁照旧，详见 [ECS 发布手册](../agent/deploy/publish_to_ecs.md#紧急发布)。普通“发布/同步 ECS”仍走 `-Target auto`，被窗口拦下时告知用户。
 - ECS 上 Agent 与 Console 共用一个按两份 `requirements.lock` 联合哈希复用的 Python 3.10 环境；Console 使用 `opencv-python-headless`，不安装与 Agent 冲突的 GUI OpenCV 包。发布成功后仍须保留当次精确回滚包、上一版共享环境和数据库快照，直到业务验收完成；清理只能作为验收后的独立有界操作。
 
 ## 本地启动与数据后端

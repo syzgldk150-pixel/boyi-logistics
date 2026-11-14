@@ -2,7 +2,7 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-11-09
+updated: 2026-11-14
 ---
 
 # 发布到 ECS
@@ -34,6 +34,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - Agent：`/home/boyce/agent`，`agent.service`
 - Console：`/home/boyce/console`，`console.service`
 - Shared：`/home/boyce/shared`
+
+## 紧急发布
+
+用户说“紧急发布”，即表示授权本次发布跳过定时写窗口，无需再次确认：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "\\wsl.localhost\Ubuntu\home\deng\projects\boyi-logistics\agent\deploy\publish_to_ecs.ps1" `
+  -Target auto -EmergencyUserAuthorizedScheduledWindowOverride
+```
+
+- 开关只跳过两次计划任务临近时间检查，远端记录 `scheduled_write_window=skipped emergency_user_authorized=true`；受保护写必须为 0，备份、迁移、服务静默、健康检查与失败回滚全部照旧。
+- 发布期间定时任务处于 release hold，落在这段时间的定时执行被跳过、不补跑（客服问题件采集按既有规则补跑一次）。
+- 发布要求工作区干净：用户未提交的改动只用 `git stash push -u -- <路径>` 临时收起，发布结束（无论成败）立即 `git stash pop`，不得提交或丢弃。
+- Windows `git.exe` 访问 GitHub 被重置时，按 [Git 工作流](../../docs/git_workflow.md#网络预检) 只为本次 PowerShell 进程设置 `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:7890` 后重试。
+- 普通“发布”“同步 ECS”仍使用 `-Target auto`；被定时写窗口拦下时停止并告知用户，由用户决定等待或改为紧急发布。
 
 ## Tailscale 连接检查
 
