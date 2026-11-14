@@ -20,10 +20,19 @@ def test_token_is_stable_unguessable_shape_and_changes_on_reset():
 
 
 def test_access_code_shape_and_keyed_digest():
+    # Old 4-character codes still check; new codes must be strong.
     assert rs.normalize_access_code(" 4821 ") == "4821" and rs.normalize_access_code("") == ""
-    for bad in ("123", "12345", "12 4", "12;4"):
+    assert rs.normalize_access_code("Ab3$xY9k", new=True) == "Ab3$xY9k"
+    for bad in ("123", "12 4", "12;4", "a" * 25, "ab<c", "ab'cd", "ab%cd"):
         with pytest.raises(rs.ReceiptShareError):
             rs.normalize_access_code(bad)
+    for weak in ("4821", "abcdefgh", "abcd1234", "ABCDEFG1", "Ab3$x"):
+        with pytest.raises(rs.ReceiptShareError):
+            rs.normalize_access_code(weak, new=True)
+    for _ in range(200):
+        code = rs.generate_access_code()
+        assert len(code) == 10 and rs.normalize_access_code(code, new=True) == code
+        assert not set(code) & set("0Oo1lI")
     assert rs.access_code_sha256(SECRET, 1, "4821") != rs.access_code_sha256(SECRET, 2, "4821")
 
 
@@ -98,6 +107,8 @@ def test_access_code_is_sealed_per_share_and_tamper_evident():
     sealed = rs.seal_access_code(SECRET, 7, "48a1")
     assert sealed.startswith("v1.") and "48a1" not in sealed
     assert rs.open_access_code(SECRET, 7, sealed) == "48a1"
+    long_code = rs.generate_access_code(24)
+    assert rs.open_access_code(SECRET, 7, rs.seal_access_code(SECRET, 7, long_code)) == long_code
     assert rs.seal_access_code(SECRET, 7, "48a1") != sealed  # fresh nonce each time
     assert rs.open_access_code(SECRET, 8, sealed) == ""  # another share cannot reuse it
     assert rs.open_access_code("t" * 40, 7, sealed) == ""  # another secret cannot read it

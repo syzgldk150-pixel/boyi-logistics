@@ -6,7 +6,7 @@
 {% block subtitle %}回单管理 / 按客户单位生成只读的图片共享链接{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="/static/receipt_shares.css?v=20261114-b">
+<link rel="stylesheet" href="/static/receipt_shares.css?v=20261114-c">
 <div class="share-page" data-share-page>
   <div class="share-notice">
     <span class="share-notice-icon" aria-hidden="true">i</span>
@@ -60,20 +60,25 @@
       </div>
       <fieldset class="share-field share-inline">
         <legend>共享范围</legend>
-        <label><input type="radio" name="scope" value="all" checked> 全部回单</label>
-        <label><input type="radio" name="scope" value="approved"> 仅审核通过</label>
-        <label><input type="radio" name="scope" value="by_date"> 按发货日期</label>
-        <span class="share-dates" data-share-dates hidden>
-          <input type="date" aria-label="开始日期" data-share-date-from> 至 <input type="date" aria-label="结束日期" data-share-date-to>
-        </span>
+        <div class="share-options">
+          <label><input type="radio" name="scope" value="all" checked> 全部回单</label>
+          <label><input type="radio" name="scope" value="approved"> 仅审核通过</label>
+          <label><input type="radio" name="scope" value="by_date"> 按发货日期</label>
+          <span class="share-dates" data-share-dates hidden>
+            <input type="date" aria-label="开始日期" data-share-date-from> 至 <input type="date" aria-label="结束日期" data-share-date-to>
+          </span>
+        </div>
       </fieldset>
       <fieldset class="share-field share-inline">
         <legend>图片类型</legend>
-        <span data-share-kinds></span>
-        <span class="share-hint share-hint-right">至少选一项，客户按类型筛选</span>
+        <div class="share-options">
+          <span class="share-kinds-box" data-share-kinds></span>
+          <span class="share-hint share-hint-right">至少选一项，客户按类型筛选</span>
+        </div>
       </fieldset>
       <fieldset class="share-field share-inline">
         <legend>链接有效期</legend>
+        <div class="share-options">
         <span class="share-pills" data-share-expiry>
           <label><input type="radio" name="expires_days" value="7"><span>7 天</span></label>
           <label><input type="radio" name="expires_days" value="30" checked><span>30 天</span></label>
@@ -84,13 +89,14 @@
         <span class="share-custom-days" data-share-custom-days hidden>
           <input type="number" min="1" max="3650" step="1" value="60" aria-label="自定义有效天数" data-share-custom-days-input> 天
         </span>
+        </div>
       </fieldset>
       <div class="share-field">
         <label for="share-code">访问码（可选）</label>
         <div class="share-code-row">
-          <input id="share-code" maxlength="4" autocomplete="off" inputmode="latin" data-share-code>
+          <input id="share-code" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false" data-share-code>
           <button class="ghost-btn" type="button" data-share-code-random>随机生成</button>
-          <span class="share-hint">不设置则凭链接直接访问</span>
+          <span class="share-hint">至少 8 位，含大小写字母、数字、符号中的三种；不设置则凭链接直接访问</span>
         </div>
       </div>
       <div class="share-field">
@@ -116,19 +122,22 @@
     <header class="share-dialog-head"><h2 id="share-customer-title">客户与发货人规则</h2>
       <button class="share-dialog-close" type="button" aria-label="关闭" data-share-close><i data-feather="x"></i></button></header>
     <div class="share-dialog-body">
-      <div class="share-field">
-        <label for="share-customer-pick">客户</label>
-        <select id="share-customer-pick" data-share-customer-pick></select>
+      <div class="share-customer-switch" data-share-customer-switch hidden>
+        <select aria-label="选择已有客户" data-share-customer-pick></select>
+        <button class="ghost-btn" type="button" data-share-customer-new><i data-feather="plus"></i>新建客户</button>
       </div>
+      <p class="share-customer-mode" data-share-customer-mode>新建客户</p>
       <div class="share-field share-two">
-        <label>客户全称 <em>*</em><input maxlength="160" data-share-customer-name></label>
-        <label>客户简称 <em>*</em><input maxlength="40" placeholder="用于文件名" data-share-customer-short></label>
+        <label class="share-labelled"><span>客户全称 <em>*</em></span><input maxlength="160" placeholder="例如：勇胜贸易有限公司" data-share-customer-name></label>
+        <label class="share-labelled"><span>客户简称 <em>*</em></span><input maxlength="40" placeholder="用于文件名，例如：勇胜" data-share-customer-short></label>
       </div>
       <div class="share-field">
         <label>发货人匹配规则 <em>*</em></label>
-        <p class="share-hint">运单的发货人符合规则，就算这个客户的单。
-          <label class="share-mode"><input type="radio" name="match_mode" value="any" checked> 满足任意一条</label>
-          <label class="share-mode"><input type="radio" name="match_mode" value="all"> 同时满足全部</label></p>
+        <p class="share-hint">运单的发货人符合规则，就算这个客户的单。</p>
+        <div class="share-options">
+          <label><input type="radio" name="match_mode" value="any" checked> 满足任意一条</label>
+          <label><input type="radio" name="match_mode" value="all"> 同时满足全部</label>
+        </div>
         <div class="share-rules" data-share-rules></div>
         <button class="ghost-btn" type="button" data-share-rule-add>添加一条规则</button>
       </div>
@@ -157,9 +166,11 @@
       <p class="share-hint" data-share-renew-target></p>
       <fieldset class="share-field share-inline">
         <legend>从今天起有效</legend>
-        <label><input type="radio" name="renew_mode" value="days" checked>
-          <input type="number" min="1" max="3650" step="1" value="30" aria-label="有效天数" data-share-renew-days> 天</label>
-        <label><input type="radio" name="renew_mode" value="forever"> 长期有效</label>
+        <div class="share-options">
+          <label><input type="radio" name="renew_mode" value="days" checked>
+            <input type="number" min="1" max="3650" step="1" value="30" aria-label="有效天数" data-share-renew-days> 天</label>
+          <label><input type="radio" name="renew_mode" value="forever"> 长期有效</label>
+        </div>
       </fieldset>
     </div>
     <footer class="share-dialog-foot">
@@ -173,5 +184,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/receipt_shares.js?v=20261114-b"></script>
+<script src="/static/receipt_shares.js?v=20261114-c"></script>
 {% endblock %}

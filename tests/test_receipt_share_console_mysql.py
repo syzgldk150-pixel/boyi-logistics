@@ -98,10 +98,10 @@ def test_customer_rules_then_link_lifecycle(console):
     senders = console.call("_handle_receipt_share_senders", query={"q": ["勇胜"]})[1]["data"]
     assert senders == [{"sender_name": "勇胜", "sender_phone": "07315186128", "waybills": 2}]
 
-    status, payload = _link(console, customer_id, access_code="4821")
+    status, payload = _link(console, customer_id, access_code="Ys7#mQ2&kP")
     share = payload["data"]["share"]
-    assert status == 200 and payload["data"]["access_code"] == "4821"
-    assert share["access_code"] == "4821"  # recoverable for copying, sealed in the table
+    assert status == 200 and payload["data"]["access_code"] == "Ys7#mQ2&kP"
+    assert share["access_code"] == "Ys7#mQ2&kP"  # recoverable for copying, sealed in the table
     token = share["url"].rsplit("/", 1)[-1]
     assert share["url"].startswith("https://r.example.test/r/") and rules.is_token_shape(token)
     assert (share["state"], share["image_types_text"], share["has_access_code"]) == ("active", "签收图·回单图", True)
@@ -112,8 +112,8 @@ def test_customer_rules_then_link_lifecycle(console):
         stored = cursor.fetchone()
     # Only digests are stored: neither the link code nor the access code can be read from the table.
     assert stored["token_sha256"] == rules.token_sha256(token) and token not in json.dumps(stored)
-    assert stored["access_code_sha256"] == rules.access_code_sha256(SECRET, share["id"], "4821")
-    assert "4821" not in stored["access_code_sealed"] and rules.open_access_code(SECRET, share["id"], stored["access_code_sealed"]) == "4821"
+    assert stored["access_code_sha256"] == rules.access_code_sha256(SECRET, share["id"], "Ys7#mQ2&kP")
+    assert "Ys7#mQ2&kP" not in stored["access_code_sealed"] and rules.open_access_code(SECRET, share["id"], stored["access_code_sealed"]) == "Ys7#mQ2&kP"
 
     def act(action, version, **extra):
         return console.call("_handle_receipt_share_action", {"record_version": version, **extra}, share["id"], action)
@@ -133,7 +133,7 @@ def test_customer_rules_then_link_lifecycle(console):
     renewed = act("renew", reset["record_version"], expires_days=0)[1]["data"]["share"]
     assert renewed["expires_text"] == "长期有效"
     custom = act("renew", renewed["record_version"], expires_days=45)[1]["data"]["share"]
-    assert custom["expires_text"].startswith("至 ") and custom["access_code"] == "4821"  # survives a reset
+    assert custom["expires_text"].startswith("至 ") and custom["access_code"] == "Ys7#mQ2&kP"  # survives a reset
     assert act("renew", custom["record_version"], expires_days=4000)[0] == 400
     listing = console.call("_handle_receipt_shares_data")[1]["data"]
     assert listing["configured"] is True and [item["id"] for item in listing["shares"]] == [share["id"]]
@@ -142,7 +142,7 @@ def test_customer_rules_then_link_lifecycle(console):
 @pytest.mark.parametrize("change", [
     {"image_types": []}, {"image_types": ["other"]}, {"scope": "everything"}, {"expires_days": -1},
     {"expires_days": 3651}, {"expires_days": "30"},
-    {"access_code": "12345"}, {"naming_template": "{运单号}.jpg"}, {"scope": "by_date", "date_from": "", "date_to": ""},
+    {"access_code": "4821"}, {"access_code": "abcdefgh"}, {"access_code": "Ab3<xY9k"}, {"naming_template": "{运单号}.jpg"}, {"scope": "by_date", "date_from": "", "date_to": ""},
     {"customer_id": 999999},
 ])
 def test_invalid_link_settings_are_refused(console, change):
@@ -176,3 +176,8 @@ def test_without_a_real_account_or_a_secret_nothing_is_created(console, monkeypa
     assert console.call("_handle_receipt_shares_data")[1]["data"]["configured"] is False
     monkeypatch.setitem(ADMIN, "is_legacy_basic_auth", True)
     assert console.call("_handle_receipt_shares_data")[0] == 403
+
+
+def test_generated_access_code_endpoint(console):
+    data = console.call("_handle_receipt_share_access_code")[1]["data"]
+    assert rules.normalize_access_code(data["access_code"], new=True) == data["access_code"]

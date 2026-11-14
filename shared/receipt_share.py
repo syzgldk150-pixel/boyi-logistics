@@ -30,7 +30,12 @@ NAMING_FIELDS: tuple[str, ...] = ("客户简称", "运单号", "单据类型", "
 _TEMPLATE_FIELD = re.compile(r"\{([^{}]*)\}")
 _UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{22}")
-_ACCESS_CODE_RE = re.compile(r"[0-9A-Za-z]{4}")
+# Letters, digits and a few symbols that are easy to type on a phone and safe in a URL-encoded form.
+ACCESS_CODE_SYMBOLS = "!@#$&*-_=?"
+_ACCESS_CODE_RE = re.compile(r"[0-9A-Za-z!@#$&*\-_=?]{4,24}")
+NEW_ACCESS_CODE_MIN = 8
+# Characters for generated codes: no look-alikes (0/O/o, 1/l/I).
+_GENERATED_CODE_SETS = ("ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnpqrstuvwxyz", "23456789", "!@#$&*-_=?")
 
 
 class ReceiptShareError(ValueError):
@@ -55,11 +60,36 @@ def is_token_shape(value: str) -> bool:
     return bool(_TOKEN_RE.fullmatch(str(value or "")))
 
 
-def normalize_access_code(value: Any) -> str:
+def normalize_access_code(value: Any, *, new: bool = False) -> str:
+    """A code a customer types. ``new`` codes must be 8+ characters mixing at least three kinds.
+
+    Codes of links made earlier (4 characters) are still accepted when checking.
+    """
+
     code = str(value or "").strip()
-    if code and not _ACCESS_CODE_RE.fullmatch(code):
-        raise ReceiptShareError("访问码为 4 位数字或字母。")
+    if not code:
+        return ""
+    if not _ACCESS_CODE_RE.fullmatch(code):
+        raise ReceiptShareError("访问码只能用字母、数字和 " + " ".join(ACCESS_CODE_SYMBOLS) + "，最长 24 位。")
+    if new:
+        kinds = sum((any(ch.islower() for ch in code), any(ch.isupper() for ch in code),
+                     any(ch.isdigit() for ch in code), any(ch in ACCESS_CODE_SYMBOLS for ch in code)))
+        if len(code) < NEW_ACCESS_CODE_MIN or kinds < 3:
+            raise ReceiptShareError("访问码至少 8 位，并包含大写字母、小写字母、数字、符号中的至少三种。")
     return code
+
+
+def generate_access_code(length: int = 10) -> str:
+    """A random code with every kind of character and no look-alikes."""
+
+    import secrets
+
+    length = max(NEW_ACCESS_CODE_MIN, min(int(length), 24))
+    chars = [secrets.choice(group) for group in _GENERATED_CODE_SETS]
+    pool = "".join(_GENERATED_CODE_SETS)
+    chars += [secrets.choice(pool) for _ in range(length - len(chars))]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
 
 
 def access_code_sha256(secret: str, share_id: int, code: str) -> str:
@@ -103,7 +133,7 @@ def open_access_code(secret: str, share_id: int, sealed: str | None) -> str:
         return ""
     nonce, cipher, tag = raw[:16], raw[16:-16], raw[-16:]
     expected = hmac.new(_access_code_key(secret, share_id, "mac"), nonce + cipher, hashlib.sha256).digest()[:16]
-    if not hmac.compare_digest(tag, expected) or len(cipher) > 32:
+    if not hmac.compare_digest(tag, expected) or len(cipher) > 24:
         return ""
     stream = hmac.new(_access_code_key(secret, share_id, "enc"), nonce, hashlib.sha256).digest()
     try:

@@ -20,6 +20,9 @@ def handle_get(app: Any, handler: Any, path: str, raw_path: str, query: dict[str
     if path == "/receipts/shares/data":
         app._handle_receipt_shares_data(handler, query)
         return True
+    if path == "/receipts/shares/access-code":
+        app._handle_receipt_share_access_code(handler, query)
+        return True
     if path == "/receipts/shares/naming-example":
         app._handle_receipt_share_naming_example(handler, query)
         return True

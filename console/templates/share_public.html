@@ -49,7 +49,7 @@
   .notice h1 { font-size: 17px; }
   .notice p { margin: 10px 0 0; color: var(--sub); }
   .notice form { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
-  .notice input { width: 132px; height: 36px; border: 1px solid var(--line); border-radius: 8px; text-align: center; font-size: 16px; letter-spacing: 4px; }
+  .notice input { width: 220px; max-width: 100%; height: 36px; border: 1px solid var(--line); border-radius: 8px; text-align: center; font-size: 16px; letter-spacing: 1px; }
   .notice .err { color: #a8322a; }
   dialog { max-width: min(96vw, 1100px); max-height: 94vh; padding: 0; border: 0; border-radius: 12px; background: #fff; }
   dialog::backdrop { background: rgb(13 17 23 / 70%); }
@@ -73,7 +73,7 @@
   <h1>请输入访问码</h1>
   <p{% if wrong %} class="err"{% endif %}>{% if wrong %}访问码不正确，请重新输入。{% else %}这条链接设置了访问码，请向博益物流索取。{% endif %}</p>
   <form method="post" action="/r/{{ token }}/code">
-    <input name="code" maxlength="4" autocomplete="off" inputmode="latin" aria-label="访问码" required autofocus>
+    <input name="code" maxlength="24" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="访问码" required autofocus>
     <button class="primary" type="submit">进入</button>
   </form>
 </section>

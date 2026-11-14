@@ -155,6 +155,12 @@ class ReceiptSharesServiceMixin:
 
         self._share_run(handler, work)
 
+    def _handle_receipt_share_access_code(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
+        """A random code from the server's generator (same rules as validation)."""
+
+        if self._share_admin(handler) is not None:
+            self._share_run(handler, lambda: {"access_code": share_rules.generate_access_code()})
+
     def _handle_receipt_share_naming_example(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
         """The dialog's live example comes from the same renderer as real downloads."""
 
@@ -240,7 +246,7 @@ class ReceiptSharesServiceMixin:
             expires_days = share_rules.normalize_expiry_days(body["expires_days"])
             image_types = share_rules.normalize_image_kinds(body["image_types"])
             template = share_rules.normalize_naming_template(body["naming_template"])
-            code = share_rules.normalize_access_code(body["access_code"])
+            code = share_rules.normalize_access_code(body["access_code"], new=True)
             if not isinstance(body["customer_id"], int):
                 raise share_rules.ReceiptShareError("请选择客户单位。")
             expires_at = datetime.now() + timedelta(days=expires_days) if expires_days else None

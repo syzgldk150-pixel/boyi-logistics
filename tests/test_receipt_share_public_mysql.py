@@ -201,6 +201,17 @@ def test_gone_links_all_look_the_same_and_show_no_data(world):
     assert world.get(f"/r/{world.token}/img/{world.ids['sign']}")[0] == 404
 
 
+def test_strong_code_with_symbols_works_through_the_form(world):
+    from urllib.parse import urlencode
+    share_id, token = world.share("符号客户有限公司", "符号", code="Ys7#mQ2&kP")
+    world.connection.commit()
+    form = {"Content-Type": "application/x-www-form-urlencoded"}
+    assert world.get(f"/r/{token}/code", method="POST", body=urlencode({"code": "Ys7#mQ2&k"}).encode(), headers=form)[0] == 403
+    status, headers, _body = world.get(f"/r/{token}/code", method="POST", body=urlencode({"code": "Ys7#mQ2&kP"}).encode(), headers=form)
+    assert status == 303
+    assert "符号客户有限公司" in world.get(f"/r/{token}", headers={"Cookie": headers["Set-Cookie"].split(";")[0]})[2].decode("utf-8")
+
+
 def test_access_code_gates_page_data_and_pictures(world):
     share_id, token = world.share("加密客户有限公司", "加密", code="4821")
     image_id = world.image(share_id, "R800", "sign", 1, "2026-11-10", (9, 9, 9))

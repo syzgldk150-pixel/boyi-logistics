@@ -183,14 +183,14 @@
   const createSubmit = $("[data-share-create-submit]");
   let exampleTimer = 0;
 
-  function fillCustomers(select, withNew = false) {
+  function fillCustomers(select, forEditing = false) {
     select.replaceChildren();
-    if (withNew) select.append(new Option("＋ 新建客户", ""));
+    if (forEditing) select.append(new Option("选择已有客户进行修改…", ""));
     for (const customer of listing.customers || []) {
       if (!customer.is_active) continue;
       select.append(new Option(`${customer.name}（${customer.code}）`, String(customer.id)));
     }
-    if (!withNew && !select.options.length) select.append(new Option("请先在“客户与规则”里添加客户", ""));
+    if (!forEditing && !select.options.length) select.append(new Option("请先在“客户与规则”里添加客户", ""));
   }
 
   function selectedKinds() {
@@ -301,10 +301,12 @@
   $$('input[name="scope"]').forEach((radio) => radio.addEventListener("change", () => {
     $("[data-share-dates]").hidden = scope.querySelector('input[name="scope"]:checked').value !== "by_date";
   }));
-  $("[data-share-code-random]").addEventListener("click", () => {
-    const digits = new Uint32Array(1);
-    window.crypto.getRandomValues(digits);
-    $("[data-share-code]").value = String(digits[0] % 10000).padStart(4, "0");
+  $("[data-share-code-random]").addEventListener("click", async () => {
+    try {
+      $("[data-share-code]").value = (await getJSON("/receipts/shares/access-code")).access_code;
+    } catch (error) {
+      feedback(createFeedback, error.message, "error");
+    }
   });
   $$("[data-share-open-create]").forEach((button) => button.addEventListener("click", openCreate));
 
@@ -370,23 +372,36 @@
 
   function loadCustomer() {
     const customer = (listing.customers || []).find((item) => String(item.id) === customerPick.value);
+    $("[data-share-customer-mode]").textContent = customer ? `正在修改：${customer.name}` : "新建客户";
     $("[data-share-customer-name]").value = customer?.name || "";
     $("[data-share-customer-short]").value = customer?.short_name || "";
     scope.querySelector(`input[name="match_mode"][value="${customer?.match.mode || "any"}"]`).checked = true;
     rulesBox.replaceChildren();
     (customer?.match.conditions || [undefined]).forEach((rule) => addRule(rule));
-    feedback(customerFeedback, customer ? `客户编码 ${customer.code}` : "新建客户后即可为其生成链接");
+    feedback(customerFeedback, customer ? `客户编码 ${customer.code}` : "保存后即可为这个客户生成链接");
+  }
+
+  function refreshCustomerSwitch() {
+    const hasCustomers = (listing.customers || []).some((item) => item.is_active);
+    $("[data-share-customer-switch]").hidden = !hasCustomers;
   }
 
   function openCustomers() {
     if (createDialog.open) createDialog.close();
     fillCustomers(customerPick, true);
+    refreshCustomerSwitch();
     loadCustomer();
     $("[data-share-senders]").replaceChildren();
     customerDialog.showModal();
+    window.ConsoleUI?.refreshIcons?.();
   }
 
   customerPick.addEventListener("change", loadCustomer);
+  $("[data-share-customer-new]").addEventListener("click", () => {
+    customerPick.value = "";
+    loadCustomer();
+    $("[data-share-customer-name]").focus();
+  });
   $("[data-share-rule-add]").addEventListener("click", () => addRule());
   $$("[data-share-open-customers]").forEach((button) => button.addEventListener("click", openCustomers));
 
@@ -427,6 +442,7 @@
       });
       await reload();
       fillCustomers(customerPick, true);
+      refreshCustomerSwitch();
       customerPick.value = String(data.customer_id);
       loadCustomer();
       feedback(customerFeedback, `已保存，当前规则匹配 ${data.matching_waybills} 张运单`);

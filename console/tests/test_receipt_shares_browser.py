@@ -9,7 +9,7 @@ SHARE = {
     "url": "https://r.example.test/r/AbCdEfGhIjKlMnOpQrStUv", "naming_template": "{客户简称}-{运单号}-{单据类型}.jpg",
     "naming_label": "默认规则", "image_types": ["sign", "receipt"], "image_types_text": "签收图·回单图", "scope": "all",
     "expires_text": "至 2026-12-31", "view_count": 128, "last_viewed_text": "11-13 14:02", "state": "active",
-    "state_label": "生效中", "has_access_code": True, "access_code": "4821", "item_count": 12, "refresh_state": "ok",
+    "state_label": "生效中", "has_access_code": True, "access_code": "Ys7#mQ2&kP", "item_count": 12, "refresh_state": "ok",
     "refresh_message": "运单 5 张，图片 12 张", "last_refreshed_text": "11-13 18:00",
 }
 CUSTOMER = {"id": 1, "code": "KH00001", "name": "勇胜贸易有限公司", "short_name": "勇胜", "is_active": True,
@@ -44,6 +44,8 @@ def test_list_create_and_disable(app, browser):
                 return route.fulfill(content_type="text/html", body=body)
             if parsed.path == "/receipts/shares/data":
                 return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": _listing(state["shares"])}))
+            if parsed.path == "/receipts/shares/access-code":
+                return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"access_code": "Kp4$wz8Hn!"}}))
             if parsed.path == "/receipts/shares/naming-example":
                 template = parse_qs(parsed.query)["template"][0]
                 if "{运单号}" not in template:
@@ -80,7 +82,7 @@ def test_list_create_and_disable(app, browser):
         assert widths == [168, 168, 156, 152, 104, 64, 76, 92, 82] and sum(widths) == 1062
 
         row.get_by_role("button", name="复制").click()
-        assert page.evaluate("navigator.clipboard.readText()") == SHARE["url"] + "\n访问码：4821"
+        assert page.evaluate("navigator.clipboard.readText()") == SHARE["url"] + "\n访问码：Ys7#mQ2&kP"
 
         page.locator(".share-card-head [data-share-open-create]").click()
         dialog = page.locator("[data-share-create-dialog]")
@@ -88,18 +90,24 @@ def test_list_create_and_disable(app, browser):
         assert abs(box["x"] + box["width"] / 2 - 720) < 4 and abs(box["y"] + box["height"] / 2 - 450) < 4 and box["width"] == 720
         page.wait_for_function("document.querySelector('[data-share-example]').textContent === '勇胜-R00024388425-签收图.jpg'")
         kinds = dialog.locator("[data-share-kind]")
+        # The boxes themselves must be visible and clickable (style.css resets inputs to appearance:none).
+        for box in kinds.all() + dialog.locator('input[name="scope"]').all():
+            assert box.evaluate("node => getComputedStyle(node).appearance") != "none"
+            size = box.bounding_box()
+            assert size and size["width"] >= 14 and size["height"] >= 14
         # A previous link of this customer pre-fills its image types.
         assert kinds.evaluate_all("boxes => boxes.map(b => [b.value, b.checked])") == [["sender_label", False], ["sign", True], ["receipt", True]]
         submit = dialog.locator("[data-share-create-submit]")
-        kinds.nth(1).uncheck(); kinds.nth(2).uncheck()
+        kinds.nth(1).click(); kinds.nth(2).click()  # click the boxes directly
+        assert not kinds.nth(1).is_checked() and not kinds.nth(2).is_checked()
         assert submit.is_disabled()  # at least one image type
-        kinds.nth(2).check()
+        kinds.nth(2).click()
         dialog.locator("[data-share-template]").fill("{客户简称}.jpg")
         page.wait_for_function("document.querySelector('[data-share-create-feedback]').dataset.kind === 'error'")
         dialog.locator("[data-share-template]").fill(DEFAULTS["naming_template"])
         dialog.locator("[data-share-code-random]").click()
+        page.wait_for_function("document.querySelector('[data-share-code]').value === 'Kp4$wz8Hn!'")
         code = dialog.locator("[data-share-code]").input_value()
-        assert len(code) == 4 and code.isdigit()
         assert dialog.locator("[data-share-custom-days]").is_hidden() and dialog.locator("[data-share-dates]").is_hidden()
         dialog.get_by_text("按发货日期").click()
         assert dialog.locator("[data-share-dates]").is_visible()
@@ -180,6 +188,14 @@ def test_customer_rules_dialog_and_empty_state(app, browser):
         assert page.locator("[data-share-empty]").is_visible() and "还没有共享链接" in page.locator("[data-share-empty]").inner_text()
         page.locator(".share-card-head [data-share-open-customers]").click()
         dialog = page.locator("[data-share-customer-dialog]")
+        assert dialog.locator("[data-share-customer-switch]").is_hidden()  # nothing to choose yet
+        assert dialog.locator("[data-share-customer-mode]").inner_text() == "新建客户"
+        mode_any = dialog.locator('input[name="match_mode"][value="any"]')
+        assert mode_any.evaluate("node => getComputedStyle(node).appearance") != "none" and mode_any.is_checked()
+        name_label = dialog.locator(".share-labelled").first
+        label_box = name_label.locator("span").bounding_box()
+        input_box = name_label.locator("input").bounding_box()
+        assert input_box["y"] > label_box["y"] and abs(input_box["x"] - label_box["x"]) < 2  # label above its input
         dialog.locator("[data-share-customer-name]").fill("勇胜贸易有限公司")
         dialog.locator("[data-share-customer-short]").fill("勇胜")
         dialog.locator("[data-share-sender-keyword]").fill("勇胜")
@@ -190,6 +206,12 @@ def test_customer_rules_dialog_and_empty_state(app, browser):
         page.wait_for_function("document.querySelector('[data-share-customer-feedback]').textContent.includes('26 张运单')")
         dialog.get_by_role("button", name="保存客户").click()
         page.wait_for_function("document.querySelector('[data-share-customer-feedback]').textContent.includes('已保存')")
+        # After saving, the picker appears with the customer selected, plus a button to start a new one.
+        assert dialog.locator("[data-share-customer-switch]").is_visible()
+        assert dialog.locator("[data-share-customer-mode]").inner_text() == "正在修改：勇胜贸易有限公司"
+        dialog.locator("[data-share-customer-new]").click()
+        assert dialog.locator("[data-share-customer-mode]").inner_text() == "新建客户"
+        assert dialog.locator("[data-share-customer-name]").input_value() == ""
         path, body = posts[-1]
         assert path == "/receipts/shares/customers"
         assert {key: body[key] for key in ("customer_id", "name", "short_name", "match")} == {
