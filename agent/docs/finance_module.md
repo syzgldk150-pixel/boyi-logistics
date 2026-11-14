@@ -4,7 +4,7 @@ type: 模块文档
 tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, 凭证, 科目余额表, 明细账, Decimal, 重建]
 related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md, ../../docs/finance_connector_contract.md]
 status: active
-updated: 2026-11-09
+updated: 2026-11-15
 ---
 
 # 财务模块（复式记账总账）
@@ -15,7 +15,7 @@ updated: 2026-11-09
 
 - 迁移 `067_retire_finance_statement_ledger.sql` 删除 062/063 及更早的全部 23 张 `finance_*` 表与运行库视图，以及 `module_data_sources` 中 `module='finance'` 的来源和账号绑定；删除前逐行导出为回滚材料（`agent/scripts/migration_row_export.py`）。
 - 删除的代码：融辉统计查询抓取插件 `sync_ronghui_finance_statement_v2`、其 Host 适配器和 Connector、`shared/finance/` 下的账本/绑定/封账/校验实现、财务 AI 费用分析（`finance_brain.py`、`analyze_finance_reviews`）、旧来源导入脚本和 Console 财务工作台。
-- 保留：`shared/finance/money.py` 的 Decimal 金额规则；财务模块菜单与 `finance.read` / `finance.manage` 权限；财务数据源页 `/modules/finance/data-sources`（新连接器将在此管理）。
+- 保留：`shared/finance/money.py` 的 Decimal 金额规则；财务模块菜单与权限（2026-11 起为身份“后台页面”中的“财务”模块：可见=查看，可操作=制单与采集；飞书/微信/AI 助手的财务查询与采集另按身份“机器人”组的“财务数据”“财务采集”，见 `../../docs/identity_and_unified_chat.md`）；财务数据源页 `/modules/finance/data-sources`（新连接器将在此管理）。
 
 现状（2026-11-07 P1–P5 全部完成，尚未发布到 ECS）：
 
@@ -74,8 +74,8 @@ updated: 2026-11-09
 
 | 方法 | 路径 | 权限 |
 |---|---|---|
-| GET | `/finance/settings`、`/finance/accounts`、`/finance/vouchers?month=&status=`、`/finance/vouchers/{id}`、`/finance/reports/trial-balance?month=`、`/finance/reports/ledger?account=&start=&end=`、`/finance/reports/journal?month=` | `finance.read` |
-| POST | `/finance/vouchers`（新建草稿）、`/finance/vouchers/{id}`（改草稿）、`/finance/vouchers/{id}/delete`、`/finance/vouchers/{id}/submit` | `finance.manage` |
+| GET | `/finance/settings`、`/finance/accounts`、`/finance/vouchers?month=&status=`、`/finance/vouchers/{id}`、`/finance/reports/trial-balance?month=`、`/finance/reports/ledger?account=&start=&end=`、`/finance/reports/journal?month=` | 财务可见（`finance:view`） |
+| POST | `/finance/vouchers`（新建草稿）、`/finance/vouchers/{id}`（改草稿）、`/finance/vouchers/{id}/delete`、`/finance/vouchers/{id}/submit` | 财务可操作（`finance:operate`） |
 | POST | `/finance/vouchers/{id}/cancel`、`/finance/settings`、`/finance/accounts`、`/finance/accounts/{code}`、`/finance/accounts/{code}/delete` | 超级管理员 |
 
 写请求还必须满足三项：真实 MySQL 后台账号、同源请求、`X-Browser-Request-UUID` 与请求体中的 `request_id` 一致。修改类请求要带 `expected_revision`。错误统一返回 `{ok:false,error_code,message}`。
@@ -123,8 +123,8 @@ updated: 2026-11-09
 
 | 方法 | 路径 | 权限 |
 |---|---|---|
-| GET | `/finance/parties`、`/finance/parties/sender-candidates`、`/finance/open-items?party_id=&account=&as_of=`、`/finance/allocations?party_id=&month=`、`/finance/reports/aging?as_of=&kind=`、`/finance/reports/statement?party_id=&start=&end=` | `finance.read` |
-| POST | `/finance/parties`、`/finance/parties/{id}`、`/finance/allocations`、`/finance/allocations/auto-waybill`、`/finance/allocations/{id}/reverse` | `finance.manage` |
+| GET | `/finance/parties`、`/finance/parties/sender-candidates`、`/finance/open-items?party_id=&account=&as_of=`、`/finance/allocations?party_id=&month=`、`/finance/reports/aging?as_of=&kind=`、`/finance/reports/statement?party_id=&start=&end=` | 财务可见（`finance:view`） |
+| POST | `/finance/parties`、`/finance/parties/{id}`、`/finance/allocations`、`/finance/allocations/auto-waybill`、`/finance/allocations/{id}/reverse` | 财务可操作（`finance:operate`） |
 
 页面新增“往来核销”和“账龄与对账单”两个页签；凭证分录行增加“往来单位”列。
 
@@ -200,8 +200,8 @@ updated: 2026-11-09
 
 | 方法 | 路径 | 权限 |
 |---|---|---|
-| GET | `/finance/waybills?month=&status=`、`/finance/doc-rules` | `finance.read` |
-| POST | `/finance/waybills/{id}/confirm`、`/finance/waybills/confirm-batch`、`/finance/allocations/daily` | `finance.manage` |
+| GET | `/finance/waybills?month=&status=`、`/finance/doc-rules` | 财务可见（`finance:view`） |
+| POST | `/finance/waybills/{id}/confirm`、`/finance/waybills/confirm-batch`、`/finance/allocations/daily` | 财务可操作（`finance:operate`） |
 | POST | `/finance/doc-rules/{prepaid|collect|monthly}` | 超级管理员 |
 
 页面新增首个页签“开单确认”，可勾选批量确认，也可逐单确认或冲销、选择往来单位、点“改金额”补录（写回运单）。规则在“设置”页维护；“往来核销”页增加“按日汇总核销”。
@@ -273,8 +273,8 @@ updated: 2026-11-09
 
 | 方法 | 路径 | 权限 |
 |---|---|---|
-| GET | `/finance/sources`、`/finance/sources/{id}/files`、`/finance/sources/{id}/batches`、`/finance/source-batches/{id}/lines?page=`、`/finance/line-rules`、`/finance/reviews`、`/finance/anomalies` | `finance.read` |
-| POST | `/finance/sources/{id}/files`（请求体是原始文件，`X-File-Name` 为 URL 编码后的文件名）、`/finance/source-files/{id}/discard`、`/finance/line-rules`、`/finance/reviews/{id}/resolve`、`/finance/anomalies/{id}/acknowledge` | `finance.manage` |
+| GET | `/finance/sources`、`/finance/sources/{id}/files`、`/finance/sources/{id}/batches`、`/finance/source-batches/{id}/lines?page=`、`/finance/line-rules`、`/finance/reviews`、`/finance/anomalies` | 财务可见（`finance:view`） |
+| POST | `/finance/sources/{id}/files`（请求体是原始文件，`X-File-Name` 为 URL 编码后的文件名）、`/finance/source-files/{id}/discard`、`/finance/line-rules`、`/finance/reviews/{id}/resolve`、`/finance/anomalies/{id}/acknowledge` | 财务可操作（`finance:operate`） |
 | POST | `/finance/sources`、`/finance/sources/{id}` | 超级管理员 |
 
 页面新增“来源与流水”页签（来源、账单上传、批次及其校验、流水及凭证）和“规则与待审”页签（待审处理、规则、异常）。
@@ -351,7 +351,7 @@ updated: 2026-11-09
 
 | 方法 | 路径 | 权限 |
 |---|---|---|
-| GET | `/finance/periods/{YYYY-MM}`、`/finance/reports/profit-loss?month=`、`/finance/reports/balance-sheet?month=`、`/finance/reports/cash-flow?month=`、`/finance/reports/waybill-margin?start=&end=` | `finance.read` |
+| GET | `/finance/periods/{YYYY-MM}`、`/finance/reports/profit-loss?month=`、`/finance/reports/balance-sheet?month=`、`/finance/reports/cash-flow?month=`、`/finance/reports/waybill-margin?start=&end=` | 财务可见（`finance:view`） |
 | POST | `/finance/periods/{YYYY-MM}/close`、`/finance/periods/{YYYY-MM}/reopen` | 超级管理员 |
 
 ### 回归
@@ -391,7 +391,7 @@ updated: 2026-11-09
   - 置信度在 0 到 1 之间，理由不超过 500 字。
 - **保存：** 通过校验后才保存到待审。没有启用模型、调用失败或返回不合格时，明确报错，不保存。
 - **页面：** “规则与待审”页每个待审都有“生成 AI 建议”按钮，并显示建议科目、往来单位、置信度和理由。点“处理”会预填建议，仍需人工确认后才保存规则并重记。AI 不会直接改账或保存规则。
-- **接口：** Console `POST /finance/reviews/{id}/suggest`（`finance.manage`），签名后转发到 Agent `POST /internal/v1/admin/finance/reviews/{id}/suggest`。
+- **接口：** Console `POST /finance/reviews/{id}/suggest`（财务可操作（`finance:operate`）），签名后转发到 Agent `POST /internal/v1/admin/finance/reviews/{id}/suggest`。
 
 ### 利润表按网点、业务线拆分
 
@@ -409,7 +409,7 @@ updated: 2026-11-09
   - 首行加粗并冻结；
   - 不依赖 openpyxl，Console 依赖锁不变。
 - **数据整理：** `shared/finance/exports.py` 按报表类型把现有报表数据整理成表格，支持科目余额表、序时账、明细账、利润表（含拆分）、资产负债表、现金流量表、单票毛利、账龄和对账单。
-- **接口：** Console `GET /finance/exports/{kind}.xlsx?...`（`finance.read`），返回中文文件名附件。页面各报表旁都有“导出 Excel”，原有的“导出 CSV”保留。
+- **接口：** Console `GET /finance/exports/{kind}.xlsx?...`（财务可见（`finance:view`）），返回中文文件名附件。页面各报表旁都有“导出 Excel”，原有的“导出 CSV”保留。
 
 ### 回归
 

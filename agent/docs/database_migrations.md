@@ -4,7 +4,7 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-14
+updated: 2026-11-15
 ---
 
 # 数据库迁移

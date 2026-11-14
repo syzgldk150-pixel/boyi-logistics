@@ -41,7 +41,7 @@ updated: 2026-11-09
 
 - [业务接口与独立插件调用架构](architecture_direct_invocation.md)：双服务、普通业务直接调用、独立插件 Invocation 和维护归属。
 - [当前插件源码、测试与升级入口](../agent/service_v2_plugins/README.md)、[Service V2 平台合同](plugin-platform-v2.md)：现行业务源码、Host 边界、独立 ZIP 与退役发布。
-- [身份权限与统一对话](identity_and_unified_chat.md)：后台账号和飞书身份继承、共用 AI 服务、授权插件执行及当前应签规则。
+- [身份权限与统一对话](identity_and_unified_chat.md)：人员与“后台页面/机器人”两组权限、机器人写操作需确认与财务仅私聊、微信个人号、共用 AI 服务、授权插件执行及当前应签规则。
 - [V3.2 维护边界](low_maintenance_v32.md)：所属模块入口、可选 AI、简单设置、局部维护与来源历史。
 - [寄件查询与范围覆盖](direct_waybill_query.md)：数据库优先、平台补查及完整来源边界。
 - [监控查询](warehouse_monitor.md)：按单号读取真实扫描时间并签发局域网回放链接，录像只在仓库局域网内播放，含位置推定边界。

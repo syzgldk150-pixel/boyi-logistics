@@ -73,7 +73,7 @@ Console 调用 Agent 的所有请求统一经 `_agent_request()`、只使用 `/i
 - 插件主状态与代际协调状态合并显示：`INSTALLED/ENABLED/DISABLED + STABLE` 可启用、升级或配置；准备、等待依赖、切换、排空、未知写隔离和错误状态禁用运行。停用保留精确 CAS 入口；已停用的失败实例可经服务端核验无活跃调用、未知写及依赖占用后卸载，不能用卸载绕过未核验写入；卸载撤销完成且协调状态 STABLE 后可重试卸载，仍走原 CAS、受保护写检查及精确清理入口，排空中与未知写状态不开放重试。
 - `BLOCKED_UNKNOWN_WRITE` 项目只显示写入结果未知并保持隔离，Console 不提供核验或恢复操作，也不把 `UNKNOWN` 显示成成功。
 - 项目设置统一通过 `PUT /internal/v1/automation/instances/{automation_id}/configuration` 原子保存 `config/account_bindings/resource_bindings/enabled_entrypoints/schedule/request_id/expected_project_configuration_version`。`enabled_entrypoints` 允许签名清单任意子集和空集；高级设置以标准 switch 独立控制系统定时、后台手动、飞书消息和外部验签请求。关闭定时保留时间配置但不注册 Job，关闭后台时执行按钮必须明确显示入口已关闭。Console 可转发最多 96 个规范时间点；保存后必须区分 `ACTIVE/DISABLED/ENTRYPOINT_DISABLED/BLOCKED_GENERATION/REFRESH_FAILED`，后两种保留原请求 UUID 供精确重试，不得把“配置已落库”误报成“运行中定时已生效”。
-- 后台账号页允许当前 Console 超级管理员创建/撤销飞书身份绑定码；页面不得展示 `open_id/chat_id`。绑定后飞书角色实时继承账号当前 `control_plane_role/is_active`。
+- 后台账号页允许当前 Console 超级管理员创建/撤销飞书身份绑定码，生成时选择所属人员；页面不得展示 `open_id/chat_id`。绑定后飞书按所属人员的身份（机器人组）实时生效；人员有后台账号时随该账号启停，账号为超级管理员时飞书也是超级管理员。
 - 插件只安装动作并声明可用的调度类型，实际定时属于系统项目配置，不属于 ZIP 或 manifest。安装完成后才在自动化卡片设置 `none/daily_times/startup`；同一插件的多个 `automation_id` 实例可各自选择账号、资源、定时和权限。
 - 自动化页不再渲染顶部账号登录绿点、登录态 popover、凭据表单或账号管理快捷入口，也不再探测旧 TMS session 接口；旧 `/automations/*-session/*` 和 `/automations/session-context` 不得路由。凭据和登录态只在侧栏“业务账号”模块管理；项目卡仅从 Agent catalog 的 `account_bindings` 显示业务账号池下拉，不回显凭据、不选默认/首项。未选、停用或 session 失效必须阻断运行、启用和完全自动。
 - 每日应签 V2 的账号角色为 `daily_sign_r13`（必填，读取该 R13 账号所属站点范围和应签清单）与 `daily_sign_tms`（可选的历史融辉配置，当前运行不调用）。账号都只取项目当前绑定，后台改绑后下一次运行生效，不固定账号或站点。
@@ -211,8 +211,8 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 账单上传 `POST /finance/sources/{id}/files`：请求体是原始文件，不超过 20MB，文件名放在 URL 编码后的 `X-File-Name` 头里，同样要求同源请求和 `X-Browser-Request-UUID`。财务来源的新建和修改只允许超级管理员。连接器写的是插件，经 Agent `connector.boyi.finance_sources@1` 提交，Console 不运行连接器。
   - 博益开单全部人工确认后才记账。“改金额”只调用现有 `/waybills/{id}/edit-data` 与 `/waybills/{id}/manual-update`，写回运单并留修改记录，财务页不另存金额。开单记账规则的修改只允许超级管理员。
   - 权限由 `shared/identity_routes.py` 投影：
-    - 查看 `finance.read`；
-    - 制单和提交 `finance.manage`；
+    - 查看需身份“后台页面”中“财务”为可见（`finance:view`）；
+    - 制单和提交需“财务”为可操作（`finance:operate`）；
     - 冲销凭证、改科目结构、改启用月和默认科目只允许超级管理员。
   - 写请求必须满足：真实 MySQL 后台账号、同源请求、`X-Browser-Request-UUID` 与请求体 `request_id` 一致；修改类请求带 `expected_revision`。
   - 金额在浏览器中只按字符串和整数（万分之一单位）计算，不用浮点数。

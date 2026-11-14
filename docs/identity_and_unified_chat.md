@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-14
+updated: 2026-11-15
 ---
 
 # 身份权限与统一对话

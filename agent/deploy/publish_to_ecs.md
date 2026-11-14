@@ -2,7 +2,7 @@
 module: deployment
 type: operations
 status: active
-updated: 2026-11-14
+updated: 2026-11-15
 ---
 
 # 发布到 ECS
@@ -73,8 +73,8 @@ powershell -ExecutionPolicy Bypass `
 
 脚本采用失败关闭策略，以下任一条件不满足都会停止：
 
-1. Tailscale SSH 连接与远端用户、工作目录预检通过；正式发布要求 Git 工作区干净，当前分支必须配置 upstream。
-2. 脚本会先 `git fetch`，本地 `HEAD` 必须与远程 upstream 完全一致。
+1. Tailscale SSH 连接与远端用户、工作目录预检通过；正式发布要求 Git 工作区干净（`git status --porcelain --untracked-files=all` 为空，未跟踪文件也算），当前分支必须配置 upstream。与本次发布无关的本地改动需先备份并暂存（如 `git stash push -u -- <路径>`），发布后再恢复。
+2. 脚本会先 `git fetch`，本地 `HEAD` 必须与远程 upstream 完全一致。Windows git 访问 GitHub 被重置（`SSL_ERROR_SYSCALL`、`Connection was reset`）时，脚本在连接服务器之前退出、ECS 无变化；按 [Git 工作流的网络预检](../../docs/git_workflow.md#网络预检) 只为本次 PowerShell 进程设置 `HTTP_PROXY/HTTPS_PROXY=http://127.0.0.1:7890` 后重跑。
 3. 本地 `127.0.0.1:9000` 不得有 Agent 监听，避免与 ECS 同时消费飞书任务。
 4. Windows `known_hosts` 必须已有以 `123.57.106.70` 标识的、经过核验的 A 服务器主机密钥；发布器通过 HostKeyAlias 复用该记录。
 5. SSH 只允许固定私钥、公钥认证、`BatchMode=yes`、`IdentitiesOnly=yes` 和 `StrictHostKeyChecking=yes`；不允许 root、密码回退或跳过主机校验。
@@ -126,6 +126,15 @@ Console `static/` 下已纳入 Git 的面单 PNG 属于明确静态资产例外�
 业务代码频繁提交时，发布只同步受管源码并重启受影响服务，不会重新创建虚拟环境，也不会重复下载 OCR、OpenCV、Playwright、pandas 等依赖。锁文件变化归入 shared 路径，才承担完整依赖安装成本并协调两个服务。
 
 `/health` 是公开的精简存活接口，只返回状态和 `release_sha`。详细组件状态位于带 `X-Agent-Internal-Token` 的 `/internal/v1/health`。
+
+## 回滚材料清理
+
+成功发布后保留的回滚材料只在业务验收后、经用户明确同意，作为独立的有界操作清理；发布脚本不会自动删除。清理范围与核对：
+
+- 删除对象：`/home/boyce/.boyi-deploy/release-<sha>-<时间>/`（每次发布的暂存树及其中 `_rollback/` 精确回滚包），以及 `/home/boyce/.boyi-venvs/` 下不再被任何服务引用的旧 `runtime-deps-<hash>` 环境。
+- 保留对象：Agent/Console 当前使用的环境（`readlink -f /home/boyce/agent/.venv` 与 `/home/boyce/console/.venv` 指向的目录）、`.boyi-deploy/release.lock`、`receipt-share.fingerprint`，以及 `agent/runtime/migration-backups/` 下迁移导出的业务数据文件（不是回滚包）。
+- 删除前确认没有发布在进行、旧环境未被引用；只按上述精确路径删除。删除后核对 `/health` 的 `release_sha`、两个服务 `active` 与 Console 登录页 200。
+- 删除后对应版本不能再一键回滚，出问题只能向前修复。2026-11-15 已按用户要求删除当时全部 39 个回滚包和旧环境 `runtime-deps-a23cd…`。
 
 ## 发布范围
 

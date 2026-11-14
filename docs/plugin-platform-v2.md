@@ -4,7 +4,7 @@ type: 开发手册
 tags: [ZIP 插件, service_v2, Host API, 独立插件]
 related: [identity_and_unified_chat.md, architecture_direct_invocation.md, ../agent/service_v2_plugins/README.md, ../agent/docs/service_v2_developer_tooling.md]
 status: active
-updated: 2026-11-09
+updated: 2026-11-15
 ---
 
 # 独立插件与宿主接口
@@ -44,7 +44,7 @@ R7 车线每日打卡包 `r7_vehicle_checkin_v2` 1.1.0 使用通用账号 `http.
 ## 用户入口与权限
 
 - `/automations` 管理功能插件的安装、设置、运行、定时、启停、升级和卸载。财务、客服采集放在各自模块的数据源入口，复用同一插件运行机制。
-- 普通账号和飞书身份继承后台设置的身份权限，超级管理员拥有全部权限。权限变更实时影响页面、接口、固定查询及插件调用，见[身份与统一对话](identity_and_unified_chat.md)。
+- 后台账号、飞书与微信都按所属人员的身份权限判断：页面与 Console 接口用“后台页面”组，飞书、微信与后台 AI 助手调用插件用“机器人”组（写类插件可设为“需确认”，在创建 Invocation 前要求本人确认）；超级管理员拥有全部权限。权限变更实时影响页面、接口、固定查询及插件调用，见[身份与统一对话](identity_and_unified_chat.md)。
 - Console AI 与飞书自然对话共用会话服务、当前激活模型和工具目录。固定关键词直接进入插件，不额外经过模型。账号与渠道身份仍分别核验。
 - AI 可以调用当前身份获准使用的已安装插件。扫描、自提、分批先返回预览，正式执行使用宿主持有的一次性确认；模型不能自填账号、资源、执行身份或任意业务参数。
 - 安装、升级和权限管理要求真实超级管理员。读取结果和执行插件使用当前角色权限及该插件的入口设置。

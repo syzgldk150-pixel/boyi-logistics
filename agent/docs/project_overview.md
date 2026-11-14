@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-11-12
+updated: 2026-11-15
 ---
 
 # 物流 Agent 项目总览
@@ -15,7 +15,7 @@ updated: 2026-11-12
 
 - 当前业务使用 `SERVICE_V2` 独立 ZIP。业务源码在 `agent/service_v2_plugins/`，Host 提供受审核的接口、隔离、持久化和回读；维护入口见[插件 README](../service_v2_plugins/README.md)。V1 运行时、迁移配对与签名发行已于 2026-10 删除，系统只运行 Service V2。
 - 超级管理员安装 ZIP 时创建独立实例，默认停用；账号、资源、参数和时间计划在安装后配置。不同实例可独立执行。核心发布只复制 `agent/scripts/release_scope.py` 列出的当前 V2 包。
-- 账号登录态由业务账号模块维护；插件只使用管理员明确保存的账号与资源绑定，不选择默认账号或第一项。普通账号与飞书身份继承身份设置的权限，超级管理员原生拥有全部权限。
+- 账号登录态由业务账号模块维护；插件只使用管理员明确保存的账号与资源绑定，不选择默认账号或第一项。后台账号、飞书绑定和微信设备都归属“人员”，按人员身份的两组权限判断：后台页面用“后台页面”组（模块可见/可操作），飞书、微信与后台 AI 助手用“机器人”组；超级管理员原生拥有全部权限（财务数据仍仅私聊）。
 - Host Capability Registry 定义精确接口 Schema 和 effect；插件不能自报写入成功。缺少身份、字段、结果或独立写后证据时明确失败或报告未知写。
 - 功能插件在自动化模块，财务/客服采集插件在所属模块的数据源页；共用生命周期与执行机制。Harness contribution 可选，账号引用和平铺参数可用宿主简单设置。
 
