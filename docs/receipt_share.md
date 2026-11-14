@@ -72,7 +72,7 @@ updated: 2026-11-14
 5. 为 `r.boyi.homes` 签证书，安装 `agent/deploy/nginx/r.boyi.homes.conf`，`nginx -t` 后 reload。
 6. 后台给需要的账号分配“客户共享”权限，建客户、生成链接验收。
 
-发布脚本目前不会自动重启 `receipt-share.service`：对外服务代码或模板变更后，需要手动 `sudo systemctl restart receipt-share`。
+发布脚本在发布成功（Agent／Console 健康、调度已恢复）之后检查 `receipt-share.service`：它加载的文件（`remote_release.sh` 的 `RECEIPT_SHARE_FILES`，测试保证等于 `receipt_share_server.py` 的本地导入闭包加页面模板）和 Console 虚拟环境的指纹，与上次发布重启它时记录在 `~/.boyi-deploy/receipt-share.fingerprint` 的不同、或服务未运行时，就重启它，并等待本机 `http://127.0.0.1:8766/r/<无效链接码>` 返回 404。输出 `receipt_share_restart=ok|skipped reason=…|failed`；失败不回滚已上线的 Agent／Console，只打印 `WARNING` 提示立即检查 `journalctl -u receipt-share`，下次发布会再次尝试。服务器没有该单元时跳过。修改单元文件本身仍需手动重新安装并 `daemon-reload`。
 
 ## 回归
 

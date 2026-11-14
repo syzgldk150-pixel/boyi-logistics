@@ -25,6 +25,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 远端回滚材料按下文保留。
 
+客户共享对外服务 `receipt-share.service` 不在回滚范围内：发布提交成功后，其加载的源码或 Console 虚拟环境有变化时由发布脚本自动重启并检查（输出 `receipt_share_restart=`），失败只告警不回滚，细节见[客户共享说明](../../docs/receipt_share.md)。
+
 生产目标固定为：
 
 - SSH/SCP：Tailscale `boyce@100.107.181.3`（普通 OpenSSH 经 Tailscale 传输，不依赖 Tailscale SSH 功能）。

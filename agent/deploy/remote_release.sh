@@ -56,6 +56,24 @@ MIGRATIONS_ATTEMPTED=0
 DOMAIN_DATABASE_SPLIT_PENDING_AT_APPLY=0
 NEW_RUNTIME_START_ATTEMPTED=0
 SCHEDULER_RELEASE_HOLD_CREATED=0
+# The public customer share site (r.boyi.homes) is its own unit running Console
+# and Shared files from the Console virtualenv. A release restarts it when what
+# it loads differs from what a release last (re)started it with.
+RECEIPT_SHARE_SERVICE="receipt-share.service"
+RECEIPT_SHARE_HEALTH_URL="http://127.0.0.1:8766/r/AAAAAAAAAAAAAAAAAAAAAA"
+RECEIPT_SHARE_HEALTH_WAIT_SECONDS=30
+RECEIPT_SHARE_STATE_FILE="${DEPLOY_ROOT}/receipt-share.fingerprint"
+# scope/relative path of every local file console/receipt_share_server.py loads;
+# tests/test_release_boundaries.py keeps this list equal to its import closure.
+RECEIPT_SHARE_FILES=(
+  console/receipt_share_server.py
+  console/templates/share_public.html
+  shared/__init__.py
+  shared/mysql_connection.py
+  shared/receipt_nas_store.py
+  shared/receipt_share.py
+  shared/receipt_share_repository.py
+)
 
 declare -A ROOTS=(
   [agent]="/home/boyce/agent"
@@ -906,6 +924,68 @@ restart_services() {
   done
 }
 
+receipt_share_fingerprint() {
+  local entry scope relative path
+  {
+    for entry in "${RECEIPT_SHARE_FILES[@]}"; do
+      scope="${entry%%/*}"
+      relative="${entry#*/}"
+      path="${ROOTS[$scope]}/${relative}"
+      if [[ -f "${path}" ]]; then
+        printf '%s %s\n' "${entry}" "$(sha256sum <"${path}" | cut -d' ' -f1)"
+      else
+        printf '%s absent\n' "${entry}"
+      fi
+    done
+    # A dependency release switches the Console virtualenv the unit runs from.
+    printf 'venv %s\n' "$(readlink -f -- "${ROOTS[console]}/.venv" 2>/dev/null || true)"
+  } | sha256sum | cut -d' ' -f1
+}
+
+receipt_share_healthy() {
+  local deadline code
+  deadline=$((SECONDS + RECEIPT_SHARE_HEALTH_WAIT_SECONDS))
+  while ((SECONDS < deadline)); do
+    if systemctl is-active --quiet "${RECEIPT_SHARE_SERVICE}"; then
+      # An unknown link code must get the ordinary "link gone" page.
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "${RECEIPT_SHARE_HEALTH_URL}" 2>/dev/null || true)"
+      [[ "${code}" == "404" ]] && return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Runs after the release committed: Agent/Console stay on the new release
+# whatever happens here, and a failure is reported instead of rolled back.
+restart_receipt_share_if_changed() {
+  local current recorded=""
+  if [[ "${SKIP_RESTART}" == "1" ]]; then
+    echo "receipt_share_restart=skipped reason=RESTART_DISABLED"
+    return 0
+  fi
+  if [[ -z "$(systemctl show "${RECEIPT_SHARE_SERVICE}" -p FragmentPath --value 2>/dev/null || true)" ]]; then
+    echo "receipt_share_restart=skipped reason=UNIT_ABSENT"
+    return 0
+  fi
+  current="$(receipt_share_fingerprint)"
+  if [[ -f "${RECEIPT_SHARE_STATE_FILE}" ]]; then
+    read -r recorded <"${RECEIPT_SHARE_STATE_FILE}" || true
+  fi
+  if [[ "${recorded}" == "${current}" ]] && systemctl is-active --quiet "${RECEIPT_SHARE_SERVICE}"; then
+    echo "receipt_share_restart=skipped reason=UNCHANGED"
+    return 0
+  fi
+  if ! sudo systemctl restart "${RECEIPT_SHARE_SERVICE}" || ! receipt_share_healthy; then
+    systemctl show "${RECEIPT_SHARE_SERVICE}" -p ActiveState -p SubState -p Result -p ExecMainStatus >&2 || true
+    echo "receipt_share_restart=failed service=${RECEIPT_SHARE_SERVICE}" >&2
+    return 1
+  fi
+  printf '%s\n' "${current}" >"${RECEIPT_SHARE_STATE_FILE}.tmp" && \
+    mv -f -- "${RECEIPT_SHARE_STATE_FILE}.tmp" "${RECEIPT_SHARE_STATE_FILE}"
+  echo "receipt_share_restart=ok"
+}
+
 stop_runtime_services_for_rollback() {
   local target service stop_status=0
   for target in "${RUNTIME_TARGETS[@]}"; do
@@ -1594,6 +1674,10 @@ run_release() {
   fi
   RELEASE_STAGE="cleanup_successful_release"
   cleanup_successful_release
+  RELEASE_STAGE="restart_receipt_share"
+  if ! restart_receipt_share_if_changed; then
+    echo "WARNING: release ${RELEASE_SHA} is live, but the customer share site (${RECEIPT_SHARE_SERVICE}) did not come back; check journalctl -u ${RECEIPT_SHARE_SERVICE} now" >&2
+  fi
   echo "Release completed: ${RELEASE_SHA} (${TARGETS_CSV})"
 }
 

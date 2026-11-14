@@ -721,6 +721,86 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertLess(execution.index("write_automation_plugin_runtime_environment"),
                         execution.index('RELEASE_STAGE="restart_services"'))
 
+    def test_receipt_share_file_list_is_the_share_servers_local_import_closure(self):
+        release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(encoding="utf-8")
+        listed = release.split("RECEIPT_SHARE_FILES=(\n", 1)[1].split("\n)", 1)[0].split()
+        closure, pending = set(), ["console/receipt_share_server.py"]
+        while pending:
+            relative = pending.pop()
+            if relative in closure:
+                continue
+            closure.add(relative)
+            for node in ast.walk(ast.parse((REPOSITORY_ROOT / relative).read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+                elif isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                else:
+                    continue
+                for name in names:
+                    if name.split(".")[0] not in {"shared", "console"}:
+                        continue
+                    for candidate in (name.replace(".", "/") + ".py", name.replace(".", "/") + "/__init__.py"):
+                        if (REPOSITORY_ROOT / candidate).is_file():
+                            pending.append(candidate)
+        server = (REPOSITORY_ROOT / "console" / "receipt_share_server.py").read_text(encoding="utf-8")
+        templates = {f"console/templates/{name}" for name in re.findall(r'get_template\("([^"]+)"\)', server)}
+        self.assertEqual(sorted(closure | templates), sorted(listed))
+
+    def test_receipt_share_restarts_only_when_its_files_or_venv_change(self):
+        harness = r"""
+            set +e
+            root="${stage_root}/fake"
+            mkdir -p "${root}/console/templates" "${root}/shared" "${root}/venv-a" "${root}/venv-b"
+            for entry in "${RECEIPT_SHARE_FILES[@]}"; do printf 'v1\n' >"${root}/${entry}"; done
+            ln -s "${root}/venv-a" "${root}/console/.venv"
+            ROOTS[console]="${root}/console"
+            ROOTS[shared]="${root}/shared"
+            RECEIPT_SHARE_STATE_FILE="${root}/receipt-share.fingerprint"
+            RECEIPT_SHARE_HEALTH_WAIT_SECONDS=2
+            UNIT=present ACTIVE=1 RESTART_FAILS=0
+            sudo() { printf 'restart:%s\n' "$3"; [[ "${RESTART_FAILS}" == "0" ]]; }
+            systemctl() {
+              case "$1" in
+                show) [[ "${UNIT}" == "present" ]] && printf '/etc/systemd/system/%s\n' "$2"; return 0 ;;
+                is-active) [[ "${ACTIVE}" == "1" ]] ;;
+              esac
+            }
+            curl() { printf '404'; }
+            step() { printf '== %s\n' "$1"; restart_receipt_share_if_changed; printf 'rc=%s\n' "$?"; }
+            step first-run
+            step unchanged
+            printf 'v2\n' >"${root}/shared/receipt_share.py"; step code-changed
+            rm "${root}/console/.venv"; ln -s "${root}/venv-b" "${root}/console/.venv"; step venv-switched
+            ACTIVE=0; step stopped-service
+            ACTIVE=1; printf 'v3\n' >"${root}/console/templates/share_public.html"; RESTART_FAILS=1; step restart-fails
+            RESTART_FAILS=0; step retried-next-release
+            UNIT=absent; printf 'v4\n' >"${root}/console/receipt_share_server.py"; step unit-absent
+            SKIP_RESTART=1; UNIT=present; step restart-disabled
+        """
+        completed = _run_sourced_release_harness(harness, target_csv="console")
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        steps = {}
+        for block in completed.stdout.split("== ")[1:]:
+            name, _, body = block.partition("\n")
+            steps[name] = body
+        restarted = {name for name, body in steps.items() if "restart:receipt-share.service" in body}
+        self.assertEqual({"first-run", "code-changed", "venv-switched", "stopped-service", "restart-fails",
+                          "retried-next-release"}, restarted)
+        self.assertIn("reason=UNCHANGED", steps["unchanged"])
+        self.assertIn("rc=1", steps["restart-fails"])
+        self.assertIn("receipt_share_restart=failed", completed.stderr)
+        self.assertIn("receipt_share_restart=ok", steps["retried-next-release"])
+        self.assertIn("reason=UNIT_ABSENT", steps["unit-absent"])
+        self.assertIn("reason=RESTART_DISABLED", steps["restart-disabled"])
+
+    def test_receipt_share_restart_runs_after_the_release_commit_point(self):
+        release = (REPOSITORY_ROOT / "agent" / "deploy" / "remote_release.sh").read_text(encoding="utf-8")
+        flow = release.split("run_release() {", 1)[1]
+        self.assertLess(flow.index('trap - ERR'), flow.index("restart_receipt_share_if_changed"))
+        self.assertLess(flow.index("cleanup_successful_release"), flow.index("restart_receipt_share_if_changed"))
+        self.assertLess(flow.index("restart_receipt_share_if_changed"), flow.index('echo "Release completed'))
+
     def test_single_service_restart_targets_only_the_selected_unit(self):
         for target, expected, forbidden in (
             ("agent", "agent.service", "console.service"),
