@@ -86,3 +86,34 @@ def test_conversation_action_requires_signed_principal(direct_runtime):  # noqa:
                           (Actor(ActorType.FEISHU_USER, "guest", authenticated_by="feishu_event"), "feishu")):
         with pytest.raises(HarnessError):
             plugins.targets(actor=actor, source=source)
+
+
+def test_assistant_write_waits_for_person_confirmation_before_any_invocation(direct_runtime, monkeypatch):  # noqa: F811
+    """Identity P3 on the real policy: "需确认" stops the call before an Invocation exists."""
+    from dataclasses import replace
+    from agent.automation_plugins.execution import PluginExecutionRouter
+    from agent.orchestration.agent_confirmation import AGENT_CONFIRMATION_REQUIRED
+    from agent.orchestration.models import OrchestrationError
+    from shared.identity_permissions import IdentityAccess
+    from tests.test_identity_interfaces import MutableAuthority
+    management, _runtime, identity = direct_runtime
+    original = PluginExecutionRouter._service_contribution_capability.__func__
+
+    def as_write(cls, *args, **kwargs):
+        capability = dict(original(cls, *args, **kwargs))
+        return {**capability, "operation_type": "internal_write", "permissions": {"required_roles": ["admin"]}}
+
+    monkeypatch.setattr(PluginExecutionRouter, "_service_contribution_capability", classmethod(as_write))
+    access = MutableAuthority()
+    access.state = IdentityAccess(True, console={"plugins.execute": "operate"}, agent={"plugins.execute": "confirm"})
+    monkeypatch.setattr(management.policy, "identity_access", access, raising=False)
+    with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) AS n FROM automation_plugin_invocations")
+        before = cursor.fetchone()["n"]
+    assistant = replace(ACTOR, channel="agent")
+    with pytest.raises(OrchestrationError) as exc:
+        management.policy.invoke_console(identity, request_id=str(uuid4()), actor=assistant)
+    assert exc.value.code == AGENT_CONFIRMATION_REQUIRED and "直接执行测试" in str(exc.value)
+    with management.repository.unit_of_work() as uow, uow.automation_plugins.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) AS n FROM automation_plugin_invocations")
+        assert cursor.fetchone()["n"] == before

@@ -47,5 +47,5 @@ def test_quick_plugins_reject_invalid_lists(ids):
 
 
 def test_new_routes_keep_their_permissions():
-    assert console_permission("POST", "/settings/profile/automation-quick-plugins") == "plugins.execute"
-    assert console_permission("GET", "/waybills/export.xlsx") == "business.query"
+    assert console_permission("POST", "/settings/profile/automation-quick-plugins") == "plugins.execute:view"
+    assert console_permission("GET", "/waybills/export.xlsx") == "business.query:view"

@@ -28,17 +28,11 @@ class FeishuBindingService:
     def _digest(code: str) -> str:
         return hashlib.sha256(code.encode("ascii")).hexdigest()
 
-    def create_binding_challenge(self, admin_user_id: int, *, role_id=None, account_id=None, label="") -> dict[str, Any]:
+    def create_binding_challenge(self, admin_user_id: int, *, person_id=None, label="") -> dict[str, Any]:
         if not isinstance(label, str) or len(label.strip()) > 80:
             raise OrchestrationError("INVALID_INPUT", "飞书账号备注需为不超过 80 个字符的文本")
-        if role_id is not None and (not isinstance(role_id, str) or not role_id.strip()):
-            raise OrchestrationError("INVALID_INPUT", "身份编号格式无效")
-        if account_id is not None and (type(account_id) is not int or account_id <= 0):
-            raise OrchestrationError("INVALID_INPUT", "后台账号编号格式无效")
-        if role_id and account_id:
-            raise OrchestrationError("INVALID_INPUT", "请选择身份或后台账号，不能同时选择")
-        if not role_id and not account_id:
-            account_id = admin_user_id  # The existing self-binding endpoint's explicit contract.
+        if person_id is not None and (not isinstance(person_id, str) or not person_id.strip()):
+            raise OrchestrationError("INVALID_INPUT", "人员编号格式无效")
         code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(10))
         expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=10)
         challenge_id = str(uuid.uuid4())
@@ -53,18 +47,19 @@ class FeishuBindingService:
                     "FEISHU_BINDING_FORBIDDEN",
                     "Only an active Console super administrator can create a binding code",
                 )
+            # Without a person the code binds the creating administrator (self-binding contract).
+            target = person_id.strip() if person_id else str(admin["person_id"])
             try:
                 uow.feishu_bindings.create_challenge({
                     "challenge_id": challenge_id,
                     "admin_user_id": int(admin_user_id),
                     "code_sha256": self._digest(code),
                     "expires_at": expires_at,
-                    "access_role_id": role_id,
-                    "identity_account_id": account_id,
+                    "person_id": target,
                     "identity_label": str(label).strip(),
                 })
             except ValueError as exc:
-                raise OrchestrationError("INVALID_INPUT", "所选身份或后台账号不存在或已停用") from exc
+                raise OrchestrationError("INVALID_INPUT", "所选人员不存在或已停用") from exc
             uow.commit()
         return {
             "challenge_id": challenge_id,
@@ -175,5 +170,5 @@ class FeishuBindingService:
         except BindingChallengeExpired:
             return "绑定码无效、已过期或已使用。"
         except ValueError:
-            return "所选身份或账号已失效，请在后台重新生成绑定码。"
+            return "所选人员已停用，请在后台重新生成绑定码。"
         return "飞书身份绑定成功；身份权限变更或解绑会立即生效。"

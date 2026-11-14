@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 import pytest
@@ -92,7 +92,8 @@ def test_conversation_binds_exact_admin_and_replays_without_sidecar_rerun() -> N
     assert first.user_message.message_id == replay.user_message.message_id
     assert first.assistant_message.message_id == replay.assistant_message.message_id
     assert first.assistant_message.content == replay.assistant_message.content
-    assert factory_calls == [(admin_actor(roles=("admin",)), REQUEST_ONE)]
+    # The conversation runs with the agent permission set (Actor.channel="agent").
+    assert factory_calls == [(replace(admin_actor(roles=("admin",)), channel="agent"), REQUEST_ONE)]
     assert tuple(item.role for item in first.session.messages) == ("user", "assistant")
     assert first.to_dict()["persistence_status"] == MEMORY_ONLY
     assert "principal_id" not in first.to_dict()

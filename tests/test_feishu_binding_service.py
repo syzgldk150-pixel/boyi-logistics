@@ -13,6 +13,7 @@ class _Rows:
             "display_name": "Root Admin",
             "is_active": 1,
             "control_plane_role": "super_admin",
+            "person_id": "11111111-2222-4333-8444-555555555555",
         }
         self.challenges: dict[str, dict] = {}
         self.binding: dict | None = None

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import asyncio
+import time
+from threading import Lock
 from dataclasses import dataclass
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid5
@@ -14,6 +16,12 @@ from uuid import NAMESPACE_URL, uuid5
 from agent.automation_plugins.catalog import project_capability_from_snapshot
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.harness.errors import HarnessError
+from agent.orchestration.agent_confirmation import (
+    AGENT_CONFIRMATION_REQUIRED,
+    CONFIRMATION_TTL_SECONDS,
+    confirmation_prompt,
+    person_confirmed,
+)
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.orchestration.selection_preview_binding import is_selection_preview_project
 from agent.orchestration.scan_preview_binding import is_scan_preview_project
@@ -70,6 +78,22 @@ class PluginConversationService:
 
     def __init__(self, policy_service: Any) -> None:
         self.policy = policy_service
+        # Console AI writes waiting for "确认": actor_id -> (expires, targets).
+        self._pending_writes: dict[str, tuple[float, tuple[ConversationPluginTarget, ...]]] = {}
+        self._pending_lock = Lock()
+
+    def remember_pending_writes(self, actor_id: str, targets: tuple[ConversationPluginTarget, ...]) -> None:
+        with self._pending_lock:
+            self._pending_writes[actor_id] = (time.monotonic() + CONFIRMATION_TTL_SECONDS, targets)
+
+    def pending_writes(self, actor_id: str, *, take: bool = False) -> tuple[ConversationPluginTarget, ...] | None:
+        """The person's unexpired pending writes; ``take`` removes them."""
+        with self._pending_lock:
+            item = self._pending_writes.pop(actor_id, None) if take else self._pending_writes.get(actor_id)
+            if item is not None and item[0] < time.monotonic():
+                self._pending_writes.pop(actor_id, None)
+                return None
+            return item[1] if item is not None else None
 
     def targets(self, *, actor: Actor, source: str) -> tuple[ConversationPluginTarget, ...]:
         channel = _channel(actor, source)
@@ -239,7 +263,7 @@ class PluginConversationTurn:
         if self.selected and self.selected != targets:
             raise HarnessError("本次消息已选择其他插件", code="HARNESS_IDEMPOTENCY_CONFLICT")
         self.selected = targets
-        receipts = []
+        receipts, needs_confirmation = [], []
         for target in targets:
             if self.choices.get(target.handle) != target:
                 raise HarnessError("插件选择已失效", code="HARNESS_PLUGIN_REQUEST_INVALID")
@@ -254,10 +278,33 @@ class PluginConversationTurn:
                     trusted_context={"dynamic_inputs": {"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}} if target.selection_tool else None,
                 )
             except OrchestrationError as exc:
+                if exc.code == AGENT_CONFIRMATION_REQUIRED:
+                    needs_confirmation.append(target)
+                    receipts.append({"title": target.title, "status": "CONFIRMATION_REQUIRED",
+                                     "message": confirmation_prompt(str(exc))})
+                    continue
                 receipts.append({"title": target.title, "status": "REJECTED", "message": redact_text(str(exc))[:500]})
                 continue
             receipts.append({"invocation_id": result["invocation_id"], "title": target.title, "status": result["status"]})
+        if needs_confirmation:
+            self.service.remember_pending_writes(self.actor.actor_id, tuple(needs_confirmation))
         return tuple(receipts)
+
+    def has_pending_writes(self) -> bool:
+        return self.source == "console" and self.service.pending_writes(self.actor.actor_id) is not None
+
+    def confirm_pending_writes(self) -> tuple[dict[str, Any], ...]:
+        """The same person replied "确认": run exactly the remembered plugins."""
+        targets = self.service.pending_writes(self.actor.actor_id, take=True)
+        if not targets:
+            return ({"title": "确认", "status": "REJECTED", "message": "这次确认已超过有效时间，没有执行；需要的话请重新发起。"},)
+        # This message's request id makes the confirmed calls new requests.
+        self.choices.update({target.handle: target for target in targets if target.handle not in self.choices})
+        with person_confirmed():
+            return self.start_console(targets)
+
+    def cancel_pending_writes(self) -> None:
+        self.service.pending_writes(self.actor.actor_id, take=True)
 
 
 __all__ = ["PLUGIN_CHAT_INSTRUCTIONS", "ConversationPluginTarget", "PluginConversationService", "PluginConversationTurn"]

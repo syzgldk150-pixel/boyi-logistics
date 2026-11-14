@@ -18,6 +18,7 @@ from agent.harness_application import (
 from agent.harness_online import visible_descriptors
 from agent.orchestration.models import Actor
 from shared.contracts import api_failure, api_success
+from shared.identity_permissions import chat_scope
 from shared.redaction import redact_text
 
 
@@ -76,6 +77,14 @@ def public_harness_tools(
     ]
 
 
+
+def _private_chat(call):
+    """The Console AI assistant is a one-to-one conversation (identity chat scope)."""
+    def run(*args, **kwargs):
+        with chat_scope("private"):
+            return call(*args, **kwargs)
+    return run
+
 async def create_harness_session_response(
     payload: HarnessSessionRequest,
     request: Request,
@@ -92,7 +101,7 @@ async def create_harness_session_response(
         actor=actor,
         request_id=primary_chat_request(actor, channel="console"),
     )
-    tools = await asyncio.to_thread(tools_provider, actor, payload.request_uuid)
+    tools = await asyncio.to_thread(_private_chat(tools_provider), actor, payload.request_uuid)
     runtime_status = _harness_runtime_status(availability_provider)
     return api_success(
         {
@@ -117,13 +126,13 @@ async def post_harness_message_response(
 ) -> dict[str, Any]:
     actor = actor_provider(request)
     receipt = await asyncio.to_thread(
-        conversation_provider().send_message,
+        _private_chat(conversation_provider().send_message),
         actor=actor,
         session_id=payload.session_id,
         request_id=payload.request_uuid,
         message=payload.message,
     )
-    tools = await asyncio.to_thread(tools_provider, actor, payload.request_uuid)
+    tools = await asyncio.to_thread(_private_chat(tools_provider), actor, payload.request_uuid)
     return api_success(
         {
             "session_id": receipt.session_id,
@@ -180,7 +189,7 @@ def create_harness_router(
 
     @router.post("/internal/v1/harness/plugin-actions")
     async def plugin_action(payload: HarnessPluginActionRequest, request: Request) -> dict[str, Any]:
-        result = await asyncio.to_thread(conversation_provider().plugin_action,
+        result = await asyncio.to_thread(_private_chat(conversation_provider().plugin_action),
             actor=actor_provider(request), session_id=payload.session_id,
             invocation_id=payload.invocation_id, request_id=payload.request_uuid,
             action=payload.action, selected_indices=payload.selected_indices)

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar, Token
@@ -44,6 +45,12 @@ from shared.automation_preview_contract import (
     normalize_scan_preview_projection as normalize_scan_preview_public_projection,
 )
 from agent.pending_actions import clear_pending, get_pending, set_pending
+from agent.orchestration.agent_confirmation import (
+    AGENT_CONFIRMATION_REQUIRED,
+    CONFIRMATION_TTL_SECONDS,
+    confirmation_prompt,
+    person_confirmed,
+)
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from agent.tms_runtime.account_contracts import PRICE_SESSION_PROFILE
 from feishu.fixed_entrypoint_router import (
@@ -76,6 +83,7 @@ from feishu.selection_preview import (
     split_selected_lines as _split_selected_lines,
     split_text_chunks as _split_text_chunks,
 )
+from shared.identity_permissions import chat_scope
 from shared.redaction import redact_text
 from shared.wechat_bot import is_wechat_actor_id
 from tools.internal_http import internal_api_headers
@@ -187,7 +195,8 @@ async def handle_channel_text(*, actor_id: str, text: str, event_id: str) -> Non
     try:
         normalized = str(text or "").strip()
         if normalized:
-            await _process_and_reply(normalized, safe_actor, safe_actor)
+            with chat_scope("private"):  # these channels are one-to-one
+                await _process_and_reply(normalized, safe_actor, safe_actor)
     finally:
         _COMMAND_CONTEXT.reset(token)
 
@@ -1794,6 +1803,7 @@ def handle_im_message(event):
         msg = event.event.message
         msg_type = msg.message_type
         chat_id = msg.chat_id
+        chat_type = str(getattr(msg, "chat_type", "") or "")
         sender_id = event.event.sender.sender_id.open_id
         event_id = _event_id_from_sdk_event(event)
         remember_chat_id(chat_id)
@@ -1805,6 +1815,7 @@ def handle_im_message(event):
             sender_id=sender_id,
             raw_content=msg.content,
             event_id=event_id,
+            chat_type=chat_type,
         ))
 
     except Exception as e:
@@ -1833,6 +1844,7 @@ def queue_im_message_payload(event_payload: dict[str, Any], *, event_id: str = "
         sender_id=sender_id,
         raw_content=message.get("content"),
         event_id=stable_event_id,
+        chat_type=str(message.get("chat_type", "") or ""),
     ))
     return True
 
@@ -1889,6 +1901,7 @@ async def _handle_im_message_data(
     sender_id: str,
     raw_content: Any,
     event_id: str = "",
+    chat_type: str = "",
 ):
     stable_event_id = str(event_id or "").strip()
     token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
@@ -1901,12 +1914,15 @@ async def _handle_im_message_data(
         else None
     )
     try:
-        await _handle_im_message_data_inner(
-            msg_type=msg_type,
-            chat_id=chat_id,
-            sender_id=sender_id,
-            raw_content=raw_content,
-        )
+        # Only Feishu's explicit one-to-one type is private; a missing type
+        # counts as a group, so private-only data is never shown there.
+        with chat_scope("private" if chat_type == "p2p" else "group"):
+            await _handle_im_message_data_inner(
+                msg_type=msg_type,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                raw_content=raw_content,
+            )
     finally:
         _COMMAND_CONTEXT.reset(token)
 
@@ -1949,11 +1965,12 @@ async def _handle_menu_action(
         else None
     )
     try:
-        await _handle_menu_action_inner(
-            event_key=event_key,
-            receive_id=receive_id,
-            receive_id_type=receive_id_type,
-        )
+        with chat_scope("private"):  # menu replies go to the operator alone
+            await _handle_menu_action_inner(
+                event_key=event_key,
+                receive_id=receive_id,
+                receive_id_type=receive_id_type,
+            )
     finally:
         _COMMAND_CONTEXT.reset(token)
 
@@ -2019,6 +2036,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             channel = "微信设备" if is_wechat_actor_id(sender_id) else "飞书账号"
             await _reply_text(chat_id, f"当前{channel}未绑定有效身份，请联系超级管理员在后台分配身份。")
             return
+    if await _handle_write_confirmation(text, chat_id=chat_id, sender_id=sender_id):
+        return
     pending_key = chat_id
     pending = get_pending(pending_key)
     if sender_id:
@@ -2626,6 +2645,38 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     await _reply_text(chat_id, reply_text, reply_type=reply_type)
 
 
+# (chat_id, sender_id) -> one plugin write waiting for its sender's "确认".
+# In-process only: a restart drops it and the person sends the command again.
+_WRITE_CONFIRMATIONS: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+async def _handle_write_confirmation(text: str, *, chat_id: str, sender_id: str) -> bool:
+    """Run or drop the sender's own pending write; other messages pass through."""
+    key = (str(chat_id or ""), str(sender_id or ""))
+    item = _WRITE_CONFIRMATIONS.get(key)
+    if item is None or not (is_confirm_text(text) or is_cancel_text(text)):
+        return False
+    _WRITE_CONFIRMATIONS.pop(key, None)
+    if item["expires_at"] < time.monotonic():
+        await _reply_text(chat_id, "这次确认已超过有效时间，没有执行；需要的话请重新发送指令。",
+                          reply_type="agent_write_confirmation_expired")
+        return True
+    if is_cancel_text(text):
+        await _reply_text(chat_id, f"已取消：{item['reason'].removesuffix('需要你确认后才执行')}没有执行。",
+                          reply_type="agent_write_confirmation_cancelled")
+        return True
+    context = _COMMAND_CONTEXT.get()
+    if context is None or not context.event_id or context.actor_id != key[1]:
+        await _reply_text(chat_id, "确认需要可信的消息身份，本次没有执行。", reply_type="agent_write_confirmation_rejected")
+        return True
+    # The confirmation message's own event id makes this a new request.
+    with person_confirmed():
+        await _dispatch_service_v2_feishu_command(
+            text=item["text"], receive_id=item["receive_id"], conversation_target=item["conversation_target"],
+            runtime_inputs=item["runtime_inputs"], quote_result=item["quote_result"])
+    return True
+
+
 async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, conversation_target: Any = None,
                                            runtime_inputs: dict[str, Any] | None = None,
                                            quote_result: bool = False) -> bool:
@@ -2675,6 +2726,15 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
             raise TypeError("managed Feishu command result must be a dict or None")
     except OrchestrationError as exc:
         logger.warning("managed Feishu command rejected | code=%s", exc.code)
+        if exc.code == AGENT_CONFIRMATION_REQUIRED and not accepted_notified:
+            # Agent level "需确认": ask the sender, keep the exact command.
+            _WRITE_CONFIRMATIONS[(context.chat_id, context.actor_id)] = {
+                "text": text, "receive_id": receive_id, "conversation_target": conversation_target,
+                "runtime_inputs": runtime_inputs, "quote_result": quote_result, "reason": str(exc),
+                "expires_at": time.monotonic() + CONFIRMATION_TTL_SECONDS,
+            }
+            await _reply_text(receive_id, confirmation_prompt(str(exc)), reply_type="agent_write_confirmation_required")
+            return True
         if accepted_notified:
             await _reply_text(
                 receive_id,

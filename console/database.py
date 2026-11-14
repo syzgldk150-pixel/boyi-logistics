@@ -538,7 +538,7 @@ class DocumentRepository:
             )
             admin_user_columns = {str(row.get("COLUMN_NAME") or "") for row in cursor.fetchall() or []}
         missing_admin_columns = sorted(
-            {"ui_preferences_json", "role", "control_plane_role", "access_role_id"} - admin_user_columns
+            {"ui_preferences_json", "role", "control_plane_role", "person_id"} - admin_user_columns
         )
         if missing_admin_columns:
             raise RuntimeError(
@@ -559,10 +559,11 @@ class DocumentRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT id, username, display_name, avatar_path, ui_preferences_json,
-                       role, control_plane_role, access_role_id, is_active, last_login_at, created_at, updated_at
-                FROM admin_users
-                ORDER BY id ASC
+                SELECT u.id, u.username, u.display_name, u.avatar_path, u.ui_preferences_json,
+                       u.role, u.control_plane_role, u.person_id, p.access_role_id, u.is_active,
+                       u.last_login_at, u.created_at, u.updated_at
+                FROM admin_users u JOIN persons p ON p.person_id = u.person_id
+                ORDER BY u.id ASC
                 """
             )
             return list(cursor.fetchall() or [])
@@ -606,17 +607,25 @@ class DocumentRepository:
         is_active: bool = True,
         role: str = "admin",
         access_role_id: str | None = None,
+        person_id: str | None = None,
     ) -> int:
+        """Create a login; it joins ``person_id`` or a new person with ``access_role_id``."""
         now = _now_iso()
         with self.connect() as connection:
             cursor = connection.cursor()
-            if access_role_id:
-                IdentityRepository.check_target(cursor, role_id=access_role_id)
+            if person_id:
+                IdentityRepository.check_person(cursor, person_id)
+                cursor.execute("SELECT id FROM admin_users WHERE person_id = %s FOR UPDATE", (person_id,))
+                if cursor.fetchone():
+                    raise ValueError("该人员已有后台账号")
+            else:
+                person_id = self.identities.create_person(
+                    cursor, name=str(display_name or "").strip() or str(username or "").strip(), role_id=access_role_id or None)
             cursor.execute(
                 """
                 INSERT INTO admin_users (
                     username, display_name, password_hash, role, control_plane_role,
-                    is_active, created_at, updated_at, access_role_id
+                    is_active, created_at, updated_at, person_id
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
@@ -630,7 +639,7 @@ class DocumentRepository:
                     1 if is_active else 0,
                     now,
                     now,
-                    access_role_id,
+                    person_id,
                 ),
             )
             return int(cursor.lastrowid)
@@ -778,13 +787,16 @@ class DocumentRepository:
                     u.role,
                     u.control_plane_role,
                     u.is_active,
-                    u.access_role_id,
+                    u.person_id,
+                    p.access_role_id,
                     r.name AS role_name,
-                    r.permissions_json,
+                    r.console_permissions_json,
+                    r.agent_permissions_json,
                     r.is_active AS role_active
                 FROM admin_sessions s
                 JOIN admin_users u ON u.id = s.user_id
-                LEFT JOIN access_roles r ON r.role_id = u.access_role_id
+                JOIN persons p ON p.person_id = u.person_id
+                LEFT JOIN access_roles r ON r.role_id = p.access_role_id
                 WHERE s.session_id = %s
                 """,
                 (str(session_id or ""),),

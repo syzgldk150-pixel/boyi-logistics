@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from agent.harness.catalog import HarnessToolCatalog, ToolDescriptor
 from agent.harness.errors import HarnessError
 from agent.harness.models import HarnessMessage, strict_json
+from agent.direct_tool_router import is_cancel_text, is_confirm_text
 from agent.harness.sidecar import SidecarResult
 from agent.llm_client import LLMClient
 from shared.redaction import is_sensitive_key, redact_text
@@ -242,6 +243,14 @@ class OnlineHarnessSidecar:
             return SidecarResult(content=format_shipment_result(self._shipments.result), tool_calls=1)
         if self._plugins is not None and self._plugins.selected:
             return self._start_plugins(self._plugins.selected, 0)
+        if self._plugins is not None and self._plugins.has_pending_writes():
+            # A plugin set to "需确认" is waiting for this person's answer.
+            text = messages[-1].content
+            if is_confirm_text(text):
+                return self._plugin_receipt(self._plugins.confirm_pending_writes(), 0)
+            if is_cancel_text(text):
+                self._plugins.cancel_pending_writes()
+                return SidecarResult(content="已取消，插件没有执行。", tool_calls=0)
         if _READ_OR_NEGATED_REQUEST.search(messages[-1].content) or not _EXPLICIT_ACTION.search(messages[-1].content):
             self._plugins = None
         if not self._llm.public_status().get("configured"):

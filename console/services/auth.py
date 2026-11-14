@@ -976,8 +976,9 @@ class AuthServiceMixin:
         display_name = str(values.get("display_name", "") or "").strip()
         password = str(values.get("password", "") or "")
         role_id = str(values.get("access_role_id") or "")
-        if not any(row["role_id"] == role_id and row["is_active"] for row in self.repository.identities.list_roles()):
-            self._redirect_with_message(handler, "/settings/accounts", "请先选择一个已启用的身份。", "warning")
+        person_id = str(values.get("person_id") or "").strip()
+        if not person_id and not any(row["role_id"] == role_id and row["is_active"] for row in self.repository.identities.list_roles()):
+            self._redirect_with_message(handler, "/settings/accounts", "请先选择一个已启用的身份，或选择已有人员。", "warning")
             return
         if not ADMIN_USERNAME_RE.fullmatch(username):
             self._redirect_with_message(handler, "/settings/accounts", "账号需为 3-64 位字母、数字、点、下划线、@ 或短横线。", "warning")
@@ -988,13 +989,18 @@ class AuthServiceMixin:
         if self.repository.get_admin_user_by_username(username):
             self._redirect_with_message(handler, "/settings/accounts", "账号已存在。", "warning")
             return
-        self.repository.create_admin_user(
-            username=username,
-            display_name=display_name or username,
-            password_hash=hash_admin_password(password),
-            is_active=True,
-            access_role_id=role_id,
-        )
+        try:
+            self.repository.create_admin_user(
+                username=username,
+                display_name=display_name or username,
+                password_hash=hash_admin_password(password),
+                is_active=True,
+                access_role_id=None if person_id else role_id,
+                person_id=person_id or None,
+            )
+        except ValueError as exc:
+            self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+            return
         self._redirect_with_message(handler, "/settings/accounts", f"账号已创建：{username}", "success")
 
     def _handle_admin_account_toggle(self, handler: BaseHTTPRequestHandler, path: str) -> None:

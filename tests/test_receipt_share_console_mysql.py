@@ -17,7 +17,7 @@ from tests.mysql_isolated_fixtures import repository, pytestmark  # noqa: E402,F
 from tests.test_receipt_share_refresh_mysql import _insert  # noqa: E402
 
 SECRET = "k" * 48
-ADMIN = {"id": 7, "username": "sharer", "display_name": "共享管理员", "role": "admin", "access_permissions": ["receipt.share"]}
+ADMIN = {"id": 7, "username": "sharer", "display_name": "共享管理员", "role": "admin", "access_permissions": ["receipt.share:view", "receipt.share:operate"]}
 
 
 class _Handler:

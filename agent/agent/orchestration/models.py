@@ -110,8 +110,14 @@ class Actor:
     roles: tuple[str, ...] = ()
     display_name: str = ""
     authenticated_by: str = ""
+    # Which permission set applies: "" derives it from actor_type (Console
+    # admin -> Console pages, Feishu/WeChat -> agent). The Console AI
+    # assistant marks its admin actor "agent".
+    channel: str = ""
 
     def __post_init__(self) -> None:
+        if self.channel not in {"", "console", "agent"}:
+            raise OrchestrationError("INVALID_ACTOR", "unknown actor channel")
         actor_id = str(self.actor_id or "").strip()
         if not actor_id:
             raise OrchestrationError("INVALID_ACTOR", "actor_id is required")

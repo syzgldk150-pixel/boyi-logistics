@@ -89,7 +89,8 @@ def test_chat_permission_revocation_rejects_existing_session_on_both_transports(
     service, _ = configure_chat(core, authority=authority)
     first = asyncio.run(core.handle_message("你好", actor=CONSOLE, source="console"))
     reply_to_feishu(service, actor=FEISHU, chat_id="group", event_id="first", message="你好")
-    authority.state = IdentityAccess(True, permissions=("business.query",))
+    from tests.identity_support import granted
+    authority.state = granted("business.query")
     with pytest.raises(HarnessError, match="对话权限"):
         asyncio.run(core.handle_message("继续", actor=CONSOLE, source="console", conversation_id=first["conversation_id"]))
     with pytest.raises(HarnessError, match="对话权限"):

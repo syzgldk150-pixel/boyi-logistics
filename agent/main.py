@@ -1610,7 +1610,7 @@ async def get_feishu_binding(request: Request):
 async def create_feishu_binding_challenge(request: Request):
     actor = _require_console_super_admin_request(request)
     payload = await request.json()
-    if not isinstance(payload, dict) or set(payload) - {"role_id", "account_id", "label"}:
+    if not isinstance(payload, dict) or set(payload) - {"person_id", "label"}:
         raise OrchestrationError("INVALID_INPUT", "绑定对象格式无效")
     return api_success(
         await asyncio.to_thread(
@@ -1648,7 +1648,7 @@ async def _wechat_call(call, *args, **kwargs):
 async def create_wechat_bot_login(request: Request):
     actor = _require_console_super_admin_request(request)
     payload = await request.json()
-    if not isinstance(payload, dict) or set(payload) - {"role_id", "account_id", "label", "permissions"}:
+    if not isinstance(payload, dict) or set(payload) - {"person_id", "label", "permissions"}:
         raise OrchestrationError("INVALID_INPUT", "微信设备绑定参数格式无效")
     return api_success(await _wechat_call(_wechat_bot().service.start_login, int(actor.actor_id), **payload))
 

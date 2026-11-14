@@ -67,8 +67,8 @@ def test_masking_and_problem_keys():
 
 
 def test_customer_service_permission_covers_the_ai_routes():
-    assert agent_permission("POST", "/internal/v1/admin/customer-service/ai/suggest") == "customer_service"
-    assert agent_permission("POST", "/internal/v1/admin/customer-service/ai/cases") == "customer_service"
+    assert agent_permission("POST", "/internal/v1/admin/customer-service/ai/suggest") == "customer_service:view"
+    assert agent_permission("POST", "/internal/v1/admin/customer-service/ai/cases") == "customer_service:operate"
 
 
 SCENARIOS = [

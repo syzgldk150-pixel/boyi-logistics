@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import uuid
 
 import httpx
 import pytest
 
-from shared.identity_permissions import PERMISSIONS, IdentityAccess
+from shared.identity_permissions import AGENT_CAPABILITIES, CONSOLE_MODULES, IdentityAccess
 from shared.wechat_bot import (
     has_unsupported_media,
     inbound_text,
@@ -24,6 +25,7 @@ from shared.wechat_bot import (
 )
 
 DEVICE = "0f0e0d0c-0b0a-4908-8706-050403020100"
+PERSON = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 
 
 # -- shared rules -------------------------------------------------------------
@@ -39,22 +41,24 @@ def test_actor_ids_are_exact_and_round_trip():
 
 
 def test_device_limits_only_narrow_the_identity():
-    role = IdentityAccess(True, False, "r1", "查询员", ("ai.chat", "business.query", "plugins.execute"))
-    assert restrict_access(role, None) is role
-    narrowed = restrict_access(role, ("business.query", "finance.read"))
-    assert narrowed.permissions == ("business.query",)  # finance.read is not in the identity
-    assert narrowed.allows("business.query") and not narrowed.allows("plugins.execute")
-    assert not narrowed.allows("finance.read")
+    role = IdentityAccess(True, False, "r1", "查询员", console={"finance": "operate"},
+                          agent={"ai.chat": "direct", "business.query": "direct", "plugins.execute": "confirm"})
+    assert restrict_access(role, None) == role.for_channel("agent")
+    narrowed = restrict_access(role, ("business.query", "plugins.execute", "finance.read"))
+    assert narrowed.permissions == ("business.query", "plugins.execute")  # finance.read is not in the identity
+    assert narrowed.agent_level("plugins.execute") == "confirm"  # the level is the identity's, not the device's
+    assert not restrict_access(role, ("business.query",)).allows("plugins.execute")
+    assert not narrowed.allows("finance.read") and not narrowed.allows("finance.manage")  # Console rights never leak
 
-    admin = IdentityAccess(True, True, None, "超级管理员", ())
+    admin = IdentityAccess(True, True, None, "超级管理员")
     limited_admin = restrict_access(admin, ("business.query",))
     assert not limited_admin.super_admin
     assert limited_admin.allows("business.query") and not limited_admin.allows("super_admin")
     assert restrict_access(admin, None).allows("super_admin")
-    assert restrict_access(admin, tuple(PERMISSIONS)).permissions == tuple(sorted(PERMISSIONS))
+    assert restrict_access(admin, tuple(AGENT_CAPABILITIES)).permissions == tuple(sorted(AGENT_CAPABILITIES))
 
     inactive = IdentityAccess()
-    assert restrict_access(inactive, ("business.query",)) is inactive
+    assert not restrict_access(inactive, ("business.query",)).active
     assert restrict_access(role, ()).permissions == ()
 
 
@@ -65,6 +69,8 @@ def test_device_limit_validation_uses_the_shared_catalog():
         validate_device_permissions(["unknown"])
     with pytest.raises(ValueError):
         validate_device_permissions(["finance.manage"])
+    with pytest.raises(ValueError):
+        validate_device_permissions(["dispatch"])  # a Console module, not an agent capability
 
 
 def test_inbound_text_uses_typed_text_and_voice_transcription():
@@ -128,17 +134,18 @@ def test_identity_lookup_routes_wechat_actor_to_device_with_limits():
 
     cursor = _Cursor([{
         "allowed_permissions_json": json.dumps(["business.query"]), "is_active": 1,
-        "control_plane_role": "admin", "access_role_id": "r1", "role_name": "业务员",
-        "role_active": 1, "permissions_json": json.dumps(["business.query", "plugins.execute"]),
+        "control_plane_role": "admin", "access_role_id": "r1", "role_name": "业务员", "role_active": 1,
+        "console_permissions_json": json.dumps({"finance": "view"}),
+        "agent_permissions_json": json.dumps({"business.query": "direct", "plugins.execute": "confirm"}),
     }])
     identities = IdentityRepository(lambda: _Connection(cursor))
     access = identities.feishu(wechat_actor_id(DEVICE))
     assert access.permissions == ("business.query",)
     assert "wechat_bot_devices" in cursor.executed[0][0]
     assert cursor.executed[0][1] == (DEVICE,)
-    assert identities.feishu(f"wechat:{DEVICE}x") == IdentityAccess()  # malformed id never queries
+    assert identities.feishu(f"wechat:{DEVICE}x") == IdentityAccess(channel="agent")  # malformed id never queries
     assert len(cursor.executed) == 1
-    assert identities.feishu(wechat_actor_id(DEVICE)) == IdentityAccess()  # revoked / missing device
+    assert identities.feishu(wechat_actor_id(DEVICE)) == IdentityAccess(channel="agent")  # revoked / missing device
 
 
 def test_feishu_binding_code_is_refused_for_wechat_senders():
@@ -308,14 +315,21 @@ def _confirmed():
                     ilink_user_id="owner-1@im.wechat", base_url="")
 
 
-async def _run_login(service, *, until=("confirmed", "failed"), steps=200, **kwargs):
-    login = await service.start_login(1, role_id="role-1", label="测试设备", permissions=["business.query"], **kwargs)
-    for _ in range(steps):
-        state = service.login_status(login["login_id"], 1)
+async def _until(service, login_id, until, timeout=5.0):
+    # A wall-clock bound: ``no_sleep`` turns every asyncio.sleep into a bare
+    # yield, so a step count can run out before the binding thread finishes.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = service.login_status(login_id, 1)
         if state["status"] in until:
-            return login, state
+            return state
         await asyncio.sleep(0.01)
     raise AssertionError("login did not finish")
+
+
+async def _run_login(service, *, until=("confirmed", "failed"), **kwargs):
+    login = await service.start_login(1, person_id=PERSON, label="测试设备", permissions=["business.query"], **kwargs)
+    return login, await _until(service, login["login_id"], until)
 
 
 @pytest.fixture
@@ -355,7 +369,7 @@ def test_confirmed_scan_creates_device_and_keeps_token_out_of_mysql(tmp_path, no
     assert state["status"] == "confirmed" and state["qr_image"] is None
     row = devices.created[0]
     assert row["owner_user_id"] == "owner-1@im.wechat" and row["ilink_bot_id"] == "bot-1@im.bot"
-    assert row["permissions"] == ("business.query",) and row["role_id"] == "role-1"
+    assert row["permissions"] == ("business.query",) and row["person_id"] == PERSON
     assert "synthetic-bot-token" not in json.dumps(row, default=str)
     assert bound == [row["device_id"]] == [state["device_id"]]
     assert tokens.load(row["device_id"])["token"] == "synthetic-bot-token"
@@ -376,12 +390,7 @@ def test_verify_code_is_forwarded_once(tmp_path, no_sleep):
 
 
 async def _wait(service, login_id):
-    for _ in range(200):
-        state = service.login_status(login_id, 1)
-        if state["status"] in {"confirmed", "failed"}:
-            return state
-        await asyncio.sleep(0.01)
-    raise AssertionError("login did not finish")
+    return await _until(service, login_id, ("confirmed", "failed"))
 
 
 @pytest.mark.parametrize("status,message", [
@@ -410,12 +419,12 @@ def test_login_input_and_ownership_are_checked(tmp_path, no_sleep):
 
     async def run():
         with pytest.raises(WeChatBotError):
-            await service.start_login(1, role_id="r", account_id=2)
+            await service.start_login(1)  # a person is required
         with pytest.raises(WeChatBotError):
-            await service.start_login(1, label="x" * 81, role_id="r")
+            await service.start_login(1, label="x" * 81, person_id=PERSON)
         with pytest.raises(WeChatBotError):
-            await service.start_login(1, role_id="r", permissions=["nope"])
-        login = await service.start_login(1, role_id="r")
+            await service.start_login(1, person_id=PERSON, permissions=["nope"])
+        login = await service.start_login(1, person_id=PERSON)
         with pytest.raises(WeChatBotError):
             service.login_status(login["login_id"], 2)  # another administrator's login
         service.cancel_login(login["login_id"], 1)
@@ -651,12 +660,16 @@ def test_accounts_template_renders_wechat_devices():
     env = Environment(loader=FileSystemLoader("console/templates"), autoescape=select_autoescape(["html"]))
     template = env.get_template("identity_management.html")
     base_device = {"device_id": DEVICE, "identity_label": "<司机>", "owner_hint": "owner-…", "access_role_id": "r1",
-                   "identity_account_id": None, "username": None, "role_name": "查询员", "active": True,
+                   "person_id": PERSON, "person_name": "老王", "username": None, "role_name": "查询员", "active": True,
                    "effective": True, "connection_state": "online", "connection_label": "在线",
                    "bound_at": "2026-11-14 10:00", "last_message_at": None, "revoked_at": None}
     html = template.render(
-        identity_roles=[{"role_id": "r1", "name": "查询员", "permissions": ["business.query"], "is_active": True}],
-        users=[], feishu_bindings=[], permission_options=PERMISSIONS, binding_challenge=None, admin_user=None,
+        identity_roles=[{"role_id": "r1", "name": "查询员", "console": {"business.query": "view"},
+                         "agent": {"business.query": "direct", "plugins.execute": "confirm"}, "is_active": True}],
+        users=[], feishu_bindings=[], console_modules=CONSOLE_MODULES, agent_capabilities=AGENT_CAPABILITIES, binding_challenge=None, admin_user=None,
+        persons=[{"person_id": PERSON, "name": "老王", "access_role_id": "r1", "role_name": "查询员", "role_active": True,
+                  "is_active": True, "effective": True, "super_admin": False, "account_id": None, "username": None,
+                  "feishu_count": 0, "wechat_count": 2}],
         wechat_devices=[{**base_device, "allowed_permissions": ["business.query"]},
                         {**base_device, "device_id": str(uuid.uuid4()), "allowed_permissions": None}],
     )
@@ -667,3 +680,15 @@ def test_accounts_template_renders_wechat_devices():
     edit = html.split(f'id="identity-wechat-edit-{DEVICE}"', 1)[1].split("</dialog>", 1)[0]
     assert 'name="limit_permissions" value="1" data-wechat-limit-toggle checked' in edit
     assert 'name="permission_business.query" value="1" checked' in edit
+    assert f'<option value="{PERSON}" selected>老王 · 查询员</option>' in edit
+    assert "2 台微信" in html and f'id="identity-person-edit-{PERSON}"' in html
+    # The role editor shows both sets with their current levels.
+    assert "后台 1 项 · 机器人 2 项" in html
+    editor = html.split('data-identity-role-form', 1)[1].split("</form>", 1)[0]
+    assert '<option value="view" selected>可见</option>' in editor.split('name="console_business.query"', 1)[1].split("</select>", 1)[0]
+    assert 'value="operate"' not in editor.split('name="console_business.query"', 1)[1].split("</select>", 1)[0]
+    plugins = editor.split('name="agent_plugins.execute"', 1)[1].split("</select>", 1)[0]
+    assert '<option value="confirm" selected>需确认</option>' in plugins and "直接执行" in plugins
+    query = editor.split('name="agent_business.query"', 1)[1].split("</select>", 1)[0]
+    assert '<option value="direct" selected>允许</option>' in query and "需确认" not in query
+    assert 'name="permission_dispatch"' not in html  # device limits list agent capabilities only

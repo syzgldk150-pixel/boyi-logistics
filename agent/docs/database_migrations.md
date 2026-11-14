@@ -34,6 +34,10 @@ updated: 2026-11-14
 
 全部是普通 DDL，迁移器只执行一次。
 
+`083_role_channels.sql` 给 `access_roles` 增加 `console_permissions_json`（后台模块→view/operate）与 `agent_permissions_json`（机器人能力→direct/confirm），由旧 `permissions_json` 按原能力换算后删除旧列；`wechat_bot_devices.allowed_permissions_json` 只保留机器人能力。含 DDL 与数据换算，不可重复执行；与 082 同属身份核心迁移，必须停两个服务后迁移，新旧代码不兼容。换算表见 [身份说明](../../docs/identity_and_unified_chat.md#两组权限迁移-083_role_channelssql)。
+
+`082_persons.sql` 在运行库新建 `persons`（人员：姓名、身份、启用），给 `admin_users`（唯一）、`feishu_admin_bindings`、`feishu_admin_binding_challenges`、`wechat_bot_devices` 增加 `person_id` 并回填：每个后台账号一个人员；继承账号的绑定/设备挂该账号的人员；直接指定身份的各自生成人员；未使用的身份型绑定码作废。之后删除各表的 `access_role_id`/`identity_account_id` 与二选一 CHECK。含 DDL 与数据回填，不可重复执行；必须停两个服务后迁移，新旧代码不兼容，回退只能整库恢复同一次备份。见 [身份说明](../../docs/identity_and_unified_chat.md#管理方式)。
+
 `081_wechat_bot_devices.sql` 在运行库 `agent_db` 新建 `wechat_bot_devices`：每台扫码绑定的微信设备一行，记录 iLink 机器人编号、扫码人编号、备注、权限来源（身份或后台账号，二选一，与飞书绑定相同的外键与检查约束）、可空的功能限制 JSON、连接状态与最近消息时间；`active_bot_id` 生成列保证同一机器人只有一条有效设备。机器人令牌不入库。`CREATE TABLE IF NOT EXISTS` 可重复执行。新代码的后台账号页读取此表，必须先迁移再重启 Console 与 Agent；回退旧代码时该表闲置无害。见 [身份说明](../../docs/identity_and_unified_chat.md#微信个人号官方-ilink-bot--clawbot)。
 
 `080_receipt_share_shipment_no.sql` 给 `waybill_db.receipt_share_items` 增加 `shipment_no`（刷新时从运单备注识别的客户发货单号，如 `1001-2600000001`，多个用 `_` 连接）和 `shipment_seq`、`shipment_of`（同一发货单号下同类图片的序号与张数，供只用 `{发货单号}` 命名时区分重名）。普通 DDL，迁移器只执行一次；已有行取默认值，下一次刷新整体重建；回退旧代码时这些列闲置无害。

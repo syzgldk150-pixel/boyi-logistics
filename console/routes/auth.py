@@ -21,6 +21,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/settings/accounts/identities/save":
         app._handle_identity_save(handler)
         return True
+    if path == "/settings/accounts/persons/save":
+        app._handle_person_save(handler)
+        return True
     if path.startswith("/settings/accounts/feishu/") and path.endswith(("/update", "/revoke")):
         parts = path.split("/")
         if len(parts) == 6:

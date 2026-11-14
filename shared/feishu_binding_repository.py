@@ -26,16 +26,15 @@ class FeishuBindingRepository(RepositoryBase):
         suffix = " FOR UPDATE" if for_update else ""
         with self.cursor() as cursor:
             cursor.execute(
-                f"SELECT id, username, display_name, is_active, control_plane_role FROM admin_users WHERE id=%s{suffix}",
+                f"SELECT id, username, display_name, is_active, control_plane_role, person_id FROM admin_users WHERE id=%s{suffix}",
                 (int(admin_user_id),),
             )
             return _row_dict(cursor, cursor.fetchone())
 
     def create_challenge(self, row: Mapping[str, Any]) -> dict[str, Any]:
         with self.cursor() as cursor:
-            role_id = row.get("access_role_id")
-            account_id = row.get("identity_account_id")
-            IdentityRepository.check_target(cursor, role_id=role_id, account_id=account_id)
+            person_id = row.get("person_id")
+            IdentityRepository.check_person(cursor, person_id)
             cursor.execute(
                 """
                 UPDATE feishu_admin_binding_challenges
@@ -48,15 +47,15 @@ class FeishuBindingRepository(RepositoryBase):
                 """
                 INSERT INTO feishu_admin_binding_challenges (
                     challenge_id, admin_user_id, code_sha256, expires_at,
-                    access_role_id, identity_account_id, identity_label
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    person_id, identity_label
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     _required_text(row.get("challenge_id"), "challenge_id"),
                     int(row["admin_user_id"]),
                     _required_text(row.get("code_sha256"), "code_sha256"),
                     row["expires_at"],
-                    role_id, account_id, str(row.get("identity_label") or ""),
+                    person_id, str(row.get("identity_label") or ""),
                 ),
             )
             cursor.execute(
@@ -138,7 +137,7 @@ class FeishuBindingRepository(RepositoryBase):
             challenge = _row_dict(cursor, cursor.fetchone())
             if not challenge:
                 raise BindingChallengeExpired("binding challenge is no longer usable")
-            IdentityRepository.check_target(cursor, role_id=challenge["access_role_id"], account_id=challenge["identity_account_id"])
+            IdentityRepository.check_person(cursor, challenge["person_id"])
             cursor.execute(
                 """
                 SELECT binding_id, admin_user_id, open_id
@@ -165,15 +164,15 @@ class FeishuBindingRepository(RepositoryBase):
                     """
                     INSERT INTO feishu_admin_bindings (
                         binding_id, admin_user_id, open_id, last_chat_id,
-                        notifications_enabled, active, access_role_id, identity_account_id, identity_label
-                    ) VALUES (%s, %s, %s, %s, TRUE, TRUE, %s, %s, %s)
+                        notifications_enabled, active, person_id, identity_label
+                    ) VALUES (%s, %s, %s, %s, TRUE, TRUE, %s, %s)
                     """,
                     (
                         _required_text(binding_id, "binding_id"),
                         int(admin_user_id),
                         _required_text(open_id, "open_id"),
                         _required_text(chat_id, "chat_id"),
-                        challenge["access_role_id"], challenge["identity_account_id"], challenge["identity_label"],
+                        challenge["person_id"], challenge["identity_label"],
                     ),
                 )
             cursor.execute("DELETE FROM feishu_binding_failures WHERE open_id=%s", (open_id,))
@@ -187,7 +186,7 @@ class FeishuBindingRepository(RepositoryBase):
                 SELECT binding.*, admin.is_active, admin.control_plane_role,
                        admin.display_name, admin.username
                 FROM feishu_admin_bindings AS binding
-                LEFT JOIN admin_users AS admin ON admin.id=binding.identity_account_id
+                LEFT JOIN admin_users AS admin ON admin.person_id=binding.person_id
                 WHERE binding.open_id=%s AND binding.active=TRUE{suffix}
                 """,
                 (_required_text(open_id, "open_id"),),
@@ -200,7 +199,8 @@ class FeishuBindingRepository(RepositoryBase):
                 """
                 SELECT binding_id, open_id, notifications_enabled, active,
                        bound_at, revoked_at, updated_at
-                FROM feishu_admin_bindings WHERE identity_account_id=%s AND active=TRUE
+                FROM feishu_admin_bindings
+                WHERE person_id=(SELECT person_id FROM admin_users WHERE id=%s) AND active=TRUE
                 """,
                 (int(admin_user_id),),
             )
@@ -213,7 +213,7 @@ class FeishuBindingRepository(RepositoryBase):
                 """
                 UPDATE feishu_admin_bindings
                 SET active=FALSE, revoked_at=NOW(6), updated_at=NOW(6)
-                WHERE identity_account_id=%s
+                WHERE person_id=(SELECT person_id FROM admin_users WHERE id=%s) AND active=TRUE
                 """,
                 (int(admin_user_id),),
             )

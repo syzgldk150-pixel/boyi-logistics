@@ -111,3 +111,15 @@ td > .identity-time { margin-top: 2px; color: var(--text-muted); font-size: var(
 .identity-wechat-qr [data-wechat-verify] { display: flex; align-items: flex-end; gap: 8px; justify-content: center; }
 .identity-wechat-status { margin: 0; font-weight: 600; }
 .identity-wechat-error { margin: 0 16px 8px; color: var(--status-danger); font-size: var(--fs-label); }
+
+/* Identity editor: Console modules and agent capabilities side by side. */
+.identity-matrix { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 0 0 16px; }
+.identity-matrix fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.identity-matrix legend { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; padding: 0; color: var(--text-primary); font-size: var(--fs-body); font-weight: 500; }
+.identity-matrix legend small { color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400; }
+.identity-matrix-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-subtle); }
+.identity-matrix-row > span { min-width: 0; }
+.identity-matrix-row strong { display: block; color: var(--text-primary); font-size: var(--fs-body); font-weight: 400 !important; }
+.identity-matrix-row small { display: block; margin-top: 2px; color: var(--text-muted); font-size: var(--fs-caption); line-height: 1.5; }
+.identity-matrix-row select.review-input { flex: none; width: 112px; min-height: 30px; height: 30px; }
+@media (max-width: 1023px) { .identity-matrix { grid-template-columns: 1fr; } }

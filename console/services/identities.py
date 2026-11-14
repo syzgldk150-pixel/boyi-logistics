@@ -5,7 +5,7 @@ import re
 from http import HTTPStatus
 
 from console.app_support import current_admin_user
-from shared.identity_permissions import PERMISSIONS
+from shared.identity_permissions import AGENT_CAPABILITIES, CONSOLE_MODULES
 
 WECHAT_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -21,15 +21,17 @@ def device_permissions(values: dict) -> list[str] | None:
             if key.startswith("permission_") and value == "1"]
 
 
-def binding_target(value: str) -> dict:
-    kind, separator, identity = str(value).partition(":")
-    if not separator or not identity:
-        raise ValueError("请选择要继承的身份或后台账号")
-    if kind == "role":
-        return {"role_id": identity}
-    if kind == "account" and identity.isdecimal() and int(identity) > 0:
-        return {"account_id": int(identity)}
-    raise ValueError("绑定对象无效")
+def role_levels(values: dict, prefix: str, catalog) -> dict[str, str]:
+    """``console_<key>``/``agent_<key>`` selects; empty means not granted."""
+    return {key: str(values.get(prefix + key)) for key in catalog if values.get(prefix + key)}
+
+
+def binding_target(value) -> dict:
+    """The person a Feishu binding or WeChat device belongs to."""
+    person_id = str(value or "").strip()
+    if not WECHAT_UUID_RE.fullmatch(person_id):
+        raise ValueError("请选择人员")
+    return {"person_id": person_id}
 
 
 class IdentitiesServiceMixin:
@@ -41,10 +43,11 @@ class IdentitiesServiceMixin:
             self._send_text(handler, HTTPStatus.FORBIDDEN, "只有超级管理员可以管理账号与身份。")
             return
         identities = self.repository.identities
+        persons = identities.list_persons()
         self._send_html(handler, self.template_env.get_template("admin_accounts.html").render(
             app_title=self.settings.app_title, users=self.repository.list_admin_users(),
             is_super_admin=True, identity_roles=identities.list_roles(),
-            feishu_bindings=identities.list_bindings(), permission_options=PERMISSIONS,
+            feishu_bindings=identities.list_bindings(), console_modules=CONSOLE_MODULES, agent_capabilities=AGENT_CAPABILITIES, persons=persons,
             wechat_devices=self.repository.wechat_devices.list_devices(),
             binding_challenge=binding_challenge,
             message=query.get("message", [""])[0], message_kind=query.get("kind", ["info"])[0],
@@ -57,14 +60,34 @@ class IdentitiesServiceMixin:
         try:
             self.repository.identities.save_role(
                 role_id=values.get("role_id") or None, name=values.get("name", ""),
-                permissions=[key.removeprefix("permission_") for key, value in values.items()
-                             if key.startswith("permission_") and value == "1"],
+                console=role_levels(values, "console_", CONSOLE_MODULES),
+                agent=role_levels(values, "agent_", AGENT_CAPABILITIES),
                 active=values.get("active") == "1",
             )
         except ValueError as exc:
             self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
             return
-        self._redirect_with_message(handler, "/settings/accounts", "身份已保存，所绑定账号和飞书的新请求立即使用新权限。", "success")
+        self._redirect_with_message(handler, "/settings/accounts", "身份已保存，该身份下人员的后台、飞书和微信的新请求立即使用新权限。", "success")
+
+    def _handle_person_save(self, handler):
+        if not self._identity_form_allowed(handler):
+            return
+        values = self._parse_urlencoded_form(handler)
+        person_id = str(values.get("person_id") or "").strip() or None
+        if person_id and not WECHAT_UUID_RE.fullmatch(person_id):
+            self._redirect_with_message(handler, "/settings/accounts", "人员编号无效", "warning")
+            return
+        try:
+            self.repository.identities.save_person(
+                person_id=person_id, name=values.get("name", ""),
+                role_id=str(values.get("access_role_id") or "").strip() or None,
+                active=None if "active" not in values else values.get("active") == "1",
+            )
+        except ValueError as exc:
+            self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+            return
+        self._redirect_with_message(handler, "/settings/accounts",
+                                    "人员已保存，他的后台账号、飞书与微信的新请求立即使用新身份。" if person_id else "人员已新增。", "success")
 
     def _handle_identity_binding_update(self, handler, binding_id, *, revoke):
         if not self._identity_form_allowed(handler):
@@ -78,7 +101,7 @@ class IdentitiesServiceMixin:
         except ValueError as exc:
             self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
             return
-        self._redirect_with_message(handler, "/settings/accounts", "飞书账号已解绑，可以重新绑定。" if revoke else "飞书账号身份已更新。", "success")
+        self._redirect_with_message(handler, "/settings/accounts", "飞书账号已解绑，可以重新绑定。" if revoke else "飞书账号已更新。", "success")
 
     # -- WeChat devices (official iLink Bot API) ---------------------------
     def _wechat_json(self, handler, result) -> None:
@@ -144,4 +167,4 @@ class IdentitiesServiceMixin:
         except ValueError as exc:
             self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
             return
-        self._redirect_with_message(handler, "/settings/accounts", "微信设备的身份与功能限制已更新，下一条消息立即生效。", "success")
+        self._redirect_with_message(handler, "/settings/accounts", "微信设备的人员与功能限制已更新，下一条消息立即生效。", "success")

@@ -32,15 +32,24 @@ def binding_repository(database, request):
 
 
 def seed_admin(repository):
+    """A synthetic super administrator login with its own person (migration 082)."""
+    person_id = str(uuid4())
     with repository.unit_of_work() as uow, uow.feishu_bindings.cursor() as cursor:
+        cursor.execute("INSERT INTO persons (person_id, name) VALUES (%s, 'Binding test')", (person_id,))
         cursor.execute(
-            "INSERT INTO admin_users (username, password_hash, display_name, is_active, role, control_plane_role, created_at, updated_at) "
-            "VALUES (%s, 'synthetic-not-a-login', 'Binding test', 1, 'super_admin', 'super_admin', NOW(6), NOW(6))",
-            (f"binding-{uuid4().hex}",),
+            "INSERT INTO admin_users (username, password_hash, display_name, is_active, role, control_plane_role, created_at, updated_at, person_id) "
+            "VALUES (%s, 'synthetic-not-a-login', 'Binding test', 1, 'super_admin', 'super_admin', NOW(6), NOW(6), %s)",
+            (f"binding-{uuid4().hex}", person_id),
         )
         identity = cursor.lastrowid
         uow.commit()
     return identity
+
+
+def person_of(repository, account_id):
+    with repository.unit_of_work() as uow, uow.feishu_bindings.cursor() as cursor:
+        cursor.execute("SELECT person_id FROM admin_users WHERE id=%s", (account_id,))
+        return cursor.fetchone()["person_id"]
 
 
 def test_fresh_binding_is_accepted_with_either_database_timezone(binding_repository):

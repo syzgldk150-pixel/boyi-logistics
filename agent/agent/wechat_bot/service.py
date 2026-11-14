@@ -57,8 +57,7 @@ def qr_image(content: str) -> str:
 class LoginSession:
     login_id: str
     admin_id: int
-    role_id: str | None
-    account_id: int | None
+    person_id: str
     label: str
     permissions: tuple[str, ...] | None
     qrcode: str
@@ -106,27 +105,24 @@ class WeChatBotService:
                     session.task.cancel()
                 self._logins.pop(login_id, None)
 
-    def _check_target(self, role_id, account_id) -> None:
+    def _check_person(self, person_id) -> None:
         with self._identities.cursor() as cursor:
-            IdentityRepository.check_target(cursor, role_id=role_id, account_id=account_id)
+            IdentityRepository.check_person(cursor, person_id)
 
-    async def start_login(self, admin_id: int, *, role_id: str | None = None, account_id: int | None = None,
+    async def start_login(self, admin_id: int, *, person_id: str | None = None,
                           label: str = "", permissions=None) -> dict[str, Any]:
         try:
             label = validate_label(label)
             allowed = validate_device_permissions(permissions)
         except ValueError as exc:
             raise WeChatBotError("INVALID_INPUT", str(exc)) from exc
-        if role_id is not None and (not isinstance(role_id, str) or not role_id.strip()):
-            raise WeChatBotError("INVALID_INPUT", "身份编号格式无效")
-        if account_id is not None and (type(account_id) is not int or account_id <= 0):
-            raise WeChatBotError("INVALID_INPUT", "后台账号编号格式无效")
-        if bool(role_id) == bool(account_id):
-            raise WeChatBotError("INVALID_INPUT", "请选择一个身份或一个后台账号")
+        if not isinstance(person_id, str) or not person_id.strip():
+            raise WeChatBotError("INVALID_INPUT", "请选择人员")
+        person_id = person_id.strip()
         try:
-            await asyncio.to_thread(self._check_target, role_id, account_id)
+            await asyncio.to_thread(self._check_person, person_id)
         except ValueError as exc:
-            raise WeChatBotError("INVALID_INPUT", "所选身份或后台账号不存在或已停用") from exc
+            raise WeChatBotError("INVALID_INPUT", "所选人员不存在或已停用") from exc
         self._purge()
         if sum(1 for s in self._logins.values() if s.status not in {"confirmed", "failed"}) >= MAX_ACTIVE_LOGINS:
             raise WeChatBotError("WECHAT_LOGIN_BUSY", "同时进行中的扫码绑定过多，请稍后再试")
@@ -136,7 +132,7 @@ class WeChatBotService:
         except ILinkError as exc:
             raise WeChatBotError(exc.code, f"获取微信二维码失败：{exc}") from exc
         session = LoginSession(
-            login_id=str(uuid.uuid4()), admin_id=int(admin_id), role_id=role_id or None, account_id=account_id,
+            login_id=str(uuid.uuid4()), admin_id=int(admin_id), person_id=person_id,
             label=label, permissions=allowed, qrcode=qr.qrcode, qr_image=qr_image(qr.content),
             qr_link=qr.content if qr.content.startswith("https://") else "",
         )
@@ -246,8 +242,8 @@ class WeChatBotService:
         try:
             await asyncio.to_thread(
                 self._devices.create_device, device_id=device_id, ilink_bot_id=status.ilink_bot_id,
-                owner_user_id=status.ilink_user_id, label=session.label, role_id=session.role_id,
-                account_id=session.account_id, permissions=session.permissions, created_by=session.admin_id)
+                owner_user_id=status.ilink_user_id, label=session.label, person_id=session.person_id,
+                permissions=session.permissions, created_by=session.admin_id)
         except WeChatDeviceConflict as exc:
             self._tokens.delete(device_id)
             self._finish(session, "failed", str(exc))

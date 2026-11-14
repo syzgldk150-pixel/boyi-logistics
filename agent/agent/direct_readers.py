@@ -15,6 +15,8 @@ from shared.identity_permissions import tool_permission
 async def invoke_registered_reader(*, catalog, name, arguments, handler, actor, source,
                                    llm_selected=False, timeout_seconds=1800, invocations=None, identity_access=None):
     if identity_access is not None and not identity_access.allows(actor, tool_permission(name)):
+        if identity_access.for_actor(actor).blocked_in_group(tool_permission(name)):
+            return {"success": False, "error_code": "PRIVATE_CHAT_ONLY", "error": "财务数据只在私聊中回答，请私聊机器人查询。"}
         return {"success": False, "error_code": "PERMISSION_DENIED", "error": "当前身份没有该查询权限，请在后台检查绑定的身份。"}
     capability = catalog.get_capability(name)
     if not capability or capability.get("operation_type") not in {"read", "compute"}:

@@ -34,7 +34,7 @@ class ReceiptSharesServiceMixin:
 
     def _can_manage_receipt_shares(self, handler: BaseHTTPRequestHandler) -> bool:
         user = getattr(handler, "current_admin_user", None) or current_admin_user() or {}
-        return self._is_super_admin_user(user) or "receipt.share" in (user.get("access_permissions") or ())
+        return self._is_super_admin_user(user) or "receipt.share:view" in (user.get("access_permissions") or ())
 
     # -- request plumbing --------------------------------------------------
     def _share_error(self, handler: BaseHTTPRequestHandler, status: int, code: str, message: str) -> None:

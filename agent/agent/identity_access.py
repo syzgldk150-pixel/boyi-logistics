@@ -10,7 +10,8 @@ from shared.identity_routes import agent_permission
 from shared.release_identity import is_release_operation
 
 
-def require_project_access(policy, actor, automation_id, *, entrypoint="", connection=None):
+def require_project_access(policy, actor, automation_id, *, entrypoint="", connection=None, read=False):
+    """``read``: viewing a run or its history (Console ``view`` is enough)."""
     access = getattr(policy, "identity_access", None)
     if access is None:  # Offline policy compositions supply their own actors.
         return
@@ -18,8 +19,8 @@ def require_project_access(policy, actor, automation_id, *, entrypoint="", conne
         return  # Existing scheduler/webhook contracts own these non-human sources.
     entry = policy._plugin_catalog.require(automation_id)
     permission = plugin_permission(entry.plugin_id, management=entry.management, entrypoint=entrypoint)
-    allowed = (access.allows(actor, permission) if connection is None
-               else access.allows(actor, permission, connection=connection))
+    allowed = (access.allows(actor, permission, read=read) if connection is None
+               else access.allows(actor, permission, connection=connection, read=read))
     if not allowed:
         raise OrchestrationError("IDENTITY_PERMISSION_DENIED", "当前身份没有执行或查看此插件的权限。")
 
@@ -35,7 +36,8 @@ def authorize_console_request(access, policy, principal, method, path):
     if path.startswith("/internal/v1/automation-projects/") and "/module-slots/" not in path:
         match = re.fullmatch(r"/internal/v1/automation-projects/([^/]+)/(invoke|invocations|scan-previews/[^/]+|selection-previews(?:/[^/]+(?:/confirm)?)?)", path)
         if match:
-            require_project_access(policy, actor, match[1], entrypoint="console")
+            require_project_access(policy, actor, match[1], entrypoint="console",
+                                   read=method.upper() == "GET")
             return
     if path.startswith("/internal/v1/automation-invocations/"):
         match = re.fullmatch(r"/internal/v1/automation-invocations/([^/]+)(?:/cancel)?", path)
@@ -48,7 +50,7 @@ def authorize_console_request(access, policy, principal, method, path):
                     row = direct.repository.get(match[1], connection=uow.connection)
                     if row:
                         require_project_access(policy, actor, row["automation_id"],
-                                               entrypoint="console", connection=uow.connection)
+                                               entrypoint="console", connection=uow.connection, read=True)
                         return direct.project_record(row, connection=uow.connection)
             else:
                 row = policy.direct_invocations.repository.get(match[1])
@@ -58,6 +60,6 @@ def authorize_console_request(access, policy, principal, method, path):
     permission = agent_permission(method, path)
     allowed = access.allows(actor, permission)
     if path in {"/internal/v1/automation/plugins/catalog", "/internal/v1/automation-project-policies"}:
-        allowed = any(access.allows(actor, p) for p in ("plugins.execute", "finance.read", "customer_service"))
+        allowed = any(access.allows(actor, p) for p in ("plugins.execute:view", "finance:view", "customer_service:view"))
     if not allowed:
         raise OrchestrationError("IDENTITY_PERMISSION_DENIED", "当前身份没有此功能权限。")

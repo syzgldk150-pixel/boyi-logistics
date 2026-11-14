@@ -30,7 +30,7 @@ Agent 只运行 Service V2：启动按持久 committed generation 恢复 V2 注�
 
 插件清单保存与审计脱敏分离；迁移 048 精确修复统计 V2 已知清单字段损坏，细节和真实数据库回归见[维护说明](../docs/identity_and_unified_chat.md)。
 
-身份与统一对话：`shared/identity_permissions.py`、`shared/identity_repository.py` 是共同权限来源；`agent/identity_access.py` 检查实际入口和插件模块。`harness_composition.py` 为后台与飞书注入同一个查询与插件服务，`agent/channel_chat.py` 只做渠道转换。微信个人号设备由 `agent/wechat_bot/`（iLink 客户端、令牌、扫码绑定、长轮询）实现，`wechat_bot_composition.py` 把它接入飞书处理链；顶层组合模块须在 `deploy/publish_to_ecs.ps1` 的 `$AgentFiles` 白名单中。迁移 047 为发布期核心迁移，不能仅回退旧源码。 细节见[维护说明](../docs/identity_and_unified_chat.md)。
+身份与统一对话：`shared/identity_permissions.py`、`shared/identity_repository.py` 是共同权限来源；飞书、微信与后台 AI 助手（`Actor.channel="agent"`）用身份的机器人组，Console 签名的页面接口用后台组；`agent/identity_access.py` 检查实际入口和插件模块。`harness_composition.py` 为后台与飞书注入同一个查询与插件服务，`agent/channel_chat.py` 只做渠道转换。微信个人号设备由 `agent/wechat_bot/`（iLink 客户端、令牌、扫码绑定、长轮询）实现，`wechat_bot_composition.py` 把它接入飞书处理链；顶层组合模块须在 `deploy/publish_to_ecs.ps1` 的 `$AgentFiles` 白名单中。迁移 047 为发布期核心迁移，不能仅回退旧源码。 细节见[维护说明](../docs/identity_and_unified_chat.md)。
 
 V3.2 维护边界以 [../docs/low_maintenance_v32.md](../docs/low_maintenance_v32.md) 为权威索引：自动化只列功能插件；财务/客服采集在所属模块；AI contribution 可选；账号引用及平铺常用参数使用宿主简单设置；历史包回退须有本实例已提交版本证据。局部入口见 `agent/scripts/plugin_maintenance.py`（仓库根相对路径），整轮入口为 `agent/scripts/accept_low_maintenance_v32.py`。
 

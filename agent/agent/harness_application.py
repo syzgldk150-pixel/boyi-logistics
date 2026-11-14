@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -265,7 +265,9 @@ class HarnessConversationService:
         self._text_queries = text_queries
 
     def _chat_actor(self, actor: Actor) -> Actor:
-        actor = _normalize_chat_actor(actor)
+        # Conversation always uses the agent permission set, also from the
+        # Console AI assistant, so a question behaves the same in every channel.
+        actor = replace(_normalize_chat_actor(actor), channel="agent")
         if self._identity_access is not None and not self._identity_access.allows(actor, "ai.chat"):
             raise _error("当前身份没有 AI 对话权限", "HARNESS_PERMISSION_DENIED")
         return actor
@@ -282,8 +284,7 @@ class HarnessConversationService:
         return self._plugin_conversations is not None
 
     def plugin_action(self, *, actor: Actor, session_id: str, invocation_id: str, request_id: str, action: str, selected_indices: list[int]) -> dict[str, Any]:
-        bound_actor = _normalize_admin_actor(actor)
-        self._chat_actor(bound_actor)
+        bound_actor = self._chat_actor(_normalize_admin_actor(actor))
         session_id = canonical_uuid(session_id, field_name="session_id")
         invocation_id = canonical_uuid(invocation_id, field_name="invocation_id")
         request_id = canonical_uuid(request_id, field_name="request_id")
@@ -653,7 +654,7 @@ class TrustedHarnessInvocationAdapter:
         allowed_dynamic_handles: Iterable[ManagedToolHandle] | None = None,
     ) -> None:
         self._policy_service = policy_service
-        self._actor = _normalize_chat_actor(actor)
+        self._actor = replace(_normalize_chat_actor(actor), channel="agent")
         self._base_request_id = canonical_uuid(base_request_id, field_name="request_id")
         self._call_index = 0
         self._lock = RLock()

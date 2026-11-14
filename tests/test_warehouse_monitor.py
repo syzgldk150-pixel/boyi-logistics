@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from console.services import warehouse_monitor as wm
-from shared.identity_permissions import PERMISSIONS, validate_permissions
+from shared.identity_permissions import AGENT_CAPABILITIES, CONSOLE_MODULES, validate_console_permissions
 from shared.identity_routes import agent_permission, business_permission, console_permission
 from tools import phase7_mysql_store as store
 
@@ -53,11 +53,11 @@ class _App(wm.WarehouseMonitorServiceMixin):
 
 
 def test_monitor_permission_is_explicit_and_defaults_to_super_admin_only():
-    assert "warehouse.monitor" in PERMISSIONS
-    assert validate_permissions(["warehouse.monitor"]) == ("warehouse.monitor",)
-    assert console_permission("GET", "/warehouse-monitor/lookup") == "warehouse.monitor"
-    assert business_permission("warehouse-scan-times") == "warehouse.monitor"
-    assert agent_permission("POST", "/internal/v1/business/warehouse-scan-times") == "warehouse.monitor"
+    assert "warehouse.monitor" in CONSOLE_MODULES and "warehouse.monitor" in AGENT_CAPABILITIES
+    assert validate_console_permissions({"warehouse.monitor": "view"}) == {"warehouse.monitor": "view"}
+    assert console_permission("GET", "/warehouse-monitor/lookup") == "warehouse.monitor:view"
+    assert business_permission("warehouse-scan-times") == "warehouse.monitor:view"
+    assert agent_permission("POST", "/internal/v1/business/warehouse-scan-times") == "warehouse.monitor:view"
 
 
 def test_scan_time_lookup_reads_main_and_child_codes_with_real_times(monkeypatch):

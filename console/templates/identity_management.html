@@ -4,22 +4,15 @@
   <option value="{{ role.role_id }}" {% if role.role_id == selected %}selected{% endif %}>{{ role.name }}{{ '（已停用）' if not role.is_active else '' }}</option>
   {% endfor %}
 {% endmacro %}
-{% macro target_options(role_id, account_id) %}
-  <option value="" disabled {% if not role_id and not account_id %}selected{% endif %}>请选择身份或后台账号</option>
-  <optgroup label="直接继承身份">
-    {% for role in identity_roles if role.is_active or role.role_id == role_id %}
-    <option value="role:{{ role.role_id }}" {% if role_id == role.role_id %}selected{% endif %}>{{ role.name }}{{ '（已停用）' if not role.is_active else '' }}</option>
-    {% endfor %}
-  </optgroup>
-  <optgroup label="继承后台账号的权限">
-    {% for user in users if user.is_active or user.id == account_id %}
-    <option value="account:{{ user.id }}" {% if account_id == user.id %}selected{% endif %}>{{ user.display_name or user.username }} · {{ user.username }}{{ '（超级管理员）' if user.role == 'super_admin' else '' }}{{ '（已停用）' if not user.is_active else '' }}</option>
-    {% endfor %}
-  </optgroup>
+{% macro person_options(selected) %}
+  <option value="" disabled {% if not selected %}selected{% endif %}>请选择人员</option>
+  {% for person in persons if person.is_active or person.person_id == selected %}
+  <option value="{{ person.person_id }}" {% if person.person_id == selected %}selected{% endif %}>{{ person.name }} · {{ person.role_name }}{{ (' · 后台账号 ' ~ person.username) if person.username else '' }}{{ '（已停用）' if not person.is_active else '' }}</option>
+  {% endfor %}
 {% endmacro %}
 {% macro permission_fields(selected) %}
-<fieldset class="identity-permissions"><legend>允许使用的功能</legend>
-  {% for key, item in permission_options.items() %}
+<fieldset class="identity-permissions"><legend>此设备可用的机器人功能</legend>
+  {% for key, item in agent_capabilities.items() %}
   <label class="identity-permission">
     <input type="checkbox" name="permission_{{ key }}" value="1" {% if key in selected %}checked{% endif %}>
     <span><strong>{{ item[0] }}</strong><small>{{ item[1] }}</small></span>
@@ -27,10 +20,41 @@
   {% endfor %}
 </fieldset>
 {% endmacro %}
+{% macro role_matrix(console, agent) %}
+<div class="identity-matrix">
+  <fieldset><legend>后台页面<small>登录后台时左侧能看到、能操作的模块</small></legend>
+    {% for key, item in console_modules.items() %}{% set level = console.get(key) %}
+    <div class="identity-matrix-row">
+      <span><strong>{{ item[0] }}</strong><small>{{ item[1] }}</small></span>
+      <select class="review-input" name="console_{{ key }}" aria-label="后台 · {{ item[0] }}">
+        <option value="" {% if not level %}selected{% endif %}>不可见</option>
+        <option value="view" {% if level == 'view' %}selected{% endif %}>可见</option>
+        {% if item[2] %}<option value="operate" {% if level == 'operate' %}selected{% endif %}>可操作</option>{% endif %}
+      </select>
+    </div>
+    {% endfor %}
+  </fieldset>
+  <fieldset><legend>机器人<small>飞书、微信和后台 AI 助手能替他查询和执行的功能</small></legend>
+    {% for key, item in agent_capabilities.items() %}{% set level = agent.get(key) %}
+    <div class="identity-matrix-row">
+      <span><strong>{{ item[0] }}</strong><small>{{ item[1] }}</small></span>
+      <select class="review-input" name="agent_{{ key }}" aria-label="机器人 · {{ item[0] }}">
+        <option value="" {% if not level %}selected{% endif %}>不允许</option>
+        {% if item[2] == 'write' %}<option value="confirm" {% if level == 'confirm' %}selected{% endif %}>需确认</option>
+        <option value="direct" {% if level == 'direct' %}selected{% endif %}>直接执行</option>
+        {% elif item[2] == 'private' %}<option value="private" {% if level == 'private' %}selected{% endif %}>仅私聊</option>
+        <option value="direct" {% if level == 'direct' %}selected{% endif %}>私聊和群聊</option>
+        {% else %}<option value="direct" {% if level == 'direct' %}selected{% endif %}>允许</option>{% endif %}
+      </select>
+    </div>
+    {% endfor %}
+  </fieldset>
+</div>
+{% endmacro %}
 {% macro device_limit_fields(allowed) %}
 <div class="identity-device-limit" data-wechat-limit>
   <label class="identity-active-toggle"><input type="checkbox" name="limit_permissions" value="1" data-wechat-limit-toggle {% if allowed is not none %}checked{% endif %}>限制此设备可用的功能</label>
-  <small class="identity-card-note">不勾选时，设备与权限来源的权限完全一致；勾选后只能使用权限来源与下面所选功能的交集，不能超出权限来源。</small>
+  <small class="identity-card-note">不勾选时，设备与所属人员的机器人权限完全一致；勾选后只能使用人员机器人权限与下面所选功能的交集，不能超出人员权限。</small>
   <div data-wechat-limit-fields {% if allowed is none %}hidden{% endif %}>{{ permission_fields(allowed or []) }}</div>
 </div>
 {% endmacro %}
@@ -46,7 +70,7 @@
     <button class="ghost-btn" type="button" data-identity-dialog-open="identity-role-create-dialog" data-identity-roles-add><i data-feather="plus"></i>新增身份</button>
     <button class="ghost-btn" type="button" data-identity-role-cancel hidden>取消</button>
   </header>
-  <p class="identity-card-note">身份决定账号可以使用哪些功能；修改后，继承该身份的后台账号、飞书账号与微信设备立即生效。</p>
+  <p class="identity-card-note">每个身份有两组权限：“后台页面”决定登录后台能看到和操作的模块；“机器人”决定飞书、微信和后台 AI 助手能替他做什么。两组互不影响，修改后立即生效。</p>
   <div class="identity-role-list">
     <div class="identity-role-row">
       <strong>超级管理员</strong><span class="identity-chip">内置</span><span class="identity-role-meta">内置全部权限</span>
@@ -56,22 +80,43 @@
       <div class="identity-role-row">
         <strong>{{ role.name }}</strong>
         <span class="identity-chip {{ 'identity-chip--green' if role.is_active else '' }}" data-identity-role-chip data-default-text="{{ '已启用' if role.is_active else '已停用' }}">{{ '已启用' if role.is_active else '已停用' }}</span>
-        <span class="identity-role-meta">{{ role.permissions|length }} 项权限</span>
+        <span class="identity-role-meta">后台 {{ role.console|length }} 项 · 机器人 {{ role.agent|length }} 项</span>
         <button class="ghost-btn btn--small identity-role-edit-btn" type="button" data-identity-role-edit="{{ role.name }}">编辑权限</button>
       </div>
       <form class="identity-role-editor" action="/settings/accounts/identities/save" method="post" data-identity-role-form hidden>
         <input type="hidden" name="role_id" value="{{ role.role_id }}">
         <label class="identity-field">身份名称<input class="review-input" name="name" value="{{ role.name }}" maxlength="80" required></label>
-        {{ permission_fields(role.permissions) }}
+        {{ role_matrix(role.console, role.agent) }}
         <div class="identity-form-actions">
           <button class="primary-btn" type="submit">保存权限</button>
           <label class="identity-active-toggle"><input type="checkbox" name="active" value="1" {% if role.is_active %}checked{% endif %}>启用身份</label>
-          <span class="identity-card-note">未勾选的功能，该身份下的账号看不到对应入口。</span>
+          <span class="identity-card-note">机器人“需确认”：执行前先向本人确认一次；“仅私聊”：群聊里不回答。</span>
         </div>
       </form>
     </div>
     {% endfor %}
   </div>
+</section>
+
+<section class="panel account-admin-panel" id="identity-persons" aria-labelledby="identity-persons-title">
+  <header class="identity-card-head">
+    <h2 id="identity-persons-title">人员 <span class="identity-card-count">{{ persons | selectattr('is_active') | list | length }} 人</span></h2>
+    <button class="ghost-btn" type="button" data-identity-dialog-open="identity-person-create-dialog"><i data-feather="plus"></i>新增人员</button>
+  </header>
+  <p class="identity-card-note">一个人员可以同时有后台账号、飞书账号和微信设备，身份设在人员上，各处一起生效。只用飞书或微信、不登录后台的人也建为人员。</p>
+  <div class="account-table-wrap"><table class="account-table">
+    <thead><tr><th>人员</th><th>身份</th><th>后台账号</th><th>飞书 / 微信</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>{% for person in persons %}<tr>
+      <td class="account-identity"><strong>{{ person.name }}</strong></td>
+      <td><div class="identity-cell-main">{{ person.role_name }}</div>{% if not person.super_admin and person.access_role_id and not person.role_active %}<div class="muted-copy">身份已停用</div>{% endif %}</td>
+      <td>{{ person.username or '—' }}</td>
+      <td>{{ person.feishu_count }} 个飞书 · {{ person.wechat_count }} 台微信</td>
+      <td><span class="identity-status {{ 'identity-status--ok' if person.effective else ('identity-status--warn' if person.is_active else '') }}">{{ '已生效' if person.effective else ('权限已停用' if person.is_active else '已停用') }}</span></td>
+      <td><div class="account-row-actions">{% if not person.super_admin %}<button type="button" data-identity-dialog-open="identity-person-edit-{{ person.person_id }}">修改</button>{% endif %}
+        {% if not person.account_id %}<form action="/settings/accounts/persons/save" method="post"><input type="hidden" name="person_id" value="{{ person.person_id }}"><input type="hidden" name="name" value="{{ person.name }}"><input type="hidden" name="access_role_id" value="{{ person.access_role_id or '' }}"><input type="hidden" name="active" value="{{ 0 if person.is_active else 1 }}"><button class="{{ 'is-muted' if person.is_active else '' }}" type="submit">{{ '停用' if person.is_active else '启用' }}</button></form>{% endif %}
+      </div></td>
+    </tr>{% else %}<tr><td colspan="6" class="identity-empty">还没有人员。</td></tr>{% endfor %}</tbody>
+  </table></div>
 </section>
 
 <section class="panel account-admin-panel" id="identity-accounts" aria-labelledby="identity-accounts-title">
@@ -86,7 +131,7 @@
       <td>{% if user.role == 'super_admin' %}<div class="identity-cell-main">超级管理员</div><div class="muted-copy">内置全部权限</div>{% else %}
         {% set user_role = roles_by_id.get(user.access_role_id) %}
         <button class="identity-link-btn" type="button" data-identity-dialog-open="identity-account-role-{{ user.id }}" title="修改继承身份">{{ user_role.name if user_role else '未分配身份' }}</button>
-        <div class="muted-copy">{% if user_role %}{{ user_role.permissions|length }} 项权限{% if not user_role.is_active %} · 身份已停用{% endif %}{% else %}请指定身份{% endif %}</div>{% endif %}</td>
+        <div class="muted-copy">{% if user_role %}后台 {{ user_role.console|length }} 项 · 机器人 {{ user_role.agent|length }} 项{% if not user_role.is_active %} · 身份已停用{% endif %}{% else %}请指定身份{% endif %}</div>{% endif %}</td>
       <td><span class="identity-status {{ 'identity-status--ok' if user.is_active else '' }}">{{ '已启用' if user.is_active else '已停用' }}</span></td>
       <td class="identity-time">{{ user.last_login_at or '尚未登录' }}</td>
       <td><div class="account-row-actions">
@@ -102,20 +147,20 @@
     <h2 id="identity-feishu-title">飞书账号 <span class="identity-card-count">{{ feishu_bindings | selectattr('active') | list | length }} 个绑定</span></h2>
     <button class="ghost-btn" type="button" data-identity-dialog-open="identity-feishu-create-dialog"><i data-feather="plus"></i>生成绑定码</button>
   </header>
-  <p class="identity-card-note">可直接继承某个身份，也可继承后台账号的当前权限。生成一次性绑定码后，由要绑定的飞书账号把码发给机器人完成绑定。</p>
+  <p class="identity-card-note">飞书账号属于某个人员，使用该人员的身份。生成一次性绑定码后，由要绑定的飞书账号把码发给机器人完成绑定。</p>
   {% if binding_challenge %}<div class="identity-challenge" role="status"><i data-feather="key"></i><span>请在 10 分钟内由要绑定的飞书账号向机器人发送：<strong>{{ binding_challenge.command }}</strong>。只能使用一次；完成后刷新本页查看。</span></div>{% endif %}
   <div class="account-table-wrap"><table class="account-table">
-    <thead><tr><th>飞书账号</th><th>权限来源</th><th>当前身份</th><th>状态 / 绑定时间</th><th>操作</th></tr></thead>
+    <thead><tr><th>飞书账号</th><th>人员</th><th>当前身份</th><th>状态 / 绑定时间</th><th>操作</th></tr></thead>
     <tbody>{% for binding in feishu_bindings %}<tr>
       <td class="account-identity"><strong>{{ binding.identity_label or '未填写备注' }}</strong><span>{{ binding.identity_hint }}</span></td>
-      <td>{{ ('后台账号 ' ~ binding.username) if binding.identity_account_id else '直接继承身份' }}</td>
+      <td>{{ binding.person_name }}{% if binding.username %}<div class="muted-copy">后台账号 {{ binding.username }}</div>{% endif %}</td>
       <td>{{ binding.role_name }}</td>
       <td><span class="identity-status {{ 'identity-status--ok' if binding.effective else ('identity-status--warn' if binding.active else '') }}">{{ '已生效' if binding.effective else ('权限已停用' if binding.active else '已解绑') }}</span><div class="identity-time">{{ binding.bound_at }}</div></td>
       <td>{% if binding.active %}<div class="account-row-actions">
-        <button type="button" data-identity-dialog-open="identity-feishu-edit-{{ binding.binding_id }}">改备注</button>
+        <button type="button" data-identity-dialog-open="identity-feishu-edit-{{ binding.binding_id }}">修改</button>
         <form action="/settings/accounts/feishu/{{ binding.binding_id }}/revoke" method="post"><button class="ghost-btn btn--small" type="submit">解绑</button></form>
       </div>{% else %}<span class="identity-time">{{ binding.revoked_at }}</span>{% endif %}</td>
-    </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有飞书账号绑定。点击“生成绑定码”，选择权限来源后发给对方。</td></tr>{% endfor %}</tbody>
+    </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有飞书账号绑定。点击“生成绑定码”，选择人员后发给对方。</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>
 
@@ -124,19 +169,19 @@
     <h2 id="identity-wechat-title">微信设备 <span class="identity-card-count">{{ wechat_devices | selectattr('active') | list | length }} 台绑定</span></h2>
     <button class="ghost-btn" type="button" data-identity-dialog-open="identity-wechat-create-dialog"><i data-feather="plus"></i>扫码绑定微信</button>
   </header>
-  <p class="identity-card-note">通过微信官方 ClawBot（iLink Bot）接入个人微信。选择权限来源和功能限制后生成二维码，由要绑定的人用自己的微信扫码确认；之后他在微信里和机器人对话，可使用与飞书相同的查询、插件和 AI 功能，范围以身份权限和本设备的功能限制为准。每台设备只接受扫码人本人的消息。</p>
+  <p class="identity-card-note">通过微信官方 ClawBot（iLink Bot）接入个人微信。选择人员和功能限制后生成二维码，由要绑定的人用自己的微信扫码确认；之后他在微信里和机器人对话，可使用与飞书相同的查询、插件和 AI 功能，范围以身份权限和本设备的功能限制为准。每台设备只接受扫码人本人的消息。</p>
   <div class="account-table-wrap"><table class="account-table">
-    <thead><tr><th>微信设备</th><th>权限来源</th><th>当前身份 / 功能限制</th><th>连接 / 绑定时间</th><th>操作</th></tr></thead>
+    <thead><tr><th>微信设备</th><th>人员</th><th>当前身份 / 功能限制</th><th>连接 / 绑定时间</th><th>操作</th></tr></thead>
     <tbody>{% for device in wechat_devices %}<tr>
       <td class="account-identity"><strong>{{ device.identity_label or '未填写备注' }}</strong><span>{{ device.owner_hint }}</span></td>
-      <td>{{ ('后台账号 ' ~ device.username) if device.identity_account_id else '直接继承身份' }}</td>
+      <td>{{ device.person_name }}{% if device.username %}<div class="muted-copy">后台账号 {{ device.username }}</div>{% endif %}</td>
       <td><div class="identity-cell-main">{{ device.role_name }}</div><div class="muted-copy">{% if device.allowed_permissions is none %}不额外限制{% else %}限 {{ device.allowed_permissions | length }} 项功能{% endif %}</div></td>
       <td>{% if device.active %}<span class="identity-status {{ 'identity-status--ok' if device.effective and device.connection_state == 'online' else 'identity-status--warn' }}">{{ device.connection_label if device.effective else '权限已停用' }}</span>{% else %}<span class="identity-status">已解绑</span>{% endif %}<div class="identity-time">{{ device.bound_at }}{% if device.last_message_at %} · 最近消息 {{ device.last_message_at }}{% endif %}</div></td>
       <td>{% if device.active %}<div class="account-row-actions">
         <button type="button" data-identity-dialog-open="identity-wechat-edit-{{ device.device_id }}">修改</button>
         <form action="/settings/accounts/wechat/{{ device.device_id }}/revoke" method="post"><button class="ghost-btn btn--small" type="submit">解绑</button></form>
       </div>{% else %}<span class="identity-time">{{ device.revoked_at }}</span>{% endif %}</td>
-    </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有绑定微信设备。点击“扫码绑定微信”，选择权限来源后让对方用微信扫码。</td></tr>{% endfor %}</tbody>
+    </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有绑定微信设备。点击“扫码绑定微信”，选择人员后让对方用微信扫码。</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>
 
@@ -145,7 +190,7 @@
     <header class="identity-dialog-head"><h2 id="identity-role-create-title">新增身份</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <div class="identity-dialog-body">
       <label class="identity-field">身份名称<input class="review-input" name="name" placeholder="例如：普通用户、业务管理员" maxlength="80" required></label>
-      {{ permission_fields([]) }}
+      {{ role_matrix({}, {}) }}
       <input type="hidden" name="active" value="1">
     </div>
     {{ dialog_foot('创建身份') }}
@@ -159,7 +204,11 @@
       <label class="identity-field">账号<input class="review-input" name="username" autocomplete="off" placeholder="登录用户名" required></label>
       <label class="identity-field">显示名称<input class="review-input" name="display_name" autocomplete="off" placeholder="显示在后台的姓名"></label>
       <label class="identity-field">初始密码<input class="review-input" type="password" name="password" autocomplete="new-password" minlength="8" placeholder="至少 8 位" required></label>
-      <label class="identity-field">继承身份<select class="review-input" name="access_role_id" required>{{ role_options(none) }}</select><small>继承身份决定该账号可用功能；超级管理员为内置身份。</small></label>
+      <label class="identity-field">所属人员<select class="review-input" name="person_id">
+        <option value="" selected>新建人员（使用下面的身份）</option>
+        {% for person in persons if person.is_active and not person.account_id %}<option value="{{ person.person_id }}">{{ person.name }} · {{ person.role_name }}</option>{% endfor %}
+      </select><small>已有飞书或微信的人员可在这里补开后台账号。</small></label>
+      <label class="identity-field">身份<select class="review-input" name="access_role_id">{{ role_options(none) }}</select><small>新建人员时必选；选择已有人员时沿用该人员的身份。</small></label>
     </div>
     {{ dialog_foot('创建账号') }}
   </form>
@@ -170,7 +219,7 @@
     <header class="identity-dialog-head"><h2 id="identity-feishu-create-title">生成绑定码</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <div class="identity-dialog-body">
       <label class="identity-field">账号备注<input class="review-input" name="label" maxlength="80" placeholder="例如：仓库小张" required></label>
-      <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(none,none) }}</select><small>绑定码 10 分钟内有效，只能使用一次。</small></label>
+      <label class="identity-field">人员<select class="review-input" name="target" required>{{ person_options(none) }}</select><small>绑定码 10 分钟内有效，只能使用一次。没有合适的人员时先“新增人员”。</small></label>
     </div>
     {{ dialog_foot('生成一次性绑定码') }}
   </form>
@@ -181,7 +230,7 @@
     <header class="identity-dialog-head"><h2 id="identity-wechat-create-title">扫码绑定微信</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <div class="identity-dialog-body" data-wechat-login-setup>
       <label class="identity-field">设备备注<input class="review-input" name="label" maxlength="80" placeholder="例如：司机老王的微信" required></label>
-      <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(none,none) }}</select><small>二维码约 8 分钟内有效；对方扫码并在手机上确认后即完成绑定。</small></label>
+      <label class="identity-field">人员<select class="review-input" name="target" required>{{ person_options(none) }}</select><small>二维码约 8 分钟内有效；对方扫码并在手机上确认后即完成绑定。</small></label>
       {{ device_limit_fields(none) }}
     </div>
     <div class="identity-dialog-body identity-wechat-qr" data-wechat-login-qr hidden>
@@ -201,6 +250,31 @@
     </footer>
   </form>
 </dialog>
+
+<dialog class="identity-dialog identity-dialog--narrow" id="identity-person-create-dialog" aria-labelledby="identity-person-create-title">
+  <form action="/settings/accounts/persons/save" method="post">
+    <header class="identity-dialog-head"><h2 id="identity-person-create-title">新增人员</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
+    <div class="identity-dialog-body">
+      <label class="identity-field">姓名<input class="review-input" name="name" maxlength="80" placeholder="例如：仓库小张" required></label>
+      <label class="identity-field">身份<select class="review-input" name="access_role_id" required>{{ role_options(none) }}</select></label>
+    </div>
+    {{ dialog_foot('新增人员') }}
+  </form>
+</dialog>
+
+{% for person in persons if not person.super_admin %}
+<dialog class="identity-dialog identity-dialog--narrow" id="identity-person-edit-{{ person.person_id }}" aria-labelledby="identity-person-edit-title-{{ person.person_id }}">
+  <form action="/settings/accounts/persons/save" method="post">
+    <input type="hidden" name="person_id" value="{{ person.person_id }}">
+    <header class="identity-dialog-head"><h2 id="identity-person-edit-title-{{ person.person_id }}">修改人员 · {{ person.name }}</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
+    <div class="identity-dialog-body">
+      <label class="identity-field">姓名<input class="review-input" name="name" value="{{ person.name }}" maxlength="80" required></label>
+      <label class="identity-field">身份<select class="review-input" name="access_role_id" required>{{ role_options(person.access_role_id) }}</select><small>该人员的后台账号、飞书与微信一起使用此身份。</small></label>
+    </div>
+    {{ dialog_foot('保存') }}
+  </form>
+</dialog>
+{% endfor %}
 
 {% for user in users %}
 <dialog class="identity-dialog identity-dialog--narrow" id="identity-account-password-{{ user.id }}" aria-labelledby="identity-account-password-title-{{ user.id }}">
@@ -231,7 +305,7 @@
     <header class="identity-dialog-head"><h2 id="identity-feishu-edit-title-{{ binding.binding_id }}">修改飞书账号</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <div class="identity-dialog-body">
       <label class="identity-field">账号备注<input class="review-input" name="label" value="{{ binding.identity_label }}" maxlength="80" required></label>
-      <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(binding.access_role_id,binding.identity_account_id) }}</select></label>
+      <label class="identity-field">人员<select class="review-input" name="target" required>{{ person_options(binding.person_id) }}</select></label>
     </div>
     {{ dialog_foot('保存') }}
   </form>
@@ -244,7 +318,7 @@
     <header class="identity-dialog-head"><h2 id="identity-wechat-edit-title-{{ device.device_id }}">修改微信设备</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
     <div class="identity-dialog-body">
       <label class="identity-field">设备备注<input class="review-input" name="label" value="{{ device.identity_label }}" maxlength="80" required></label>
-      <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(device.access_role_id,device.identity_account_id) }}</select></label>
+      <label class="identity-field">人员<select class="review-input" name="target" required>{{ person_options(device.person_id) }}</select></label>
       {{ device_limit_fields(device.allowed_permissions) }}
     </div>
     {{ dialog_foot('保存') }}

@@ -156,7 +156,7 @@ class MonitoringFinanceServiceMixin:
     def _render_finance(self, handler: BaseHTTPRequestHandler, query: dict) -> None:
         user = getattr(handler, "current_admin_user", None) or current_admin_user() or {}
         is_super_admin = self._is_super_admin_user(user)
-        can_manage = is_super_admin or "finance.manage" in (user.get("access_permissions") or ())
+        can_manage = is_super_admin or "finance:operate" in (user.get("access_permissions") or ())
         template = self.template_env.get_template("finance.html")
         self._send_html(handler, template.render(
             app_title=self.settings.app_title, can_manage=can_manage, is_super_admin=is_super_admin,

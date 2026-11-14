@@ -11,9 +11,10 @@ This module has no I/O and reads no environment.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any, Iterable, Mapping
 
-from shared.identity_permissions import PERMISSIONS, IdentityAccess, validate_permissions
+from shared.identity_permissions import AGENT, AGENT_CAPABILITIES, IdentityAccess
 
 WECHAT_ACTOR_PREFIX = "wechat:"
 _DEVICE_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -60,10 +61,15 @@ def is_wechat_actor_id(actor_id: Any) -> bool:
 
 
 def validate_device_permissions(values: Any) -> tuple[str, ...] | None:
-    """``None`` keeps the identity's permissions; a list narrows them."""
+    """``None`` keeps the person's agent permissions; a list narrows them."""
     if values is None:
         return None
-    return validate_permissions(list(values) if isinstance(values, (list, tuple)) else values)
+    if not isinstance(values, (list, tuple)) or any(not isinstance(v, str) or v not in AGENT_CAPABILITIES for v in values):
+        raise ValueError("包含未知的机器人权限")
+    result = tuple(sorted(set(values)))
+    if "finance.manage" in result and "finance.read" not in result:
+        raise ValueError("财务采集需要同时允许财务数据")
+    return result
 
 
 def validate_label(label: Any) -> str:
@@ -73,18 +79,15 @@ def validate_label(label: Any) -> str:
 
 
 def restrict_access(access: IdentityAccess, allowed: Iterable[str] | None) -> IdentityAccess:
-    """Intersect the identity's live permissions with the device's limits."""
+    """Intersect the person's live agent permissions with the device's limits."""
+    access = access.for_channel(AGENT)
     if not access.active or allowed is None:
         return access
-    base = set(PERMISSIONS) if access.super_admin else set(access.permissions)
-    permissions = tuple(sorted(base & set(allowed)))
-    return IdentityAccess(
-        active=True,
-        super_admin=False,
-        role_id=access.role_id,
-        role_name=f"{access.role_name}（设备限制）",
-        permissions=permissions,
-    )
+    base = ({key: access.agent_level(key) for key in AGENT_CAPABILITIES} if access.super_admin
+            else dict(access.agent))
+    keep = set(allowed)
+    return replace(access, super_admin=False, role_name=f"{access.role_name}（设备限制）", console={},
+                   agent={key: level for key, level in base.items() if key in keep})
 
 
 def inbound_text(message: Mapping[str, Any]) -> str:
