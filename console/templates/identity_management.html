@@ -27,6 +27,13 @@
   {% endfor %}
 </fieldset>
 {% endmacro %}
+{% macro device_limit_fields(allowed) %}
+<div class="identity-device-limit" data-wechat-limit>
+  <label class="identity-active-toggle"><input type="checkbox" name="limit_permissions" value="1" data-wechat-limit-toggle {% if allowed is not none %}checked{% endif %}>限制此设备可用的功能</label>
+  <small class="identity-card-note">不勾选时，设备与权限来源的权限完全一致；勾选后只能使用权限来源与下面所选功能的交集，不能超出权限来源。</small>
+  <div data-wechat-limit-fields {% if allowed is none %}hidden{% endif %}>{{ permission_fields(allowed or []) }}</div>
+</div>
+{% endmacro %}
 {% macro dialog_foot(submit_label, danger=false) %}
   <footer class="identity-dialog-foot"><button class="ghost-btn" type="button" data-identity-dialog-close>取消</button><button class="{{ 'danger-btn' if danger else 'primary-btn' }}" type="submit">{{ submit_label }}</button></footer>
 {% endmacro %}
@@ -39,7 +46,7 @@
     <button class="ghost-btn" type="button" data-identity-dialog-open="identity-role-create-dialog" data-identity-roles-add><i data-feather="plus"></i>新增身份</button>
     <button class="ghost-btn" type="button" data-identity-role-cancel hidden>取消</button>
   </header>
-  <p class="identity-card-note">身份决定账号可以使用哪些功能；修改后，继承该身份的后台账号与飞书账号立即生效。</p>
+  <p class="identity-card-note">身份决定账号可以使用哪些功能；修改后，继承该身份的后台账号、飞书账号与微信设备立即生效。</p>
   <div class="identity-role-list">
     <div class="identity-role-row">
       <strong>超级管理员</strong><span class="identity-chip">内置</span><span class="identity-role-meta">内置全部权限</span>
@@ -112,6 +119,27 @@
   </table></div>
 </section>
 
+<section class="panel account-admin-panel" id="identity-wechat" aria-labelledby="identity-wechat-title">
+  <header class="identity-card-head">
+    <h2 id="identity-wechat-title">微信设备 <span class="identity-card-count">{{ wechat_devices | selectattr('active') | list | length }} 台绑定</span></h2>
+    <button class="ghost-btn" type="button" data-identity-dialog-open="identity-wechat-create-dialog"><i data-feather="plus"></i>扫码绑定微信</button>
+  </header>
+  <p class="identity-card-note">通过微信官方 ClawBot（iLink Bot）接入个人微信。选择权限来源和功能限制后生成二维码，由要绑定的人用自己的微信扫码确认；之后他在微信里和机器人对话，可使用与飞书相同的查询、插件和 AI 功能，范围以身份权限和本设备的功能限制为准。每台设备只接受扫码人本人的消息。</p>
+  <div class="account-table-wrap"><table class="account-table">
+    <thead><tr><th>微信设备</th><th>权限来源</th><th>当前身份 / 功能限制</th><th>连接 / 绑定时间</th><th>操作</th></tr></thead>
+    <tbody>{% for device in wechat_devices %}<tr>
+      <td class="account-identity"><strong>{{ device.identity_label or '未填写备注' }}</strong><span>{{ device.owner_hint }}</span></td>
+      <td>{{ ('后台账号 ' ~ device.username) if device.identity_account_id else '直接继承身份' }}</td>
+      <td><div class="identity-cell-main">{{ device.role_name }}</div><div class="muted-copy">{% if device.allowed_permissions is none %}不额外限制{% else %}限 {{ device.allowed_permissions | length }} 项功能{% endif %}</div></td>
+      <td>{% if device.active %}<span class="identity-status {{ 'identity-status--ok' if device.effective and device.connection_state == 'online' else 'identity-status--warn' }}">{{ device.connection_label if device.effective else '权限已停用' }}</span>{% else %}<span class="identity-status">已解绑</span>{% endif %}<div class="identity-time">{{ device.bound_at }}{% if device.last_message_at %} · 最近消息 {{ device.last_message_at }}{% endif %}</div></td>
+      <td>{% if device.active %}<div class="account-row-actions">
+        <button type="button" data-identity-dialog-open="identity-wechat-edit-{{ device.device_id }}">修改</button>
+        <form action="/settings/accounts/wechat/{{ device.device_id }}/revoke" method="post"><button class="ghost-btn btn--small" type="submit">解绑</button></form>
+      </div>{% else %}<span class="identity-time">{{ device.revoked_at }}</span>{% endif %}</td>
+    </tr>{% else %}<tr><td colspan="5" class="identity-empty">还没有绑定微信设备。点击“扫码绑定微信”，选择权限来源后让对方用微信扫码。</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+
 <dialog class="identity-dialog identity-dialog--wide" id="identity-role-create-dialog" aria-labelledby="identity-role-create-title">
   <form action="/settings/accounts/identities/save" method="post">
     <header class="identity-dialog-head"><h2 id="identity-role-create-title">新增身份</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
@@ -148,6 +176,32 @@
   </form>
 </dialog>
 
+<dialog class="identity-dialog identity-dialog--wide" id="identity-wechat-create-dialog" aria-labelledby="identity-wechat-create-title" data-wechat-login>
+  <form data-wechat-login-form>
+    <header class="identity-dialog-head"><h2 id="identity-wechat-create-title">扫码绑定微信</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
+    <div class="identity-dialog-body" data-wechat-login-setup>
+      <label class="identity-field">设备备注<input class="review-input" name="label" maxlength="80" placeholder="例如：司机老王的微信" required></label>
+      <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(none,none) }}</select><small>二维码约 8 分钟内有效；对方扫码并在手机上确认后即完成绑定。</small></label>
+      {{ device_limit_fields(none) }}
+    </div>
+    <div class="identity-dialog-body identity-wechat-qr" data-wechat-login-qr hidden>
+      <img alt="微信绑定二维码" width="240" height="240" data-wechat-qr-image>
+      <p class="identity-wechat-status" role="status" aria-live="polite" data-wechat-status></p>
+      <p class="identity-card-note" data-wechat-expiry></p>
+      <a class="identity-link-btn" href="#" target="_blank" rel="noopener noreferrer" data-wechat-qr-link hidden>无法扫码时，把这个链接发给对方在微信里打开</a>
+      <div class="identity-field" data-wechat-verify hidden>
+        <label>对方手机上显示的数字<input class="review-input" inputmode="numeric" autocomplete="off" maxlength="12" data-wechat-verify-input></label>
+        <button class="primary-btn" type="button" data-wechat-verify-submit>提交数字</button>
+      </div>
+    </div>
+    <p class="identity-wechat-error" role="alert" data-wechat-error hidden></p>
+    <footer class="identity-dialog-foot">
+      <button class="ghost-btn" type="button" data-wechat-cancel>取消</button>
+      <button class="primary-btn" type="submit" data-wechat-start>生成二维码</button>
+    </footer>
+  </form>
+</dialog>
+
 {% for user in users %}
 <dialog class="identity-dialog identity-dialog--narrow" id="identity-account-password-{{ user.id }}" aria-labelledby="identity-account-password-title-{{ user.id }}">
   <form action="/settings/accounts/{{ user.id }}/reset-password" method="post">
@@ -178,6 +232,20 @@
     <div class="identity-dialog-body">
       <label class="identity-field">账号备注<input class="review-input" name="label" value="{{ binding.identity_label }}" maxlength="80" required></label>
       <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(binding.access_role_id,binding.identity_account_id) }}</select></label>
+    </div>
+    {{ dialog_foot('保存') }}
+  </form>
+</dialog>
+{% endfor %}
+
+{% for device in wechat_devices if device.active %}
+<dialog class="identity-dialog identity-dialog--wide" id="identity-wechat-edit-{{ device.device_id }}" aria-labelledby="identity-wechat-edit-title-{{ device.device_id }}">
+  <form action="/settings/accounts/wechat/{{ device.device_id }}/update" method="post">
+    <header class="identity-dialog-head"><h2 id="identity-wechat-edit-title-{{ device.device_id }}">修改微信设备</h2><button class="modal-close" type="button" data-identity-dialog-close aria-label="关闭"><i data-feather="x"></i></button></header>
+    <div class="identity-dialog-body">
+      <label class="identity-field">设备备注<input class="review-input" name="label" value="{{ device.identity_label }}" maxlength="80" required></label>
+      <label class="identity-field">权限来源<select class="review-input" name="target" required>{{ target_options(device.access_role_id,device.identity_account_id) }}</select></label>
+      {{ device_limit_fields(device.allowed_permissions) }}
     </div>
     {{ dialog_foot('保存') }}
   </form>

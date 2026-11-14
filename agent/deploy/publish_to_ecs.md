@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass `
 
 发布包只从 `git ls-files` 取得已提交文件，再按 Agent、Console、Shared 明确白名单构建。未跟踪文件即使位于项目目录中也不会上传。
 
-Agent 入口依赖的顶层组合模块 `business_composition.py`、`harness_composition.py` 与 `customer_service_ai_composition.py` 必须随包发布；发布边界测试会沿 `main.py` 的本地顶层导入检查白名单，防止源码测试通过但安装后缺少启动模块。
+Agent 入口依赖的顶层组合模块 `business_composition.py`、`harness_composition.py`、`customer_service_ai_composition.py`、`receipt_share_composition.py` 与 `wechat_bot_composition.py` 必须随包发布；发布边界测试会沿 `main.py` 的本地顶层导入检查白名单，防止源码测试通过但安装后缺少启动模块。
 
 当前 V2 源码还要经过精确过滤：`scripts/release_scope.py` 的显式包清单决定发布 `service_v2_plugins/` 下的哪些包、`_shared/` 及根说明文件；构包后与远端编译前再次核验集合（`verify-staged`），缺包或出现未知目录均失败。
 

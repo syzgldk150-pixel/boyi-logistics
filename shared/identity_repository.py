@@ -7,6 +7,12 @@ from uuid import uuid4
 
 from shared.identity_permissions import IdentityAccess, access_from_row, validate_permissions
 from shared.runtime_repositories import _connection, _cursor
+from shared.wechat_bot import (
+    is_wechat_actor_id,
+    parse_wechat_actor_id,
+    restrict_access,
+    validate_device_permissions,
+)
 
 
 class IdentityRepository:
@@ -38,6 +44,10 @@ class IdentityRepository:
             return access_from_row(cursor.fetchone())
 
     def feishu(self, open_id: str) -> IdentityAccess:
+        """Bound chat sender: a Feishu open_id or a WeChat device actor id."""
+        if is_wechat_actor_id(open_id):
+            device_id = parse_wechat_actor_id(open_id)
+            return self.wechat_device(device_id) if device_id else IdentityAccess()
         with self.cursor() as cursor:
             cursor.execute("""SELECT b.identity_account_id,
                 IF(b.identity_account_id IS NULL, 1, u.is_active) AS is_active,
@@ -49,6 +59,25 @@ class IdentityRepository:
                 LEFT JOIN access_roles r ON r.role_id=COALESCE(b.access_role_id,u.access_role_id)
                 WHERE b.open_id=%s AND b.active=TRUE""", (open_id,))
             return access_from_row(cursor.fetchone())
+
+    def wechat_device(self, device_id: str) -> IdentityAccess:
+        """Live identity of an active WeChat device, narrowed by its own limits."""
+        with self.cursor() as cursor:
+            cursor.execute("""SELECT d.allowed_permissions_json,
+                IF(d.identity_account_id IS NULL, 1, u.is_active) AS is_active,
+                IF(d.identity_account_id IS NULL, 'admin', u.control_plane_role) AS control_plane_role,
+                COALESCE(d.access_role_id, u.access_role_id) AS access_role_id,
+                r.name AS role_name, r.is_active AS role_active, r.permissions_json
+                FROM wechat_bot_devices d
+                LEFT JOIN admin_users u ON u.id=d.identity_account_id
+                LEFT JOIN access_roles r ON r.role_id=COALESCE(d.access_role_id,u.access_role_id)
+                WHERE d.device_id=%s AND d.active=TRUE""", (device_id,))
+            row = cursor.fetchone()
+        if not row:
+            return IdentityAccess()
+        raw = row.get("allowed_permissions_json")
+        allowed = validate_device_permissions(json.loads(raw) if isinstance(raw, (str, bytes)) else raw)
+        return restrict_access(access_from_row(row), allowed)
 
     def for_actor(self, actor, *, connection=None) -> IdentityAccess:
         kind = str(getattr(getattr(actor, "actor_type", None), "value", ""))

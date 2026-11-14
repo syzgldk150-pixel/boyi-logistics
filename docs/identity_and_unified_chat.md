@@ -4,7 +4,7 @@ type: implementation
 status: active
 authority: canonical
 owner: repository
-updated: 2026-11-04
+updated: 2026-11-14
 ---
 
 # 身份权限与统一对话
@@ -90,6 +90,25 @@ V2 自动化卡片按已安装插件声明的唯一平台分类；从其他页�
 
 修改身份、停用账号或解绑后，每次查询和插件执行重新读取有效权限。页面菜单和 Agent 接口使用同一权限目录。后台普通账号不能通过直接访问 API 绕过权限；插件运行记录按实际插件所属模块检查访问权。
 
+## 微信个人号（官方 iLink Bot / ClawBot）
+
+2026-11-14 起，除飞书外还可通过微信官方 ClawBot 插件的 iLink Bot API 接入个人微信。协议依据腾讯发布的渠道插件 `@tencent-weixin/openclaw-weixin` 2.4.10 源码（`src/api/api.ts`、`src/api/types.ts`、`src/auth/login-qr.ts`、`src/monitor/monitor.ts`）：`https://ilinkai.weixin.qq.com` 的 JSON 接口，`get_bot_qrcode?bot_type=3` / `get_qrcode_status` 扫码，`getupdates` 长轮询收消息，`sendmessage` 回复并回传用户消息的 `context_token`，`errcode=-14` 为会话失效。
+
+- **绑定**：系统管理“微信设备”中由超级管理员选择权限来源（身份或后台账号，与飞书相同）、设备备注和可选的功能限制，生成二维码；对方用自己的微信扫码并在手机确认（需要时由管理员录入手机上显示的数字）。确认后 iLink 为这个微信签发一个机器人，系统才新建设备记录（迁移 `081_wechat_bot_devices.sql`）。同一个微信机器人同时只能有一条有效设备，解绑后可重新扫码。二维码约 8 分钟有效，扫码会话只在 Agent 进程内保存，重启后需重新生成。
+- **功能限制**：设备可不限制（与权限来源完全一致），或只勾选部分功能；实际权限是权限来源的实时权限与勾选项的交集，不会超出权限来源。权限来源为超级管理员时，一旦设置限制就不再拥有超级管理员专属能力。规则在 `shared/wechat_bot.py` 的 `restrict_access`。
+- **对话与功能**：设备消息以 `wechat:<device_id>` 作为发送者进入与飞书相同的 `feishu/message_handler.py` 处理链（固定命令、插件调用与确认、登录验证码、AI 对话），每条消息都经 `IdentityRepository.feishu()` 实时读取设备身份与限制，所以改身份、改限制、停用身份或解绑对下一条消息立即生效。飞书绑定码对微信发送者无效。事件编号为 `wechat:<device_id>:<message_id>`，幂等键沿用 `feishu:{event_id}`。只处理文字与微信自带的语音转文字；图片、文件、视频提示暂不支持。每台设备只接受扫码人本人的消息。
+- **令牌与运行**：机器人令牌和长轮询游标只保存在 Agent 私有目录 `agent/agent/state/wechat_bot/<device_id>/`（0600，不入库、不进日志）；解绑即删除。只有持有 MySQL 命名锁 `logistics_agent_wechat_consumer` 的 Agent 进程轮询，没拿到锁不轮询；本地 WSL 没有令牌文件，不会消费生产设备。连接状态（连接中/在线/会话失效/异常）写回设备记录供后台显示；会话失效按官方做法暂停 60 分钟后重试，长期失效需解绑后重新扫码。
+
+| 内容 | 维护入口 |
+| --- | --- |
+| 规则（发送者编号、功能限制、消息文字、分段） | `shared/wechat_bot.py` |
+| 设备存储 | `shared/wechat_bot_repository.py`、`shared/identity_repository.py` 的 `wechat_device` |
+| iLink 客户端 / 令牌 / 扫码绑定 / 轮询 | `agent/agent/wechat_bot/`（`ilink.py`、`tokens.py`、`service.py`、`channel.py`） |
+| 接入共用对话链 | `agent/wechat_bot_composition.py`、`feishu/message_handler.py` 的 `bind_channel_reply_sender` / `handle_channel_text` |
+| 后台页面 | `console/services/identities.py`、`console/templates/identity_management.html` |
+
+Agent 接口均要求签名超级管理员：`POST /internal/v1/admin/wechat-bot/logins`、`GET|DELETE .../logins/{id}`、`POST .../logins/{id}/verify-code`、`DELETE .../devices/{id}`。回归：`tests/test_wechat_bot.py`，真实 MySQL `tests/test_wechat_bot_devices_mysql.py`。扫码协议已对真实 iLink 核实到二维码生成与状态查询；收发消息需绑定后在生产核验。
+
 ## 对话调用
 
 后台 AI 助手与飞书自然对话共用 `HarnessConversationService`、当前启用的模型、工具目录和 `ChatTextQueries`。`channel_chat.py` 只负责接入身份、会话和消息编号转换，不维护另一套提示词或模型循环。群聊按发送者隔离上下文。
@@ -109,6 +128,7 @@ Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层�
 | HTTP 权限映射 | `shared/identity_routes.py`、`agent/agent/identity_access.py` |
 | 后台身份管理 | `console/services/identities.py`、`console/templates/identity_management.html` |
 | 飞书绑定验证 | `shared/feishu_binding_repository.py`、`agent/agent/orchestration/feishu_binding_service.py` |
+| 微信设备（iLink） | 见上文“微信个人号”一节 |
 | 统一 AI 会话 | `agent/agent/harness_application.py`、`agent/agent/channel_chat.py` |
 | 确定性业务文本查询 | `agent/agent/chat_text_queries.py` |
 

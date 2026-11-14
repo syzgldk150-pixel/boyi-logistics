@@ -2,9 +2,9 @@
 
 {% block title %}后台账号管理 - {{ app_title }}{% endblock %}
 {% block breadcrumb %}系统管理{% endblock %}
-{% block subtitle %}身份权限、后台账号与飞书绑定{% endblock %}
+{% block subtitle %}身份权限、后台账号、飞书绑定与微信设备{% endblock %}
 
-{% block head %}<link rel="stylesheet" href="/static/identity-settings.css?v=20261112-type13">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/identity-settings.css?v=20261114-wechat1">{% endblock %}
 {% block content %}
 {% include 'identity_management.html' %}
 {% endblock %}
@@ -24,6 +24,97 @@
       dialog.querySelectorAll("[data-identity-dialog-close]").forEach((button) => button.addEventListener("click", () => dialog.close()));
       dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
     });
+
+    root.querySelectorAll("[data-wechat-limit]").forEach((box) => {
+      const toggle = box.querySelector("[data-wechat-limit-toggle]");
+      const fields = box.querySelector("[data-wechat-limit-fields]");
+      toggle?.addEventListener("change", () => { if (fields) fields.hidden = !toggle.checked; });
+    });
+
+    const wechat = root.querySelector("[data-wechat-login]");
+    if (wechat) {
+      const form = wechat.querySelector("[data-wechat-login-form]");
+      const setup = wechat.querySelector("[data-wechat-login-setup]");
+      const qrPanel = wechat.querySelector("[data-wechat-login-qr]");
+      const image = wechat.querySelector("[data-wechat-qr-image]");
+      const link = wechat.querySelector("[data-wechat-qr-link]");
+      const statusText = wechat.querySelector("[data-wechat-status]");
+      const expiry = wechat.querySelector("[data-wechat-expiry]");
+      const verify = wechat.querySelector("[data-wechat-verify]");
+      const verifyInput = wechat.querySelector("[data-wechat-verify-input]");
+      const errorText = wechat.querySelector("[data-wechat-error]");
+      const startButton = wechat.querySelector("[data-wechat-start]");
+      let loginId = "";
+      let timer = 0;
+      const showError = (message) => { errorText.textContent = message || ""; errorText.hidden = !message; };
+      const call = async (method, url, body) => {
+        const response = await fetch(url, {
+          method, credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json", "X-Requested-With": "WeChatDeviceBinding" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        let payload = null;
+        try { payload = await response.json(); } catch (_error) { payload = null; }
+        if (!payload || !payload.ok) throw new Error(payload?.error?.message || "请求失败，请稍后重试");
+        return payload.data;
+      };
+      const reset = () => {
+        window.clearTimeout(timer);
+        loginId = "";
+        setup.hidden = false; qrPanel.hidden = true; verify.hidden = true;
+        startButton.hidden = false; startButton.disabled = false;
+        image.removeAttribute("src"); link.hidden = true; showError("");
+      };
+      const render = (data) => {
+        statusText.textContent = data.message || "";
+        expiry.textContent = data.expires_in_seconds ? `二维码约 ${Math.ceil(data.expires_in_seconds / 60)} 分钟后失效` : "";
+        verify.hidden = data.status !== "need_verifycode";
+        if (data.qr_image) image.src = data.qr_image;
+        if (data.qr_link) { link.href = data.qr_link; link.hidden = false; }
+        if (data.status === "confirmed") {
+          window.setTimeout(() => window.location.assign("/settings/accounts?kind=success&message=" + encodeURIComponent("微信设备已绑定")), 1200);
+          return false;
+        }
+        if (data.status === "failed") { showError(data.message); startButton.hidden = false; startButton.disabled = false; startButton.textContent = "重新生成二维码"; setup.hidden = false; return false; }
+        return true;
+      };
+      const poll = async () => {
+        if (!loginId) return;
+        try {
+          if (render(await call("GET", `/settings/accounts/wechat/logins/${loginId}`))) timer = window.setTimeout(poll, 2000);
+        } catch (error) { showError(error.message); timer = window.setTimeout(poll, 4000); }
+      };
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        window.clearTimeout(timer);
+        const data = new FormData(form);
+        const limited = data.get("limit_permissions") === "1";
+        const permissions = [];
+        for (const [key, value] of data.entries()) if (key.startsWith("permission_") && value === "1") permissions.push(key.slice(11));
+        startButton.disabled = true; showError("");
+        try {
+          const login = await call("POST", "/settings/accounts/wechat/logins", {
+            label: data.get("label") || "", target: data.get("target") || "",
+            limit_permissions: limited ? "1" : "", permissions,
+          });
+          loginId = login.login_id;
+          setup.hidden = true; qrPanel.hidden = false; startButton.hidden = true;
+          if (render(login)) timer = window.setTimeout(poll, 2000);
+        } catch (error) { showError(error.message); startButton.disabled = false; }
+      });
+      wechat.querySelector("[data-wechat-verify-submit]")?.addEventListener("click", async () => {
+        try { render(await call("POST", `/settings/accounts/wechat/logins/${loginId}/verify-code`, { code: verifyInput.value.trim() })); verifyInput.value = ""; }
+        catch (error) { showError(error.message); }
+      });
+      const cancel = async () => {
+        const current = loginId;
+        reset();
+        if (current) { try { await call("POST", `/settings/accounts/wechat/logins/${current}/cancel`, {}); } catch (_error) { /* already ended */ } }
+      };
+      wechat.querySelector("[data-wechat-cancel]")?.addEventListener("click", () => { cancel(); wechat.close(); });
+      wechat.addEventListener("close", () => { if (loginId) cancel(); });
+    }
 
     const card = root.querySelector("[data-identity-roles]");
     if (!card) return;

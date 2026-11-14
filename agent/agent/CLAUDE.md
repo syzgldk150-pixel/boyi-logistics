@@ -4,6 +4,8 @@ Service V2 候选投影必须携带正整数 `selection_limit`，确认按同一
 
 ## 当前身份与统一对话边界
 
+微信个人号（官方 iLink Bot）：`wechat_bot/` 不依赖飞书，`ilink.py` 按腾讯官方插件 2.4.10 的请求格式调用，`tokens.py` 只在 `state/wechat_bot/` 以 0600 保存令牌与游标，`service.py` 负责扫码绑定与解绑，`channel.py` 持 MySQL 命名锁轮询并只接受扫码人本人的消息。细节见[维护说明](../../docs/identity_and_unified_chat.md)。
+
 统一对话与身份：`harness_application.py` 是后台与飞书自然对话的唯一会话服务；`channel_chat.py` 处理可信渠道身份，`chat_text_queries.py` 统一单号与财务文本查询。`core.py` 不再运行第二套 LLM 循环。身份权限在每次工具/插件调用重新核验，不同会话独立并行。统计 V2 的正式连接器位于 `automation_plugins/arrival_connectors_v2.py`。系统只运行 V2；Connector 复用的已审核 Host 原语（`automation_plugins/host_primitive_*.py`、`reviewed_primitives.py`）是当前能力，不是遗留代码。细节见[维护说明](../../docs/identity_and_unified_chat.md)。
 
 当前调用架构见 [直接业务与插件说明](../../docs/architecture_direct_invocation.md)。`direct_readers.py` 管理固定查询的参数、角色与临时能力；`automation_plugins/direct_invocation.py` 管理插件独立调用。

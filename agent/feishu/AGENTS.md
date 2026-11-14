@@ -6,6 +6,8 @@
 
 飞书身份与对话：所有绑定由后台统一展示和管理；可继承自定义身份或后台账号的实时权限。自然语言交给共用 Harness 会话服务，固定指令仍直接执行原插件接口；模型不能提供账号或资源身份。解绑与身份停用后的新查询/调用立即拒绝。 细节见[维护说明](../../docs/identity_and_unified_chat.md)。
 
+其他一对一聊天渠道（当前为微信个人号设备）经 `bind_channel_reply_sender(prefix, sender)` 注册回复发送器、经 `handle_channel_text` 进入 `_process_and_reply`；发送者编号即会话编号（如 `wechat:<device_id>`），身份仍由 `identity_access.feishu()` 实时解析，绑定码对微信发送者无效。本模块不得导入微信实现。
+
 ## 目录职责
 
 `feishu/` 负责飞书消息入口、长连接、消息事件分发、回复格式化。

@@ -9,6 +9,11 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/settings/accounts":
         app._render_admin_accounts(handler, query)
         return True
+    if path.startswith("/settings/accounts/wechat/logins/"):
+        parts = path.split("/")
+        if len(parts) == 6:
+            app._handle_wechat_login_status(handler, parts[5])
+            return True
     return False
 
 
@@ -20,6 +25,19 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         parts = path.split("/")
         if len(parts) == 6:
             app._handle_identity_binding_update(handler, parts[4], revoke=parts[5] == "revoke")
+            return True
+    if path == "/settings/accounts/wechat/logins":
+        app._handle_wechat_login_create(handler)
+        return True
+    if path.startswith("/settings/accounts/wechat/logins/") and path.endswith(("/verify-code", "/cancel")):
+        parts = path.split("/")
+        if len(parts) == 7:
+            app._handle_wechat_login_action(handler, parts[5], parts[6])
+            return True
+    if path.startswith("/settings/accounts/wechat/") and path.endswith(("/update", "/revoke")):
+        parts = path.split("/")
+        if len(parts) == 6 and parts[4] != "logins":
+            app._handle_wechat_device_update(handler, parts[4], revoke=parts[5] == "revoke")
             return True
     if path == "/logout":
         app._handle_logout(handler)

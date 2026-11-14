@@ -102,3 +102,12 @@ td > .identity-time { margin-top: 2px; color: var(--text-muted); font-size: var(
 .account-row-actions { flex-wrap: nowrap; gap: 10px; white-space: nowrap; }
 .account-admin-panel .account-table td:last-child { padding-right: 8px; }
 .account-row-actions .btn--small { padding: 0 8px !important; }
+
+/* WeChat devices (iLink ClawBot) */
+.identity-device-limit { display: grid; gap: 6px; }
+.identity-device-limit [data-wechat-limit-fields] { margin-top: 4px; }
+.identity-wechat-qr { display: grid; justify-items: center; gap: 8px; text-align: center; }
+.identity-wechat-qr img { width: 240px; height: 240px; padding: 8px; border-radius: var(--r-block); background: #fff; border: 1px solid var(--line); }
+.identity-wechat-qr [data-wechat-verify] { display: flex; align-items: flex-end; gap: 8px; justify-content: center; }
+.identity-wechat-status { margin: 0; font-weight: 600; }
+.identity-wechat-error { margin: 0 16px 8px; color: var(--status-danger); font-size: var(--fs-label); }

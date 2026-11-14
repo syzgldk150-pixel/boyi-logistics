@@ -1,16 +1,30 @@
-"""System management forms for shared identities and all Feishu bindings."""
+"""System management forms for shared identities, Feishu bindings and WeChat devices."""
 from __future__ import annotations
 
+import re
 from http import HTTPStatus
 
 from console.app_support import current_admin_user
 from shared.identity_permissions import PERMISSIONS
 
+WECHAT_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def device_permissions(values: dict) -> list[str] | None:
+    """``None`` keeps the identity's permissions; otherwise only the ticked ones."""
+    if values.get("limit_permissions") not in {"1", True}:
+        return None
+    raw = values.get("permissions")
+    if isinstance(raw, list):
+        return [str(item) for item in raw]
+    return [key.removeprefix("permission_") for key, value in values.items()
+            if key.startswith("permission_") and value == "1"]
+
 
 def binding_target(value: str) -> dict:
     kind, separator, identity = str(value).partition(":")
     if not separator or not identity:
-        raise ValueError("请选择飞书账号要继承的身份或后台账号")
+        raise ValueError("请选择要继承的身份或后台账号")
     if kind == "role":
         return {"role_id": identity}
     if kind == "account" and identity.isdecimal() and int(identity) > 0:
@@ -31,6 +45,7 @@ class IdentitiesServiceMixin:
             app_title=self.settings.app_title, users=self.repository.list_admin_users(),
             is_super_admin=True, identity_roles=identities.list_roles(),
             feishu_bindings=identities.list_bindings(), permission_options=PERMISSIONS,
+            wechat_devices=self.repository.wechat_devices.list_devices(),
             binding_challenge=binding_challenge,
             message=query.get("message", [""])[0], message_kind=query.get("kind", ["info"])[0],
         ))
@@ -64,3 +79,69 @@ class IdentitiesServiceMixin:
             self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
             return
         self._redirect_with_message(handler, "/settings/accounts", "飞书账号已解绑，可以重新绑定。" if revoke else "飞书账号身份已更新。", "success")
+
+    # -- WeChat devices (official iLink Bot API) ---------------------------
+    def _wechat_json(self, handler, result) -> None:
+        if result.get("ok") and isinstance(result.get("data"), dict):
+            self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": result["data"], "error": None})
+            return
+        message = str(result.get("error") or "微信设备操作失败")
+        self._send_json(handler, HTTPStatus.BAD_REQUEST, {
+            "ok": False, "data": None,
+            "error": {"code": str(result.get("error_code") or "WECHAT_BOT_FAILED"), "message": message}})
+
+    def _handle_wechat_login_create(self, handler):
+        if not self._identity_form_allowed(handler):
+            return
+        body = self._parse_json_body(handler)
+        try:
+            payload = {**binding_target(str(body.get("target") or "")),
+                       "label": str(body.get("label") or ""), "permissions": device_permissions(body)}
+        except ValueError as exc:
+            self._wechat_json(handler, {"ok": False, "error": str(exc), "error_code": "INVALID_INPUT"})
+            return
+        self._wechat_json(handler, self._agent_request("POST", "/internal/v1/admin/wechat-bot/logins",
+                                                       payload=payload, timeout=30))
+
+    def _handle_wechat_login_status(self, handler, login_id):
+        if not self._is_super_admin_user(current_admin_user()) or not WECHAT_UUID_RE.fullmatch(login_id):
+            self._send_text(handler, HTTPStatus.FORBIDDEN, "只有超级管理员可以管理微信设备。")
+            return
+        self._wechat_json(handler, self._agent_request("GET", f"/internal/v1/admin/wechat-bot/logins/{login_id}", timeout=12))
+
+    def _handle_wechat_login_action(self, handler, login_id, action):
+        if not self._identity_form_allowed(handler):
+            return
+        if not WECHAT_UUID_RE.fullmatch(login_id):
+            self._wechat_json(handler, {"ok": False, "error": "扫码绑定编号无效"})
+            return
+        if action == "verify-code":
+            body = self._parse_json_body(handler)
+            result = self._agent_request("POST", f"/internal/v1/admin/wechat-bot/logins/{login_id}/verify-code",
+                                         payload={"code": str(body.get("code") or "")}, timeout=12)
+        else:
+            result = self._agent_request("DELETE", f"/internal/v1/admin/wechat-bot/logins/{login_id}", timeout=12)
+        self._wechat_json(handler, result)
+
+    def _handle_wechat_device_update(self, handler, device_id, *, revoke):
+        if not self._identity_form_allowed(handler):
+            return
+        if not WECHAT_UUID_RE.fullmatch(device_id):
+            self._redirect_with_message(handler, "/settings/accounts", "微信设备编号无效", "warning")
+            return
+        values = self._parse_urlencoded_form(handler)
+        if revoke:
+            result = self._agent_request("DELETE", f"/internal/v1/admin/wechat-bot/devices/{device_id}", timeout=20)
+            if not result.get("ok"):
+                self._redirect_with_message(handler, "/settings/accounts", str(result.get("error") or "微信设备解绑失败"), "warning")
+                return
+            self._redirect_with_message(handler, "/settings/accounts", "微信设备已解绑，该微信的新消息立即停止处理。", "success")
+            return
+        try:
+            self.repository.wechat_devices.update_device(
+                device_id, label=values.get("label", ""), permissions=device_permissions(values),
+                **binding_target(values.get("target", "")))
+        except ValueError as exc:
+            self._redirect_with_message(handler, "/settings/accounts", str(exc), "warning")
+            return
+        self._redirect_with_message(handler, "/settings/accounts", "微信设备的身份与功能限制已更新，下一条消息立即生效。", "success")

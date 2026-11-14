@@ -32,6 +32,7 @@ from agent.plugin_flow_editor import PluginFlowEditor, PluginFlowEditorError
 from shared.customer_service_ai import CustomerServiceAIRepository
 from customer_service_ai_composition import build_customer_service_ai
 from receipt_share_composition import ReceiptShareRuntime, build_receipt_share_runtime
+from wechat_bot_composition import WeChatBotRuntime
 from plugin_core_adapters.customer_auto_reply import bind_customer_service_ai
 from shared.customer_service_ai import CustomerServiceAIError
 from shared.ai_tasks.audit import AITaskAuditRepository
@@ -245,6 +246,7 @@ finance_review_advisor: "FinanceReviewAdvisor | None" = None
 customer_service_ai: "CustomerServiceAIService | None" = None
 plugin_flow_editor: "PluginFlowEditor | None" = None
 receipt_share_runtime: "ReceiptShareRuntime | None" = None
+wechat_bot_runtime: "WeChatBotRuntime | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
 automation_plugin_runtime: ProductionAutomationPluginRuntime | None = None
 automation_project_entrypoints: AutomationProjectEntrypoints | None = None
@@ -679,7 +681,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
-    global plugin_flow_editor, receipt_share_runtime
+    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -914,6 +916,12 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Feishu webhook mode enabled: %s", feishu_event_mode())
 
+    # WeChat devices share the Feishu chat pipeline and identity checks.
+    wechat_bot_runtime = WeChatBotRuntime(
+        connect=orchestration_connections, lease_connect=_orchestration_connection,
+        identities=project_policy_service.identity_access)
+    wechat_bot_runtime.start()
+
     tms_session_alert_stop = asyncio.Event()
     tms_session_alert_task = None
     if _should_start_tms_session_alert_monitor():
@@ -960,6 +968,9 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
     register_account_session_restored(None)
     bind_automation_project_entrypoints(None)
+    if wechat_bot_runtime is not None:
+        await wechat_bot_runtime.stop()
+        wechat_bot_runtime = None
     bind_feishu_binding_runtime(None)
     bind_service_v2_feishu_dispatcher(None)
     await stop_feishu_ws()
@@ -1615,6 +1626,64 @@ async def revoke_feishu_binding(request: Request):
     actor = _require_console_super_admin_request(request)
     await asyncio.to_thread(_feishu_bindings().revoke_binding, int(actor.actor_id))
     return api_success({"revoked": True})
+
+
+def _wechat_bot() -> WeChatBotRuntime:
+    if wechat_bot_runtime is None:
+        raise RuntimeError("WeChat bot runtime is not initialized")
+    return wechat_bot_runtime
+
+
+async def _wechat_call(call, *args, **kwargs):
+    from agent.wechat_bot.service import WeChatBotError
+
+    try:
+        result = call(*args, **kwargs)
+        return await result if asyncio.iscoroutine(result) else result
+    except WeChatBotError as exc:
+        raise OrchestrationError(exc.code, str(exc)) from exc
+
+
+@app.post("/internal/v1/admin/wechat-bot/logins")
+async def create_wechat_bot_login(request: Request):
+    actor = _require_console_super_admin_request(request)
+    payload = await request.json()
+    if not isinstance(payload, dict) or set(payload) - {"role_id", "account_id", "label", "permissions"}:
+        raise OrchestrationError("INVALID_INPUT", "微信设备绑定参数格式无效")
+    return api_success(await _wechat_call(_wechat_bot().service.start_login, int(actor.actor_id), **payload))
+
+
+@app.get("/internal/v1/admin/wechat-bot/logins/{login_id}")
+async def get_wechat_bot_login(login_id: str, request: Request):
+    actor = _require_console_super_admin_request(request)
+    return api_success(await _wechat_call(_wechat_bot().service.login_status, login_id, int(actor.actor_id)))
+
+
+@app.post("/internal/v1/admin/wechat-bot/logins/{login_id}/verify-code")
+async def submit_wechat_bot_verify_code(login_id: str, request: Request):
+    actor = _require_console_super_admin_request(request)
+    payload = await request.json()
+    if not isinstance(payload, dict) or set(payload) != {"code"}:
+        raise OrchestrationError("INVALID_INPUT", "请输入手机微信上显示的数字")
+    return api_success(await _wechat_call(
+        _wechat_bot().service.submit_verify_code, login_id, int(actor.actor_id), payload["code"]))
+
+
+@app.delete("/internal/v1/admin/wechat-bot/logins/{login_id}")
+async def cancel_wechat_bot_login(login_id: str, request: Request):
+    actor = _require_console_super_admin_request(request)
+    await _wechat_call(_wechat_bot().service.cancel_login, login_id, int(actor.actor_id))
+    return api_success({"cancelled": True})
+
+
+@app.delete("/internal/v1/admin/wechat-bot/devices/{device_id}")
+async def revoke_wechat_bot_device(device_id: str, request: Request):
+    _require_console_super_admin_request(request)
+    from shared.wechat_bot import parse_wechat_actor_id
+
+    if parse_wechat_actor_id("wechat:" + device_id) is None:
+        raise OrchestrationError("INVALID_INPUT", "微信设备编号格式无效")
+    return api_success({"revoked": await _wechat_bot().service.revoke(device_id)})
 
 
 class ChatRequest(BaseModel):

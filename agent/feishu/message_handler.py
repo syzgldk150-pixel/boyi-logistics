@@ -77,6 +77,7 @@ from feishu.selection_preview import (
     split_text_chunks as _split_text_chunks,
 )
 from shared.redaction import redact_text
+from shared.wechat_bot import is_wechat_actor_id
 from tools.internal_http import internal_api_headers
 
 logger = logging.getLogger("feishu")
@@ -121,6 +122,7 @@ _FEISHU_BINDING_RUNTIME: Any | None = None
 _SERVICE_V2_FEISHU_DISPATCHER: ServiceV2FeishuDispatcher | None = None
 _ACTIVE_PLUGIN_INVOCATIONS: dict[tuple[str, str, str], str] = {}
 _INVOCATION_RESULTS = InvocationResultFollower()
+_CHANNEL_REPLY_SENDERS: dict[str, Callable[[str, str], Awaitable[None]]] = {}
 
 
 def bind_automation_project_entrypoints(
@@ -150,6 +152,44 @@ def bind_service_v2_feishu_dispatcher(service: ServiceV2FeishuDispatcher | None)
     if service is not None and not isinstance(service, ServiceV2FeishuDispatcher):
         raise TypeError("service must be ServiceV2FeishuDispatcher or None")
     _SERVICE_V2_FEISHU_DISPATCHER = service
+
+
+def bind_channel_reply_sender(prefix: str, sender: Callable[[str, str], Awaitable[None]] | None) -> None:
+    """Register (or with ``None`` remove) the reply sender of another chat channel.
+
+    A channel delivers its verified sender as an actor id with this prefix, so
+    every reply this module sends to that id goes back through the channel.
+    """
+    if not isinstance(prefix, str) or not prefix.endswith(":") or prefix in {"feishu:"}:
+        raise ValueError("channel prefix must end with ':'")
+    if sender is None:
+        _CHANNEL_REPLY_SENDERS.pop(prefix, None)
+        return
+    if not callable(sender):
+        raise TypeError("sender must be callable")
+    _CHANNEL_REPLY_SENDERS[prefix] = sender
+
+
+async def handle_channel_text(*, actor_id: str, text: str, event_id: str) -> None:
+    """Entry for another one-to-one chat channel whose sender is already verified.
+
+    The actor id doubles as the chat id; identity, permissions, fixed commands,
+    plugin calls, confirmations and AI chat behave exactly as for Feishu.
+    """
+    safe_actor = str(actor_id or "").strip()
+    if not any(safe_actor.startswith(prefix) for prefix in _CHANNEL_REPLY_SENDERS):
+        raise ValueError("unregistered channel actor")
+    stable_event_id = str(event_id or "").strip()
+    token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
+        FeishuCommandContext(event_id=stable_event_id, actor_id=safe_actor, chat_id=safe_actor)
+        if stable_event_id else None
+    )
+    try:
+        normalized = str(text or "").strip()
+        if normalized:
+            await _process_and_reply(normalized, safe_actor, safe_actor)
+    finally:
+        _COMMAND_CONTEXT.reset(token)
 
 
 @dataclass(frozen=True)
@@ -1976,7 +2016,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     if identity_access is not None:
         identity = await asyncio.to_thread(identity_access.feishu, str(sender_id or ""))
         if not identity.active:
-            await _reply_text(chat_id, "当前飞书账号未绑定有效身份，请联系超级管理员在后台分配身份。")
+            channel = "微信设备" if is_wechat_actor_id(sender_id) else "飞书账号"
+            await _reply_text(chat_id, f"当前{channel}未绑定有效身份，请联系超级管理员在后台分配身份。")
             return
     pending_key = chat_id
     pending = get_pending(pending_key)
@@ -2791,7 +2832,13 @@ async def _reply_text(
     *,
     reply_type: str = "text",
 ):
-    """发送文本回复到飞书。"""
+    """发送文本回复到飞书；其他渠道（如微信设备）的会话交给其注册的发送器。"""
+    for prefix, sender in _CHANNEL_REPLY_SENDERS.items():
+        if str(receive_id or "").startswith(prefix):
+            logger.info("channel outbound | channel=%s | reply_type=%s | chars=%d",
+                        prefix.rstrip(":"), reply_type, len(str(text or "")))
+            await sender(str(receive_id), str(text or ""))
+            return
     logger.info(
         "feishu outbound | receive_id=%s | receive_id_type=%s | reply_type=%s | chars=%d",
         receive_id,

@@ -17,6 +17,7 @@ from shared.redaction import redact_sensitive, redact_text
 from shared.runtime_repositories import ScheduledTaskRepository, WorkflowResourceRepository
 from shared.runtime_repositories import WaybillRepository
 from shared.identity_repository import IdentityRepository
+from shared.wechat_bot_repository import WeChatDeviceRepository
 from shared.logistics_tables import waybill_table, receipt_table
 
 import re
@@ -425,6 +426,7 @@ class DocumentRepository:
         self._workflow_resources = WorkflowResourceRepository(self.connect)
         self._waybills = WaybillRepository(self.connect)
         self.identities = IdentityRepository(self.connect)
+        self.wechat_devices = WeChatDeviceRepository(self.connect)
 
     @contextmanager
     def connect(self) -> Iterator[Any]:

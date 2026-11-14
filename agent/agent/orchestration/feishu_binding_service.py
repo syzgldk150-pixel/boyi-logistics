@@ -11,6 +11,7 @@ from typing import Any
 from agent.feishu_command_contract import match_feishu_approval_binding
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.feishu_binding_repository import BindingChallengeExpired, BindingConflict
+from shared.wechat_bot import is_wechat_actor_id
 
 
 _CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -130,6 +131,9 @@ class FeishuBindingService:
         """Current Feishu ingress only binds identity; it never decides old Runs."""
         normalized = str(text or "").strip()
         match = match_feishu_approval_binding(normalized)
+        if match and is_wechat_actor_id(open_id):
+            # WeChat devices are bound only by the Console QR scan.
+            return "微信设备已由后台扫码绑定，绑定码只用于飞书账号。"
         if match:
             return self._bind(open_id, chat_id, match.group(1).upper())
         return None
