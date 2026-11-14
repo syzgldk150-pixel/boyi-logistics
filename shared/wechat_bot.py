@@ -116,19 +116,22 @@ def has_unsupported_media(message: Mapping[str, Any]) -> bool:
 
 
 def keep_line_breaks(text: str) -> str:
-    """Keep the plain-text layout in WeChat, which renders replies as Markdown.
+    """Keep one field per line in WeChat, which renders replies as Markdown.
 
     Since ClawBot 2.4 the WeChat client renders bot text as Markdown, where a
-    single line break inside a paragraph collapses into a space. Replies are
-    shared plain text (one field per line), so each such break becomes a
-    Markdown hard break (two trailing spaces); blank lines stay paragraphs.
+    single line break collapses into a space. Replies are shared plain text
+    (one field per line). A hard break with two trailing spaces works on the
+    phone but not in the Windows client (tested 2026-11-15, as were a trailing
+    backslash and ``<br>``); only a blank line breaks on both. So every line
+    becomes its own paragraph; existing blank lines are not doubled.
     """
-    lines = str(text or "").split("\n")
-    out = []
-    for index, line in enumerate(lines):
-        line = line.rstrip()
-        following = lines[index + 1] if index + 1 < len(lines) else ""
-        out.append(line + "  " if line and following.strip() else line)
+    lines = [line.rstrip() for line in str(text or "").split("\n")]
+    out: list[str] = []
+    for line in lines:
+        if line:
+            if out:
+                out.append("")
+            out.append(line)
     return "\n".join(out)
 
 
