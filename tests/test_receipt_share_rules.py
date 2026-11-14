@@ -92,3 +92,24 @@ def test_nas_path_is_by_waybill_and_rejects_traversal():
                  ("ronghui", "R1", "sign", "a" * 64, "jpg", "2026/11")):
         with pytest.raises(ValueError):
             rs.nas_image_path(*args)
+
+
+def test_access_code_is_sealed_per_share_and_tamper_evident():
+    sealed = rs.seal_access_code(SECRET, 7, "48a1")
+    assert sealed.startswith("v1.") and "48a1" not in sealed
+    assert rs.open_access_code(SECRET, 7, sealed) == "48a1"
+    assert rs.seal_access_code(SECRET, 7, "48a1") != sealed  # fresh nonce each time
+    assert rs.open_access_code(SECRET, 8, sealed) == ""  # another share cannot reuse it
+    assert rs.open_access_code("t" * 40, 7, sealed) == ""  # another secret cannot read it
+    flipped = sealed[:-2] + ("A" if sealed[-2] != "A" else "B") + sealed[-1]
+    for bad in (flipped, "", None, "v1.", "v1.!!!", "v0." + sealed[3:], sealed + "AAAA"):
+        assert rs.open_access_code(SECRET, 7, bad) == ""
+    with pytest.raises(rs.ReceiptShareError):
+        rs.seal_access_code(SECRET, 7, "")
+
+
+def test_expiry_days():
+    assert [rs.normalize_expiry_days(value) for value in (0, 1, 45, 3650)] == [0, 1, 45, 3650]
+    for bad in (-1, 3651, 1.5, "30", None, True):
+        with pytest.raises(rs.ReceiptShareError):
+            rs.normalize_expiry_days(bad)

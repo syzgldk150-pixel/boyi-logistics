@@ -9,7 +9,7 @@ SHARE = {
     "url": "https://r.example.test/r/AbCdEfGhIjKlMnOpQrStUv", "naming_template": "{客户简称}-{运单号}-{单据类型}.jpg",
     "naming_label": "默认规则", "image_types": ["sign", "receipt"], "image_types_text": "签收图·回单图", "scope": "all",
     "expires_text": "至 2026-12-31", "view_count": 128, "last_viewed_text": "11-13 14:02", "state": "active",
-    "state_label": "生效中", "has_access_code": False, "item_count": 12, "refresh_state": "ok",
+    "state_label": "生效中", "has_access_code": True, "access_code": "4821", "item_count": 12, "refresh_state": "ok",
     "refresh_message": "运单 5 张，图片 12 张", "last_refreshed_text": "11-13 18:00",
 }
 CUSTOMER = {"id": 1, "code": "KH00001", "name": "勇胜贸易有限公司", "short_name": "勇胜", "is_active": True,
@@ -59,6 +59,8 @@ def test_list_create_and_disable(app, browser):
                     state["shares"].insert(0, created)
                     return route.fulfill(content_type="application/json", body=json.dumps(
                         {"ok": True, "data": {"share": created, "access_code": payload["access_code"]}}))
+                if parsed.path.endswith("/renew"):
+                    return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"share": state["shares"][-1]}}))
                 if parsed.path.endswith("/disable"):
                     state["shares"][-1].update(state="disabled", state_label="已停用", record_version=3)
                     return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"share": state["shares"][-1]}}))
@@ -78,7 +80,7 @@ def test_list_create_and_disable(app, browser):
         assert widths == [168, 168, 156, 152, 104, 64, 76, 92, 82] and sum(widths) == 1062
 
         row.get_by_role("button", name="复制").click()
-        assert page.evaluate("navigator.clipboard.readText()") == SHARE["url"]
+        assert page.evaluate("navigator.clipboard.readText()") == SHARE["url"] + "\n访问码：4821"
 
         page.locator(".share-card-head [data-share-open-create]").click()
         dialog = page.locator("[data-share-create-dialog]")
@@ -98,13 +100,18 @@ def test_list_create_and_disable(app, browser):
         dialog.locator("[data-share-code-random]").click()
         code = dialog.locator("[data-share-code]").input_value()
         assert len(code) == 4 and code.isdigit()
-        dialog.get_by_text("90 天").click()
+        assert dialog.locator("[data-share-custom-days]").is_hidden() and dialog.locator("[data-share-dates]").is_hidden()
+        dialog.get_by_text("按发货日期").click()
+        assert dialog.locator("[data-share-dates]").is_visible()
+        dialog.get_by_text("全部回单").click()
+        dialog.get_by_text("自定义").click()
+        dialog.locator("[data-share-custom-days-input]").fill("45")
         submit.click()
         page.wait_for_function("!document.querySelector('[data-share-create-dialog]').open")
         path, body, uuid = state["posts"][-1]
         assert path == "/receipts/shares" and uuid == body["request_id"]
         assert {key: body[key] for key in ("customer_id", "scope", "image_types", "expires_days", "access_code", "naming_template")} == {
-            "customer_id": 1, "scope": "all", "image_types": ["receipt"], "expires_days": 90, "access_code": code,
+            "customer_id": 1, "scope": "all", "image_types": ["receipt"], "expires_days": 45, "access_code": code,
             "naming_template": DEFAULTS["naming_template"]}
         assert page.evaluate("navigator.clipboard.readText()") == f"https://r.example.test/r/NewLinkCodeNewLinkCode1\n访问码：{code}"
         assert page.locator("[data-share-rows] tr").count() == 2
@@ -114,6 +121,25 @@ def test_list_create_and_disable(app, browser):
         assert state["posts"][-1][0] == "/receipts/shares/3/disable" and state["posts"][-1][1]["record_version"] == 2
         assert page.locator("[data-share-rows] tr").nth(1).get_by_role("button", name="启用").count() == 1
 
+        state["shares"][-1].update(state="expired", state_label="已过期", record_version=4)
+        page.evaluate("1")  # keep the page alive while the stub changes
+        page.locator("[data-share-search]").fill("")
+        page.locator("[data-share-rows] tr").first.evaluate("n => n")
+        page.reload()
+        expired = page.locator("[data-share-rows] tr").nth(1)
+        expired.get_by_role("button", name="续期").click()
+        renew = page.locator("[data-share-renew-dialog]")
+        renew.locator("[data-share-renew-days]").fill("120")
+        renew.get_by_role("button", name="确定续期").click()
+        page.wait_for_function("document.querySelector('[data-share-toast]').textContent === '已续期 120 天'")
+        assert state["posts"][-1][0] == "/receipts/shares/3/renew" and state["posts"][-1][1]["expires_days"] == 120
+        expired.get_by_role("button", name="续期").click()
+        renew.get_by_text("长期有效").click()
+        renew.get_by_role("button", name="确定续期").click()
+        page.wait_for_function("document.querySelector('[data-share-toast]').textContent === '已改为长期有效'")
+        assert state["posts"][-1][1]["expires_days"] == 0
+        state["shares"][-1].update(state="disabled", state_label="已停用")
+        page.reload()
         page.locator("[data-share-state-filter]").select_option("disabled")
         assert page.locator("[data-share-rows] tr").count() == 1
         assert state["errors"] == []
@@ -206,7 +232,8 @@ def test_share_button_on_the_receipts_page_opens_its_own_tab(app, browser):
         page.goto(f"{ORIGIN}/receipts")
         page.locator('a[href="/receipts/shares"]').click()
         page.wait_for_function("location.pathname === '/receipts/shares'")
-        page.locator(".main-content:not([hidden]) [data-share-page]").wait_for()
+        # The page script runs after the tab is inserted; wait for its first render.
+        page.locator(".main-content:not([hidden]) [data-share-rows] tr").first.wait_for()
         assert page.locator(".main-content:not([hidden]) [data-share-rows] tr").count() == 1
         # The receipts page stays open in its own tab beside it.
         assert page.locator(".main-content [data-receipts-page]").count() == 1

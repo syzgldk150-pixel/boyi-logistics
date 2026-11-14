@@ -69,6 +69,60 @@ def access_code_sha256(secret: str, share_id: int, code: str) -> str:
                     hashlib.sha256).hexdigest()
 
 
+def _access_code_key(secret: str, share_id: int, purpose: str) -> bytes:
+    return hmac.new(secret.encode("utf-8"), f"receipt-share-code-{purpose}:{int(share_id)}".encode("ascii"),
+                    hashlib.sha256).digest()
+
+
+def seal_access_code(secret: str, share_id: int, code: str) -> str:
+    """Encrypt-then-MAC a short code for one share (HMAC-SHA256 keystream; standard library only)."""
+
+    import os
+
+    data = normalize_access_code(code).encode("ascii")
+    if not data:
+        raise ReceiptShareError("访问码为空。")
+    nonce = os.urandom(16)
+    stream = hmac.new(_access_code_key(secret, share_id, "enc"), nonce, hashlib.sha256).digest()
+    cipher = bytes(left ^ right for left, right in zip(data, stream))
+    tag = hmac.new(_access_code_key(secret, share_id, "mac"), nonce + cipher, hashlib.sha256).digest()[:16]
+    return "v1." + base64.urlsafe_b64encode(nonce + cipher + tag).decode("ascii").rstrip("=")
+
+
+def open_access_code(secret: str, share_id: int, sealed: str | None) -> str:
+    """The code sealed for this share, or "" when absent, tampered with or sealed for another share."""
+
+    text = str(sealed or "")
+    if not text.startswith("v1."):
+        return ""
+    try:
+        raw = base64.urlsafe_b64decode(text[3:] + "=" * (-len(text[3:]) % 4))
+    except (ValueError, TypeError):
+        return ""
+    if len(raw) < 16 + 1 + 16:
+        return ""
+    nonce, cipher, tag = raw[:16], raw[16:-16], raw[-16:]
+    expected = hmac.new(_access_code_key(secret, share_id, "mac"), nonce + cipher, hashlib.sha256).digest()[:16]
+    if not hmac.compare_digest(tag, expected) or len(cipher) > 32:
+        return ""
+    stream = hmac.new(_access_code_key(secret, share_id, "enc"), nonce, hashlib.sha256).digest()
+    try:
+        return normalize_access_code(bytes(left ^ right for left, right in zip(cipher, stream)).decode("ascii"))
+    except (UnicodeDecodeError, ReceiptShareError):
+        return ""
+
+
+MAX_EXPIRY_DAYS = 3650
+
+
+def normalize_expiry_days(value: Any) -> int:
+    """Whole days a link stays valid; 0 means no expiry."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_EXPIRY_DAYS:
+        raise ReceiptShareError(f"有效期请填 1–{MAX_EXPIRY_DAYS} 天，或选择长期有效。")
+    return value
+
+
 def normalize_image_kinds(values: Any) -> list[str]:
     chosen = {str(item) for item in values} if isinstance(values, (list, tuple, set, frozenset)) else set()
     if not chosen or not chosen <= set(IMAGE_KINDS):

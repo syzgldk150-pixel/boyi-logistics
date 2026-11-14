@@ -14,6 +14,7 @@
   const toast = $("[data-share-toast]");
   const createDialog = $("[data-share-create-dialog]");
   const customerDialog = $("[data-share-customer-dialog]");
+  const renewDialog = $("[data-share-renew-dialog]");
   let toastTimer = 0;
 
   function el(tag, className, text) {
@@ -55,6 +56,10 @@
   async function reload() {
     listing = await getJSON("/receipts/shares/data");
     render();
+  }
+
+  function linkText(url, code) {
+    return code ? `${url}\n访问码：${code}` : url;
   }
 
   async function copyText(text) {
@@ -115,11 +120,13 @@
       const ops = el("td");
       const box = el("div", "share-ops");
       box.append(opButton("复制", async () => {
-        const copied = await copyText(share.url);
-        showToast(copied ? (share.has_access_code ? "链接已复制（访问码请另行告知客户）" : "链接已复制") : "复制失败，请手动复制。", copied ? "" : "error");
+        const copied = await copyText(linkText(share.url, share.access_code));
+        const note = share.access_code ? "链接和访问码已复制"
+          : (share.has_access_code ? "链接已复制（这条链接的访问码无法找回，如需告知客户请重置）" : "链接已复制");
+        showToast(copied ? note : "复制失败，请手动复制。", copied ? "" : "error");
       }, !share.url));
       if (share.state === "active") box.append(opButton("停用", () => act(share, "disable", "停用后客户立即无法打开这条链接，确定停用？")));
-      else if (share.state === "expired") box.append(opButton("续期", () => act(share, "renew", "", { expires_days: 30 })));
+      else if (share.state === "expired") box.append(opButton("续期", () => openRenew(share)));
       else box.append(opButton("启用", () => act(share, "enable")));
       box.append(opButton("重置", () => act(share, "reset", "重置后旧链接立即失效，需要把新链接重新发给客户。确定重置？"), !listing.configured));
       ops.append(box);
@@ -142,7 +149,8 @@
     try {
       await post(`/receipts/shares/${share.id}/${action}`, { record_version: share.record_version, ...extra });
       await reload();
-      showToast({ disable: "链接已停用", enable: "链接已启用", renew: "已续期 30 天", reset: "链接已重置，请复制新链接" }[action] || "已更新");
+      const renewed = extra.expires_days === 0 ? "已改为长期有效" : `已续期 ${extra.expires_days} 天`;
+      showToast({ disable: "链接已停用", enable: "链接已启用", renew: renewed, reset: "链接已重置，请复制新链接" }[action] || "已更新");
     } catch (error) {
       showToast(error.message, "error");
       reload().catch(() => {});
@@ -159,6 +167,7 @@
   }
   bindClose(createDialog);
   bindClose(customerDialog);
+  bindClose(renewDialog);
 
   function feedback(node, message, kind = "") {
     if (!node) return;
@@ -252,6 +261,41 @@
     if (previous) $$("[data-share-kind]").forEach((box) => { box.checked = previous.image_types.includes(box.value); });
   }
 
+  function chosenExpiryDays() {
+    const value = scope.querySelector('input[name="expires_days"]:checked').value;
+    return value === "custom" ? Number($("[data-share-custom-days-input]").value) : Number(value);
+  }
+
+  $$('input[name="expires_days"]').forEach((radio) => radio.addEventListener("change", () => {
+    $("[data-share-custom-days]").hidden = scope.querySelector('input[name="expires_days"]:checked').value !== "custom";
+  }));
+
+  // ---- renew ---------------------------------------------------------------
+  let renewing = null;
+  function openRenew(share) {
+    renewing = share;
+    $("[data-share-renew-target]").textContent = `${share.customer_name} · 当前${share.expires_text}`;
+    scope.querySelector('input[name="renew_mode"][value="days"]').checked = true;
+    $("[data-share-renew-days]").value = "30";
+    $("[data-share-renew-feedback]").textContent = "";
+    renewDialog.showModal();
+  }
+  $("[data-share-renew-days]").addEventListener("focus", () => {
+    scope.querySelector('input[name="renew_mode"][value="days"]').checked = true;
+  });
+  $("[data-share-renew-form]").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!renewing) return;
+    const forever = scope.querySelector('input[name="renew_mode"]:checked').value === "forever";
+    const days = forever ? 0 : Number($("[data-share-renew-days]").value);
+    if (!forever && !(Number.isInteger(days) && days >= 1 && days <= 3650)) {
+      feedback($("[data-share-renew-feedback]"), "请填 1–3650 之间的整数天数。", "error");
+      return;
+    }
+    renewDialog.close();
+    await act(renewing, "renew", "", { expires_days: days });
+  });
+
   customerSelect.addEventListener("change", () => { applyPrevious(); updateCreateState(); refreshExample(); });
   templateInput.addEventListener("input", refreshExample);
   $$('input[name="scope"]').forEach((radio) => radio.addEventListener("change", () => {
@@ -274,12 +318,11 @@
         scope: scope.querySelector('input[name="scope"]:checked').value,
         date_from: $("[data-share-date-from]").value, date_to: $("[data-share-date-to]").value,
         image_types: selectedKinds(),
-        expires_days: Number(scope.querySelector('input[name="expires_days"]:checked').value),
+        expires_days: chosenExpiryDays(),
         access_code: $("[data-share-code]").value.trim(),
         naming_template: templateInput.value.trim(),
       });
-      const text = data.access_code ? `${data.share.url}\n访问码：${data.access_code}` : data.share.url;
-      const copied = await copyText(text);
+      const copied = await copyText(linkText(data.share.url, data.access_code));
       createDialog.close();
       await reload();
       showToast(copied ? (data.access_code ? "链接和访问码已复制" : "链接已复制") : "链接已生成，请在列表中复制");

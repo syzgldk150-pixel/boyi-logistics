@@ -34,6 +34,8 @@ updated: 2026-11-13
 
 全部是普通 DDL，迁移器只执行一次。
 
+`079_receipt_share_access_code_sealed.sql` 给 `waybill_db.receipt_shares` 增加可空的 `access_code_sealed`：访问码用链接密钥派生的密钥加密后的密文，供后台复制链接时一并复制；对外服务仍只比对 `access_code_sha256`。普通 DDL，迁移器只执行一次；旧链接为空，回退旧代码时该列闲置无害。
+
 `078_receipt_shares.sql` 在 `waybill_db` 新建客户共享 7 张表：`receipt_share_customers`（客户与发货人匹配规则）、`receipt_shares`（共享链接，只存链接码与访问码的摘要）、`receipt_share_images`（按运单归档到 NAS 的图片，一图一行）、`receipt_share_items`（每条链接可见的图片，刷新时整体替换）、`receipt_share_waybill_state`（每张运单上次读取平台照片的时间与张数）、`receipt_share_events`、`receipt_share_access_logs`。不设外键，全部语句可重复执行；`migration_055_domain_databases.py` 的 `LATER_WAYBILL_TABLES` 把它们投影为 `agent_db` 同名视图。回退旧代码时这些表闲置无害。
 
 `077_cs_auto_reply.sql` 给运行库 `agent_db.cs_templates` 增加自动处理授权四列（是否授权、授权/取消人与时间、原因），并新建 `cs_auto_replies`：每条问题件最多一条自动回复（主键即问题件身份），在调用平台前写入，状态为进行中、已回读确认、结果未知或平台已有回复。`ALTER TABLE` 为普通 DDL，迁移器只执行一次。客服 AI 与自动回复依赖这些列和表，必须先迁移再重启 Agent；回退旧代码时新增列和表闲置无害。

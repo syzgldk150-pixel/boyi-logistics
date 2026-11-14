@@ -107,3 +107,9 @@
   .share-dialog { width: 100%; margin: auto 0 0; border-radius: 14px 14px 0 0; }
   .share-ops button, .share-card-actions .ghost-btn, .share-card-actions .primary-btn, .share-dialog-foot button { min-height: 44px; }
 }
+.share-custom-days { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-body); }
+.share-custom-days input, .share-dialog--small input[type="number"] { width: 88px; height: 30px !important; padding: 0 8px; border: 1px solid var(--line-default);
+  border-radius: 8px; font-family: var(--font-num); }
+.share-dialog--small { width: min(440px, calc(100vw - 32px)); }
+/* Elements toggled with the hidden attribute must not be re-shown by a display rule above. */
+.share-page [hidden], .share-dialog [hidden] { display: none !important; }

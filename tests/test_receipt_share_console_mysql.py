@@ -101,16 +101,19 @@ def test_customer_rules_then_link_lifecycle(console):
     status, payload = _link(console, customer_id, access_code="4821")
     share = payload["data"]["share"]
     assert status == 200 and payload["data"]["access_code"] == "4821"
+    assert share["access_code"] == "4821"  # recoverable for copying, sealed in the table
     token = share["url"].rsplit("/", 1)[-1]
     assert share["url"].startswith("https://r.example.test/r/") and rules.is_token_shape(token)
     assert (share["state"], share["image_types_text"], share["has_access_code"]) == ("active", "签收图·回单图", True)
     assert console.agent[-1] == ("POST", "/internal/v1/admin/receipt-shares/refresh", {"share_id": share["id"]})
     with console.repository._connection_factory() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT token_sha256, access_code_sha256 FROM receipt_shares WHERE id = %s", (share["id"],))
+        cursor.execute("SELECT token_sha256, access_code_sha256, access_code_sealed FROM receipt_shares WHERE id = %s",
+                       (share["id"],))
         stored = cursor.fetchone()
     # Only digests are stored: neither the link code nor the access code can be read from the table.
     assert stored["token_sha256"] == rules.token_sha256(token) and token not in json.dumps(stored)
     assert stored["access_code_sha256"] == rules.access_code_sha256(SECRET, share["id"], "4821")
+    assert "4821" not in stored["access_code_sealed"] and rules.open_access_code(SECRET, share["id"], stored["access_code_sealed"]) == "4821"
 
     def act(action, version, **extra):
         return console.call("_handle_receipt_share_action", {"record_version": version, **extra}, share["id"], action)
@@ -129,12 +132,16 @@ def test_customer_rules_then_link_lifecycle(console):
         assert [row["action"] for row in cursor.fetchall()] == ["created", "disable", "enable", "reset"]
     renewed = act("renew", reset["record_version"], expires_days=0)[1]["data"]["share"]
     assert renewed["expires_text"] == "长期有效"
+    custom = act("renew", renewed["record_version"], expires_days=45)[1]["data"]["share"]
+    assert custom["expires_text"].startswith("至 ") and custom["access_code"] == "4821"  # survives a reset
+    assert act("renew", custom["record_version"], expires_days=4000)[0] == 400
     listing = console.call("_handle_receipt_shares_data")[1]["data"]
     assert listing["configured"] is True and [item["id"] for item in listing["shares"]] == [share["id"]]
 
 
 @pytest.mark.parametrize("change", [
-    {"image_types": []}, {"image_types": ["other"]}, {"scope": "everything"}, {"expires_days": 15},
+    {"image_types": []}, {"image_types": ["other"]}, {"scope": "everything"}, {"expires_days": -1},
+    {"expires_days": 3651}, {"expires_days": "30"},
     {"access_code": "12345"}, {"naming_template": "{运单号}.jpg"}, {"scope": "by_date", "date_from": "", "date_to": ""},
     {"customer_id": 999999},
 ])

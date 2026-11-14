@@ -20,13 +20,17 @@ updated: 2026-11-14
 | 拉取 | `agent/agent/receipt_share_refresh.py`、`agent/receipt_share_composition.py` | 每天 12:00、18:00、23:00（中国时间），有积压每 10 分钟续跑；Console 可触发单条链接 |
 | 后台 | `console/services/receipt_shares.py`、`/receipts/shares` | 需要 `receipt.share` 权限（身份管理中分配） |
 | 对外 | `console/receipt_share_server.py`、`templates/share_public.html` | 独立进程 `receipt-share.service`，只监听 `127.0.0.1:8766` |
-| 数据 | 迁移 `078_receipt_shares.sql` | `waybill_db` 的 `receipt_share_*` 七张表 |
+| 数据 | 迁移 `078_receipt_shares.sql`、`079_receipt_share_access_code_sealed.sql` | `waybill_db` 的 `receipt_share_*` 七张表；079 加访问码密文列 |
 
 ## 数据怎么来
 
 客户 = 一组发货人匹配规则（名称／电话／地址，等于或包含）。刷新时按规则找出该客户未作废的运单，只向平台读取已签收且仍缺签收图或回单图的运单（缺图的每 6 小时再读，开单 90 天内有效；一次运行最多读 120 张运单）。博益开单从它绑定的融辉／韵达运单读取照片，客户看到的是博益单号。每张图片按“平台／月份／运单号”在 NAS 只存一次，服务器磁盘不落原图；随后在一个事务里整体替换该链接可见的图片。平台或 NAS 失败时链接保持原内容，后续重试。
 
 “仅审核通过”按整张运单判断：回单审核通过的运单才出现在链接里。文件名字段 `{开单日期}` 取运单开单日期（系统没有可靠的签收日期）。寄件单图片尚未接入。
+
+## 访问码与有效期
+
+访问码在库里存两份：`access_code_sha256` 是带密钥的摘要，对外服务只用它校验；`access_code_sealed`（迁移 079）是用链接密钥派生的密钥加密、带完整性校验的密文，只供后台“复制”时连同链接一起复制。迁移 079 之前生成的链接没有密文，复制时只能复制链接。有效期可选 7／30／90 天、长期有效或自定义 1–3650 天；过期链接“续期”时同样可选天数或长期有效，从当天起算。
 
 ## 对外服务的边界
 

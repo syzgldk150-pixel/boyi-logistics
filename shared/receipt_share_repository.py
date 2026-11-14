@@ -35,7 +35,7 @@ def _share(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 _SHARE_COLUMNS = (
-    "s.id, s.customer_id, s.token_version, s.token_sha256, s.access_code_sha256, s.scope, s.date_from, s.date_to, "
+    "s.id, s.customer_id, s.token_version, s.token_sha256, s.access_code_sha256, s.access_code_sealed, s.scope, s.date_from, s.date_to, "
     "s.image_types_json, s.naming_template, s.expires_at, s.status, s.view_count, s.last_viewed_at, "
     "s.refresh_state, s.refresh_message, s.last_refreshed_at, s.record_version, s.created_at, "
     "c.code AS customer_code, c.name AS customer_name, c.short_name AS customer_short_name, c.match_json, "
@@ -300,8 +300,8 @@ def share_by_request(connection, request_id: str) -> dict[str, Any] | None:
 
 def create_share(connection, *, request_id: str, customer_id: int, scope: str, date_from: Any, date_to: Any,
                  image_types: Sequence[str], naming_template: str, expires_at: datetime | None, actor_id: str,
-                 token_digest: Any, access_code_digest: Any) -> dict[str, Any]:
-    """Insert a link; ``token_digest(share_id, version)`` and ``access_code_digest(share_id)`` see the new id.
+                 token_digest: Any, access_code_digest: Any, access_code_sealed: Any = None) -> dict[str, Any]:
+    """Insert a link; ``token_digest``, ``access_code_digest`` and ``access_code_sealed`` see the new id.
 
     The link code depends on the row id, so the row is inserted with a
     placeholder digest and completed before the caller commits.
@@ -315,8 +315,9 @@ def create_share(connection, *, request_id: str, customer_id: int, scope: str, d
              date_to or None, json.dumps(list(image_types)), naming_template, expires_at, actor_id))
         cursor.execute("SELECT LAST_INSERT_ID() AS id")
         share_id = int(cursor.fetchone()["id"])
-        cursor.execute("UPDATE receipt_shares SET token_sha256 = %s, access_code_sha256 = %s WHERE id = %s",
-                       (token_digest(share_id, 1), access_code_digest(share_id), share_id))
+        cursor.execute("UPDATE receipt_shares SET token_sha256 = %s, access_code_sha256 = %s, access_code_sealed = %s "
+                       "WHERE id = %s", (token_digest(share_id, 1), access_code_digest(share_id),
+                                         access_code_sealed(share_id) if access_code_sealed else None, share_id))
     return get_share(connection, share_id)
 
 

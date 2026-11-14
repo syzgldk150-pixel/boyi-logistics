@@ -6,7 +6,7 @@
 {% block subtitle %}回单管理 / 按客户单位生成只读的图片共享链接{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="/static/receipt_shares.css?v=20261114-a">
+<link rel="stylesheet" href="/static/receipt_shares.css?v=20261114-b">
 <div class="share-page" data-share-page>
   <div class="share-notice">
     <span class="share-notice-icon" aria-hidden="true">i</span>
@@ -79,6 +79,10 @@
           <label><input type="radio" name="expires_days" value="30" checked><span>30 天</span></label>
           <label><input type="radio" name="expires_days" value="90"><span>90 天</span></label>
           <label><input type="radio" name="expires_days" value="0"><span>长期有效</span></label>
+          <label><input type="radio" name="expires_days" value="custom"><span>自定义</span></label>
+        </span>
+        <span class="share-custom-days" data-share-custom-days hidden>
+          <input type="number" min="1" max="3650" step="1" value="60" aria-label="自定义有效天数" data-share-custom-days-input> 天
         </span>
       </fieldset>
       <div class="share-field">
@@ -145,9 +149,29 @@
     </footer>
   </form>
 </dialog>
+<dialog class="share-dialog share-dialog--small" data-share-renew-dialog aria-labelledby="share-renew-title">
+  <form class="share-dialog-box" data-share-renew-form novalidate>
+    <header class="share-dialog-head"><h2 id="share-renew-title">续期</h2>
+      <button class="share-dialog-close" type="button" aria-label="关闭" data-share-close><i data-feather="x"></i></button></header>
+    <div class="share-dialog-body">
+      <p class="share-hint" data-share-renew-target></p>
+      <fieldset class="share-field share-inline">
+        <legend>从今天起有效</legend>
+        <label><input type="radio" name="renew_mode" value="days" checked>
+          <input type="number" min="1" max="3650" step="1" value="30" aria-label="有效天数" data-share-renew-days> 天</label>
+        <label><input type="radio" name="renew_mode" value="forever"> 长期有效</label>
+      </fieldset>
+    </div>
+    <footer class="share-dialog-foot">
+      <span class="share-foot-note" data-share-renew-feedback></span>
+      <button class="ghost-btn" type="button" data-share-close>取消</button>
+      <button class="primary-btn" type="submit">确定续期</button>
+    </footer>
+  </form>
+</dialog>
 <script id="share-listing" type="application/json">{{ listing | tojson }}</script>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/receipt_shares.js?v=20261114-a"></script>
+<script src="/static/receipt_shares.js?v=20261114-b"></script>
 {% endblock %}

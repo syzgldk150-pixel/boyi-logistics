@@ -14,7 +14,6 @@ from shared import receipt_share_repository as share_repository
 from shared.receipt_share_settings import load_share_settings
 
 SHARE_JSON_MAX_BYTES = 64 * 1024
-SHARE_EXPIRY_DAYS = (7, 30, 90, 0)  # 0 = no expiry
 SHARE_ACTIONS = {"disable", "enable", "reset", "renew", "refresh"}
 DEFAULT_SHARE_BASE_URL = "https://r.boyi.homes"
 _SHARE_ACTION_ROUTE = re.compile(r"/receipts/shares/(\d{1,18})/([a-z]+)")
@@ -107,6 +106,8 @@ class ReceiptSharesServiceMixin:
             "view_count": int(share["view_count"] or 0), "last_viewed_text": stamp(share["last_viewed_at"], "%m-%d %H:%M"),
             "state": state, "state_label": {"active": "生效中", "expired": "已过期", "disabled": "已停用"}[state],
             "has_access_code": bool(share["access_code_sha256"]),
+            # Copied together with the link; links made before migration 079 have no recoverable code.
+            "access_code": share_rules.open_access_code(secret, share["id"], share.get("access_code_sealed")) if secret else "",
             "item_count": int(share.get("item_count") or 0),
             "refresh_state": share["refresh_state"], "refresh_message": share["refresh_message"],
             "last_refreshed_text": stamp(share["last_refreshed_at"], "%m-%d %H:%M"),
@@ -236,14 +237,13 @@ class ReceiptSharesServiceMixin:
             date_to = normalize_open_date(str(body["date_to"] or "")) if scope == "by_date" else ""
             if scope == "by_date" and (not date_from or not date_to or date_from > date_to):
                 raise share_rules.ReceiptShareError("按发货日期共享时请选择起止日期。")
-            if body["expires_days"] not in SHARE_EXPIRY_DAYS or isinstance(body["expires_days"], bool):
-                raise share_rules.ReceiptShareError("链接有效期无效。")
+            expires_days = share_rules.normalize_expiry_days(body["expires_days"])
             image_types = share_rules.normalize_image_kinds(body["image_types"])
             template = share_rules.normalize_naming_template(body["naming_template"])
             code = share_rules.normalize_access_code(body["access_code"])
             if not isinstance(body["customer_id"], int):
                 raise share_rules.ReceiptShareError("请选择客户单位。")
-            expires_at = datetime.now() + timedelta(days=body["expires_days"]) if body["expires_days"] else None
+            expires_at = datetime.now() + timedelta(days=expires_days) if expires_days else None
             actor_id, actor_name = self._share_actor(user)
             with self.repository.connect() as connection:
                 existing = share_repository.share_by_request(connection, request_id)
@@ -258,11 +258,13 @@ class ReceiptSharesServiceMixin:
                         token_digest=lambda share_id, version: share_rules.token_sha256(
                             share_rules.share_token(secret, share_id, version)),
                         access_code_digest=lambda share_id: (
-                            share_rules.access_code_sha256(secret, share_id, code) if code else None))
+                            share_rules.access_code_sha256(secret, share_id, code) if code else None),
+                        access_code_sealed=(lambda share_id: share_rules.seal_access_code(secret, share_id, code))
+                        if code else None)
                     share_repository.add_event(
                         connection, share_id=existing["id"], customer_id=customer["id"], action="created",
                         actor_id=actor_id, actor_name=actor_name,
-                        detail={"scope": scope, "image_types": image_types, "expires_days": body["expires_days"],
+                        detail={"scope": scope, "image_types": image_types, "expires_days": expires_days,
                                 "has_access_code": bool(code), "naming_template": template})
             created.update(existing)
             return {"share": self._share_view(existing, secret, datetime.now()), "access_code": code}
@@ -299,9 +301,7 @@ class ReceiptSharesServiceMixin:
                         connection, share_id, expected_version=version,
                         status="disabled" if action == "disable" else "active")
                 elif action == "renew":
-                    days = body.get("expires_days")
-                    if days not in SHARE_EXPIRY_DAYS or isinstance(days, bool):
-                        raise share_rules.ReceiptShareError("链接有效期无效。")
+                    days = share_rules.normalize_expiry_days(body.get("expires_days"))
                     detail["expires_days"] = days
                     updated = share_repository.update_share(
                         connection, share_id, expected_version=version, status="active",
