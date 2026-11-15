@@ -88,18 +88,21 @@ def test_expired_context_cannot_be_reconstructed_by_model_guessing():
 
 
 @pytest.mark.parametrize("phrase", ["不要扫描，只查发货吨位", "今天扫描多少件", "查扫描量", "发货按什么规则统计"])
-def test_read_questions_never_receive_plugin_write_tools(phrase):
+def test_read_questions_never_run_plugin_writes_unconfirmed(phrase):
+    """P1: plugin tools are offered, but a write chosen for a question always waits for "确认"."""
+    from agent.agent_actions.gateway import ActionGateway
+    from agent.agent_actions.spec import ActionSpec
+
     model = ScriptedModel()
     async def answer(messages, tools=None, **kwargs):
-        assert not any(item["function"]["name"].startswith("run_plugin") for item in tools)
         return {"content": "只读查询说明。"}
     model.chat = answer
-    def forbidden():
-        raise AssertionError("write tools exposed to read question")
-    plugins = SimpleNamespace(selected=(), model_tools=forbidden)
+    plugins = SimpleNamespace(selected=(), model_tools=lambda: [], has_pending_writes=lambda: False, choices={})
     adapter = TrustedHarnessInvocationAdapter(policy_service=SimpleNamespace(), actor=ACTOR, base_request_id=str(uuid4()), fixed_handlers={})
     sidecar = OnlineHarnessSidecar(catalog=HarnessToolCatalog(invocation_port=adapter), llm=model, plugin_turn=plugins)
-    sidecar.run(messages=(HarnessMessage("user", phrase, str(uuid4())),), timeout_seconds=5)
+    assert sidecar.run(messages=(HarnessMessage("user", phrase, str(uuid4())),), timeout_seconds=5).content == "只读查询说明。"
+    scan = ActionSpec(action_id="plugin:x", title="写入", effect="external_write", capability="plugins.execute")
+    assert ActionGateway().decide(scan, actor=ACTOR, arguments={}, message=phrase).decision == "CONFIRM"
 
 
 def test_knowledge_exceptions_after_short_preview_survive_model_projection():

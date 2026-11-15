@@ -22,7 +22,8 @@ from agent.harness.sidecar import SidecarResult
 from agent.llm_client import LLMClient
 from shared.agent_action_audit import ActionDecision
 from shared.redaction import is_sensitive_key, redact_text
-from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS, PluginConversationTurn
+from agent.agent_actions.recorder import audit_before_write
+from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS, ConversationPluginRequest, PluginConversationTurn
 from agent.shipment_conversation import ShipmentConversation
 from agent.knowledge_answers import cite_knowledge
 from shared.shipment_metrics import ShipmentQueryError, format_shipment_result
@@ -42,8 +43,19 @@ _LABELED_ACCOUNT = re.compile(
     r"|\s*[A-Za-z0-9][A-Za-z0-9_.@-]{1,79})"
 )
 _EXECUTION_REQUEST = re.compile(r"^(?:(?:请|帮我|现在|立即|先)\s*)*(?:执行|运行|触发|启动|同步|扫描|打卡|上传|写入)")
-_READ_OR_NEGATED_REQUEST = re.compile(r"查询|查一下|查数据|查扫描|多少|几票|几件|几吨|吨位|扫描量|规则|依据|为什么|怎么定义|不要|不用|别(?:给我|帮我)?(?:扫|执行|运行|上传)|昨天呢|按目的地")
-_EXPLICIT_ACTION = re.compile(r"执行|运行|启动|同步|上传|扫描|处理|跑起来|跑一下")
+# A reply that claims something was done. Only actual Invocations prove that.
+_CLAIMED_DONE = re.compile(r"已(?:经)?(?:执行|运行|完成|同步|扫描|上传|提交|处理|发起|启动|触发)")
+# A genuine question back to the person (allowed for execution requests without a tool call).
+_ASKS_BACK = re.compile(r"[?？]|请(?:说明|告诉|提供|补充|确认|问|指定|选择)|哪(?:个|些|一|里)|是否|吗")
+NO_EXECUTION_REPLY = "本次未发起插件执行。请说明要执行哪个插件。"
+ASK_USER = "ask_user"
+_ASK_USER_TOOL = {"type": "function", "function": {
+    "name": ASK_USER,
+    "description": "向用户提问：缺少必要条件、无法唯一确定要做什么或要用哪个实例时调用；问题原样发给用户，可附最多 6 个选项。调用后本轮不执行任何其他工具。",
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["question"], "properties": {
+        "question": {"type": "string", "minLength": 1, "maxLength": 300},
+        "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "minLength": 1, "maxLength": 60}}}},
+}}
 _RULE_BOUND_QUERY = re.compile(r"知识库|文档|按.*(?:最新规则|我们的统计口径|现行规定)")
 _PRIVATE_MODEL_KEY_PARTS = (
     "token",
@@ -67,7 +79,8 @@ _SYSTEM_PROMPT = """你是博益物流的 AI 助手。请始终使用简明中�
 同一能力存在多个实例时，只能依据用户给出的网点、业务名称或实例名称选择；无法唯一确定时列出中文实例名称并询问，不得默认选择第一个。
 工具返回无数据、不可用或超时时，要如实说明并给出下一步建议，不能编造结果。
 不要输出内部工具名、数据库字段名、存储位置、内部路径、密钥、令牌、哈希或原始错误详情。
-一次回答可以组合多个只读查询，但应只调用完成问题所需的最少工具。"""
+一次回答可以组合多个只读查询，但应只调用完成问题所需的最少工具。
+缺少必要条件或无法唯一确定要做什么时，调用 ask_user 提问（可附选项），不要猜测，也不要用普通文字假装已经执行。"""
 
 _FIXED_MODEL_NAMES = {
     "shipment.query": "query_shipments",
@@ -106,8 +119,14 @@ def build_system_prompt(*, clock_hint: str, query_context: Mapping[str, Any] | N
 
 
 def plugin_tools_visible(message: str) -> bool:
-    """Whether this message may see plugin tools at all (current baseline rule)."""
-    return not _READ_OR_NEGATED_REQUEST.search(message) and bool(_EXPLICIT_ACTION.search(message))
+    """Plugin tools are always offered (agent layer P1).
+
+    The P0 rule hid them unless the message contained an action verb. The action
+    gateway now decides instead: a write chosen for a question-like message, or
+    one whose arguments the model filled, always waits for the person's "确认".
+    """
+    del message
+    return True
 
 
 def _error(message: str, code: str) -> HarnessError:
@@ -249,6 +268,7 @@ class OnlineHarnessSidecar:
         self._knowledge_results = []
         self._completed_result = None
         self._decisions: list[ActionDecision] = []
+        self._plugin_requests: tuple[ConversationPluginRequest, ...] = ()
 
     def _decide(self, action_id: str, effect: str, decision: str, *, title: str = "", arguments=None,
                 invocation_id: str | None = None, error_code: str | None = None) -> None:
@@ -286,18 +306,23 @@ class OnlineHarnessSidecar:
             return self._completed_result
         if self._shipments.result is not None:
             return self._result(content=format_shipment_result(self._shipments.result), tool_calls=1)
-        if self._plugins is not None and self._plugins.selected:
-            return self._start_plugins(self._plugins.selected, 0)
+        if self._plugins is not None and self._plugin_requests:
+            return self._start_plugins(self._plugin_requests, 0)
         if self._plugins is not None and self._plugins.has_pending_writes():
             # A plugin set to "需确认" is waiting for this person's answer.
             text = messages[-1].content
             if is_confirm_text(text):
-                return self._plugin_receipt(self._plugins.confirm_pending_writes(), 0)
+                pending = self._plugins.service.pending_writes(self._plugins.actor.actor_id) or ()
+                if pending:  # recorded before the confirmed writes are submitted
+                    audit_before_write(tuple(self._decisions) + tuple(
+                        ActionDecision(action_id=f"plugin:{item.target.automation_id}", effect=item.target.effect,
+                                       decision="EXECUTE", action_title=item.target.title, arguments=dict(item.inputs))
+                        for item in pending))
+                return self._plugin_receipt(self._plugins.confirm_pending_writes(), 0,
+                                            tuple(item.target for item in pending))
             if is_cancel_text(text):
                 self._plugins.cancel_pending_writes()
                 return self._result(content="已取消，插件没有执行。", tool_calls=0)
-        if not plugin_tools_visible(messages[-1].content):
-            self._plugins = None
         if not self._llm.public_status().get("configured"):
             raise _error(
                 "尚未启用智能模型，请先在智能模型页面完成配置",
@@ -306,6 +331,7 @@ class OnlineHarnessSidecar:
 
         descriptors = visible_descriptors(self._catalog)
         model_tools, name_to_id = _model_tools(descriptors)
+        model_tools.append(_ASK_USER_TOOL)
         if self._plugins is not None:
             model_tools.extend(self._plugins.model_tools())
         transcript: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt(
@@ -330,10 +356,11 @@ class OnlineHarnessSidecar:
                 content = _minimize_text(response.get("content") or "").strip()
                 if not content:
                     raise _error("智能模型没有返回可读内容", "HARNESS_PROTOCOL_INVALID")
-                if calls == 0 and _EXECUTION_REQUEST.search(messages[-1].content):
-                    # A model sentence is never an execution receipt. Keep
-                    # requests for clarification, but do not repeat an invented result.
-                    content = "没有匹配到可执行脚本，我不知道该执行哪个任务。请说明插件名称；本次未发起插件执行。"
+                if (calls == 0 and _EXECUTION_REQUEST.search(messages[-1].content)
+                        and (_CLAIMED_DONE.search(content) or not _ASKS_BACK.search(content))):
+                    # A model sentence is never an execution receipt. A real question
+                    # back passes (P1); invented results and vague promises do not.
+                    content = NO_EXECUTION_REPLY
                 content = cite_knowledge(content, self._knowledge_results)
                 self._completed_result = self._result(content=content, tool_calls=calls)
                 return self._completed_result
@@ -352,7 +379,7 @@ class OnlineHarnessSidecar:
                 if not call_id or not isinstance(function, Mapping):
                     raise _error("智能模型工具请求无法读取", "HARNESS_PROTOCOL_INVALID")
                 name = str(function.get("name") or "").strip()
-                tool_id = name_to_id.get(name)
+                tool_id = ASK_USER if name == ASK_USER else name_to_id.get(name)
                 if self._plugins is not None and name in self._plugins.choices:
                     tool_id = name
                 if tool_id is None:
@@ -389,9 +416,14 @@ class OnlineHarnessSidecar:
                     "tool_calls": assistant_calls,
                 }
             )
+            asked = [arguments for _, tool_id, arguments in resolved_calls if tool_id == ASK_USER]
+            if asked:
+                return self._ask(asked[0], calls)
             plugin_calls = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
                             if self._plugins is not None and tool_id in self._plugins.choices]
-            selected = self._plugins.select(plugin_calls) if plugin_calls else ()
+            selected = self._decide_plugins(plugin_calls, messages[-1].content) if plugin_calls else ()
+            if isinstance(selected, SidecarResult):
+                return selected
             for call_id, tool_id, arguments in sorted(resolved_calls, key=lambda item: item[1] != "knowledge.search"):
                 if self._plugins is not None and tool_id in self._plugins.choices:
                     continue
@@ -434,14 +466,54 @@ class OnlineHarnessSidecar:
             if selected:
                 return self._start_plugins(selected, calls)
 
-    def _start_plugins(self, selected, calls):
+    def _ask(self, arguments, calls):
+        # A question carries no business data; mask secrets, phones and e-mails only
+        # (the address-label rule would swallow "地址是哪里？").
+        def mask(value):
+            return _EMAIL.sub("[邮箱已隐藏]", _PHONE.sub("[手机号已隐藏]", redact_text(value)))
+        question = mask(arguments.get("question") or "").strip()[:300]
+        options = [mask(item).strip()[:60] for item in (arguments.get("options") or [])[:6]
+                   if isinstance(item, str) and item.strip()]
+        if not question:
+            raise _error("智能模型的提问无法读取", "HARNESS_PROTOCOL_INVALID")
+        self._decide(ASK_USER, "read", "CLARIFY", arguments={"options": len(options)})
+        content = question + "".join(f"\n{index}. {item}" for index, item in enumerate(options, 1))
+        self._completed_result = self._result(content=content, tool_calls=calls + 1)
+        return self._completed_result
+
+    def _decide_plugins(self, plugin_calls, message):
+        """Gateway decisions for the chosen plugins; any question or refusal stops them all."""
+        decided = self._plugins.select(plugin_calls, message=message)
+        blocked = [(target, decision) for target, decision in decided if not decision.runs]
+        if blocked:
+            lines = []
+            for target, decision in decided:
+                self._decide(f"plugin:{target.automation_id}", target.effect,
+                             decision.decision if not decision.runs else "REJECT", title=target.title,
+                             arguments=decision.arguments, error_code=decision.error_code or "NOT_RUN_WITH_OTHERS")
+            for target, decision in blocked:
+                lines.append(decision.question if decision.decision == "CLARIFY" else f"{target.title}：{decision.reason}，没有执行。")
+            self._completed_result = self._result(content="\n".join(lines), tool_calls=len(plugin_calls))
+            return self._completed_result
+        return tuple(ConversationPluginRequest(target, decision.arguments, confirm=decision.decision == "CONFIRM")
+                     for target, decision in decided)
+
+    def _start_plugins(self, requests, calls):
+        self._plugin_requests = requests
         if self._plugins.source == "feishu":
-            self._plugins.selected = selected
-            for target in selected:
-                # Handed to the Feishu/WeChat channel, which asks for "确认" itself when needed.
-                self._decide(f"plugin:{target.automation_id}", target.effect, "EXECUTE", title=target.title, arguments={})
-            return self._result(content="已识别要执行的插件。", tool_calls=calls + len(selected), plugin_requests=selected)
-        return self._plugin_receipt(self._plugins.start_console(selected), calls, selected)
+            self._plugins.selected = tuple(item.target for item in requests)
+            for item in requests:
+                # Handed to the Feishu/WeChat channel, which runs or asks "确认" itself.
+                self._decide(f"plugin:{item.target.automation_id}", item.target.effect,
+                             "CONFIRM" if item.confirm else "EXECUTE", title=item.target.title, arguments=dict(item.inputs))
+            return self._result(content="已识别要执行的插件。", tool_calls=calls + len(requests), plugin_requests=requests)
+        if any(item.target.spec().writes and not item.confirm for item in requests):
+            # Writes are recorded before they are submitted; no record, no run.
+            audit_before_write(tuple(self._decisions) + tuple(
+                ActionDecision(action_id=f"plugin:{item.target.automation_id}", effect=item.target.effect,
+                               decision="EXECUTE", action_title=item.target.title, arguments=dict(item.inputs))
+                for item in requests))
+        return self._plugin_receipt(self._plugins.start_console(requests), calls, tuple(item.target for item in requests))
 
     def _plugin_receipt(self, receipts, calls, targets=()):
         for index, receipt in enumerate(receipts):

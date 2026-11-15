@@ -36,7 +36,7 @@ class AgentExecutionToolTests(unittest.TestCase):
         core.llm = SimpleNamespace(chat=AsyncMock(return_value={"content": "我来处理这个任务。"}))
         _, calls = configure_chat(core)
         result = asyncio.run(core.handle_message("执行一个不存在的脚本", actor=direct_admin(), source="console"))
-        self.assertIn("没有匹配到可执行脚本", result["reply"])
+        self.assertIn("本次未发起插件执行", result["reply"])
         self.assertEqual([], calls)
 
     def test_agent_allows_normal_chat_without_claiming_execution(self):

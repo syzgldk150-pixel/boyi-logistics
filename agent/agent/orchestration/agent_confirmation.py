@@ -22,6 +22,9 @@ from agent.orchestration.models import ActorType, OrchestrationError
 AGENT_CONFIRMATION_REQUIRED = "AGENT_CONFIRMATION_REQUIRED"
 CONFIRMATION_TTL_SECONDS = 300
 _CONFIRMED: ContextVar[bool] = ContextVar("agent_write_confirmed", default=False)
+# Set only by host code (agent layer P1) when the model filled the write's
+# arguments or chose a write for a question: confirm whatever the agent level.
+_ALWAYS_CONFIRM: ContextVar[bool] = ContextVar("agent_write_always_confirm", default=False)
 
 
 @contextmanager
@@ -34,6 +37,16 @@ def person_confirmed() -> Iterator[None]:
         _CONFIRMED.reset(token)
 
 
+@contextmanager
+def confirmation_required() -> Iterator[None]:
+    """Writes submitted inside need the person's "确认" even at level "直接执行"."""
+    token = _ALWAYS_CONFIRM.set(True)
+    try:
+        yield
+    finally:
+        _ALWAYS_CONFIRM.reset(token)
+
+
 def is_agent_actor(actor: Any) -> bool:
     """Feishu/WeChat senders and the Console AI assistant (``channel="agent"``)."""
     return getattr(actor, "actor_type", None) is ActorType.FEISHU_USER or getattr(actor, "channel", "") == "agent"
@@ -41,7 +54,11 @@ def is_agent_actor(actor: Any) -> bool:
 
 def require_person_confirmation(*, identity_access: Any, actor: Any, capability: str, title: str) -> None:
     """Raise unless this agent write may run now."""
-    if identity_access is None or not is_agent_actor(actor) or _CONFIRMED.get():
+    if not is_agent_actor(actor) or _CONFIRMED.get():
+        return
+    if _ALWAYS_CONFIRM.get():
+        raise OrchestrationError(AGENT_CONFIRMATION_REQUIRED, f"“{title}”需要你确认后才执行")
+    if identity_access is None:
         return
     if identity_access.for_actor(actor).agent_level(capability) == "confirm":
         raise OrchestrationError(AGENT_CONFIRMATION_REQUIRED, f"“{title}”需要你确认后才执行")
@@ -54,6 +71,6 @@ def confirmation_prompt(reason: str) -> str:
 
 
 __all__ = [
-    "AGENT_CONFIRMATION_REQUIRED", "CONFIRMATION_TTL_SECONDS", "confirmation_prompt",
+    "AGENT_CONFIRMATION_REQUIRED", "CONFIRMATION_TTL_SECONDS", "confirmation_prompt", "confirmation_required",
     "is_agent_actor", "person_confirmed", "require_person_confirmation",
 ]

@@ -6,7 +6,7 @@
        "address": {"type": "string", "minLength": 1, "maxLength": 500},
        "weight": {"type": "number", "minimum": 0.000001},
        "volume": {"type": "number", "minimum": 0.000001}}, "required": ["address", "weight"]}},
-    {"key": "scan", "title": "发件扫描", "description": "读取当天到货数据并在融辉平台提交发件扫描，先生成预览再由人确认。", "effect": "external_write"},
+    {"key": "scan", "title": "发件扫描", "description": "读取当天到货数据并在融辉平台提交发件扫描，先生成预览再由人确认。", "effect": "external_write", "preview": true},
     {"key": "arrival_list", "title": "到货清单", "description": "同步当天到货清单到飞书表格。", "effect": "internal_write"},
     {"key": "arrival_stats", "title": "到货统计", "description": "统计当天各主单到货件数并刷新分批表。", "effect": "internal_write"}
   ],

@@ -11,7 +11,7 @@ from agent.harness.sessions import InMemoryHarnessSessionRepository
 from agent.harness_application import HarnessConversationService
 from agent.harness_online import OnlineHarnessSidecar
 from agent.llm_client import LLMClient
-from agent.plugin_conversations import PluginConversationService
+from agent.plugin_conversations import ConversationPluginRequest, PluginConversationService
 from tests.direct_invocation_fixture import direct_repository  # noqa: F401
 from tests.test_direct_plugin_invocation_mysql import ACTOR, direct_runtime, _legacy_counts  # noqa: F401
 
@@ -65,11 +65,13 @@ def test_chat_rechecks_live_settings_and_rejects_model_overrides(direct_runtime)
     turn = plugins.turn(actor=ACTOR, source="console", request_id=str(uuid4()))
     target = next(item for item in turn.choices.values() if item.automation_id == identity)
     for arguments in ({"dry_run": False}, {"account_id": "invented"}, {"date": "2026-09-10"}):
-        with pytest.raises(HarnessError):
-            turn.select([(target.handle, arguments)])
+        # The gateway refuses AI-filled settings for an entry that takes no per-call input (P1).
+        (_, decision), = turn.select([(target.handle, arguments)], message="请执行直接执行测试")
+        assert decision.decision == "REJECT"
     with pytest.raises(HarnessError):
         turn.select([(target.handle, {}), (target.handle, {})])
-    selected = turn.select([(target.handle, {})])
+    (_, decision), = turn.select([(target.handle, {})], message="请执行直接执行测试")
+    selected = (ConversationPluginRequest(target),)
     entry = management.catalog.require(identity)
     management.management.save_plugin_settings(identity, config={}, account_bindings={}, resource_bindings={},
         request_id=str(uuid4()), expected_project_configuration_version=entry.project_config_version, actor=ACTOR)

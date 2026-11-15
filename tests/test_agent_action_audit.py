@@ -219,9 +219,8 @@ def test_migration_084_stores_turns_and_decisions(database):  # noqa: F811
                                autocommit=False)
 
     repository = AgentActionAuditRepository(connect)
-    repository.record_turn(_turn())
-    with pytest.raises(pymysql.err.IntegrityError):  # the same turn is never written twice
-        repository.record_turn(_turn())
+    repository.record_turn(_turn(outcome="PLUGIN"))  # recorded before a write runs (P1) ...
+    repository.record_turn(_turn())  # ... and updated with the finished turn
     with connect() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT channel, outcome, message_text FROM agent_conversation_turns")
         (channel, outcome, text), = cursor.fetchall()

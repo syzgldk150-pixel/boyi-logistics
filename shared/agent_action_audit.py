@@ -119,12 +119,16 @@ class AgentActionAuditRepository:
                 resource.close()
 
     def record_turn(self, turn: ConversationTurn) -> None:
-        """Turn and its decisions in one short transaction."""
+        """Turn and its decisions in one short transaction; writing the same turn again updates it."""
         with self._cursor() as cursor:
             cursor.execute(
                 "INSERT INTO agent_conversation_turns (turn_id, person_id, actor_id, channel, chat_scope,"
                 " message_text, model, outcome, tool_calls, duration_ms, error_code)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                # A write is recorded before it runs and the finished turn again after (P1).
+                " ON DUPLICATE KEY UPDATE person_id=COALESCE(VALUES(person_id), person_id), model=VALUES(model),"
+                " outcome=VALUES(outcome), tool_calls=VALUES(tool_calls), duration_ms=VALUES(duration_ms),"
+                " error_code=VALUES(error_code)",
                 (
                     turn.turn_id, (turn.person_id or None) and str(turn.person_id)[:64], str(turn.actor_id)[:191],
                     turn.channel, turn.chat_scope, redact_utterance(turn.message_text),
@@ -137,7 +141,10 @@ class AgentActionAuditRepository:
                 cursor.executemany(
                     "INSERT INTO agent_action_decisions (decision_id, turn_id, seq, action_id, action_title,"
                     " effect, arguments_json, decision, invocation_id, error_code)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    " ON DUPLICATE KEY UPDATE action_id=VALUES(action_id), action_title=VALUES(action_title),"
+                    " effect=VALUES(effect), arguments_json=VALUES(arguments_json), decision=VALUES(decision),"
+                    " invocation_id=VALUES(invocation_id), error_code=VALUES(error_code)",
                     [
                         (
                             _decision_id(turn.turn_id, seq), turn.turn_id, seq, str(item.action_id)[:191],

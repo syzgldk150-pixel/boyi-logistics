@@ -10,12 +10,50 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable, Iterator, Sequence
 
+from agent.harness.errors import HarnessError
 from shared.agent_action_audit import AgentActionAuditRepository, ConversationTurn
 
 logger = logging.getLogger(__name__)
+
+
+# Bound by the conversation service around one turn: writes the turn so far,
+# synchronously, before a write is submitted (agent layer P1 "先记后做").
+_PRE_WRITE: ContextVar[Callable[[Sequence[Any]], None] | None] = ContextVar("agent_pre_write_audit", default=None)
+
+
+class AuditUnavailable(HarnessError):
+    """The write could not be recorded, so it must not run."""
+
+    code = "AGENT_AUDIT_UNAVAILABLE"
+
+
+@contextmanager
+def pre_write_audit(writer: Callable[[Sequence[Any]], None] | None) -> Iterator[None]:
+    token = _PRE_WRITE.set(writer)
+    try:
+        yield
+    finally:
+        _PRE_WRITE.reset(token)
+
+
+def audit_before_write(decisions: Sequence[Any]) -> None:
+    """Record the turn's decisions now; raise :class:`AuditUnavailable` when that fails.
+
+    Without a bound writer (no audit configured, e.g. isolated tests) this is a no-op.
+    """
+    writer = _PRE_WRITE.get()
+    if writer is None:
+        return
+    try:
+        writer(decisions)
+    except Exception as exc:
+        logger.warning("agent pre-write audit failed | error_type=%s", type(exc).__name__)
+        raise AuditUnavailable("操作记录暂时无法写入，本次没有执行，请稍后重试。") from exc
 
 
 class TurnRecorder:
@@ -54,4 +92,4 @@ class TurnRecorder:
         self._executor.shutdown(wait=True)
 
 
-__all__ = ["TurnRecorder"]
+__all__ = ["AuditUnavailable", "TurnRecorder", "audit_before_write", "pre_write_audit"]

@@ -138,7 +138,7 @@ def test_feishu_cancel_and_expiry_never_run_the_write(feishu):
 # -- Console AI assistant ---------------------------------------------------------------
 
 def test_console_assistant_remembers_the_plugin_and_runs_it_on_confirm():
-    from agent.plugin_conversations import ConversationPluginTarget, PluginConversationService
+    from agent.plugin_conversations import ConversationPluginRequest, ConversationPluginTarget, PluginConversationService
 
     target = ConversationPluginTarget(handle="run_plugin_stats", automation_id="stats", generation=1, configuration_version=1,
                                       contribution_id="console-run", title="统计到货", description="", effect="write")
@@ -156,7 +156,7 @@ def test_console_assistant_remembers_the_plugin_and_runs_it_on_confirm():
 
     service = Service(SimpleNamespace(invoke_trusted=invoke_trusted))
     first = service.turn(actor=ASSISTANT, source="console", request_id="request-1")
-    receipts = first.start_console((target,))
+    receipts = first.start_console((ConversationPluginRequest(target),))
     assert receipts[0]["status"] == "CONFIRMATION_REQUIRED" and "回复“确认”" in receipts[0]["message"]
     assert not invoked
     other = service.turn(actor=Actor(ActorType.CONSOLE_ADMIN, "8", ("admin",), authenticated_by="mysql_admin_session"),
@@ -168,7 +168,7 @@ def test_console_assistant_remembers_the_plugin_and_runs_it_on_confirm():
     assert receipts[0]["status"] == "RUNNING" and len(invoked) == 1
     assert not service.turn(actor=ASSISTANT, source="console", request_id="request-3").has_pending_writes()
     # Cancel drops it without running.
-    service.turn(actor=ASSISTANT, source="console", request_id="request-4").start_console((target,))
+    service.turn(actor=ASSISTANT, source="console", request_id="request-4").start_console((ConversationPluginRequest(target),))
     service.turn(actor=ASSISTANT, source="console", request_id="request-5").cancel_pending_writes()
     assert not service.turn(actor=ASSISTANT, source="console", request_id="request-6").has_pending_writes()
     assert len(invoked) == 1

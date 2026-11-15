@@ -2619,24 +2619,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 
     notice_task.cancel()
     if result.get("plugin_requests"):
-        from agent.plugin_conversations import ConversationPluginTarget
-        targets = result["plugin_requests"]
-        if not all(isinstance(target, ConversationPluginTarget) for target in targets):
-            await _reply_text(chat_id, "插件选择无效，本次未执行。")
-            return
-        async def run_plugin(target):
-            if target.command:
-                matched = await _dispatch_service_v2_feishu_command(text=target.command, receive_id=chat_id, conversation_target=target)
-                if not matched:
-                    await _reply_text(chat_id, f"{target.title}入口已变化，请重新发起。")
-            elif target.selection_tool:
-                await _invoke_selection_preview_and_reply(route_key=target.route_key,
-                    tool_name=SELF_PICKUP_PREVIEW_TOOL_NAME if target.selection_tool == "self_pickup_problem_upload_v2" else "preview_split_pending_problems",
-                    receive_id=chat_id, conversation_target=target)
-            else:
-                await _invoke_automation_project_and_reply(route_key=target.route_key, dynamic_inputs={},
-                    receive_id=chat_id, conversation_target=target)
-        await asyncio.gather(*(run_plugin(target) for target in targets))
+        from feishu.conversation_plugins import run_conversation_plugins
+        await run_conversation_plugins(result["plugin_requests"], chat_id=chat_id)
         return
     if await _handle_agent_tool_auth_result(chat_id, result):
         return

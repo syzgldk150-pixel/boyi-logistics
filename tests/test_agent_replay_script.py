@@ -15,25 +15,40 @@ def test_fixture_cases_are_unique_and_well_formed():
             assert action == "none" or action in keys or "." in action
 
 
-def test_turn_mirrors_production_visibility_and_parameter_rule():
-    messages, tools, names = build_turn("报个价，测试市 300 公斤", FIXTURE["plugins"], with_parameters=False)
-    assert "plugin:quote" not in names.values()  # needs this turn's input: hidden before P1
-    _, _, names = build_turn("执行扫描", FIXTURE["plugins"], with_parameters=True)
-    assert "plugin:scan" in names.values()
-    _, _, names = build_turn("今天扫描了多少票", FIXTURE["plugins"], with_parameters=True)
+def test_turn_mirrors_production_and_p0_rules():
+    messages, tools, names = build_turn("报个价，测试市 300 公斤", FIXTURE["plugins"], baseline_p0=True)
+    assert "plugin:quote" not in names.values() and "ask_user" not in names  # P0: hidden
+    _, _, names = build_turn("今天扫描了多少票", FIXTURE["plugins"], baseline_p0=True)
     assert not any(value.startswith("plugin:") for value in names.values())
+    _, _, names = build_turn("报个价，测试市 300 公斤", FIXTURE["plugins"])
+    assert {"plugin:quote", "plugin:scan", "ask_user"} <= set(names.values())  # P1: offered, gateway decides
     assert messages[0]["role"] == "system" and "博益物流" in messages[0]["content"]
 
 
-def test_scoring_counts_wrong_writes_as_misexecutions():
-    def reckless(messages, tools):
-        names = [tool["function"]["name"] for tool in tools]
-        if "run_plugin_scan" in names:
-            return {"tool_calls": [{"id": "x", "function": {"name": "run_plugin_scan", "arguments": "{}"}}]}
-        return {"content": "?"}
-    cases = [{"id": "q", "text": "扫描插件执行失败的原因怎么处理", "expect": {"action": "none"}}]
-    report = score(cases, FIXTURE["plugins"], reckless)
+def _always(name):
+    def model(messages, tools):
+        return {"tool_calls": [{"id": "x", "function": {"name": name, "arguments": "{}"}}]}
+    return model
+
+
+def test_wrong_write_for_a_question_is_only_asked_not_run():
+    cases = [{"id": "q", "text": "到货清单为什么没更新", "expect": {"action": "none"}}]
+    report = score(cases, FIXTURE["plugins"], _always("run_plugin_arrival_list"))
+    assert report["wrong_writes_chosen"] == 1 and report["misexecutions"] == 0
+    assert report["rows"][0]["gateway"] == {"plugin:arrival_list": "CONFIRM"}
+
+
+def test_wrong_write_for_a_command_counts_as_misexecution():
+    cases = [{"id": "c", "text": "同步一下到货清单", "expect": {"action": "plugin:arrival_stats"}}]
+    report = score(cases, FIXTURE["plugins"], _always("run_plugin_arrival_list"))
     assert report["misexecutions"] == 1 and report["action_hit_rate"] == 0
+
+
+def test_ask_user_counts_as_asking_back():
+    def asks(messages, tools):
+        return {"tool_calls": [{"id": "x", "function": {"name": "ask_user", "arguments": '{"question":"发到哪里？"}'}}]}
+    report = score([{"id": "q", "text": "报价", "expect": {"action": "none"}}], FIXTURE["plugins"], asks)
+    assert report["action_hit_rate"] == 1 and report["rows"][0]["asked_back"]
 
 
 def test_offline_run_has_no_misexecution(tmp_path, capsys):

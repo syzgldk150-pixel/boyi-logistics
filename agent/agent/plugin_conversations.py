@@ -8,11 +8,14 @@ from __future__ import annotations
 import json
 import asyncio
 import time
-from threading import Lock
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
+from agent.agent_actions.gateway import ActionGateway, GatewayDecision
+from agent.agent_actions.grounding import label as field_label
+from agent.agent_actions.pending import PendingConfirmations
+from agent.agent_actions.spec import ActionSpec
 from agent.automation_plugins.catalog import project_capability_from_snapshot
 from agent.automation_plugins.execution import PluginExecutionRouter
 from agent.harness.errors import HarnessError
@@ -39,6 +42,7 @@ PLUGIN_CHAT_INSTRUCTIONS = """你可以按用户明确的执行意图调用当�
 插件名称、用途与适用实例以本次工具目录为准；多个实例不能唯一确定时，列出名称询问，不能选第一项。
 仅询问功能、原因或执行方法时不要启动插件。用户明确要求同时执行多个插件时，一次提交相应的多个工具调用。
 插件使用已有设置；不要声称改变了日期、账号、网点或筛选条件。不符合当前设置的要求应先说明并询问。
+带条件的插件（例如报价的地址、重量、体积）只能照抄用户本次原话里的内容填写，不得换算、补全或猜测；缺少必填条件时用 ask_user 询问，不要调用插件。
 扫描、自提、分批等需要预览的插件，首次调用只生成候选，正式确认由用户完成，不能替用户确认。
 不得编造完成状态或结果；发起执行不等于完成。不要重试写操作、重复调用同一插件或绕过已有权限。"""
 
@@ -56,13 +60,42 @@ class ConversationPluginTarget:
     route_key: str = ""
     command: str = ""
     selection_tool: str = ""
+    plugin_id: str = ""
+    capability: str = "plugins.execute"
+    preview: bool = False
+    # JSON of the contribution's declared per-call input schema; "" = none.
+    input_schema_json: str = ""
+
+    @property
+    def input_schema(self) -> dict[str, Any] | None:
+        return json.loads(self.input_schema_json) if self.input_schema_json else None
+
+    def spec(self) -> ActionSpec:
+        return ActionSpec(action_id=f"plugin:{self.automation_id}", title=self.title, effect=self.effect,
+                          capability=self.capability, input_schema=self.input_schema, preview=self.preview)
 
     def model_tool(self) -> dict[str, Any]:
+        schema = self.input_schema
+        usage = ("本次条件只能照抄用户原话，缺少必填条件先用 ask_user 询问；" if schema else "使用该实例当前已保存设置，")
         return {"type": "function", "function": {
             "name": self.handle,
-            "description": f"执行插件：{self.title}。业务用途：{self.description} 当前调用权限：此工具已对当前管理员开放，发起时由宿主再次复核；使用该实例当前已保存设置，仅在用户明确要求执行时调用。预览及正式确认以宿主实际返回为准。",
-            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            "description": f"执行插件：{self.title}。业务用途：{self.description} 当前调用权限：此工具已对当前管理员开放，发起时由宿主再次复核；{usage}仅在用户明确要求执行时调用。预览及正式确认以宿主实际返回为准。",
+            "parameters": schema or {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         }}
+
+
+@dataclass(frozen=True)
+class ConversationPluginRequest:
+    """One gateway-approved plugin run: the target, grounded inputs, and whether to ask first."""
+
+    target: ConversationPluginTarget
+    inputs: Mapping[str, Any] = field(default_factory=dict)
+    confirm: bool = False
+
+    def describe(self) -> str:
+        schema = (self.target.input_schema or {}).get("properties") or {}
+        parts = [f"{field_label(key, schema.get(key))} {value}" for key, value in self.inputs.items()]
+        return f"“{self.target.title}”" + (f"（{'；'.join(parts)}）" if parts else "")
 
 
 def _channel(actor: Actor, source: str) -> AutomationEntrypoint:
@@ -78,22 +111,17 @@ class PluginConversationService:
 
     def __init__(self, policy_service: Any) -> None:
         self.policy = policy_service
-        # Console AI writes waiting for "确认": actor_id -> (expires, targets).
-        self._pending_writes: dict[str, tuple[float, tuple[ConversationPluginTarget, ...]]] = {}
-        self._pending_lock = Lock()
+        # Console AI writes waiting for "确认": actor_id -> requests (agent layer P1 store).
+        self._pending: PendingConfirmations[tuple[ConversationPluginRequest, ...]] = PendingConfirmations(
+            CONFIRMATION_TTL_SECONDS, clock=lambda: time.monotonic())
+        self.gateway = ActionGateway(identity_access=getattr(policy_service, "identity_access", None))
 
-    def remember_pending_writes(self, actor_id: str, targets: tuple[ConversationPluginTarget, ...]) -> None:
-        with self._pending_lock:
-            self._pending_writes[actor_id] = (time.monotonic() + CONFIRMATION_TTL_SECONDS, targets)
+    def remember_pending_writes(self, actor_id: str, requests: tuple[ConversationPluginRequest, ...]) -> None:
+        self._pending.remember(actor_id, requests)
 
-    def pending_writes(self, actor_id: str, *, take: bool = False) -> tuple[ConversationPluginTarget, ...] | None:
+    def pending_writes(self, actor_id: str, *, take: bool = False) -> tuple[ConversationPluginRequest, ...] | None:
         """The person's unexpired pending writes; ``take`` removes them."""
-        with self._pending_lock:
-            item = self._pending_writes.pop(actor_id, None) if take else self._pending_writes.get(actor_id)
-            if item is not None and item[0] < time.monotonic():
-                self._pending_writes.pop(actor_id, None)
-                return None
-            return item[1] if item is not None else None
+        return self._pending.take(actor_id) if take else self._pending.peek(actor_id)
 
     def targets(self, *, actor: Actor, source: str) -> tuple[ConversationPluginTarget, ...]:
         channel = _channel(actor, source)
@@ -122,12 +150,10 @@ class PluginConversationService:
                 contribution = invocation.contribution_id
                 if contribution not in snapshot.enabled_entrypoints:
                     continue
-                if any(
-                    item.get("id") == contribution and item.get("input_schema", {}).get("properties")
-                    for item in entry.contributions.get(channel.value, ())
-                ):
-                    # These entries require explicit channel input, not an empty model call.
-                    continue
+                inputs = [item.get("input_schema") for item in entry.contributions.get(channel.value, ())
+                          if item.get("id") == contribution and (item.get("input_schema") or {}).get("properties")]
+                # Entries with per-call input take model-proposed arguments the gateway grounds (P1).
+                input_schema_json = json.dumps(inputs[0], ensure_ascii=False, sort_keys=True) if len(inputs) == 1 else ""
                 capability = PluginExecutionRouter._service_contribution_capability(
                     project_capability_from_snapshot(snapshot), contribution_id=contribution)
                 title = redact_text(entry.name if entry.display_name == entry.name else f"{entry.name}（{entry.display_name}）")
@@ -158,7 +184,11 @@ class PluginConversationService:
                     configuration_version=contract.project_configuration_version,
                     contribution_id=contribution, title=title, description=description,
                     effect=str(capability["operation_type"]), route_key=route_key,
-                    command=command, selection_tool=selection_tool,
+                    command=command, selection_tool=selection_tool, plugin_id=entry.plugin_id,
+                    capability=plugin_permission(entry.plugin_id, management=getattr(entry, "management", None)),
+                    preview=bool(selection_tool or route_key or is_scan_preview_project(entry)
+                                 or is_selection_preview_project(entry)),
+                    input_schema_json=input_schema_json,
                 ))
         return tuple(choices)
 
@@ -239,35 +269,48 @@ class PluginConversationTurn:
     def model_tools(self) -> list[dict[str, Any]]:
         return [target.model_tool() for target in self.choices.values()]
 
-    def select(self, calls: list[tuple[str, Mapping[str, Any]]]) -> tuple[ConversationPluginTarget, ...]:
-        selected = []
+    def select(self, calls: list[tuple[str, Mapping[str, Any]]], *, message: str = ""
+               ) -> tuple[tuple[ConversationPluginTarget, GatewayDecision], ...]:
+        """Pass every chosen plugin through the action gateway (agent layer P1)."""
+        decided = []
         identities = set()
         for name, arguments in calls:
-            if name not in self.choices or not isinstance(arguments, Mapping) or arguments:
+            if name not in self.choices or not isinstance(arguments, Mapping):
                 raise HarnessError("插件调用与当前可用入口不匹配", code="HARNESS_PLUGIN_REQUEST_INVALID")
             target = self.choices[name]
             if target.automation_id in identities:
                 raise HarnessError("同一次对话不能重复启动同一个插件实例", code="HARNESS_PLUGIN_REQUEST_INVALID")
             identities.add(target.automation_id)
-            selected.append(target)
-        if not selected or len(selected) > 8:
+            gateway = getattr(self.service, "gateway", None) or ActionGateway()
+            decided.append((target, gateway.decide(target.spec(), actor=self.actor, arguments=arguments, message=message)))
+        if not decided or len(decided) > 8:
             raise HarnessError("本次插件选择数量无效", code="HARNESS_PLUGIN_REQUEST_INVALID")
-        if self.source == "feishu" and sum(bool(item.selection_tool) for item in selected) > 1:
+        if self.source == "feishu" and sum(bool(item.selection_tool) for item, _ in decided) > 1:
             raise HarnessError("自提与分批共用飞书候选选择，请分别发起并确认；其他插件可同时执行。", code="HARNESS_PLUGIN_REQUEST_INVALID")
-        return tuple(selected)
+        return tuple(decided)
 
-    def start_console(self, targets: tuple[ConversationPluginTarget, ...]) -> tuple[dict[str, Any], ...]:
+    def start_console(self, requests: tuple[ConversationPluginRequest, ...]) -> tuple[dict[str, Any], ...]:
         _channel(self.actor, self.source)
         if self.source != "console":
             raise HarnessError("飞书插件须由飞书入口执行", code="HARNESS_PLUGIN_FORBIDDEN")
+        targets = tuple(request.target for request in requests)
         if self.selected and self.selected != targets:
             raise HarnessError("本次消息已选择其他插件", code="HARNESS_IDEMPOTENCY_CONFLICT")
         self.selected = targets
         receipts, needs_confirmation = [], []
-        for target in targets:
+        for request in requests:
+            target = request.target
             if self.choices.get(target.handle) != target:
                 raise HarnessError("插件选择已失效", code="HARNESS_PLUGIN_REQUEST_INVALID")
+            if request.confirm:
+                # Gateway said confirm first: nothing is submitted before the person answers.
+                needs_confirmation.append(request)
+                receipts.append({"title": target.title, "status": "CONFIRMATION_REQUIRED",
+                                 "message": confirmation_prompt(f"{request.describe()}需要你确认后才执行")})
+                continue
             request_id = str(uuid5(NAMESPACE_URL, f"plugin-chat:{self.actor.actor_id}:{self.request_id}:{target.handle}"))
+            dynamic = ({"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""} if target.selection_tool
+                       else dict(request.inputs) if request.inputs else None)
             try:
                 result = self.service.policy.invoke_trusted(
                     target.automation_id, entrypoint=AutomationEntrypoint.CONSOLE,
@@ -275,11 +318,11 @@ class PluginConversationTurn:
                     expected_automation_generation=target.generation,
                     expected_project_configuration_version=target.configuration_version,
                     contribution_id=target.contribution_id, require_full_auto=True,
-                    trusted_context={"dynamic_inputs": {"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""}} if target.selection_tool else None,
+                    trusted_context={"dynamic_inputs": dynamic} if dynamic is not None else None,
                 )
             except OrchestrationError as exc:
                 if exc.code == AGENT_CONFIRMATION_REQUIRED:
-                    needs_confirmation.append(target)
+                    needs_confirmation.append(request)
                     receipts.append({"title": target.title, "status": "CONFIRMATION_REQUIRED",
                                      "message": confirmation_prompt(str(exc))})
                     continue
@@ -295,16 +338,17 @@ class PluginConversationTurn:
 
     def confirm_pending_writes(self) -> tuple[dict[str, Any], ...]:
         """The same person replied "确认": run exactly the remembered plugins."""
-        targets = self.service.pending_writes(self.actor.actor_id, take=True)
-        if not targets:
+        requests = self.service.pending_writes(self.actor.actor_id, take=True)
+        if not requests:
             return ({"title": "确认", "status": "REJECTED", "message": "这次确认已超过有效时间，没有执行；需要的话请重新发起。"},)
         # This message's request id makes the confirmed calls new requests.
-        self.choices.update({target.handle: target for target in targets if target.handle not in self.choices})
+        self.choices.update({item.target.handle: item.target for item in requests if item.target.handle not in self.choices})
+        confirmed = tuple(ConversationPluginRequest(item.target, item.inputs, confirm=False) for item in requests)
         with person_confirmed():
-            return self.start_console(targets)
+            return self.start_console(confirmed)
 
     def cancel_pending_writes(self) -> None:
         self.service.pending_writes(self.actor.actor_id, take=True)
 
 
-__all__ = ["PLUGIN_CHAT_INSTRUCTIONS", "ConversationPluginTarget", "PluginConversationService", "PluginConversationTurn"]
+__all__ = ["PLUGIN_CHAT_INSTRUCTIONS", "ConversationPluginRequest", "ConversationPluginTarget", "PluginConversationService", "PluginConversationTurn"]

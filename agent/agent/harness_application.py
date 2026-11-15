@@ -268,6 +268,24 @@ class HarnessConversationService:
         self._text_queries = text_queries
         self._turn_recorder = turn_recorder
 
+    def _turn(self, actor: Actor, *, turn_id: str, message: str, started: float, outcome: str,
+              decisions: tuple, model=None, tool_calls: int = 0, error_code: str | None = None) -> ConversationTurn:
+        return ConversationTurn(
+            turn_id=turn_id, actor_id=actor.actor_id, channel=channel_of(actor.actor_type.value, actor.actor_id),
+            chat_scope="private" if in_private_chat() else "group", message_text=message, outcome=outcome,
+            model=model, tool_calls=tool_calls, duration_ms=int((time.monotonic() - started) * 1000),
+            error_code=error_code, decisions=decisions)
+
+    def _pre_write_writer(self, actor: Actor, *, turn_id: str, message: str, started: float):
+        """Synchronous audit of the turn so far, used right before a write is submitted (P1)."""
+        if self._turn_recorder is None:
+            return None
+        def write(decisions) -> None:
+            self._turn_recorder.record_now(self._turn(
+                actor, turn_id=turn_id, message=message, started=started, outcome="PLUGIN",
+                decisions=tuple(decisions)), actor=actor)
+        return write
+
     def _record_turn(self, actor: Actor, *, turn_id: str, message: str, started: float,
                      result: SidecarResult | None, fixed: bool, error_code: str | None) -> None:
         """Hand one finished turn to the audit (agent layer P0); never affects the reply."""
@@ -292,12 +310,9 @@ class HarnessConversationService:
                 outcome = "REJECTED"
             else:
                 outcome = "REPLY"
-            turn = ConversationTurn(
-                turn_id=turn_id, actor_id=actor.actor_id, channel=channel_of(actor.actor_type.value, actor.actor_id),
-                chat_scope="private" if in_private_chat() else "group", message_text=message, outcome=outcome,
-                model=getattr(result, "model", None), tool_calls=getattr(result, "tool_calls", 0) or 0,
-                duration_ms=int((time.monotonic() - started) * 1000), error_code=error_code, decisions=decisions,
-            )
+            turn = self._turn(actor, turn_id=turn_id, message=message, started=started, outcome=outcome,
+                              decisions=decisions, model=getattr(result, "model", None),
+                              tool_calls=getattr(result, "tool_calls", 0) or 0, error_code=error_code)
             self._turn_recorder.submit(turn, actor=actor)
         except Exception:  # the audit never changes what the person sees
             import logging
@@ -476,11 +491,22 @@ class HarnessConversationService:
                     bind_context(self._session_query_context.get(safe_session_id))
                 self._pending_sidecars[assistant_id] = sidecar
             started = time.monotonic()
+            from agent.agent_actions.recorder import AuditUnavailable, pre_write_audit
             try:
-                result = fixed_result if fixed_result is not None else sidecar.run(
-                    messages=session_with_user.messages,
-                    timeout_seconds=self._timeout_seconds,
-                )
+                with pre_write_audit(self._pre_write_writer(bound_actor, turn_id=assistant_id, message=message,
+                                                            started=started)):
+                    result = fixed_result if fixed_result is not None else sidecar.run(
+                        messages=session_with_user.messages,
+                        timeout_seconds=self._timeout_seconds,
+                    )
+                if (isinstance(result, SidecarResult) and self._turn_recorder is not None
+                        and _hands_writes_to_channel(result)):
+                    # Feishu/WeChat run these after this returns: record them first (P1).
+                    writer = self._pre_write_writer(bound_actor, turn_id=assistant_id, message=message, started=started)
+                    try:
+                        writer(tuple(result.decisions))
+                    except Exception as exc:
+                        raise AuditUnavailable("操作记录暂时无法写入，本次没有执行，请稍后重试。") from exc
             except HarnessError as exc:
                 self._record_turn(bound_actor, turn_id=assistant_id, message=message, started=started,
                                   result=None, fixed=False, error_code=exc.code)
@@ -544,6 +570,11 @@ class HarnessConversationService:
         if not callable(getattr(sidecar, "run", None)):
             raise _error("Harness sidecar is invalid", "HARNESS_PROTOCOL_INVALID")
         return sidecar
+
+
+def _hands_writes_to_channel(result: SidecarResult) -> bool:
+    from agent.agent_actions.spec import is_write_effect
+    return any(is_write_effect(getattr(getattr(item, "target", None), "effect", "read")) for item in result.plugin_requests)
 
 
 class ProductionGatedHarnessSidecar:
