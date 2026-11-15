@@ -125,6 +125,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `routes/automation.py`
   - `services/automation_plugin_management.py`
   - `static/style.css`
+- 改业务手册页（机器人 Agent 层 P2）：`templates/handbook.html`、`static/handbook.js`、`static/handbook.css`、`services/handbook.py`、`routes/handbook.py`。入口 `/settings/llm/handbook`，从“智能模型”页右上角进入，不新增固定模块或菜单；路由不在权限映射里，按规则只有超级管理员可用。Console 不判断编译结果是否合规，编译、试跑、确认歧义、审核、暂停/恢复/作废都转发 Agent `/internal/v1/admin/handbook/*`。回归见 `tests/test_handbook_console.py`。
 - 改插件处理流程页（阶段 5，声明了 `flow` 的插件在卡片上显示“处理流程”）：
   - `templates/automation_plugin_flow.html`、`static/plugin_flow.js`、`services/automation_plugin_flow.py`、`routes/automation.py`
   - 仅超级管理员；Console 不判断流程是否合规，查看、AI 调整、试运行都转发 Agent `/internal/v1/automation/instances/{id}/flow*`，保存读取设置上下文后只替换 `config.flow`，经 `plugin-settings` 带配置版本保存。宿主简单设置的表单跳过 `flow` 字段（`automation_catalog_projection.plugin_flow_declared`）。回归见 `tests/test_automation_plugin_flow.py`。

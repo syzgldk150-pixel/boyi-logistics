@@ -48,7 +48,7 @@ class ActionGateway:
         self._identity_access = identity_access
 
     def decide(self, spec: ActionSpec, *, actor: Any, arguments: Mapping[str, Any] | None,
-               message: str) -> GatewayDecision:
+               message: str, handbook: Any = None) -> GatewayDecision:
         # 1 identity and 2 capability: read live on every decision.
         if self._identity_access is not None:
             access = self._identity_access.for_actor(actor)
@@ -58,6 +58,10 @@ class ActionGateway:
                 if getattr(access, "blocked_in_group", lambda _: False)(spec.capability):
                     return GatewayDecision("REJECT", reason="这项内容只在私聊里回答", error_code="PRIVATE_CHAT_ONLY")
                 return GatewayDecision("REJECT", reason=f"当前身份没有“{spec.title}”的权限", error_code="PERMISSION_DENIED")
+        # Approved handbook rules without a condition are enforced here, by code (P2).
+        forbidden = handbook.enforced(spec.action_id, "forbid") if handbook is not None else None
+        if forbidden:
+            return GatewayDecision("REJECT", reason=forbidden, error_code="HANDBOOK_FORBIDDEN")
         # 3 object: every argument tied to the person's own words.
         supplied = dict(arguments or {})
         if spec.input_schema is None:
@@ -71,6 +75,9 @@ class ActionGateway:
                 return GatewayDecision("CLARIFY", question=exc.question, error_code=exc.code)
         # 4 data: internal colleagues only; the row-scope slot stays unused (decision 1).
         # 5 audit happens in the caller before any EXECUTE/CONFIRM write is run.
+        ask_first = handbook.enforced(spec.action_id, "ask_first") if handbook is not None else None
+        if ask_first and not spec.preview:
+            return GatewayDecision("CONFIRM", arguments=grounded, reason=ask_first)
         if spec.writes and not spec.preview and (grounded or looks_like_question(message)):
             # Model-filled write, or a write chosen for a question: always confirm.
             return GatewayDecision("CONFIRM", arguments=grounded,

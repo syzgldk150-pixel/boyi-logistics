@@ -11,6 +11,7 @@ from console.services.harness import HarnessServiceMixin
 from console.services.finance_ledger import FinanceLedgerServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
 from console.services.llm_settings import LLMSettingsServiceMixin
+from console.services.handbook import HandbookServiceMixin
 from console.services.customer_service import CustomerServiceMixin
 from console.services.waybills_receipts import WaybillsReceiptsServiceMixin
 from console.services.waybill_export import WaybillExportServiceMixin
@@ -51,6 +52,7 @@ class LocalDocFlowApp(
     ControlPlaneServiceMixin,
     HarnessServiceMixin,
     LLMSettingsServiceMixin,
+    HandbookServiceMixin,
     MonitoringFinanceServiceMixin,
     FinanceLedgerServiceMixin,
     CustomerServiceMixin,

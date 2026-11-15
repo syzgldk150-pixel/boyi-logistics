@@ -138,6 +138,7 @@ from agent.business_query import (
     MySQLAutomationOperationsRepository,
 )
 from agent.business_modules_api import create_business_module_router
+from agent.handbook_api import create_handbook_router
 from agent.automation_plugins.production import (
     ProductionAutomationPluginRuntime,
     build_production_automation_plugin_runtime,
@@ -245,6 +246,7 @@ agent_core: AgentCore | None = None
 finance_review_advisor: "FinanceReviewAdvisor | None" = None
 customer_service_ai: "CustomerServiceAIService | None" = None
 plugin_flow_editor: "PluginFlowEditor | None" = None
+agent_handbook_service = None
 receipt_share_runtime: "ReceiptShareRuntime | None" = None
 wechat_bot_runtime: "WeChatBotRuntime | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
@@ -681,7 +683,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
-    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime
+    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -870,11 +872,27 @@ async def lifespan(app: FastAPI):
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
     harness_gateway = build_read_only_harness_gateway(runtime, finance_summary=business_finance_query.run, invocations=direct_invocations)
     from agent.agent_actions.recorder import TurnRecorder
+    from agent.agent_actions.trial import HandbookTrial
+    from agent.handbook import HandbookService
     from shared.agent_action_audit import AgentActionAuditRepository
+    from shared.agent_handbook import HandbookCatalog
+    from shared.agent_handbook_repository import AgentHandbookRepository
     agent_turn_recorder = TurnRecorder(AgentActionAuditRepository(runtime.memory.connection_factory),
                                        identity_access=project_policy_service.identity_access)
+
+    def handbook_catalog(actor):
+        _tools, _names, titles, _clock = process_service_v2_runtime.selection_tools(actor)
+        return HandbookCatalog(actions={key: value for key, value in titles.items()
+                                        if not key.startswith("plugin:") and key != "ask_user"},
+                               plugins={key: value for key, value in titles.items() if key.startswith("plugin:")})
+
+    agent_handbook_service = HandbookService(
+        AgentHandbookRepository(runtime.memory.connection_factory), ai_task_gateway, catalog_provider=handbook_catalog,
+        trial_runner=HandbookTrial(runtime.llm, lambda actor: process_service_v2_runtime.selection_tools(actor),
+                                   active=lambda: agent_handbook_service.snapshot()))
     process_service_v2_runtime = ServiceV2ProcessRuntime(
         turn_recorder=agent_turn_recorder,
+        handbook_provider=agent_handbook_service.snapshot,
         plugin_conversations=plugin_conversations,
         text_queries=build_chat_text_queries(runtime),
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
@@ -1025,6 +1043,12 @@ app.include_router(
         scheduler_project_sync_provider=lambda automation_id: (
             _automation_plugins().service_effect_driver.refresh_project_schedule(automation_id)
         ),
+    )
+)
+app.include_router(
+    create_handbook_router(
+        service_provider=lambda: agent_handbook_service,
+        super_admin_provider=lambda request: _require_console_super_admin_request(request),
     )
 )
 app.include_router(

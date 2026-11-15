@@ -91,11 +91,16 @@ class ConversationPluginRequest:
     target: ConversationPluginTarget
     inputs: Mapping[str, Any] = field(default_factory=dict)
     confirm: bool = False
+    reason: str = ""
 
     def describe(self) -> str:
         schema = (self.target.input_schema or {}).get("properties") or {}
         parts = [f"{field_label(key, schema.get(key))} {value}" for key, value in self.inputs.items()]
         return f"“{self.target.title}”" + (f"（{'；'.join(parts)}）" if parts else "")
+
+    def confirmation_reason(self) -> str:
+        note = f"。{self.reason}" if self.reason and self.reason not in {"你的话更像是在提问", "参数由 AI 从你的话里提取"} else ""
+        return f"{self.describe()}需要你确认后才执行{note}"
 
 
 def _channel(actor: Actor, source: str) -> AutomationEntrypoint:
@@ -269,7 +274,7 @@ class PluginConversationTurn:
     def model_tools(self) -> list[dict[str, Any]]:
         return [target.model_tool() for target in self.choices.values()]
 
-    def select(self, calls: list[tuple[str, Mapping[str, Any]]], *, message: str = ""
+    def select(self, calls: list[tuple[str, Mapping[str, Any]]], *, message: str = "", handbook: Any = None
                ) -> tuple[tuple[ConversationPluginTarget, GatewayDecision], ...]:
         """Pass every chosen plugin through the action gateway (agent layer P1)."""
         decided = []
@@ -282,7 +287,8 @@ class PluginConversationTurn:
                 raise HarnessError("同一次对话不能重复启动同一个插件实例", code="HARNESS_PLUGIN_REQUEST_INVALID")
             identities.add(target.automation_id)
             gateway = getattr(self.service, "gateway", None) or ActionGateway()
-            decided.append((target, gateway.decide(target.spec(), actor=self.actor, arguments=arguments, message=message)))
+            decided.append((target, gateway.decide(target.spec(), actor=self.actor, arguments=arguments, message=message,
+                                                   handbook=handbook)))
         if not decided or len(decided) > 8:
             raise HarnessError("本次插件选择数量无效", code="HARNESS_PLUGIN_REQUEST_INVALID")
         if self.source == "feishu" and sum(bool(item.selection_tool) for item, _ in decided) > 1:
@@ -306,7 +312,7 @@ class PluginConversationTurn:
                 # Gateway said confirm first: nothing is submitted before the person answers.
                 needs_confirmation.append(request)
                 receipts.append({"title": target.title, "status": "CONFIRMATION_REQUIRED",
-                                 "message": confirmation_prompt(f"{request.describe()}需要你确认后才执行")})
+                                 "message": confirmation_prompt(request.confirmation_reason())})
                 continue
             request_id = str(uuid5(NAMESPACE_URL, f"plugin-chat:{self.actor.actor_id}:{self.request_id}:{target.handle}"))
             dynamic = ({"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""} if target.selection_tool

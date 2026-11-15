@@ -163,6 +163,17 @@ Agent 接口均要求签名超级管理员：`POST /internal/v1/admin/wechat-bot
 
 `agent/scripts/replay_agent_utterances.py` 用 `tests/fixtures/agent_replay/agent_utterances.json`（虚构说法）回放：与生产共用 `build_system_prompt`、`plugin_tools_visible` 和固定工具目录，只记录模型第一次选择的动作和参数，绝不执行；输出动作命中率、参数命中率和误执行数（选了与期望不同的写类插件），误执行数不为 0 时退出码为 1。`--offline` 只验证流程；`--active` 在 Agent 主机上使用当前激活模型；`--provider/--model` 从对应环境变量读取密钥。
 
+### 业务手册（机器人 Agent 层 P2，迁移 085）
+
+超级管理员在后台“智能模型 → 业务手册”（`/settings/llm/handbook`，不新增固定模块）用平常的话写业务说明。一条说明经过四步才生效：
+
+1. **写**：标题与正文（最多 4000 字），保存为草稿版本。
+2. **编译**：经共用 AI 任务网关（任务 `handbook.compile`，脱敏、校验、`ai_task_runs` 审计）编译为三类内容：术语（`plugin` 指向已安装插件，系统核对；`text` 是普通同义词，标明“系统无法核对，请人工确认”）、说法样例（必须指向现有动作或插件）、规则（`ask_first` 先问再做，只能用于插件；`forbid` 禁止；针对全部动作的规则必须写条件）。含糊或矛盾处列为歧义，现有功能做不到的列为开发需求。校验在 `shared/agent_handbook.py`。
+3. **试跑**：说明里的每个说法问一遍当前模型，生效前、生效后各记录一次选中的动作（用审核人自己的工具目录，只选择不执行），显示命中与改进条数。
+4. **审核生效**：歧义每条都要修改消除或勾选确认，且没有开发需求，超级管理员看中文复述后点生效。
+
+运行时（`agent/agent/handbook.py` 的 `snapshot()`，30 秒缓存，审核/暂停/作废/修改时立即清除，读失败沿用上次结果）：术语只在本句用到时把“术语=含义”附在原话后供代码核对参数（例如“岳麓店”可被核对为批准的完整网点名）；说法样例和带条件的规则作为提示词，只对本轮可见动作给出，并注明不能扩大权限；不带条件的规则由代码强制——`forbid` 让网关拒绝（固定查询直接不调用），`ask_first` 让网关要求本人确认。生效的说明一经修改立即暂停，新版本审核通过才恢复；未修改的暂停可直接恢复。存储为 `agent_handbook_entries` 与 `agent_handbook_versions`（`shared/agent_handbook_repository.py`），接口 `/internal/v1/admin/handbook/*` 仅超级管理员。
+
 Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层检查敏感及内部身份字段。`tests/test_harness_console_boundary.py` 将真实会话服务的创建、回复和刷新恢复结果送入 Console 响应校验，防止两端字段合同不一致导致页面连接失败。
 
 ## 维护归属
@@ -177,6 +188,7 @@ Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层�
 | 微信设备（iLink） | 见上文“微信个人号”一节 |
 | 统一 AI 会话 | `agent/agent/harness_application.py`、`agent/agent/channel_chat.py` |
 | 确定性业务文本查询 | `agent/agent/chat_text_queries.py` |
+| 业务手册 | `shared/agent_handbook.py`、`shared/agent_handbook_repository.py`、`agent/agent/handbook.py`、`agent/agent/handbook_api.py`、`agent/agent/agent_actions/trial.py`、`console/services/handbook.py`、`console/templates/handbook.html`、`console/static/handbook.js` |
 | 对话轨迹与回放评测 | `shared/agent_action_audit.py`、`agent/agent/agent_actions/recorder.py`、`agent/scripts/replay_agent_utterances.py` |
 
 ## 数据升级与发布边界

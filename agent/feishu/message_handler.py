@@ -2646,7 +2646,7 @@ async def _handle_write_confirmation(text: str, *, chat_id: str, sender_id: str)
                           reply_type="agent_write_confirmation_expired")
         return True
     if is_cancel_text(text):
-        await _reply_text(chat_id, f"已取消：{item['reason'].removesuffix('需要你确认后才执行')}没有执行。",
+        await _reply_text(chat_id, f"已取消：{item['reason'].split('需要你确认后才执行')[0]}没有执行。",
                           reply_type="agent_write_confirmation_cancelled")
         return True
     context = _COMMAND_CONTEXT.get()

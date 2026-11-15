@@ -35,6 +35,7 @@ class ServiceV2ProcessRuntime:
         plugin_conversations=None,
         text_queries=None,
         turn_recorder=None,
+        handbook_provider=None,
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
@@ -45,6 +46,7 @@ class ServiceV2ProcessRuntime:
             fixed_handlers=harness_fixed_handlers,
             instance_name_resolver=instance_name_resolver,
             plugin_conversations=plugin_conversations,
+            handbook_provider=handbook_provider,
         )
         self._conversations = HarnessConversationService(
             repository=InMemoryHarnessSessionRepository(),
@@ -68,6 +70,9 @@ class ServiceV2ProcessRuntime:
 
     def harness_tools(self, actor: Actor, request_id: str) -> list[dict[str, str]]:
         return self._harness.public_tools(actor, request_id)
+
+    def selection_tools(self, actor: Actor):
+        return self._harness.selection_tools(actor)
 
     def harness_status(self) -> HarnessRuntimeStatus:
         return self._harness.status()

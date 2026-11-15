@@ -429,6 +429,7 @@ class HarnessRuntime:
         launcher: BubblewrapHarnessModelLauncher | None = None,
         instance_name_resolver: Callable[[str], str] | None = None,
         plugin_conversations=None,
+        handbook_provider: Callable[[], object] | None = None,
     ) -> None:
         if not isinstance(backend_availability, RuntimeContributionBackendAvailability):
             raise TypeError("backend_availability is invalid")
@@ -449,6 +450,7 @@ class HarnessRuntime:
         self._fixed_handlers = dict(fixed_handlers)
         self._instance_name_resolver = instance_name_resolver
         self._plugin_conversations = plugin_conversations
+        self._handbook_provider = handbook_provider
         self._launcher = launcher or BubblewrapHarnessModelLauncher()
         self._lock = RLock()
         self._started = False
@@ -583,7 +585,33 @@ class HarnessRuntime:
                 llm=self._llm,
                 plugin_turn=(self._plugin_conversations.turn(actor=actor, source=self._source(actor), request_id=request_id)
                              if self._plugin_conversations is not None else None),
+                handbook=self._handbook_provider() if self._handbook_provider is not None else None,
             )
+
+    def selection_tools(self, actor: Actor) -> tuple[list[dict], dict[str, str], dict[str, str], str]:
+        """The model tools this person would see, for handbook compile/trial (agent layer P2).
+
+        Returns (model tools, model tool name -> action id, action id -> title, clock hint).
+        Plugin actions use the id ``plugin:<automation_id>``.
+        """
+        from uuid import uuid4
+
+        from agent.harness_online import _ASK_USER_TOOL, ASK_USER, _model_tools
+        from agent.shipment_conversation import ShipmentConversation
+
+        self._require_ready()
+        with self._catalog_snapshot():
+            descriptors = visible_descriptors(self._catalog(actor, str(uuid4())))
+            tools, names = _model_tools(descriptors)
+            titles = {descriptor.tool_id: descriptor.title for descriptor in descriptors}
+            if self._plugin_conversations is not None:
+                for target in self._plugin_conversations.targets(actor=actor, source=self._source(actor)):
+                    tools.append(target.model_tool())
+                    names[target.handle] = f"plugin:{target.automation_id}"
+                    titles[f"plugin:{target.automation_id}"] = target.title
+        tools.append(_ASK_USER_TOOL)
+        names[ASK_USER] = ASK_USER
+        return tools, names, titles, ShipmentConversation().clock_hint()
 
     @staticmethod
     def _source(actor: Actor) -> str:

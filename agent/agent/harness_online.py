@@ -21,6 +21,7 @@ from agent.direct_tool_router import is_cancel_text, is_confirm_text
 from agent.harness.sidecar import SidecarResult
 from agent.llm_client import LLMClient
 from shared.agent_action_audit import ActionDecision
+from shared.agent_handbook import HandbookSnapshot
 from shared.redaction import is_sensitive_key, redact_text
 from agent.agent_actions.recorder import audit_before_write
 from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS, ConversationPluginRequest, PluginConversationTurn
@@ -256,7 +257,8 @@ def _run_chat(
 class OnlineHarnessSidecar:
     """Run one bounded active-model conversation with closed read-only tools."""
 
-    def __init__(self, *, catalog: HarnessToolCatalog, llm: LLMClient, plugin_turn: PluginConversationTurn | None = None) -> None:
+    def __init__(self, *, catalog: HarnessToolCatalog, llm: LLMClient, plugin_turn: PluginConversationTurn | None = None,
+                 handbook: HandbookSnapshot | None = None) -> None:
         if not isinstance(catalog, HarnessToolCatalog):
             raise TypeError("catalog must be HarnessToolCatalog")
         if not isinstance(llm, LLMClient):
@@ -269,6 +271,8 @@ class OnlineHarnessSidecar:
         self._completed_result = None
         self._decisions: list[ActionDecision] = []
         self._plugin_requests: tuple[ConversationPluginRequest, ...] = ()
+        self._handbook = handbook if handbook is not None and not handbook.empty else None
+        self._titles: dict[str, str] = {}
 
     def _decide(self, action_id: str, effect: str, decision: str, *, title: str = "", arguments=None,
                 invocation_id: str | None = None, error_code: str | None = None) -> None:
@@ -334,9 +338,17 @@ class OnlineHarnessSidecar:
         model_tools.append(_ASK_USER_TOOL)
         if self._plugins is not None:
             model_tools.extend(self._plugins.model_tools())
-        transcript: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt(
-            clock_hint=self._shipments.clock_hint(), query_context=self.query_context,
-            with_plugins=self._plugins is not None)}]
+        self._titles = {descriptor.tool_id: descriptor.title for descriptor in descriptors}
+        if self._plugins is not None:
+            self._titles.update({f"plugin:{target.automation_id}": target.title for target in self._plugins.choices.values()})
+        system_prompt = build_system_prompt(clock_hint=self._shipments.clock_hint(), query_context=self.query_context,
+                                            with_plugins=self._plugins is not None)
+        if self._handbook is not None:
+            system_prompt += self._handbook.prompt_section(self._titles)
+        transcript: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        # Approved handbook terms the person used, appended for code-side grounding only.
+        grounding_message = (self._handbook.expand_message(messages[-1].content, titles=self._titles)
+                             if self._handbook is not None else messages[-1].content)
         transcript.extend(
             {"role": item.role, "content": _minimize_text(item.content)}
             for item in messages
@@ -421,11 +433,18 @@ class OnlineHarnessSidecar:
                 return self._ask(asked[0], calls)
             plugin_calls = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
                             if self._plugins is not None and tool_id in self._plugins.choices]
-            selected = self._decide_plugins(plugin_calls, messages[-1].content) if plugin_calls else ()
+            selected = self._decide_plugins(plugin_calls, grounding_message) if plugin_calls else ()
             if isinstance(selected, SidecarResult):
                 return selected
             for call_id, tool_id, arguments in sorted(resolved_calls, key=lambda item: item[1] != "knowledge.search"):
                 if self._plugins is not None and tool_id in self._plugins.choices:
+                    continue
+                forbidden = self._handbook.enforced(tool_id, "forbid") if self._handbook is not None else None
+                if forbidden:
+                    transcript.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps({
+                        "ok": False, "code": "HANDBOOK_FORBIDDEN", "message": forbidden}, ensure_ascii=False)})
+                    self._decide(tool_id, "read", "REJECT", arguments=arguments, error_code="HANDBOOK_FORBIDDEN")
+                    calls += 1
                     continue
                 if tool_id == "shipment.query":
                     if _RULE_BOUND_QUERY.search(messages[-1].content) and not any(
@@ -436,7 +455,7 @@ class OnlineHarnessSidecar:
                         calls += 1
                         continue
                     try:
-                        arguments = self._shipments.prepare(arguments, message=messages[-1].content)
+                        arguments = self._shipments.prepare(arguments, message=grounding_message)
                     except ShipmentQueryError as exc:
                         self._decide(tool_id, "read", "CLARIFY", arguments=arguments, error_code="SHIPMENT_QUERY_INCOMPLETE")
                         return self._result(content=str(exc), tool_calls=calls)
@@ -483,7 +502,7 @@ class OnlineHarnessSidecar:
 
     def _decide_plugins(self, plugin_calls, message):
         """Gateway decisions for the chosen plugins; any question or refusal stops them all."""
-        decided = self._plugins.select(plugin_calls, message=message)
+        decided = self._plugins.select(plugin_calls, message=message, handbook=self._handbook)
         blocked = [(target, decision) for target, decision in decided if not decision.runs]
         if blocked:
             lines = []
@@ -495,7 +514,8 @@ class OnlineHarnessSidecar:
                 lines.append(decision.question if decision.decision == "CLARIFY" else f"{target.title}：{decision.reason}，没有执行。")
             self._completed_result = self._result(content="\n".join(lines), tool_calls=len(plugin_calls))
             return self._completed_result
-        return tuple(ConversationPluginRequest(target, decision.arguments, confirm=decision.decision == "CONFIRM")
+        return tuple(ConversationPluginRequest(target, decision.arguments, confirm=decision.decision == "CONFIRM",
+                                               reason=decision.reason if decision.decision == "CONFIRM" else "")
                      for target, decision in decided)
 
     def _start_plugins(self, requests, calls):

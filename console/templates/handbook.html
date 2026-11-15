@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}业务手册 · {{ app_title }}{% endblock %}
+{% block breadcrumb %}业务手册{% endblock %}
+{% block subtitle %}智能模型 / 机器人业务手册{% endblock %}
+{% block body_class %}handbook-page{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261115-p2">{% endblock %}
+
+{% block page_actions %}
+<a class="ghost-btn" data-console-navigate href="/settings/llm"><i data-feather="arrow-left"></i>返回智能模型</a>
+{% endblock %}
+
+{% block content %}
+<section class="handbook" data-handbook aria-labelledby="handbook-list-title">
+  <p class="handbook__lead">用平常的话写业务说明，机器人据此理解大家的说法。一条说明要经过<b>编译 → 系统校验 → 试跑 → 超级管理员审核</b>才生效；生效后再修改会<b>立即暂停</b>，直到新版本审核通过。说明只能帮助机器人理解，<b>不能扩大任何人的权限</b>；现有功能做不到的要求会整理成开发需求，不会生效。</p>
+  <div class="handbook__status" data-handbook-status role="status" aria-live="polite"></div>
+
+  <div class="handbook__layout">
+    <aside class="handbook__panel handbook__list" aria-labelledby="handbook-list-title">
+      <div class="handbook__panel-head">
+        <h2 id="handbook-list-title">业务说明</h2>
+        <button class="ghost-btn" type="button" data-handbook-new><i data-feather="plus"></i><span>新建</span></button>
+      </div>
+      <ul class="handbook__entries" data-handbook-entries></ul>
+    </aside>
+
+    <section class="handbook__panel handbook__editor" aria-labelledby="handbook-editor-title" data-handbook-editor>
+      <div class="handbook__panel-head">
+        <h2 id="handbook-editor-title" data-handbook-editor-title>新建业务说明</h2>
+        <span class="handbook__badge" data-handbook-entry-status hidden></span>
+      </div>
+      <label class="handbook__field"><span>标题</span>
+        <input type="text" maxlength="100" data-handbook-title placeholder="例如：网点简称与报价说法">
+      </label>
+      <label class="handbook__field"><span>说明</span>
+        <textarea rows="8" maxlength="4000" data-handbook-body placeholder="例如：大家说“岳麓店”就是长沙岳麓区网点。“报个价”“问个价”都是要三平台报价。到货清单同步只能在下午 3 点后由仓库主管发起，其他人要先问。"></textarea>
+      </label>
+      <div class="handbook__actions">
+        <button class="primary-btn" type="button" data-handbook-save><i data-feather="save"></i><span>保存说明</span></button>
+        <button class="ghost-btn" type="button" data-handbook-compile hidden><i data-feather="cpu"></i><span>交给 AI 编译</span></button>
+      </div>
+      <div data-handbook-result hidden></div>
+    </section>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/handbook.js?v=20261115-p2"></script>
+{% endblock %}

@@ -38,7 +38,7 @@ async def _run_one(handler: Any, request: ConversationPluginRequest, chat_id: st
             await handler._reply_text(chat_id, f"{target.title}需要确认后执行，但当前消息身份不完整，本次没有执行。",
                                       reply_type="agent_write_confirmation_rejected")
             return
-        reason = f"{request.describe()}需要你确认后才执行"
+        reason = request.confirmation_reason()
         handler._WRITE_CONFIRMATIONS[(context.chat_id, context.actor_id)] = {
             "text": target.command, "receive_id": chat_id, "conversation_target": target,
             "runtime_inputs": inputs, "quote_result": quote, "reason": reason,
