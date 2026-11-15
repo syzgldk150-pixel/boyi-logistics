@@ -131,3 +131,43 @@ td > .identity-time { margin-top: 2px; color: var(--text-muted); font-size: var(
 .account-admin-panel .identity-person-table th:nth-child(4) { width: 19%; }
 .account-admin-panel .identity-person-table th:nth-child(5) { width: 12%; }
 .account-admin-panel .identity-person-table th:nth-child(6) { width: 16%; }
+
+/* 2026-11-15 settings card (rules 6.1): white head 50 + 1px line, note 36, white column row 32. */
+.identity-card-head { min-height: 50px; height: 50px; padding: 0 14px 0 16px; background: var(--bg-surface); border-bottom: 1px solid var(--line-default); }
+.identity-card-head h2 { align-items: baseline; font-size: 15px; color: var(--text-primary); }
+.identity-card-count { font-size: 12.5px; }
+.identity-card-head :is(.ghost-btn, .primary-btn) { height: 28px; min-height: 28px; padding: 0 12px; font-size: 12.5px; }
+.identity-card-head > .identity-card-note, .account-admin-panel > .identity-card-note { display: flex; align-items: center; min-height: 36px; margin: 0; padding: 8px 16px; line-height: 1.5; }
+.account-admin-panel > .identity-challenge { margin-top: 0; }
+.account-admin-panel .account-table-wrap { border-top: 0; }
+.account-admin-panel .account-table th { width: auto; height: 32px; padding: 0 16px; background: var(--bg-surface); color: var(--text-muted); font-size: 11.5px; font-weight: 500; border-bottom: 1px solid var(--line-subtle); }
+.account-admin-panel .account-table th:nth-child(n) { width: auto; }
+.account-admin-panel .account-table td { height: 58px; border-bottom: 1px solid var(--line-subtle); }
+.account-admin-panel .identity-access-table { min-width: 960px; }
+.account-admin-panel .account-table tr.is-revoked td { color: var(--text-muted); }
+.identity-source { color: var(--text-secondary); font-size: 12.5px; }
+.identity-source .identity-link-btn { color: var(--text-secondary); font-size: 12.5px; text-align: left; }
+.identity-access-table .identity-chip { height: 20px; background: var(--bg-subtle); color: var(--text-secondary); font-size: 11.5px; white-space: nowrap; }
+.identity-access-table .identity-time { color: var(--text-secondary); font-size: 12.5px; }
+.identity-access-table .identity-time .muted-copy { font-family: inherit; font-size: var(--fs-tiny); }
+.identity-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
+.identity-status::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: currentColor; flex: none; }
+.identity-role-list { border-top: 0; }
+.identity-role-row { min-height: 50px; padding: 6px 16px; }
+.identity-role-row strong { min-width: 122px; }
+.identity-role-item { border-top: 1px solid var(--line-subtle); }
+.identity-role-item.is-editing > .identity-role-row { background: var(--bg-surface); }
+.identity-role-item.is-editing > .identity-role-editor { border-top: 1px solid var(--line-default); padding: 16px 16px 18px; }
+.identity-chip--dark { background: var(--text-primary); color: var(--text-on-dark); }
+.identity-permission strong, .identity-matrix-row strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.identity-menu { position: relative; }
+.identity-menu-list { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: grid; width: 200px; padding: 6px; border: 1px solid var(--line-default); border-radius: var(--r-block); background: var(--bg-surface); box-shadow: var(--shadow-overlay); }
+.identity-menu-list[hidden] { display: none; }
+.identity-menu-list button { display: grid; gap: 2px; padding: 8px 10px; border: 0; border-radius: var(--r-small-button); background: none; text-align: left; cursor: pointer; }
+.identity-menu-list button:hover, .identity-menu-list button:focus-visible { background: var(--bg-selected); outline: none; }
+.identity-menu-list strong { color: var(--text-primary); font-size: var(--fs-body); font-weight: 500; }
+.identity-menu-list small { color: var(--text-muted); font-size: var(--fs-caption); }
+@media (max-width: 639px) { .identity-card-head { height: auto; min-height: 50px; padding: 8px 14px 8px 16px; } }
+.account-admin-panel td.account-identity { display: table-cell; }
+.account-admin-panel td.account-identity > * { display: block; }
+body .account-admin-panel + .account-admin-panel { margin-top: 8px; }

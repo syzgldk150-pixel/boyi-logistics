@@ -2,9 +2,9 @@
 
 {% block title %}后台账号管理 - {{ app_title }}{% endblock %}
 {% block breadcrumb %}系统管理{% endblock %}
-{% block subtitle %}身份权限、后台账号、飞书绑定与微信设备{% endblock %}
+{% block subtitle %}人员、身份与接入账号{% endblock %}
 
-{% block head %}<link rel="stylesheet" href="/static/identity-settings.css?v=20261114-wechat1">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/identity-settings.css?v=20261115-cards">{% endblock %}
 {% block content %}
 {% include 'identity_management.html' %}
 {% endblock %}
@@ -24,6 +24,17 @@
       dialog.querySelectorAll("[data-identity-dialog-close]").forEach((button) => button.addEventListener("click", () => dialog.close()));
       dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
     });
+
+    const menu = root.querySelector("[data-identity-menu]");
+    if (menu) {
+      const toggle = menu.querySelector("[data-identity-menu-toggle]");
+      const list = menu.querySelector("[data-identity-menu-list]");
+      const setOpen = (open) => { list.hidden = !open; toggle.setAttribute("aria-expanded", String(open)); };
+      toggle.addEventListener("click", () => { setOpen(list.hidden); if (!list.hidden) list.querySelector("button")?.focus(); });
+      list.querySelectorAll("button").forEach((item) => item.addEventListener("click", () => setOpen(false)));
+      document.addEventListener("click", (event) => { if (!menu.contains(event.target)) setOpen(false); });
+      menu.addEventListener("keydown", (event) => { if (event.key === "Escape" && !list.hidden) { setOpen(false); toggle.focus(); } });
+    }
 
     root.querySelectorAll("[data-wechat-limit]").forEach((box) => {
       const toggle = box.querySelector("[data-wechat-limit-toggle]");
@@ -146,7 +157,7 @@
         const chip = item.querySelector("[data-identity-role-chip]");
         if (chip) { chip.textContent = "编辑中"; chip.classList.add("identity-chip--dark"); }
         edit.hidden = true;
-        if (editingLabel) { editingLabel.hidden = false; editingLabel.textContent = `· 正在编辑「${edit.getAttribute("data-identity-role-edit") || ""}」`; }
+        if (editingLabel) { editingLabel.hidden = false; editingLabel.textContent = ` · 正在编辑「${edit.getAttribute("data-identity-role-edit") || ""}」`; }
         if (cancelButton) cancelButton.hidden = false;
         if (addButton) addButton.hidden = true;
         form?.querySelector("input[name=name]")?.focus();
