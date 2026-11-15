@@ -20,6 +20,9 @@ RULE_STATUSES = ("DRAFT", "APPROVED")
 OUTCOMES = ("AMOUNT", "NEGOTIATE", "NOT_PROVIDED", "MANUAL")
 GOODS_TYPES = ("general", "mattress", "pallet")
 CENT = Decimal("0.01")
+# Which date of a waybill picks the rule version: its billing (开单) date,
+# confirmed by the user on 2026-11-16. Callers pass that date to select_rule.
+VERSION_DATE_BASIS = "billing_date"
 
 
 class FeeRuleError(ValueError):
@@ -110,7 +113,7 @@ class FeeResult:
 
 
 def select_rule(rules: Iterable[FeeRuleSet], *, fee_kind: str, business_date: date) -> FeeRuleSet:
-    """The approved rule set in force on ``business_date``; none means nobody reports an amount."""
+    """The approved rule set in force on ``business_date`` (the waybill's 开单日期); none means no amount."""
     candidates = [rule for rule in rules if rule.fee_kind == fee_kind and rule.status == "APPROVED"
                   and rule.effective_from is not None and rule.effective_from <= business_date]
     if not candidates:
@@ -204,6 +207,6 @@ def boundary_table(rule: FeeRuleSet, *, weight: Decimal = Decimal("200")) -> lis
 
 
 __all__ = [
-    "FeeResult", "FeeRuleError", "FeeRuleSet", "GOODS_TYPES", "OUTCOMES", "RULE_STATUSES", "Rate",
+    "FeeResult", "FeeRuleError", "FeeRuleSet", "GOODS_TYPES", "OUTCOMES", "RULE_STATUSES", "Rate", "VERSION_DATE_BASIS",
     "UPSTAIRS_V61_DRAFT", "UpstairsInputs", "boundary_table", "calculate_upstairs", "check_inputs", "select_rule",
 ]
