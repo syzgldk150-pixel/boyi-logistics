@@ -200,6 +200,14 @@ def _match_details(matches):
     return details
 
 
+def _notice_details(matches):
+    notices = {}
+    for delivery, match in matches:
+        if match.get("notice"):
+            notices.setdefault(match["notice"], []).append(delivery)
+    return [f"{'/'.join(modes)}原页弹窗提示：{text}" for text, modes in notices.items()]
+
+
 def _address(client, form, request, mode, match):
     body = {
         "BuyerProvince": "", "BuyerCity": "", "BuyerArea": "",
@@ -222,8 +230,17 @@ def _address(client, form, request, mode, match):
         "site_name": row["target_center"].strip() if isinstance(row.get("target_center"), str) else "",
         "details": _site_details(row),
     })
-    if str(row.get("info")) not in {"0", "1"}:
-        raise QuoteError("韵达目的网点存在服务限制，请在原页核实")
+    # Original page (read 2026-11-15): info=2 alerts servicemsg (e.g. Hainan
+    # sea-freight goods notice) and still fills the site, so quoting continues and
+    # the alert is surfaced first. Other values (3 no site, 4/5 payment/COD,
+    # 6 closed line) stop or need input on the page.
+    info = str(row.get("info"))
+    reason = row.get("servicemsg").strip() if isinstance(row.get("servicemsg"), str) else ""
+    if info == "2" and reason:
+        match["notice"] = reason
+        match["details"] = [line for line in match["details"] if line != f"服务限制：{reason}"]
+    if info not in {"0", "1", "2"}:
+        raise QuoteError(f"韵达目的网点不可直接开单：{reason or '平台未说明原因'}，请在原页核实")
     code = _scalar(row.get("target_center_code"), "目的网点")
     if code in {"BA", "OR", "RF", "AE", "AY"}:
         raise QuoteError("韵达地址属于盲区、超区或不可报价范围")
@@ -331,7 +348,7 @@ def quote(client, request):
             option_details.append(mode_options)
         except QuoteError as exc:
             warnings.append(f"韵达{delivery}：{exc}")
-    details = _match_details(matches) + option_details
+    details = _notice_details(matches) + _match_details(matches) + option_details
     if not quotes:
         raise QuoteError("；".join(warnings), details=details)
     result = {"quotes": quotes, "warnings": warnings, "details": details}

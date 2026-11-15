@@ -201,6 +201,23 @@ def test_unserviceable_area_does_not_produce_a_price(code):
         yunda.quote(client, REQUEST)
 
 
+def test_site_notice_info_2_still_quotes_and_keeps_notice():
+    site = {**SITE, "info": "2", "servicemsg": "虚构海运货品提示，请谨慎开单"}
+    result = yunda.quote(Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}}), REQUEST)
+    assert len(result["quotes"]) == 2
+    assert result["details"][0] == "自提/派送原页弹窗提示：虚构海运货品提示，请谨慎开单"
+    assert not any(line.startswith("服务限制") for line in result["details"])
+
+
+@pytest.mark.parametrize("info", ["3", "4", "5", "6"])
+def test_blocking_site_info_reports_platform_reason(info):
+    site = {**SITE, "info": info, "servicemsg": "虚构线路已关停"}
+    client = Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}})
+    with pytest.raises(QuoteError, match="不可直接开单：虚构线路已关停"):
+        yunda.quote(client, REQUEST)
+    assert not any(name == "yunda_price" for name, _, _ in client.calls)
+
+
 def test_one_delivery_mode_failure_keeps_other_fresh_mode():
     client = Client(replacements={("yunda_price", "111"): {"info": 0, "data": "synthetic failure"}})
     result = yunda.quote(client, REQUEST)
@@ -368,7 +385,7 @@ def test_malformed_optional_details_are_reported_without_losing_prices():
 def test_restricted_site_details_survive_failure_of_both_modes():
     site = {**SITE, "info": "3", "servicemsg": "虚构站点暂停服务", "LimitingMsg": "虚构道路限制"}
     client = Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}})
-    with pytest.raises(QuoteError, match="服务限制") as caught:
+    with pytest.raises(QuoteError, match="不可直接开单：虚构站点暂停服务") as caught:
         yunda.quote(client, REQUEST)
     assert "自提/派送匹配网点：虚构网点甲" in caught.value.details
     assert "服务限制：虚构站点暂停服务" in caught.value.details
