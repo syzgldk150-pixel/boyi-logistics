@@ -34,6 +34,7 @@ class ServiceV2ProcessRuntime:
         instance_name_resolver: Callable[[str], str] | None = None,
         plugin_conversations=None,
         text_queries=None,
+        turn_recorder=None,
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
@@ -52,6 +53,7 @@ class ServiceV2ProcessRuntime:
             plugin_conversations=plugin_conversations,
             identity_access=getattr(policy_service, "identity_access", None),
             text_queries=text_queries,
+            turn_recorder=turn_recorder,
         )
         self._ingress = ServiceV2ManagedIngress(
             policy_service=policy_service,

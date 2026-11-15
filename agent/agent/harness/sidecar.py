@@ -40,6 +40,10 @@ class SidecarResult:
     plugin_invocations: tuple[Mapping[str, Any], ...] = ()
     # Internal channel handoff; never included in public HTTP receipts.
     plugin_requests: tuple[object, ...] = ()
+    # Internal audit trail (agent layer P0): one entry per action decided in
+    # this turn and the active model. Never included in public receipts.
+    decisions: tuple[object, ...] = ()
+    model: str | None = None
 
     def __post_init__(self) -> None:
         if (

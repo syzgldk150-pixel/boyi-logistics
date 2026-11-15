@@ -14,6 +14,7 @@ production fallback.
 from __future__ import annotations
 
 import copy
+import time
 import uuid
 from dataclasses import dataclass, replace
 from threading import RLock
@@ -26,7 +27,8 @@ from agent.harness.sessions import InMemoryHarnessSessionRepository
 from agent.harness.sidecar import SidecarResult
 from agent.orchestration.models import Actor, ActorType, OrchestrationError
 from shared.redaction import redact_text
-from shared.identity_permissions import tool_permission, plugin_permission
+from shared.agent_action_audit import ConversationTurn, channel_of
+from shared.identity_permissions import in_private_chat, tool_permission, plugin_permission
 from shared.shipment_metrics import QUERY_KEYS as SHIPMENT_QUERY_KEYS
 
 
@@ -235,6 +237,7 @@ class HarnessConversationService:
         plugin_conversations=None,
         identity_access=None,
         text_queries=None,
+        turn_recorder=None,
     ) -> None:
         if not isinstance(repository, InMemoryHarnessSessionRepository):
             raise TypeError("HarnessConversationService requires the memory-only repository")
@@ -263,6 +266,42 @@ class HarnessConversationService:
         self._plugin_conversations = plugin_conversations
         self._identity_access = identity_access
         self._text_queries = text_queries
+        self._turn_recorder = turn_recorder
+
+    def _record_turn(self, actor: Actor, *, turn_id: str, message: str, started: float,
+                     result: SidecarResult | None, fixed: bool, error_code: str | None) -> None:
+        """Hand one finished turn to the audit (agent layer P0); never affects the reply."""
+        if self._turn_recorder is None:
+            return
+        try:
+            decisions = tuple(getattr(result, "decisions", ()) or ())
+            kinds = {item.decision for item in decisions}
+            if error_code:
+                outcome = "ERROR"
+            elif fixed:
+                outcome = "FIXED"
+            elif "CONFIRM" in kinds or "REVIEW" in kinds:
+                outcome = "CONFIRM"
+            elif any(item.decision == "EXECUTE" and item.action_id.startswith("plugin:") for item in decisions):
+                outcome = "PLUGIN"
+            elif "EXECUTE" in kinds:
+                outcome = "READ"
+            elif "CLARIFY" in kinds:
+                outcome = "CLARIFY"
+            elif "REJECT" in kinds:
+                outcome = "REJECTED"
+            else:
+                outcome = "REPLY"
+            turn = ConversationTurn(
+                turn_id=turn_id, actor_id=actor.actor_id, channel=channel_of(actor.actor_type.value, actor.actor_id),
+                chat_scope="private" if in_private_chat() else "group", message_text=message, outcome=outcome,
+                model=getattr(result, "model", None), tool_calls=getattr(result, "tool_calls", 0) or 0,
+                duration_ms=int((time.monotonic() - started) * 1000), error_code=error_code, decisions=decisions,
+            )
+            self._turn_recorder.submit(turn, actor=actor)
+        except Exception:  # the audit never changes what the person sees
+            import logging
+            logging.getLogger(__name__).warning("agent turn audit could not be prepared", exc_info=True)
 
     def _chat_actor(self, actor: Actor) -> Actor:
         # Conversation always uses the agent permission set, also from the
@@ -436,15 +475,23 @@ class HarnessConversationService:
                 if callable(bind_context):
                     bind_context(self._session_query_context.get(safe_session_id))
                 self._pending_sidecars[assistant_id] = sidecar
+            started = time.monotonic()
             try:
                 result = fixed_result if fixed_result is not None else sidecar.run(
                     messages=session_with_user.messages,
                     timeout_seconds=self._timeout_seconds,
                 )
-            except HarnessError:
+            except HarnessError as exc:
+                self._record_turn(bound_actor, turn_id=assistant_id, message=message, started=started,
+                                  result=None, fixed=False, error_code=exc.code)
                 raise
             except Exception as exc:
+                self._record_turn(bound_actor, turn_id=assistant_id, message=message, started=started,
+                                  result=None, fixed=False, error_code="HARNESS_SIDECAR_FAILED")
                 raise _error("Harness sidecar failed", "HARNESS_SIDECAR_FAILED") from exc
+            if isinstance(result, SidecarResult) and not clearing:
+                self._record_turn(bound_actor, turn_id=assistant_id, message=message, started=started,
+                                  result=result, fixed=fixed_result is not None, error_code=None)
             if not isinstance(result, SidecarResult):
                 raise _error("Harness sidecar returned an invalid result", "HARNESS_PROTOCOL_INVALID")
             assistant_message = HarnessMessage(

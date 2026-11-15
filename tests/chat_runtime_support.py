@@ -10,7 +10,7 @@ from agent.harness_online import OnlineHarnessSidecar
 from agent.llm_client import LLMClient
 
 
-def configure_chat(core, *, plugins=None, handlers=None, authority=None, include_fixed=False):
+def configure_chat(core, *, plugins=None, handlers=None, authority=None, include_fixed=False, turn_recorder=None):
     if authority is not None:
         core.identity_access = authority
     model = LLMClient()
@@ -30,6 +30,7 @@ def configure_chat(core, *, plugins=None, handlers=None, authority=None, include
         return OnlineHarnessSidecar(catalog=catalog, llm=model,
             plugin_turn=plugins.turn(actor=actor, source="feishu" if actor.actor_type.value == "feishu_user" else "console", request_id=request_id) if plugins else None)
     service = HarnessConversationService(repository=InMemoryHarnessSessionRepository(), sidecar_factory=sidecar,
-        timeout_seconds=30, identity_access=authority, text_queries=ChatTextQueries(reader, today=core._today_provider))
+        timeout_seconds=30, identity_access=authority, text_queries=ChatTextQueries(reader, today=core._today_provider),
+        turn_recorder=turn_recorder)
     core.configure_conversations(service)
     return service, calls

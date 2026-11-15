@@ -146,6 +146,12 @@ Agent 接口均要求签名超级管理员：`POST /internal/v1/admin/wechat-bot
 
 不同会话可以并行；同一会话内部保持消息顺序，同一事件的重复投递取回同一次结果。会话当前存于内存，插件实际 Invocation 存入数据库。
 
+### 对话轨迹与评测（机器人 Agent 层 P0，迁移 084）
+
+每轮自然对话（后台 AI 助手、飞书、微信）结束后写一行 `agent_conversation_turns`：人员、渠道、私聊或群聊（未知按群聊）、经 `shared/redaction.py` 与手机号/邮箱遮盖后的原话（最多 2000 字）、模型、结局（`REPLY/READ/PLUGIN/CONFIRM/CLARIFY/FIXED/REJECTED/ERROR`）、调用次数、耗时与错误码；本轮每个动作判定写一行 `agent_action_decisions`（动作、读写类型、最小化参数、`EXECUTE/CONFIRM/REVIEW/CLARIFY/REJECT`、插件执行编号）。判定由 `harness_online.py` 在选择工具或插件时生成，经 `SidecarResult.decisions`（宿主内部字段，不进 HTTP 回执）交给会话服务；会话服务把轮次交给组合根注入的 `agent/agent/agent_actions/recorder.py`，由单个后台线程写库，写失败只记日志、不影响回复。仓储为 `shared/agent_action_audit.py`。P0 不改变任何回答或执行行为。
+
+`agent/scripts/replay_agent_utterances.py` 用 `tests/fixtures/agent_replay/agent_utterances.json`（虚构说法）回放：与生产共用 `build_system_prompt`、`plugin_tools_visible` 和固定工具目录，只记录模型第一次选择的动作和参数，绝不执行；输出动作命中率、参数命中率和误执行数（选了与期望不同的写类插件），误执行数不为 0 时退出码为 1。`--offline` 只验证流程；`--active` 在 Agent 主机上使用当前激活模型；`--provider/--model` 从对应环境变量读取密钥。
+
 Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层检查敏感及内部身份字段。`tests/test_harness_console_boundary.py` 将真实会话服务的创建、回复和刷新恢复结果送入 Console 响应校验，防止两端字段合同不一致导致页面连接失败。
 
 ## 维护归属
@@ -160,6 +166,7 @@ Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层�
 | 微信设备（iLink） | 见上文“微信个人号”一节 |
 | 统一 AI 会话 | `agent/agent/harness_application.py`、`agent/agent/channel_chat.py` |
 | 确定性业务文本查询 | `agent/agent/chat_text_queries.py` |
+| 对话轨迹与回放评测 | `shared/agent_action_audit.py`、`agent/agent/agent_actions/recorder.py`、`agent/scripts/replay_agent_utterances.py` |
 
 ## 数据升级与发布边界
 

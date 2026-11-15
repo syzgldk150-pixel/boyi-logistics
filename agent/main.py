@@ -869,7 +869,12 @@ async def lifespan(app: FastAPI):
     )
     bind_service_v2_feishu_dispatcher(service_v2_feishu_dispatcher)
     harness_gateway = build_read_only_harness_gateway(runtime, finance_summary=business_finance_query.run, invocations=direct_invocations)
+    from agent.agent_actions.recorder import TurnRecorder
+    from shared.agent_action_audit import AgentActionAuditRepository
+    agent_turn_recorder = TurnRecorder(AgentActionAuditRepository(runtime.memory.connection_factory),
+                                       identity_access=project_policy_service.identity_access)
     process_service_v2_runtime = ServiceV2ProcessRuntime(
+        turn_recorder=agent_turn_recorder,
         plugin_conversations=plugin_conversations,
         text_queries=build_chat_text_queries(runtime),
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,

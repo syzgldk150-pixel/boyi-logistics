@@ -9,6 +9,8 @@ updated: 2026-11-15
 
 # 数据库迁移
 
+`084_agent_conversation_audit.sql` 新建运行库 `agent_conversation_turns`（每轮自然对话一行：人员、渠道、私聊/群聊、脱敏原话、模型、结局、耗时、错误码）与 `agent_action_decisions`（每个动作判定一行，`(turn_id, seq)` 唯一）。只有 `CREATE TABLE IF NOT EXISTS`，可重复执行；新旧代码兼容（旧代码不写这两张表），可只回退源码。写入方为 `shared/agent_action_audit.py`，说明见 [身份与统一对话](../../docs/identity_and_unified_chat.md#对话轨迹与评测机器人-agent-层-p0迁移-084)。
+
 `067_retire_finance_statement_ledger.sql` 退役融辉账户收支账本（用户确认生产从未在业务中使用，不做转换）：先删除运行库 23 个 `finance_*` 视图，再删除 `finance_db` 中 004/009/039/062/063 建立的全部 `finance_*` 实体表，最后删除 `module_data_sources` 中 `module='finance'` 的来源及其 `module_data_source_accounts` 绑定，客服来源不受影响。执行器先绑定实体库名，经 `scripts/migration_row_export.py` 在每条 `DROP TABLE`/`DELETE` 前把将被删除的行写入迁移备份目录的 JSON-lines 导出（`DROP VIEW` 不含数据，不导出），完成后重建运行库视图；`scripts/migration_055_domain_databases.py` 只为仍存在的财务表投影视图。旧融辉统计查询抓取插件仍在运行时拒绝执行。每步可重复执行。总账新表由后续迁移加入。
 
 `068_finance_gl_core.sql` 在 `finance_db` 新建总账内核 8 张表：`finance_accounts`、`finance_settings`、`finance_periods`、`finance_voucher_sequences`、`finance_vouchers`、`finance_voucher_lines`、`finance_gl_entries`、`finance_events`。同时以 `INSERT IGNORE` 预置《小企业会计准则》科目和默认设置（启用月为空）。执行器走 055 之后的通用路径：绑定库名、执行，再按 `LATER_FINANCE_TABLES` 重建运行库视图。全部语句可重复执行。
