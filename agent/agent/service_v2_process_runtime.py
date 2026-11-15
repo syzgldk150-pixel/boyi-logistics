@@ -36,6 +36,7 @@ class ServiceV2ProcessRuntime:
         text_queries=None,
         turn_recorder=None,
         handbook_provider=None,
+        business_actions=None,
     ) -> None:
         self._availability = backend_availability
         self._harness = HarnessRuntime(
@@ -47,6 +48,7 @@ class ServiceV2ProcessRuntime:
             instance_name_resolver=instance_name_resolver,
             plugin_conversations=plugin_conversations,
             handbook_provider=handbook_provider,
+            business_actions=business_actions,
         )
         self._conversations = HarnessConversationService(
             repository=InMemoryHarnessSessionRepository(),

@@ -893,6 +893,8 @@ async def lifespan(app: FastAPI):
     process_service_v2_runtime = ServiceV2ProcessRuntime(
         turn_recorder=agent_turn_recorder,
         handbook_provider=agent_handbook_service.snapshot,
+        business_actions=_agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
+                                                 project_policy_service.identity_access),
         plugin_conversations=plugin_conversations,
         text_queries=build_chat_text_queries(runtime),
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
@@ -1617,6 +1619,50 @@ def _require_console_admin_request(request: Request) -> Actor:
             "This control-plane request requires an authenticated Console administrator",
         )
     return actor
+
+
+def _agent_business_actions(business_service, runtime, loop, identity_access):
+    """Back-office actions for conversations (agent layer P3) over the same direct business service."""
+    from agent.agent_actions.business_actions import BusinessActions
+    from agent.tms_runtime.direct_business import DirectBusinessError
+    from shared.customer_problem_policy import CUSTOMER_SERVICE_RESOURCE_KEY
+    from shared.runtime_repositories import WorkflowResourceRepository
+
+    def invoke(operation, params, principal, request_id):
+        try:
+            return asyncio.run_coroutine_threadsafe(business_service.invoke(
+                operation, params, principal=principal, request_id=request_id, timeout_sec=120), loop).result(timeout=150)
+        except DirectBusinessError as exc:
+            return {"ok": False, "error_code": exc.code, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - reported to the person without internals
+            return {"ok": False, "error_code": type(exc).__name__, "error": "业务接口暂时不可用"}
+
+    def cs_accounts():
+        """Accounts chosen in the Console customer-service settings, joined with published sources."""
+        factory = runtime.memory.connection_factory
+        import pymysql
+        record = WorkflowResourceRepository(factory, cursor_factory=pymysql.cursors.DictCursor).get_record(
+            CUSTOMER_SERVICE_RESOURCE_KEY) or {}
+        config = record.get("config") if isinstance(record.get("config"), dict) else {}
+        chosen = {("ronghui", str(item)) for item in config.get("ronghui_account_ids") or []}
+        chosen |= {("yunda", str(item)) for item in config.get("yunda_account_ids") or []}
+        connection = factory()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT a.account_id, a.provider, s.display_name FROM module_data_source_accounts a"
+                               " JOIN module_data_sources s ON s.source_id=a.source_id"
+                               " WHERE a.module='customer_service' ORDER BY a.provider, a.account_id")
+                rows = cursor.fetchall()
+        finally:
+            connection.close()
+        accounts = []
+        for row in rows:
+            account_id, provider, name = (row["account_id"], row["provider"], row["display_name"]) if isinstance(row, dict) else row
+            if (str(provider), str(account_id)) in chosen:
+                accounts.append({"platform": str(provider), "account_id": str(account_id), "name": str(name or account_id)})
+        return accounts
+
+    return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access)
 
 
 def _require_console_super_admin_request(request: Request) -> Actor:

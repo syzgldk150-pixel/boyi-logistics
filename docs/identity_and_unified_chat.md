@@ -174,6 +174,18 @@ Agent 接口均要求签名超级管理员：`POST /internal/v1/admin/wechat-bot
 
 运行时（`agent/agent/handbook.py` 的 `snapshot()`，30 秒缓存，审核/暂停/作废/修改时立即清除，读失败沿用上次结果）：术语只在本句用到时把“术语=含义”附在原话后供代码核对参数（例如“岳麓店”可被核对为批准的完整网点名）；说法样例和带条件的规则作为提示词，只对本轮可见动作给出，并注明不能扩大权限；不带条件的规则由代码强制——`forbid` 让网关拒绝（固定查询直接不调用），`ask_first` 让网关要求本人确认。生效的说明一经修改立即暂停，新版本审核通过才恢复；未修改的暂停可直接恢复。存储为 `agent_handbook_entries` 与 `agent_handbook_versions`（`shared/agent_handbook_repository.py`），接口 `/internal/v1/admin/handbook/*` 仅超级管理员。
 
+### 后台业务动作（机器人 Agent 层 P3）
+
+`agent/agent/agent_actions/business_actions.py` 在自然对话里提供三个动作，调用与后台页面相同的直接业务接口（`DirectBusinessService`），一律实时读原平台：
+
+| 动作 | 所需机器人能力 | 说明 |
+|---|---|---|
+| 查询客服问题件 | 客户服务 | 账号只取后台“客户服务”设置里选定的账号（`customer_service.problem_settings` 与 `module_data_source_accounts`），模型不能指定账号；方向“发给我的/我发布的”，日期只能选今天/昨天/最近 7 天/最近 30 天，由代码按中国时间换算；沿用操作场网点过滤；最多列 20 件并编号。 |
+| 回复客服问题件 | 客户服务（接口另要求超级管理员） | 只能回复本人上一次查询结果里的某一条（15 分钟内有效，只有一条时可不说编号）；回复内容必须是原话片段；处理状态只能是处理中/已处理/已完结；回显后本人回复“确认”才提交，5 分钟内有效、只用一次；提交前先落库，提交沿用原接口的写意图与写后核验，结果未确认时提示到后台核对、不要重复回复。 |
+| 查询回单 | 业务查询 | 寄件/派件回单，日期同上，最多列 20 张；审核仍在后台“回单管理”。 |
+
+结果由代码渲染，不交模型改写。暂不提供：回单审核（后台审核后还要更新本地回单状态和审核记录，这部分逻辑在 Console，需先下沉到共享层）、标记已读（融辉写入字段尚未核实）、寄件运单查询（现有接口是按日期补查入库，不是单纯读取；单票查询沿用“查询运单信息”“查询物流轨迹”）。
+
 Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层检查敏感及内部身份字段。`tests/test_harness_console_boundary.py` 将真实会话服务的创建、回复和刷新恢复结果送入 Console 响应校验，防止两端字段合同不一致导致页面连接失败。
 
 ## 维护归属
@@ -188,6 +200,7 @@ Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层�
 | 微信设备（iLink） | 见上文“微信个人号”一节 |
 | 统一 AI 会话 | `agent/agent/harness_application.py`、`agent/agent/channel_chat.py` |
 | 确定性业务文本查询 | `agent/agent/chat_text_queries.py` |
+| 后台业务动作（问题件、回单） | `agent/agent/agent_actions/business_actions.py`、`agent/main.py`（`_agent_business_actions`） |
 | 业务手册 | `shared/agent_handbook.py`、`shared/agent_handbook_repository.py`、`agent/agent/handbook.py`、`agent/agent/handbook_api.py`、`agent/agent/agent_actions/trial.py`、`console/services/handbook.py`、`console/templates/handbook.html`、`console/static/handbook.js` |
 | 对话轨迹与回放评测 | `shared/agent_action_audit.py`、`agent/agent/agent_actions/recorder.py`、`agent/scripts/replay_agent_utterances.py` |
 

@@ -258,7 +258,7 @@ class OnlineHarnessSidecar:
     """Run one bounded active-model conversation with closed read-only tools."""
 
     def __init__(self, *, catalog: HarnessToolCatalog, llm: LLMClient, plugin_turn: PluginConversationTurn | None = None,
-                 handbook: HandbookSnapshot | None = None) -> None:
+                 handbook: HandbookSnapshot | None = None, business_turn: Any = None) -> None:
         if not isinstance(catalog, HarnessToolCatalog):
             raise TypeError("catalog must be HarnessToolCatalog")
         if not isinstance(llm, LLMClient):
@@ -272,6 +272,7 @@ class OnlineHarnessSidecar:
         self._decisions: list[ActionDecision] = []
         self._plugin_requests: tuple[ConversationPluginRequest, ...] = ()
         self._handbook = handbook if handbook is not None and not handbook.empty else None
+        self._business = business_turn
         self._titles: dict[str, str] = {}
 
     def _decide(self, action_id: str, effect: str, decision: str, *, title: str = "", arguments=None,
@@ -327,6 +328,22 @@ class OnlineHarnessSidecar:
             if is_cancel_text(text):
                 self._plugins.cancel_pending_writes()
                 return self._result(content="已取消，插件没有执行。", tool_calls=0)
+        if self._business is not None and self._business.has_pending():
+            # A back-office write (P3) is waiting for this person's answer.
+            text = messages[-1].content
+            if is_confirm_text(text):
+                pending = self._business.pending_decision()
+                audit_before_write(tuple(self._decisions) + ((pending,) if pending is not None else ()))
+                content, invocation_id = self._business.confirm_pending()
+                if pending is not None:
+                    self._decisions.append(ActionDecision(action_id=pending.action_id, effect=pending.effect,
+                                                          decision="EXECUTE", action_title=pending.action_title,
+                                                          arguments=pending.arguments, invocation_id=invocation_id))
+                self._completed_result = self._result(content=content, tool_calls=1)
+                return self._completed_result
+            if is_cancel_text(text):
+                self._completed_result = self._result(content=self._business.cancel_pending(), tool_calls=0)
+                return self._completed_result
         if not self._llm.public_status().get("configured"):
             raise _error(
                 "尚未启用智能模型，请先在智能模型页面完成配置",
@@ -336,9 +353,13 @@ class OnlineHarnessSidecar:
         descriptors = visible_descriptors(self._catalog)
         model_tools, name_to_id = _model_tools(descriptors)
         model_tools.append(_ASK_USER_TOOL)
+        if self._business is not None:
+            model_tools.extend(self._business.model_tools())
         if self._plugins is not None:
             model_tools.extend(self._plugins.model_tools())
         self._titles = {descriptor.tool_id: descriptor.title for descriptor in descriptors}
+        if self._business is not None:
+            self._titles.update(self._business.titles())
         if self._plugins is not None:
             self._titles.update({f"plugin:{target.automation_id}": target.title for target in self._plugins.choices.values()})
         system_prompt = build_system_prompt(clock_hint=self._shipments.clock_hint(), query_context=self.query_context,
@@ -391,7 +412,8 @@ class OnlineHarnessSidecar:
                 if not call_id or not isinstance(function, Mapping):
                     raise _error("智能模型工具请求无法读取", "HARNESS_PROTOCOL_INVALID")
                 name = str(function.get("name") or "").strip()
-                tool_id = ASK_USER if name == ASK_USER else name_to_id.get(name)
+                tool_id = (ASK_USER if name == ASK_USER else name if self._business is not None and self._business.handles(name)
+                           else name_to_id.get(name))
                 if self._plugins is not None and name in self._plugins.choices:
                     tool_id = name
                 if tool_id is None:
@@ -431,6 +453,18 @@ class OnlineHarnessSidecar:
             asked = [arguments for _, tool_id, arguments in resolved_calls if tool_id == ASK_USER]
             if asked:
                 return self._ask(asked[0], calls)
+            business = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
+                        if self._business is not None and self._business.handles(tool_id)]
+            if business:
+                # Back-office actions are rendered by code; the model never rewrites their results.
+                texts = []
+                for tool_id, arguments in business[:3]:
+                    text, decision = self._business.execute(tool_id, arguments, message=grounding_message,
+                                                            handbook=self._handbook)
+                    self._decisions.append(decision)
+                    texts.append(text)
+                self._completed_result = self._result(content="\n\n".join(texts)[:7000], tool_calls=calls + len(business))
+                return self._completed_result
             plugin_calls = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
                             if self._plugins is not None and tool_id in self._plugins.choices]
             selected = self._decide_plugins(plugin_calls, grounding_message) if plugin_calls else ()

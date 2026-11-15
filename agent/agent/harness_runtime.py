@@ -430,6 +430,7 @@ class HarnessRuntime:
         instance_name_resolver: Callable[[str], str] | None = None,
         plugin_conversations=None,
         handbook_provider: Callable[[], object] | None = None,
+        business_actions=None,
     ) -> None:
         if not isinstance(backend_availability, RuntimeContributionBackendAvailability):
             raise TypeError("backend_availability is invalid")
@@ -451,6 +452,7 @@ class HarnessRuntime:
         self._instance_name_resolver = instance_name_resolver
         self._plugin_conversations = plugin_conversations
         self._handbook_provider = handbook_provider
+        self._business_actions = business_actions
         self._launcher = launcher or BubblewrapHarnessModelLauncher()
         self._lock = RLock()
         self._started = False
@@ -586,6 +588,8 @@ class HarnessRuntime:
                 plugin_turn=(self._plugin_conversations.turn(actor=actor, source=self._source(actor), request_id=request_id)
                              if self._plugin_conversations is not None else None),
                 handbook=self._handbook_provider() if self._handbook_provider is not None else None,
+                business_turn=(self._business_actions.turn(actor, request_id)
+                               if self._business_actions is not None else None),
             )
 
     def selection_tools(self, actor: Actor) -> tuple[list[dict], dict[str, str], dict[str, str], str]:
@@ -611,6 +615,12 @@ class HarnessRuntime:
                     titles[f"plugin:{target.automation_id}"] = target.title
         tools.append(_ASK_USER_TOOL)
         names[ASK_USER] = ASK_USER
+        if self._business_actions is not None:
+            from agent.agent_actions.business_actions import PREFIX, SPECS, BusinessTurn
+            tools.extend(BusinessTurn.model_tools())
+            for name, (spec, _description) in SPECS.items():
+                names[PREFIX + name] = spec.action_id
+                titles[spec.action_id] = spec.title
         return tools, names, titles, ShipmentConversation().clock_hint()
 
     @staticmethod
