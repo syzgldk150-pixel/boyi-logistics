@@ -2036,7 +2036,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
             channel = "微信设备" if is_wechat_actor_id(sender_id) else "飞书账号"
             await _reply_text(chat_id, f"当前{channel}未绑定有效身份，请联系超级管理员在后台分配身份。")
             return
-    if await _handle_write_confirmation(text, chat_id=chat_id, sender_id=sender_id):
+    if await _handle_write_confirmation(text, chat_id=chat_id, sender_id=sender_id) or await _review_reply(
+            text, chat_id=chat_id, sender_id=sender_id):
         return
     pending_key = chat_id
     pending = get_pending(pending_key)
@@ -2634,6 +2635,11 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
 _WRITE_CONFIRMATIONS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+async def _review_reply(text: str, *, chat_id: str, sender_id: str) -> bool:
+    from feishu.review_requests import handle_review_reply
+    return await handle_review_reply(text, chat_id=chat_id, sender_id=sender_id)
+
+
 async def _handle_write_confirmation(text: str, *, chat_id: str, sender_id: str) -> bool:
     """Run or drop the sender's own pending write; other messages pass through."""
     key = (str(chat_id or ""), str(sender_id or ""))
@@ -2710,6 +2716,12 @@ async def _dispatch_service_v2_feishu_command(*, text: str, receive_id: str, con
             raise TypeError("managed Feishu command result must be a dict or None")
     except OrchestrationError as exc:
         logger.warning("managed Feishu command rejected | code=%s", exc.code)
+        if exc.code == "AGENT_REVIEW_REQUIRED" and not accepted_notified:
+            from feishu.review_requests import submit_review
+            await submit_review(chat_id=receive_id, command=text, runtime_inputs=runtime_inputs, quote_result=quote_result,
+                                title=getattr(exc, "title", text), summary=f"执行“{getattr(exc, 'title', text)}”",
+                                capability=getattr(exc, "capability", "plugins.execute"))
+            return True
         if exc.code == AGENT_CONFIRMATION_REQUIRED and not accepted_notified:
             # Agent level "需确认": ask the sender, keep the exact command.
             _WRITE_CONFIRMATIONS[(context.chat_id, context.actor_id)] = {

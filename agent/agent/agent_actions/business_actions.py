@@ -85,13 +85,31 @@ class PendingReply:
                 f"“{self.reply_text}”，处理状态改为“{self.prob_status}”")
 
 
+def reply_arguments(item: PendingReply) -> dict[str, Any]:
+    """The closed ``customer-service-reply`` input, built only from the queried row and the person's words."""
+    row = item.row
+    return {"platform": row["platform"], "account_id": row["account_id"],
+            "account_label": row.get("account_label") or row["account_id"],
+            "external_id": row["external_id"], "source_direction": row.get("source_direction") or "",
+            "waybill_no": row["waybill_no"], "status": row.get("status") or "",
+            "reply_text": item.reply_text, "prob_status": item.prob_status, "old_prob_status": row.get("status") or ""}
+
+
+def reply_outcome(result: Mapping[str, Any], describe: str) -> tuple[bool, str]:
+    if result.get("ok"):
+        return True, f"已提交并核对：{describe}。"
+    if str(result.get("status") or "") == "WRITE_OUTCOME_UNKNOWN":
+        return False, f"{describe}——结果未能核对，请到客户服务页面查看这一件，不要重复回复。"
+    return False, f"没有回复成功：{redact_text(result.get('error') or '原平台未确认')[:200]}"
+
+
 class BusinessActions:
     """Process-wide state: last results per person and pending confirmations."""
 
     def __init__(self, *, invoke: Invoke, cs_accounts: Callable[[], Sequence[Mapping[str, str]]],
                  identity_access: Any = None, today: Callable[[], date] | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
-        self._invoke, self._cs_accounts = invoke, cs_accounts
+                 clock: Callable[[], float] = time.monotonic, reviews: Any = None) -> None:
+        self._invoke, self._cs_accounts, self.reviews = invoke, cs_accounts, reviews
         self.gateway = ActionGateway(identity_access=identity_access)
         self._today = today or (lambda: datetime.now(CHINA).date())
         self._results: PendingConfirmations[list[dict[str, Any]]] = PendingConfirmations(RESULT_TTL_SECONDS, clock=clock)
@@ -150,22 +168,11 @@ class BusinessTurn:
         if item is None:
             return ("这次确认已超过有效时间，没有提交；需要的话请重新查询后再回复。" if state == "expired"
                     else "没有等待确认的操作。"), None
-        row = item.row
-        arguments = {"platform": row["platform"], "account_id": row["account_id"],
-                     "account_label": row.get("account_label") or row["account_id"],
-                     "external_id": row["external_id"], "source_direction": row.get("source_direction") or "",
-                     "waybill_no": row["waybill_no"], "status": row.get("status") or "",
-                     "reply_text": item.reply_text, "prob_status": item.prob_status,
-                     "old_prob_status": row.get("status") or ""}
+        arguments = reply_arguments(item)
         # The confirming message's own request makes this a new, idempotent write request.
         result = self._call("customer-service-reply", arguments,
                             request_id=request_id or str(uuid.uuid5(uuid.NAMESPACE_URL, f"biz-reply:{self.request_id}")))
-        if result.get("ok"):
-            return f"已提交并核对：{item.describe()}。", result.get("invocation_id")
-        status = str(result.get("status") or "")
-        if status == "WRITE_OUTCOME_UNKNOWN":
-            return f"{item.describe()}——结果未能核对，请到客户服务页面查看这一件，不要重复回复。", result.get("invocation_id")
-        return f"没有回复成功：{redact_text(result.get('error') or '原平台未确认')[:200]}", result.get("invocation_id")
+        return reply_outcome(result, item.describe())[1], result.get("invocation_id")
 
     # -- execution ---------------------------------------------------------------------
 
@@ -184,14 +191,14 @@ class BusinessTurn:
         if decision.decision == "REJECT":
             return f"{spec.title}：{decision.reason}，没有执行。", record("REJECT", decision.error_code)
         if spec.action_id == "cs.reply_problem":
-            return self._prepare_reply(decision, record)
+            return self._prepare_reply(decision, record, review=decision.decision == "REVIEW")
         try:
             text = (self._query_problems if spec.action_id == "cs.query_problems" else self._query_receipts)(decision.arguments)
         except BusinessActionError as exc:
             return str(exc), record("REJECT", exc.code)
         return text, record("EXECUTE")
 
-    def _prepare_reply(self, decision: GatewayDecision, record) -> tuple[str, ActionDecision]:
+    def _prepare_reply(self, decision: GatewayDecision, record, *, review: bool = False) -> tuple[str, ActionDecision]:
         rows = self.actions._results.peek((self._key, "problems")) or []
         if not rows:
             return "请先查询问题件，再说明回复第几条。", record("CLARIFY", "NO_RECENT_RESULT")
@@ -202,6 +209,13 @@ class BusinessTurn:
             return f"请说明要回复上次结果里的第几条（1 到 {len(rows)}）。", record("CLARIFY", "ITEM_REQUIRED")
         pending = PendingReply(rows[int(index) - 1], decision.arguments["reply_text"],
                                decision.arguments.get("prob_status") or "已处理")
+        if review:
+            if self.actions.reviews is None:
+                return "你的身份需要超级管理员复核，但复核服务当前不可用，没有提交。", record("REJECT", "REVIEW_UNAVAILABLE")
+            submitted = self.actions.reviews.submit(
+                kind="cs.reply", actor=self.actor, capability="customer_service", title="回复客服问题件",
+                summary=pending.describe(), plan={"arguments": reply_arguments(pending)})
+            return self.actions.reviews.submitted_message(submitted), record("REVIEW")
         self.actions._pending.remember(self._key, pending)
         minutes = CONFIRM_TTL_SECONDS // 60
         return (f"将{pending.describe()}。回复“确认”提交，回复“取消”放弃；{minutes} 分钟内有效。",

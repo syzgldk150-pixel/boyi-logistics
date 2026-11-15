@@ -14,7 +14,7 @@
 
 ## 直接调用边界
 
-- 自然语言插件请求由 `AgentCore` 按当前插件目录选择并经动作网关核对，`message_handler.py` 把可信请求对象（`ConversationPluginRequest`：目标、已核对的本次输入、是否先确认）交给 `conversation_plugins.py`，经原 Feishu 入口执行并跟随本次结果；需先确认的请求只记入 `_WRITE_CONFIRMATIONS` 并提问，不提交；固定关键词仍直接路由。扫描确认仅消费明确扫描确认文本，未确认的预览不截获其他自然对话。
+- 自然语言插件请求由 `AgentCore` 按当前插件目录选择并经动作网关核对，`message_handler.py` 把可信请求对象（`ConversationPluginRequest`：目标、已核对的本次输入、是否先确认）交给 `conversation_plugins.py`，经原 Feishu 入口执行并跟随本次结果；需先确认的请求只记入 `_WRITE_CONFIRMATIONS` 并提问，不提交；需他人复核的请求与固定指令的 `AGENT_REVIEW_REQUIRED` 交给 `review_requests.py` 生成复核请求，超级管理员可回复“同意复核/拒绝复核 编号”；固定关键词仍直接路由。扫描确认仅消费明确扫描确认文本，未确认的预览不截获其他自然对话。
 - 固定“统计”及同一宿主解析器接受的无参数统计简称，在分发前规范为插件声明的命令“统计到货数据”；其他固定命令按原文分发。固定命令由 `fixed_entrypoint_router.py` 发往 `../agent/automation_plugins/fixed_entrypoints.py` 指定插件唯一启用的实例，零个或多个都明确拒绝，不能回退或重复执行。
 - 非插件只读文本通过注入的 `AgentCore` 直接 reader 调用；插件文本、菜单和 pending 确认都经注入的 `ServiceV2FeishuDispatcher` 提交服务端 Invocation，`AutomationProjectEntrypoints` 只用于按原事件读取已接受调用的结果。两者都禁止直接调用 `ToolExecutor`、业务脚本或第三方写函数。
 - Service v2 动态文本通过同一 `ServiceV2FeishuDispatcher` 解析当前 committed/READY contribution；pending、登录、确认和宿主固定命令优先，动态未知才继续既有 Agent/LLM 路径。Dispatcher 接收 `_COMMAND_CONTEXT` 中已验证的 event/sender/chat、精确声明命令，以及当前 contribution `input_schema` 声明的本次业务输入；不得接收项目/服务/操作/账号/资源身份或覆盖保存配置。报价解析器只提交地址、重量、体积与静态命令“三平台报价”。命中但身份缺失必须拒绝并停止，回复不暴露内部执行身份。

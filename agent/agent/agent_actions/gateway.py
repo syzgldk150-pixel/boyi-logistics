@@ -50,6 +50,7 @@ class ActionGateway:
     def decide(self, spec: ActionSpec, *, actor: Any, arguments: Mapping[str, Any] | None,
                message: str, handbook: Any = None) -> GatewayDecision:
         # 1 identity and 2 capability: read live on every decision.
+        level = None
         if self._identity_access is not None:
             access = self._identity_access.for_actor(actor)
             if not access.active:
@@ -58,6 +59,7 @@ class ActionGateway:
                 if getattr(access, "blocked_in_group", lambda _: False)(spec.capability):
                     return GatewayDecision("REJECT", reason="这项内容只在私聊里回答", error_code="PRIVATE_CHAT_ONLY")
                 return GatewayDecision("REJECT", reason=f"当前身份没有“{spec.title}”的权限", error_code="PERMISSION_DENIED")
+            level = access.agent_level(spec.capability)
         # Approved handbook rules without a condition are enforced here, by code (P2).
         forbidden = handbook.enforced(spec.action_id, "forbid") if handbook is not None else None
         if forbidden:
@@ -75,6 +77,9 @@ class ActionGateway:
                 return GatewayDecision("CLARIFY", question=exc.question, error_code=exc.code)
         # 4 data: internal colleagues only; the row-scope slot stays unused (decision 1).
         # 5 audit happens in the caller before any EXECUTE/CONFIRM write is run.
+        if spec.writes and not spec.preview and level == "review":
+            # “需他人复核” (P4): a super administrator approves this write first.
+            return GatewayDecision("REVIEW", arguments=grounded, reason="你的身份需要超级管理员复核")
         ask_first = handbook.enforced(spec.action_id, "ask_first") if handbook is not None else None
         if ask_first and not spec.preview:
             return GatewayDecision("CONFIRM", arguments=grounded, reason=ask_first)

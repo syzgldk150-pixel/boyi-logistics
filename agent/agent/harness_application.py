@@ -574,7 +574,8 @@ class HarnessConversationService:
 
 def _hands_writes_to_channel(result: SidecarResult) -> bool:
     from agent.agent_actions.spec import is_write_effect
-    return any(is_write_effect(getattr(getattr(item, "target", None), "effect", "read")) for item in result.plugin_requests)
+    return any(is_write_effect(getattr(getattr(item, "target", None), "effect", "read")) and not getattr(item, "review", False)
+               for item in result.plugin_requests)
 
 
 class ProductionGatedHarnessSidecar:

@@ -431,6 +431,7 @@ class HarnessRuntime:
         plugin_conversations=None,
         handbook_provider: Callable[[], object] | None = None,
         business_actions=None,
+        review_service=None,
     ) -> None:
         if not isinstance(backend_availability, RuntimeContributionBackendAvailability):
             raise TypeError("backend_availability is invalid")
@@ -453,6 +454,7 @@ class HarnessRuntime:
         self._plugin_conversations = plugin_conversations
         self._handbook_provider = handbook_provider
         self._business_actions = business_actions
+        self._review_service = review_service
         self._launcher = launcher or BubblewrapHarnessModelLauncher()
         self._lock = RLock()
         self._started = False
@@ -590,6 +592,7 @@ class HarnessRuntime:
                 handbook=self._handbook_provider() if self._handbook_provider is not None else None,
                 business_turn=(self._business_actions.turn(actor, request_id)
                                if self._business_actions is not None else None),
+                reviews=self._review_service,
             )
 
     def selection_tools(self, actor: Actor) -> tuple[list[dict], dict[str, str], dict[str, str], str]:

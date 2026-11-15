@@ -20,11 +20,35 @@ from typing import Any, Iterator
 from agent.orchestration.models import ActorType, OrchestrationError
 
 AGENT_CONFIRMATION_REQUIRED = "AGENT_CONFIRMATION_REQUIRED"
+AGENT_REVIEW_REQUIRED = "AGENT_REVIEW_REQUIRED"
 CONFIRMATION_TTL_SECONDS = 300
 _CONFIRMED: ContextVar[bool] = ContextVar("agent_write_confirmed", default=False)
 # Set only by host code (agent layer P1) when the model filled the write's
 # arguments or chose a write for a question: confirm whatever the agent level.
 _ALWAYS_CONFIRM: ContextVar[bool] = ContextVar("agent_write_always_confirm", default=False)
+# Set only by the review service (agent layer P4) while it runs a write a super
+# administrator approved; it clears both "需他人复核" and "需确认".
+_REVIEWED: ContextVar[bool] = ContextVar("agent_write_reviewed", default=False)
+
+
+@contextmanager
+def reviewer_approved() -> Iterator[None]:
+    token, confirmed = _REVIEWED.set(True), _CONFIRMED.set(True)
+    try:
+        yield
+    finally:
+        _CONFIRMED.reset(confirmed)
+        _REVIEWED.reset(token)
+
+
+def require_review_clearance(*, identity_access: Any, actor: Any, capability: str, title: str) -> None:
+    """Raise ``AGENT_REVIEW_REQUIRED`` for a "需他人复核" person outside an approved run."""
+    if identity_access is None or not is_agent_actor(actor) or _REVIEWED.get():
+        return
+    if identity_access.for_actor(actor).agent_level(capability) == "review":
+        error = OrchestrationError(AGENT_REVIEW_REQUIRED, f"“{title}”需要超级管理员复核后才执行")
+        error.capability, error.title = capability, title  # for the review request the channel files
+        raise error
 
 
 @contextmanager
@@ -54,6 +78,7 @@ def is_agent_actor(actor: Any) -> bool:
 
 def require_person_confirmation(*, identity_access: Any, actor: Any, capability: str, title: str) -> None:
     """Raise unless this agent write may run now."""
+    require_review_clearance(identity_access=identity_access, actor=actor, capability=capability, title=title)
     if not is_agent_actor(actor) or _CONFIRMED.get():
         return
     if _ALWAYS_CONFIRM.get():
@@ -71,6 +96,7 @@ def confirmation_prompt(reason: str) -> str:
 
 
 __all__ = [
-    "AGENT_CONFIRMATION_REQUIRED", "CONFIRMATION_TTL_SECONDS", "confirmation_prompt", "confirmation_required",
+    "AGENT_CONFIRMATION_REQUIRED", "AGENT_REVIEW_REQUIRED", "CONFIRMATION_TTL_SECONDS", "confirmation_prompt",
+    "confirmation_required", "require_review_clearance", "reviewer_approved",
     "is_agent_actor", "person_confirmed", "require_person_confirmation",
 ]

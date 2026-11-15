@@ -73,3 +73,20 @@ class HandbookConsoleTests(unittest.TestCase):
         self.assertTrue(handbook.handle_post(app, None, f"/settings/llm/handbook/entries/{ENTRY_ID}/trial", "", {}))
         self.assertFalse(handbook.handle_get(app, None, "/settings/llm", "", {}))
         self.assertEqual(["page", ("get", ENTRY_ID), ("post", ENTRY_ID, "trial")], seen)
+
+
+class ReviewsConsoleTests(HandbookConsoleTests):
+    def test_review_actions_forward_only_the_note(self):
+        app, calls = self._app(lambda *a: {"ok": True, "data": {"status": "EXECUTED"}})
+        app._handle_review_action(_handler({"note": "x" * 300, "actor": "y"}), ENTRY_ID, "reject")
+        self.assertEqual(f"/internal/v1/admin/reviews/{ENTRY_ID}/reject", calls[0]["endpoint"])
+        self.assertEqual({"note": "x" * 200}, calls[0]["payload"])
+        app._handle_review_action(_handler({}), ENTRY_ID, "approve")
+        self.assertEqual({}, calls[1]["payload"])
+        app._handle_review_action(_handler({}), "bad", "approve")
+        self.assertEqual(HTTPStatus.NOT_FOUND, app.sent_status)
+
+    def test_admins_cannot_decide(self):
+        app, calls = self._app(lambda *a: self.fail("must not call"), roles=("admin",))
+        app._handle_review_action(_handler({}), ENTRY_ID, "approve")
+        self.assertEqual(HTTPStatus.FORBIDDEN, app.sent_status)

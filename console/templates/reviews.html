@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}复核请求 · {{ app_title }}{% endblock %}
+{% block breadcrumb %}复核请求{% endblock %}
+{% block subtitle %}智能模型 / 机器人复核请求{% endblock %}
+{% block body_class %}reviews-page{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261116-p4">{% endblock %}
+
+{% block page_actions %}
+<a class="ghost-btn" data-console-navigate href="/settings/llm"><i data-feather="arrow-left"></i>返回智能模型</a>
+{% endblock %}
+
+{% block content %}
+<section class="handbook" data-reviews aria-labelledby="reviews-title">
+  <p class="handbook__lead">身份设为“需他人复核”的人员通过飞书、微信或后台 AI 助手发起写入时，系统不直接执行，而是在这里等待超级管理员处理。<b>同意后立即执行一次</b>，执行前会再次核对发起人仍有权限；<b>过期自动作废</b>，不会重试。也可以在飞书里回复“同意复核 编号”或“拒绝复核 编号 原因”。</p>
+  <div class="handbook__status" data-reviews-status role="status" aria-live="polite"></div>
+  <section class="handbook__panel" aria-labelledby="reviews-title">
+    <div class="handbook__panel-head">
+      <h2 id="reviews-title">复核请求</h2>
+      <button class="ghost-btn" type="button" data-reviews-refresh><i data-feather="refresh-cw"></i><span>刷新</span></button>
+    </div>
+    <table class="handbook__trial">
+      <thead><tr><th>编号</th><th>发起人</th><th>内容</th><th>状态</th><th>结果</th><th>操作</th></tr></thead>
+      <tbody data-reviews-rows></tbody>
+    </table>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/reviews.js?v=20261116-p4"></script>
+{% endblock %}

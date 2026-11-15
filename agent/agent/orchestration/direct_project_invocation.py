@@ -16,7 +16,7 @@ from agent.tool_registry import validate_schema_instance
 from shared.automation_project_authorization import AutomationEntrypoint, AutomationProjectInvocation, OMIT_DYNAMIC_ARGUMENT
 from shared.automation_project_authorization import canonical_sha256
 from agent.identity_access import require_project_access
-from agent.orchestration.agent_confirmation import require_person_confirmation
+from agent.orchestration.agent_confirmation import require_person_confirmation, require_review_clearance
 from shared.identity_permissions import plugin_permission
 
 
@@ -159,6 +159,13 @@ def invoke_direct(service, automation_id: str, *, entrypoint, request_id, actor,
     explicit_admin = source is AutomationEntrypoint.CONSOLE and (service._is_super_admin(actor) or bool(set(actor.roles).intersection(roles)))
     if write and not (full_auto or explicit_admin):
         raise OrchestrationError("PROJECT_PERMISSION_REQUIRED", "当前账号或插件设置未授权此执行")
+    if write and (scan or selection) and preview_invocation_id is not None:
+        # "需他人复核" also covers the formal run of a preview (agent layer P4).
+        require_review_clearance(
+            identity_access=getattr(service, "identity_access", None), actor=actor,
+            capability=plugin_permission(entry.plugin_id, management=getattr(entry, "management", None),
+                                         entrypoint=source.value),
+            title=entry.display_name or entry.name)
     if write and not (scan or selection):
         # Agent level "需确认": the person confirms in chat before any write.
         require_person_confirmation(

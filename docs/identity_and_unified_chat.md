@@ -186,6 +186,16 @@ Agent 接口均要求签名超级管理员：`POST /internal/v1/admin/wechat-bot
 
 结果由代码渲染，不交模型改写。暂不提供：回单审核（后台审核后还要更新本地回单状态和审核记录，这部分逻辑在 Console，需先下沉到共享层）、标记已读（融辉写入字段尚未核实）、寄件运单查询（现有接口是按日期补查入库，不是单纯读取；单票查询沿用“查询运单信息”“查询物流轨迹”）。
 
+### 需他人复核（机器人 Agent 层 P4，迁移 086）
+
+身份“机器人”组里，写类能力（执行插件、客户服务、财务采集）多了一档“需他人复核”。这类人员通过飞书、微信或后台 AI 助手发起写入时：
+
+- **不执行，改为复核请求**：网关返回“复核”（预览类插件首次调用仍只生成候选）；固定飞书指令在写入口 `require_person_confirmation` 处得到 `AGENT_REVIEW_REQUIRED`；预览类插件的正式执行（确认候选）同样需要复核，此时请超级管理员在后台自动化页面确认候选。请求保存计划（`agent_review_requests`，6 位编号），发起人收到编号。
+- **通知**：推送给开启通知的超级管理员飞书绑定；后台“智能模型 → 复核请求”（`/settings/llm/reviews`）列出。微信主动推送尚未核实，暂不推送。
+- **处理**：超级管理员在后台点“同意并执行/拒绝”，或在飞书回复“同意复核 编号”“拒绝复核 编号 原因”（只认超级管理员）。同意时先把请求原子地改为已同意（只能一次），再实时核对发起人仍有效且仍有这项能力，然后以发起人身份在 `reviewer_approved()` 内执行一次：后台发起的插件走后台入口并核对版本；飞书/微信发起的插件在原会话重新走受管指令分发，结果发回原会话；问题件回复沿用原写意图与写后核验。执行结果写回请求并私信通知飞书发起人。
+- **过期**：2 小时内未处理即作废，不会重试；不做成事项中心或待领取队列。
+- 实现：`agent/agent/agent_actions/review.py`、`shared/agent_review_repository.py`、`agent/agent/review_api.py`（`/internal/v1/admin/reviews/*`，仅超级管理员）、`agent/feishu/review_requests.py`、`console/services/reviews.py`。
+
 Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层检查敏感及内部身份字段。`tests/test_harness_console_boundary.py` 将真实会话服务的创建、回复和刷新恢复结果送入 Console 响应校验，防止两端字段合同不一致导致页面连接失败。
 
 ## 维护归属
@@ -200,6 +210,7 @@ Console 会话响应显式接收 Agent 的 `messages` 历史投影，仍逐层�
 | 微信设备（iLink） | 见上文“微信个人号”一节 |
 | 统一 AI 会话 | `agent/agent/harness_application.py`、`agent/agent/channel_chat.py` |
 | 确定性业务文本查询 | `agent/agent/chat_text_queries.py` |
+| 需他人复核 | `agent/agent/agent_actions/review.py`、`shared/agent_review_repository.py`、`agent/agent/review_api.py`、`agent/feishu/review_requests.py`、`console/services/reviews.py`、`console/templates/reviews.html` |
 | 后台业务动作（问题件、回单） | `agent/agent/agent_actions/business_actions.py`、`agent/main.py`（`_agent_business_actions`） |
 | 业务手册 | `shared/agent_handbook.py`、`shared/agent_handbook_repository.py`、`agent/agent/handbook.py`、`agent/agent/handbook_api.py`、`agent/agent/agent_actions/trial.py`、`console/services/handbook.py`、`console/templates/handbook.html`、`console/static/handbook.js` |
 | 对话轨迹与回放评测 | `shared/agent_action_audit.py`、`agent/agent/agent_actions/recorder.py`、`agent/scripts/replay_agent_utterances.py` |

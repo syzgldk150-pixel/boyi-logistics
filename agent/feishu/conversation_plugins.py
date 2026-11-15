@@ -31,6 +31,11 @@ async def _run_one(handler: Any, request: ConversationPluginRequest, chat_id: st
     target = request.target
     inputs = dict(request.inputs) or None
     quote = target.plugin_id == QUOTE_PLUGIN_ID
+    if request.review:
+        from feishu.review_requests import submit_review
+        await submit_review(chat_id=chat_id, command=target.command, runtime_inputs=inputs, quote_result=quote,
+                            title=target.title, summary=f"执行{request.describe()}", capability=target.capability)
+        return
     if request.confirm:
         # The gateway requires "确认" first: remember the exact command and ask; nothing runs now.
         context = handler._COMMAND_CONTEXT.get()

@@ -3,7 +3,8 @@
 * Console (the back-office pages): each module is ``view`` or ``operate``.
   Read-only modules only have ``view``.
 * Agent (Feishu, WeChat and the Console AI assistant): a write capability is
-  ``direct`` or ``confirm`` (the person confirms in chat before it runs); a
+  ``direct``, ``confirm`` (the person confirms in chat before it runs) or
+  ``review`` (a super administrator approves each write first); a
   private capability (finance data) is ``private`` (one-to-one chats only)
   or ``direct`` (group chats too); other reads are always ``direct``.
 
@@ -49,7 +50,7 @@ AGENT_CAPABILITIES = {
     "finance.manage": ("财务采集", "执行财务采集插件；需同时允许财务数据", "write"),
     "accounts.manage": ("业务账号登录", "发送和提交各平台登录验证码（本身即逐步确认）", "read"),
 }
-AGENT_LEVELS = {"read": ("direct",), "write": ("direct", "confirm"), "private": ("private", "direct")}
+AGENT_LEVELS = {"read": ("direct",), "write": ("direct", "confirm", "review"), "private": ("private", "direct")}
 SUPER_ADMIN = "super_admin"
 CONSOLE = "console"
 AGENT = "agent"
@@ -89,11 +90,12 @@ def validate_agent_permissions(values) -> dict[str, str]:
         raise ValueError("机器人权限格式无效")
     result = {}
     for key, level in values.items():
-        if key not in AGENT_CAPABILITIES or level not in {"direct", "confirm", "private"}:
+        if key not in AGENT_CAPABILITIES or level not in {"direct", "confirm", "review", "private"}:
             raise ValueError("包含未知的机器人权限")
         label, _, kind = AGENT_CAPABILITIES[key]
         if level not in AGENT_LEVELS[kind]:
-            raise ValueError(f"“{label}”只是查询，无需确认" if level == "confirm" else f"“{label}”没有“仅私聊”选项")
+            raise ValueError(f"“{label}”只是查询，无需确认或复核" if level in {"confirm", "review"}
+                             else f"“{label}”没有“仅私聊”选项")
         result[key] = level
     if "finance.manage" in result and "finance.read" not in result:
         raise ValueError("财务采集需要同时允许财务数据")

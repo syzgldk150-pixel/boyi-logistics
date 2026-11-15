@@ -9,6 +9,8 @@ updated: 2026-11-15
 
 # 数据库迁移
 
+`086_agent_review_requests.sql` 新建运行库 `agent_review_requests`（“需他人复核”请求：6 位编号唯一、类型、状态 PENDING/APPROVED/REJECTED/EXPIRED/EXECUTED/FAILED、计划、发起人、原会话、有效期、处理人与结果）。只有 `CREATE TABLE IF NOT EXISTS`，可重复执行；新旧代码兼容。注意：身份可以设为 `review` 档后若回退旧代码，旧代码的权限校验会拒绝该档位，回退前须先把相关身份改回“需确认”或“直接执行”。
+
 `085_agent_handbook.sql` 新建运行库 `agent_handbook_entries`（业务说明：标题、状态 DRAFT/ACTIVE/PAUSED/RETIRED、最新与生效版本、`row_version`）与 `agent_handbook_versions`（每版正文、编译结果、校验、试跑、歧义确认、审核人）。只有 `CREATE TABLE IF NOT EXISTS`，可重复执行；新旧代码兼容，可只回退源码。说明见 [身份与统一对话](../../docs/identity_and_unified_chat.md#业务手册机器人-agent-层-p2迁移-085)。
 
 `084_agent_conversation_audit.sql` 新建运行库 `agent_conversation_turns`（每轮自然对话一行：人员、渠道、私聊/群聊、脱敏原话、模型、结局、耗时、错误码）与 `agent_action_decisions`（每个动作判定一行，`(turn_id, seq)` 唯一）。只有 `CREATE TABLE IF NOT EXISTS`，可重复执行；新旧代码兼容（旧代码不写这两张表），可只回退源码。写入方为 `shared/agent_action_audit.py`，说明见 [身份与统一对话](../../docs/identity_and_unified_chat.md#对话轨迹与评测机器人-agent-层-p0迁移-084)。

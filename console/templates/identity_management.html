@@ -40,7 +40,8 @@
       <span><strong>{{ item[0] }}</strong><small>{{ item[1] }}</small></span>
       <select class="review-input" name="agent_{{ key }}" aria-label="机器人 · {{ item[0] }}">
         <option value="" {% if not level %}selected{% endif %}>不允许</option>
-        {% if item[2] == 'write' %}<option value="confirm" {% if level == 'confirm' %}selected{% endif %}>需确认</option>
+        {% if item[2] == 'write' %}<option value="review" {% if level == 'review' %}selected{% endif %}>需他人复核</option>
+        <option value="confirm" {% if level == 'confirm' %}selected{% endif %}>需确认</option>
         <option value="direct" {% if level == 'direct' %}selected{% endif %}>直接执行</option>
         {% elif item[2] == 'private' %}<option value="private" {% if level == 'private' %}selected{% endif %}>仅私聊</option>
         <option value="direct" {% if level == 'direct' %}selected{% endif %}>私聊和群聊</option>
@@ -116,7 +117,7 @@
         <div class="identity-form-actions">
           <button class="primary-btn" type="submit">保存权限</button>
           <label class="identity-active-toggle"><input type="checkbox" name="active" value="1" {% if role.is_active %}checked{% endif %}>启用身份</label>
-          <span class="identity-card-note">机器人“需确认”：执行前先向本人确认一次；“仅私聊”：群聊里不回答。</span>
+          <span class="identity-card-note">机器人“需确认”：执行前先向本人确认一次；“需他人复核”：每次写入先由超级管理员在后台或机器人里同意；“仅私聊”：群聊里不回答。</span>
         </div>
       </form>
     </div>

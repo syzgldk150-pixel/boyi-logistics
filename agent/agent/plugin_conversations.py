@@ -92,6 +92,7 @@ class ConversationPluginRequest:
     inputs: Mapping[str, Any] = field(default_factory=dict)
     confirm: bool = False
     reason: str = ""
+    review: bool = False
 
     def describe(self) -> str:
         schema = (self.target.input_schema or {}).get("properties") or {}

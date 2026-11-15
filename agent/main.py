@@ -139,6 +139,7 @@ from agent.business_query import (
 )
 from agent.business_modules_api import create_business_module_router
 from agent.handbook_api import create_handbook_router
+from agent.review_api import create_review_router
 from agent.automation_plugins.production import (
     ProductionAutomationPluginRuntime,
     build_production_automation_plugin_runtime,
@@ -247,6 +248,7 @@ finance_review_advisor: "FinanceReviewAdvisor | None" = None
 customer_service_ai: "CustomerServiceAIService | None" = None
 plugin_flow_editor: "PluginFlowEditor | None" = None
 agent_handbook_service = None
+agent_review_service = None
 receipt_share_runtime: "ReceiptShareRuntime | None" = None
 wechat_bot_runtime: "WeChatBotRuntime | None" = None
 automation_project_policy_service: AutomationProjectPolicyService | None = None
@@ -683,7 +685,7 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
-    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service
+    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service, agent_review_service
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -890,11 +892,15 @@ async def lifespan(app: FastAPI):
         AgentHandbookRepository(runtime.memory.connection_factory), ai_task_gateway, catalog_provider=handbook_catalog,
         trial_runner=HandbookTrial(runtime.llm, lambda actor: process_service_v2_runtime.selection_tools(actor),
                                    active=lambda: agent_handbook_service.snapshot()))
+    agent_review_service = _agent_review_service(runtime, project_policy_service, business_service)
+    agent_business_actions = _agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
+                                                     project_policy_service.identity_access)
+    agent_business_actions.reviews = agent_review_service
     process_service_v2_runtime = ServiceV2ProcessRuntime(
         turn_recorder=agent_turn_recorder,
         handbook_provider=agent_handbook_service.snapshot,
-        business_actions=_agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
-                                                 project_policy_service.identity_access),
+        review_service=agent_review_service,
+        business_actions=agent_business_actions,
         plugin_conversations=plugin_conversations,
         text_queries=build_chat_text_queries(runtime),
         policy_service=project_policy_service, contribution_registry=plugin_runtime.contribution_registry,
@@ -1050,6 +1056,12 @@ app.include_router(
 app.include_router(
     create_handbook_router(
         service_provider=lambda: agent_handbook_service,
+        super_admin_provider=lambda request: _require_console_super_admin_request(request),
+    )
+)
+app.include_router(
+    create_review_router(
+        service_provider=lambda: agent_review_service,
         super_admin_provider=lambda request: _require_console_super_admin_request(request),
     )
 )
@@ -1619,6 +1631,58 @@ def _require_console_admin_request(request: Request) -> Actor:
             "This control-plane request requires an authenticated Console administrator",
         )
     return actor
+
+
+def _agent_review_service(runtime, policy_service, business_service):
+    """“需他人复核” (agent layer P4): requests, super-admin notifications and the per-kind executors."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    from agent.agent_actions.business_actions import reply_outcome
+    from agent.agent_actions.review import ReviewService
+    from feishu.notify import send_text_sync
+    from feishu.review_requests import bind_review_service, execute_feishu_plan
+    from shared.agent_review_repository import AgentReviewRepository
+    from shared.automation_project_authorization import AutomationEntrypoint
+    from shared.wechat_bot import is_wechat_actor_id
+
+    repository = AgentReviewRepository(runtime.memory.connection_factory)
+
+    def notify_reviewers(text):
+        for open_id in repository.super_admin_open_ids():
+            send_text_sync(open_id, text, receive_id_type="open_id")
+
+    def notify_requester(text, request):
+        requester = request["requester"]
+        if requester.get("actor_type") == "feishu_user" and not is_wechat_actor_id(requester.get("actor_id")):
+            send_text_sync(str(requester["actor_id"]), text, receive_id_type="open_id")
+
+    async def run_console_plugin(request, actor):
+        plan = request["plan"]
+        dynamic = ({"dry_run": True, "selected_bill_codes": [], "preview_fingerprint": ""} if plan.get("selection_tool")
+                   else plan.get("inputs") or None)
+        result = await asyncio.to_thread(
+            policy_service.invoke_trusted, plan["automation_id"], entrypoint=AutomationEntrypoint.CONSOLE,
+            request_id=str(uuid5(NAMESPACE_URL, f"agent-review:{request['request_id']}")), actor=actor,
+            expected_automation_generation=plan["generation"],
+            expected_project_configuration_version=plan["configuration_version"],
+            contribution_id=plan["contribution_id"], require_full_auto=True,
+            trusted_context={"dynamic_inputs": dynamic} if dynamic is not None else None)
+        return True, "已发起执行，状态见后台自动化记录。", result.get("invocation_id")
+
+    async def run_cs_reply(request, actor):
+        arguments = request["plan"]["arguments"]
+        result = await business_service.invoke(
+            "customer-service-reply", dict(arguments), principal={"actor_id": actor.actor_id, "roles": list(actor.roles)},
+            request_id=str(uuid5(NAMESPACE_URL, f"agent-review:{request['request_id']}")), timeout_sec=120)
+        ok, text = reply_outcome(result, request["summary"])
+        return ok, text, result.get("invocation_id")
+
+    service = ReviewService(repository, identity_access=policy_service.identity_access,
+                            executors={"plugin.console": run_console_plugin, "plugin.feishu": execute_feishu_plan,
+                                       "cs.reply": run_cs_reply},
+                            notify_reviewers=notify_reviewers, notify_requester=notify_requester)
+    bind_review_service(service)
+    return service
 
 
 def _agent_business_actions(business_service, runtime, loop, identity_access):

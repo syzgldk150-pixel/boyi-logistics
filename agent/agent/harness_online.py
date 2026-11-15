@@ -258,7 +258,7 @@ class OnlineHarnessSidecar:
     """Run one bounded active-model conversation with closed read-only tools."""
 
     def __init__(self, *, catalog: HarnessToolCatalog, llm: LLMClient, plugin_turn: PluginConversationTurn | None = None,
-                 handbook: HandbookSnapshot | None = None, business_turn: Any = None) -> None:
+                 handbook: HandbookSnapshot | None = None, business_turn: Any = None, reviews: Any = None) -> None:
         if not isinstance(catalog, HarnessToolCatalog):
             raise TypeError("catalog must be HarnessToolCatalog")
         if not isinstance(llm, LLMClient):
@@ -273,6 +273,7 @@ class OnlineHarnessSidecar:
         self._plugin_requests: tuple[ConversationPluginRequest, ...] = ()
         self._handbook = handbook if handbook is not None and not handbook.empty else None
         self._business = business_turn
+        self._reviews = reviews
         self._titles: dict[str, str] = {}
 
     def _decide(self, action_id: str, effect: str, decision: str, *, title: str = "", arguments=None,
@@ -537,7 +538,10 @@ class OnlineHarnessSidecar:
     def _decide_plugins(self, plugin_calls, message):
         """Gateway decisions for the chosen plugins; any question or refusal stops them all."""
         decided = self._plugins.select(plugin_calls, message=message, handbook=self._handbook)
-        blocked = [(target, decision) for target, decision in decided if not decision.runs]
+        blocked = [(target, decision) for target, decision in decided if decision.decision in {"CLARIFY", "REJECT"}]
+        reviewed = [(target, decision) for target, decision in decided if decision.decision == "REVIEW"]
+        if reviewed and not blocked and self._plugins.source == "console":
+            return self._submit_plugin_reviews(decided, len(plugin_calls))
         if blocked:
             lines = []
             for target, decision in decided:
@@ -549,8 +553,36 @@ class OnlineHarnessSidecar:
             self._completed_result = self._result(content="\n".join(lines), tool_calls=len(plugin_calls))
             return self._completed_result
         return tuple(ConversationPluginRequest(target, decision.arguments, confirm=decision.decision == "CONFIRM",
-                                               reason=decision.reason if decision.decision == "CONFIRM" else "")
+                                               reason=decision.reason if decision.decision == "CONFIRM" else "",
+                                               review=decision.decision == "REVIEW")
                      for target, decision in decided)
+
+    def _submit_plugin_reviews(self, decided, calls):
+        """Console AI assistant: “需他人复核” writes become review requests; others still run normally next time."""
+        lines = []
+        for target, decision in decided:
+            if decision.decision != "REVIEW":
+                self._decide(f"plugin:{target.automation_id}", target.effect, "REJECT", title=target.title,
+                             arguments=decision.arguments, error_code="NOT_RUN_WITH_REVIEW")
+                lines.append(f"{target.title}：和需要复核的操作一起提出，没有执行，请单独再说一次。")
+                continue
+            if self._reviews is None:
+                self._decide(f"plugin:{target.automation_id}", target.effect, "REJECT", title=target.title,
+                             arguments=decision.arguments, error_code="REVIEW_UNAVAILABLE")
+                lines.append(f"{target.title}：需要超级管理员复核，但复核服务当前不可用，没有执行。")
+                continue
+            request = ConversationPluginRequest(target, decision.arguments)
+            submitted = self._reviews.submit(
+                kind="plugin.console", actor=self._plugins.actor, capability=target.capability,
+                title=target.title, summary=f"执行{request.describe()}",
+                plan={"automation_id": target.automation_id, "generation": target.generation,
+                      "configuration_version": target.configuration_version, "contribution_id": target.contribution_id,
+                      "inputs": dict(decision.arguments), "selection_tool": target.selection_tool})
+            self._decide(f"plugin:{target.automation_id}", target.effect, "REVIEW", title=target.title,
+                         arguments=decision.arguments)
+            lines.append(self._reviews.submitted_message(submitted))
+        self._completed_result = self._result(content="\n".join(lines), tool_calls=calls)
+        return self._completed_result
 
     def _start_plugins(self, requests, calls):
         self._plugin_requests = requests
@@ -559,7 +591,8 @@ class OnlineHarnessSidecar:
             for item in requests:
                 # Handed to the Feishu/WeChat channel, which runs or asks "确认" itself.
                 self._decide(f"plugin:{item.target.automation_id}", item.target.effect,
-                             "CONFIRM" if item.confirm else "EXECUTE", title=item.target.title, arguments=dict(item.inputs))
+                             "REVIEW" if item.review else "CONFIRM" if item.confirm else "EXECUTE", title=item.target.title,
+                             arguments=dict(item.inputs))
             return self._result(content="已识别要执行的插件。", tool_calls=calls + len(requests), plugin_requests=requests)
         if any(item.target.spec().writes and not item.confirm for item in requests):
             # Writes are recorded before they are submitted; no record, no run.
