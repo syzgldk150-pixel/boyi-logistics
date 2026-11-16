@@ -66,6 +66,15 @@ class KnowledgeCli:
 
     def read_pdf(self, object_id, *, deadline):
         """v1.0.3 download uses relative output and has no --format flag."""
+        return self._pdf_child(object_id, (), deadline=deadline)
+
+    def render_pdf_page(self, object_id, page, *, deadline):
+        """Download the PDF again (no cache) and draw one page as a PNG in the disposable child."""
+        if type(page) is not int or not 1 <= page <= 200:
+            _fail("KNOWLEDGE_ARGUMENT_INVALID", "页码无效。")
+        return self._pdf_child(object_id, ("--render", str(page)), deadline=deadline)
+
+    def _pdf_child(self, object_id, options, *, deadline):
         object_id = _identity(object_id)
         if os.name != "posix":
             _fail("KNOWLEDGE_RUNTIME_UNSUPPORTED", "知识读取需要受控的 Linux 运行环境。")
@@ -79,7 +88,7 @@ class KnowledgeCli:
             if not pdf.is_file() or pdf.is_symlink() or not 0 < pdf.stat().st_size <= 16_000_000:
                 _fail("KNOWLEDGE_PDF_INVALID", "PDF 下载为空或超过读取上限。")
             return self._run([sys.executable, "-I", str(Path(__file__).with_name("feishu_knowledge_pdf.py")),
-                              str(pdf)], deadline=deadline, cwd=directory,
+                              *options, str(pdf)], deadline=deadline, cwd=directory,
                              env={"PATH": os.defpath, "LANG": "C.UTF-8"})
 
     @staticmethod
@@ -164,6 +173,22 @@ class FeishuKnowledgeSource:
         if not self._space_names or len(set(self._space_names)) != len(self._space_names):
             raise ValueError("unique authorized space names required")
         self._slots = BoundedSemaphore(2)
+
+    def page_image(self, document_id: str, page: int) -> bytes:
+        """One PDF page as PNG bytes, for a table answer; the document comes from this turn's verified quote."""
+        import base64
+
+        render = getattr(self._cli, "render_pdf_page", None)
+        if render is None:
+            _fail("KNOWLEDGE_PDF_UNAVAILABLE", "PDF 页面截图尚未配置。")
+        data = _data(render(document_id, page, deadline=time.monotonic() + 25))
+        try:
+            image = base64.b64decode(str(data.get("png_base64") or ""), validate=True)
+        except ValueError:
+            image = b""
+        if data.get("page") != page or not image.startswith(b"\x89PNG\r\n\x1a\n"):
+            _fail("KNOWLEDGE_PDF_RENDER_FAILED", "PDF 页面截图没有生成。")
+        return image
 
     def _pages(self, command, parameters, *, deadline, limit=300):
         rows, cursor, seen = [], "", set()

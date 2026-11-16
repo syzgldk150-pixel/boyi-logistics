@@ -116,6 +116,29 @@ async def create_harness_session_response(
     )
 
 
+def page_images(attachments, renderer: Callable[[str, int], bytes] | None) -> list[dict[str, str]]:
+    """Table pages of a quoted knowledge answer, drawn for the AI assistant page (data URLs).
+
+    A page that cannot be drawn keeps its caption, the reason and the page text instead.
+    """
+    import base64
+
+    images = []
+    for item in list(attachments or ())[:2]:
+        caption = str(getattr(item, "caption", "") or "")
+        try:
+            if renderer is None:
+                raise RuntimeError("PDF 截图尚未配置")
+            picture = renderer(item.document_id, item.page)
+            if not isinstance(picture, bytes) or not picture.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise RuntimeError("截图格式无效")
+            images.append({"caption": caption, "data_url": "data:image/png;base64," + base64.b64encode(picture).decode("ascii")})
+        except Exception as exc:  # noqa: BLE001 - shown to the person with the page text
+            images.append({"caption": caption, "error": str(exc)[:80] or type(exc).__name__,
+                           "fallback": str(getattr(item, "fallback", "") or "")})
+    return images
+
+
 async def post_harness_message_response(
     payload: HarnessMessageRequest,
     request: Request,
@@ -123,6 +146,7 @@ async def post_harness_message_response(
     conversation_provider: Callable[[], HarnessConversationService],
     tools_provider: Callable[[Actor, str], list[dict[str, str]]],
     actor_provider: Callable[[Request], Actor],
+    page_image_provider: Callable[[str, int], bytes] | None = None,
 ) -> dict[str, Any]:
     actor = actor_provider(request)
     receipt = await asyncio.to_thread(
@@ -133,8 +157,12 @@ async def post_harness_message_response(
         message=payload.message,
     )
     tools = await asyncio.to_thread(_private_chat(tools_provider), actor, payload.request_uuid)
+    images = (await asyncio.to_thread(page_images, receipt.attachments, page_image_provider)
+              if getattr(receipt, "attachments", ()) else [])
+    extra = {"images": images} if images else {}  # only when a quoted answer has table pages
     return api_success(
         {
+            **extra,
             "session_id": receipt.session_id,
             "request_uuid": receipt.request_id,
             "message_id": receipt.assistant_message.message_id,
@@ -157,6 +185,7 @@ def create_harness_router(
     tools_provider: Callable[[Actor, str], list[dict[str, str]]],
     actor_provider: Callable[[Request], Actor],
     availability_provider: Callable[[], object] | None = None,
+    page_image_provider: Callable[[str, int], bytes] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -185,6 +214,7 @@ def create_harness_router(
             conversation_provider=conversation_provider,
             tools_provider=tools_provider,
             actor_provider=actor_provider,
+            page_image_provider=page_image_provider,
         )
 
     @router.post("/internal/v1/harness/plugin-actions")

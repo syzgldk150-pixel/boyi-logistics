@@ -20,7 +20,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from shared.wechat_bot import ITEM_TEXT, MESSAGE_STATE_FINISH, MESSAGE_TYPE_BOT
+from shared.wechat_bot import ITEM_IMAGE, ITEM_TEXT, MESSAGE_STATE_FINISH, MESSAGE_TYPE_BOT
 
 logger = logging.getLogger("agent.wechat_ilink")
 
@@ -33,6 +33,12 @@ LONG_POLL_TIMEOUT_SECONDS = 35.0
 API_TIMEOUT_SECONDS = 15.0
 LIGHT_TIMEOUT_SECONDS = 10.0
 STALE_TOKEN_ERRCODE = -14
+# Images (src/cdn/upload.ts, cdn-upload.ts, cdn-url.ts, messaging/send.ts of the same plugin):
+# getuploadurl -> AES-128-ECB (PKCS7) upload to the CDN -> sendmessage with an image item.
+CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+UPLOAD_MEDIA_IMAGE = 1
+MAX_IMAGE_BYTES = 10_000_000
+CDN_UPLOAD_ATTEMPTS = 3
 
 
 class ILinkError(RuntimeError):
@@ -96,6 +102,21 @@ class QRStatus:
     ilink_user_id: str = ""
     base_url: str = ""
     redirect_host: str = ""
+
+
+def cdn_upload_url(ticket: Mapping[str, Any], filekey: str) -> str:
+    """The CDN address from ``getuploadurl``: its full URL, or the plugin's documented fallback."""
+    full = str(ticket.get("upload_full_url") or "").strip()
+    if full:
+        parsed = urlparse(full)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not (host == "weixin.qq.com" or host.endswith(".weixin.qq.com")):
+            raise ILinkError("ILINK_UPLOAD_URL_INVALID", "图片上传地址不是微信的 HTTPS 地址")
+        return full
+    param = str(ticket.get("upload_param") or "")
+    if not param:
+        raise ILinkError("ILINK_UPLOAD_URL_MISSING", "微信没有返回图片上传地址")
+    return f"{CDN_BASE_URL}/upload?encrypted_query_param={quote(param, safe='')}&filekey={quote(filekey, safe='')}"
 
 
 class ILinkClient:
@@ -189,6 +210,67 @@ class ILinkClient:
         ret = data.get("ret")
         if ret not in (None, 0):
             raise ILinkError("ILINK_SEND_FAILED", f"发送消息失败 ret={ret}")
+
+    async def send_image(self, base_url: str, token: str, *, to_user_id: str, image: bytes,
+                         context_token: str | None) -> None:
+        """Upload one picture encrypted to the WeChat CDN, then send it as an image message."""
+        import hashlib
+
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import pad
+
+        if not isinstance(image, bytes) or not 0 < len(image) <= MAX_IMAGE_BYTES:
+            raise ILinkError("ILINK_IMAGE_INVALID", "图片为空或超过发送上限")
+        filekey, aeskey = secrets.token_hex(16), secrets.token_bytes(16)
+        ciphertext = AES.new(aeskey, AES.MODE_ECB).encrypt(pad(image, 16))
+        try:
+            ticket = await self._post(base_url, "ilink/bot/getuploadurl", {
+                "filekey": filekey, "media_type": UPLOAD_MEDIA_IMAGE, "to_user_id": to_user_id,
+                "rawsize": len(image), "rawfilemd5": hashlib.md5(image).hexdigest(),  # noqa: S324 - protocol field
+                "filesize": len(ciphertext), "no_need_thumb": True, "aeskey": aeskey.hex(),
+                "base_info": _base_info()}, token=token, timeout=API_TIMEOUT_SECONDS, label="申请图片上传")
+        except httpx.TimeoutException:
+            raise ILinkError("ILINK_UPLOAD_TIMEOUT", "申请图片上传超时") from None
+        upload_url = cdn_upload_url(ticket, filekey)
+        download_param = await self._upload_to_cdn(upload_url, ciphertext)
+        message: dict[str, Any] = {
+            "from_user_id": "", "to_user_id": to_user_id, "client_id": f"boyi-{uuid.uuid4().hex}",
+            "message_type": MESSAGE_TYPE_BOT, "message_state": MESSAGE_STATE_FINISH,
+            # The plugin base64-encodes the hex text of the key, not the raw key bytes.
+            "item_list": [{"type": ITEM_IMAGE, "image_item": {
+                "media": {"encrypt_query_param": download_param,
+                          "aes_key": base64.b64encode(aeskey.hex().encode("ascii")).decode("ascii"), "encrypt_type": 1},
+                "mid_size": len(ciphertext)}}],
+        }
+        if context_token:
+            message["context_token"] = context_token
+        try:
+            data = await self._post(base_url, "ilink/bot/sendmessage", {"msg": message, "base_info": _base_info()},
+                                    token=token, timeout=API_TIMEOUT_SECONDS, label="发送图片")
+        except httpx.TimeoutException:
+            raise ILinkError("ILINK_SEND_TIMEOUT", "发送图片超时，图片可能未送达") from None
+        if data.get("ret") not in (None, 0):
+            raise ILinkError("ILINK_SEND_FAILED", f"发送图片失败 ret={data.get('ret')}")
+
+    async def _upload_to_cdn(self, url: str, ciphertext: bytes) -> str:
+        for attempt in range(1, CDN_UPLOAD_ATTEMPTS + 1):
+            try:
+                response = await self._client.post(url, content=ciphertext, timeout=API_TIMEOUT_SECONDS,
+                                                   headers={"Content-Type": "application/octet-stream"})
+            except httpx.HTTPError as exc:
+                if attempt == CDN_UPLOAD_ATTEMPTS:
+                    raise ILinkError("ILINK_UPLOAD_FAILED", f"图片上传网络失败（{type(exc).__name__}）") from None
+                continue
+            if 400 <= response.status_code < 500:
+                raise ILinkError("ILINK_UPLOAD_REJECTED", f"图片上传被拒绝 HTTP {response.status_code}")
+            if response.status_code == 200:
+                param = response.headers.get("x-encrypted-param")
+                if not param:
+                    raise ILinkError("ILINK_UPLOAD_FAILED", "图片上传后没有返回下载参数")
+                return param
+            if attempt == CDN_UPLOAD_ATTEMPTS:
+                raise ILinkError("ILINK_UPLOAD_FAILED", f"图片上传失败 HTTP {response.status_code}")
+        raise ILinkError("ILINK_UPLOAD_FAILED", "图片上传失败")
 
     async def notify(self, base_url: str, token: str, *, start: bool) -> None:
         endpoint = "ilink/bot/msg/notifystart" if start else "ilink/bot/msg/notifystop"

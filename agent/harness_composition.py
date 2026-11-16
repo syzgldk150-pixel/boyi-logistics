@@ -30,6 +30,9 @@ def build_read_only_harness_gateway(runtime: object, *, finance_summary=None, in
     memory = getattr(runtime, "memory")
     knowledge = FeishuKnowledgeSource()
     loop = asyncio.get_running_loop() if invocations is not None else None
+    # Table pages of a quoted knowledge answer are sent as pictures (Feishu/WeChat and the AI assistant).
+    from feishu.reply_images import bind_page_renderer
+    bind_page_renderer(getattr(knowledge, "page_image", None))
 
     def tracking(number):
         with execution_capability_scope("track_waybill", ttl_seconds=60):

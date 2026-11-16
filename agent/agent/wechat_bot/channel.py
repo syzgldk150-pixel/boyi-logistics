@@ -282,6 +282,18 @@ class WeChatChannelRuntime:
             logger.error("WeChat message handling failed: %s", type(task.exception()).__name__)
 
     # -- replies ---------------------------------------------------------
+    async def send_image(self, receive_id: str, image: bytes) -> None:
+        """Send one picture back to the device's owner; raises ILinkError so the caller can say why."""
+        device_id = parse_wechat_actor_id(receive_id)
+        credentials = self._tokens.load(device_id) if device_id is not None else None
+        if not credentials:
+            raise ILinkError("ILINK_DEVICE_UNAVAILABLE", "微信设备没有可用的登录令牌")
+        context = self._contexts.get(device_id)
+        to_user = context[0] if context else credentials["owner_user_id"]
+        await self._client.send_image(credentials["base_url"], credentials["token"], to_user_id=to_user,
+                                      image=image, context_token=context[1] if context else None)
+        logger.info("wechat outbound image | device=%s | bytes=%d", device_id, len(image))
+
     async def send(self, receive_id: str, text: str) -> None:
         device_id = parse_wechat_actor_id(receive_id)
         if device_id is None:

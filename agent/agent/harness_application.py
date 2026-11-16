@@ -201,6 +201,8 @@ class HarnessMessageReceipt:
     tool_calls: int
     plugin_invocations: tuple[Mapping[str, Any], ...] = ()
     plugin_requests: tuple[object, ...] = ()
+    # Table pages each channel sends as a picture (knowledge_answers.PageImage); internal only.
+    attachments: tuple[object, ...] = ()
 
     @property
     def session_id(self) -> str:
@@ -260,6 +262,7 @@ class HarnessConversationService:
         self._message_tool_calls: dict[str, int] = {}
         self._message_plugins: dict[str, tuple[Mapping[str, Any], ...]] = {}
         self._message_plugin_requests: dict[str, tuple[object, ...]] = {}
+        self._message_attachments: dict[str, tuple[object, ...]] = {}
         self._pending_sidecars: dict[str, HarnessSidecar] = {}
         self._session_invocations: dict[str, set[str]] = {}
         self._session_query_context: dict[str, dict[str, Any]] = {}
@@ -439,13 +442,15 @@ class HarnessConversationService:
                     tool_calls=self._message_tool_calls[assistant_id],
                     plugin_invocations=self._message_plugins.get(assistant_id, ()),
                     plugin_requests=self._message_plugin_requests.get(assistant_id, ()),
+                    attachments=self._message_attachments.get(assistant_id, ()),
                 )
 
             clearing = message.strip() == "清空会话"
             if clearing:
                 old_session = self._repository.clear_messages(principal_id=bound_actor.actor_id, session_id=safe_session_id)
                 for old_message in old_session.messages:
-                    for cache in (self._message_tool_calls, self._message_plugins, self._message_plugin_requests, self._pending_sidecars):
+                    for cache in (self._message_tool_calls, self._message_plugins, self._message_plugin_requests,
+                                  self._message_attachments, self._pending_sidecars):
                         cache.pop(old_message.message_id, None)
                 # This only clears model context. Running plugins and their durable
                 # execution records remain available in the automation module.
@@ -540,6 +545,7 @@ class HarnessConversationService:
                 self._session_query_context[safe_session_id] = copy.deepcopy(sidecar.query_context)
             self._message_plugins[assistant_id] = result.plugin_invocations
             self._message_plugin_requests[assistant_id] = result.plugin_requests
+            self._message_attachments[assistant_id] = result.attachments
             self._session_invocations.setdefault(safe_session_id, set()).update(
                 item["invocation_id"] for item in result.plugin_invocations if item.get("invocation_id")
             )
@@ -558,6 +564,7 @@ class HarnessConversationService:
                 tool_calls=result.tool_calls,
                 plugin_invocations=result.plugin_invocations,
                 plugin_requests=result.plugin_requests,
+                attachments=result.attachments,
             )
 
     def _build_sidecar(self, actor: Actor, request_id: str) -> HarnessSidecar:

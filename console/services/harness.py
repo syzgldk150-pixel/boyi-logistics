@@ -50,6 +50,7 @@ _HARNESS_TOP_LEVEL_RESPONSE_FIELDS = frozenset(
         "blocked_reason",
         "next_poll_after_ms",
         "plugin_invocations",
+        "images",
     }
 )
 _HARNESS_FORBIDDEN_RESPONSE_KEYS = frozenset(
@@ -180,13 +181,38 @@ def _safe_response_value(value: object, *, depth: int = 0) -> Any:
     raise ValueError("AI 助手返回了无法识别的数据")
 
 
+_PNG_DATA_URL = re.compile(r"data:image/png;base64,[A-Za-z0-9+/]+={0,2}")
+_MAX_PAGE_IMAGE_URL = 2_000_000
+
+
+def _project_page_images(images: object) -> list[dict[str, str]]:
+    """Table pages of a quoted answer: exact PNG data URLs (never redacted), captions as safe text."""
+    if not isinstance(images, list) or len(images) > 2:
+        raise ValueError("AI 助手返回的截图格式无效")
+    projected = []
+    for image in images:
+        if not isinstance(image, Mapping) or set(image) - {"caption", "data_url", "error", "fallback"}:
+            raise ValueError("AI 助手返回的截图格式无效")
+        item = {key: _safe_response_value(str(image.get(key) or "")) for key in ("caption", "error", "fallback") if key in image}
+        if "data_url" in image:
+            url = image["data_url"]
+            if not isinstance(url, str) or len(url) > _MAX_PAGE_IMAGE_URL or not _PNG_DATA_URL.fullmatch(url):
+                raise ValueError("AI 助手返回的截图格式无效")
+            item["data_url"] = url
+        projected.append(item)
+    return projected
+
+
 def _project_harness_response(data: object) -> dict[str, Any]:
     if not isinstance(data, Mapping):
         raise ValueError("AI 助手返回内容必须是结构化对象")
     unknown = set(data) - _HARNESS_TOP_LEVEL_RESPONSE_FIELDS
     if unknown:
         raise ValueError("AI 助手返回了不支持的顶层字段")
-    projected = _safe_response_value(data)
+    images = _project_page_images(data["images"]) if "images" in data else None
+    projected = _safe_response_value({key: value for key, value in data.items() if key != "images"})
+    if images is not None:
+        projected["images"] = images
     if not isinstance(projected, dict):  # pragma: no cover - guarded above
         raise ValueError("AI 助手返回内容必须是结构化对象")
     for field_name in ("session_id", "request_uuid", "message_id"):

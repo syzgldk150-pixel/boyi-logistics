@@ -15,6 +15,7 @@ from agent.wechat_bot.ilink import ILinkClient
 from agent.wechat_bot.service import WeChatBotService
 from agent.wechat_bot.tokens import WeChatTokenStore
 from feishu.message_handler import bind_channel_reply_sender, handle_channel_text
+from feishu.reply_images import bind_channel_image_sender
 from shared.identity_repository import IdentityRepository
 from shared.wechat_bot import WECHAT_ACTOR_PREFIX
 from shared.wechat_bot_repository import WeChatDeviceRepository
@@ -41,6 +42,7 @@ class WeChatBotRuntime:
 
     def start(self) -> None:
         bind_channel_reply_sender(WECHAT_ACTOR_PREFIX, self.channel.send)
+        bind_channel_image_sender(WECHAT_ACTOR_PREFIX, self.channel.send_image)
         self.channel.start()
         logger.info("WeChat bot channel started")
 
@@ -48,5 +50,6 @@ class WeChatBotRuntime:
         await self.service.close()
         await self.channel.stop()
         bind_channel_reply_sender(WECHAT_ACTOR_PREFIX, None)
+        bind_channel_image_sender(WECHAT_ACTOR_PREFIX, None)
         await self.client.close()
         logger.info("WeChat bot channel stopped")

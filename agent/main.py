@@ -1093,6 +1093,7 @@ app.include_router(
         tools_provider=service_v2_harness_tools,
         actor_provider=lambda request: _require_console_admin_request(request),
         availability_provider=service_v2_harness_status,
+        page_image_provider=lambda document_id, page: _knowledge_page_image(document_id, page),
     )
 )
 
@@ -1752,6 +1753,12 @@ def _agent_business_actions(business_service, runtime, loop, identity_access):
     fee_rules = FeeRuleRepository(runtime.memory.connection_factory)
     return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access,
                            fee_rules=fee_rules.approved)
+
+
+def _knowledge_page_image(document_id: str, page: int) -> bytes:
+    """Table page pictures for the AI assistant page; the renderer is bound by the harness composition."""
+    from feishu.reply_images import render_page
+    return render_page(document_id, page)
 
 
 def _require_console_super_admin_request(request: Request) -> Actor:

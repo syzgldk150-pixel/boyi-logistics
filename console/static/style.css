@@ -3199,6 +3199,7 @@ body .line-haul-tool-btn {
 }
 .harness-message-label { display: block; margin-bottom: 4px; color: var(--muted); font-size: var(--fs-body); }
 .harness-message-copy { margin: 0; white-space: pre-wrap; }
+.harness-page-image { display: block; max-width: 100%; height: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
 .harness-composer-wrap {
   position: sticky;
   bottom: 0;

@@ -62,6 +62,35 @@ _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _SKIP = re.compile(r"[\s　*_`>|#]")
 
 
+def page_text(body: str, page: int) -> str:
+    """The text of one page inside a PDF excerpt (between its marker and the next)."""
+    marks = list(_PAGE_MARK.finditer(body))
+    for index, mark in enumerate(marks):
+        if int(mark.group(1)) == page:
+            end = marks[index + 1].start() if index + 1 < len(marks) else len(body)
+            return body[mark.end():end]
+    return ""
+
+
+def looks_like_table(text: str) -> bool:
+    """A table read through the text layer comes out as many short lines, many with figures."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 6:
+        return False
+    short = sum(len(line) <= 14 for line in lines) / len(lines)
+    figures = sum(bool(re.search(r"\d", line)) for line in lines) / len(lines)
+    return short >= 0.5 and figures >= 0.3
+
+
+@dataclass(frozen=True)
+class PageImage:
+    """A table page to send as a picture; ``fallback`` is sent instead if the picture cannot be."""
+    document_id: str
+    page: int
+    caption: str
+    fallback: str
+
+
 class QuoteError(ValueError):
     """The proposed passage is not original text of a document read in this turn."""
 
@@ -126,13 +155,28 @@ class Quote:
     text: str
     url: str | None
     pages: tuple[int, ...]
+    document_id: str | None = None
+    table_pages: tuple[int, ...] = ()
+
+    def _title(self) -> str:
+        return self.title.replace("[", "［").replace("]", "］")
 
     def render(self) -> str:
-        title = self.title.replace("[", "［").replace("]", "］")
-        lines = [f"以下是《{title}》{self.location}的原文：", "", self.text]
+        if self.table_pages:
+            # A table's text layer comes out scrambled: the page picture is the original.
+            lines = [f"以下是《{self._title()}》{self.location}的原文（表格页，原文见下方截图）："]
+        else:
+            lines = [f"以下是《{self._title()}》{self.location}的原文：", "", self.text]
         if self.url:
             lines += ["", f"全文：{self.url}"]
         return "\n".join(lines)
+
+    def images(self) -> tuple[PageImage, ...]:
+        if not self.table_pages or not self.document_id:
+            return ()
+        fallback = f"这一页的文字如下（表格的文字可能错位，请以原表为准）：\n\n{self.text}"
+        return tuple(PageImage(self.document_id, page, f"《{self._title()}》第 {page} 页", fallback)
+                     for page in self.table_pages)
 
 
 def quote_knowledge(arguments: Mapping, results: Sequence[Mapping]) -> Quote:
@@ -146,10 +190,15 @@ def quote_knowledge(arguments: Mapping, results: Sequence[Mapping]) -> Quote:
     body = item["body"]
     start, end = _locate(body, proposed)
     text = _PAGE_MARK.sub("", body[start:end]).strip()
-    pages = tuple(sorted({int(page) for page in _PAGE_MARK.findall(body[:end])[-1:]}
-                         | {int(page) for page in _PAGE_MARK.findall(body[start:end])})) if item.get("format") == "pdf" else ()
+    pdf = item.get("format") == "pdf"
+    pages = tuple(sorted({int(page) for page in _PAGE_MARK.findall(body[:start])[-1:]}
+                         | {int(page) for page in _PAGE_MARK.findall(body[start:end])})) if pdf else ()
+    hinted = arguments.get("table") is True
+    table_pages = tuple(page for page in pages if hinted or looks_like_table(page_text(body, page)))[:2]
+    document_id = item.get("document_id") if isinstance(item.get("document_id"), str) else None
     return Quote(source_id, str(item.get("title") or ""), _location(item, body, start, end), text,
-                 item.get("url") if isinstance(item.get("url"), str) else None, pages)
+                 item.get("url") if isinstance(item.get("url"), str) else None, pages,
+                 document_id if pdf else None, table_pages if pdf and document_id else ())
 
 
 def unquoted_reply(results: Sequence[Mapping]) -> str:

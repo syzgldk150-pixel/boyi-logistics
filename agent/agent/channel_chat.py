@@ -43,4 +43,5 @@ def reply_to_feishu(
     )
     return {"reply": receipt.assistant_message.content,
             "plugin_requests": receipt.plugin_requests,
+            "attachments": receipt.attachments,
             "replayed": receipt.replayed}

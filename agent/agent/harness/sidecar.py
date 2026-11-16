@@ -44,6 +44,9 @@ class SidecarResult:
     # this turn and the active model. Never included in public receipts.
     decisions: tuple[object, ...] = ()
     model: str | None = None
+    # Internal channel handoff: table pages each channel sends as a picture
+    # (knowledge_answers.PageImage). Never included in public receipts.
+    attachments: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         if (

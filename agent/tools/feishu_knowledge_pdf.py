@@ -104,6 +104,32 @@ def select_pages(body, query):
                      "scope_note": "已检索全部页文字层；返回命中页及相邻页。图示、扫描文字及表格版面未经识别。"}
 
 
+MAX_PAGE_IMAGE_BYTES = 1_300_000  # base64 + JSON stays under the parent 2 MB output cap
+
+
+def render_page(path, page):
+    """One page as a PNG for a table answer (业务手册 收尾第 4b 步); smaller scale if the picture is large."""
+    import base64
+    import io
+
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(path)
+    try:
+        if not 1 <= len(document) <= 200 or not 1 <= page <= len(document):
+            raise ValueError("page_out_of_range")
+        for scale in (2.0, 1.5, 1.2):
+            image = document[page - 1].render(scale=scale).to_pil().convert("L")
+            output = io.BytesIO()
+            image.save(output, format="PNG", optimize=True)
+            if len(output.getvalue()) <= MAX_PAGE_IMAGE_BYTES:
+                return {"page": page, "width": image.width, "height": image.height,
+                        "png_base64": base64.b64encode(output.getvalue()).decode("ascii")}
+        raise ValueError("image_limit")
+    finally:
+        document.close()
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     try:
@@ -111,7 +137,10 @@ if __name__ == "__main__":
         if sys.platform != "win32":
             import resource
             resource.setrlimit(resource.RLIMIT_AS, (768*1024*1024, 768*1024*1024))
-        result = {"data": extract_pages(sys.argv[1])}
+        if len(sys.argv) == 4 and sys.argv[1] == "--render":
+            result = {"data": render_page(sys.argv[3], int(sys.argv[2]))}
+        else:
+            result = {"data": extract_pages(sys.argv[1])}
     except Exception:
         result = {"code": "KNOWLEDGE_PDF_EXTRACTION_FAILED"}
     print(json.dumps(result, ensure_ascii=False))

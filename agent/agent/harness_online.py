@@ -63,7 +63,8 @@ _QUOTE_TOOL = {"type": "function", "function": {
                    "不要改写、总结、拼接或省略；只引用一段。系统核对后原样发给用户，并注明出处。",
     "parameters": {"type": "object", "additionalProperties": False, "required": ["source_id", "quote"], "properties": {
         "source_id": {"type": "string", "minLength": 1, "maxLength": 200},
-        "quote": {"type": "string", "minLength": 1, "maxLength": QUOTE_MAX_CHARS * 2}}},
+        "quote": {"type": "string", "minLength": 1, "maxLength": QUOTE_MAX_CHARS * 2},
+        "table": {"type": "boolean", "description": "引用的内容来自表格时填 true，系统会改发这一页的截图。"}}},
 }}
 _QUOTE_NUDGE = ("业务知识问题不能用自己的话回答。请调用 quote_knowledge，从刚才返回的正文中一字不差地复制最能回答问题的那一段；"
                 "正文里没有能直接回答的段落就不要调用。")
@@ -499,7 +500,8 @@ class OnlineHarnessSidecar:
                     continue
                 self._decide("knowledge.quote", "read", "EXECUTE", arguments={"source_id": quote.source_id})
                 self.quotes.append(quote)
-                self._completed_result = self._result(content=quote.render(), tool_calls=calls + len(resolved_calls))
+                self._completed_result = self._result(content=quote.render(), tool_calls=calls + len(resolved_calls),
+                                                      attachments=quote.images())
                 return self._completed_result
             business = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
                         if self._business is not None and self._business.handles(tool_id)]

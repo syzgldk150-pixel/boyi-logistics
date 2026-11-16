@@ -121,7 +121,7 @@ V2 自动化卡片按已安装插件声明的唯一平台分类；从其他页�
 
 ## 微信个人号（官方 iLink Bot / ClawBot）
 
-2026-11-14 起，除飞书外还可通过微信官方 ClawBot 插件的 iLink Bot API 接入个人微信。协议依据腾讯发布的渠道插件 `@tencent-weixin/openclaw-weixin` 2.4.10 源码（`src/api/api.ts`、`src/api/types.ts`、`src/auth/login-qr.ts`、`src/monitor/monitor.ts`）：`https://ilinkai.weixin.qq.com` 的 JSON 接口，`get_bot_qrcode?bot_type=3` / `get_qrcode_status` 扫码，`getupdates` 长轮询收消息，`sendmessage` 回复并回传用户消息的 `context_token`，`errcode=-14` 为会话失效。
+2026-11-14 起，除飞书外还可通过微信官方 ClawBot 插件的 iLink Bot API 接入个人微信。2026-11-16 起支持向微信发送图片（知识回答的表格页截图）：按同一插件的 `src/cdn/upload.ts`、`cdn-upload.ts`、`messaging/send.ts`，先 `ilink/bot/getuploadurl`（`media_type=1`、明文大小与 MD5、密文大小、十六进制 AES 密钥），再把 AES-128-ECB（PKCS7）密文 POST 到返回的微信 HTTPS 上传地址（或按 `upload_param` 拼出 `novac2c.cdn.weixin.qq.com` 地址），取响应头 `x-encrypted-param`，最后 `sendmessage` 发图片项（`aes_key` 为十六进制密钥文本的 base64，`mid_size` 为密文大小）。协议依据腾讯发布的渠道插件 `@tencent-weixin/openclaw-weixin` 2.4.10 源码（`src/api/api.ts`、`src/api/types.ts`、`src/auth/login-qr.ts`、`src/monitor/monitor.ts`）：`https://ilinkai.weixin.qq.com` 的 JSON 接口，`get_bot_qrcode?bot_type=3` / `get_qrcode_status` 扫码，`getupdates` 长轮询收消息，`sendmessage` 回复并回传用户消息的 `context_token`，`errcode=-14` 为会话失效。
 
 - **绑定**：系统管理“接入账号”卡“+ 新增接入 → 微信”中由超级管理员选择所属人员（与飞书相同）、设备备注和可选的功能限制，生成二维码；对方用自己的微信扫码并在手机确认（需要时由管理员录入手机上显示的数字）。确认后 iLink 为这个微信签发一个机器人，系统才新建设备记录（迁移 `081_wechat_bot_devices.sql`）。同一个微信机器人同时只能有一条有效设备，解绑后可重新扫码。二维码约 8 分钟有效，扫码会话只在 Agent 进程内保存，重启后需重新生成。
 - **功能限制**：设备可不限制（与所属人员完全一致），或只勾选部分功能；实际权限是人员的实时权限与勾选项的交集，不会超出人员权限。人员为超级管理员时，一旦设置限制就不再拥有超级管理员专属能力。规则在 `shared/wechat_bot.py` 的 `restrict_access`。

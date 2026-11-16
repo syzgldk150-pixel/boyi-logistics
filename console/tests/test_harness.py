@@ -331,7 +331,7 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert "可以开始提问" in script
     assert "查询业务，或让我执行插件" in template
     assert "AI 助手" in template
-    assert "plugin-chat-20261102" in template
+    assert "page-images-20261116" in template
     assert "Harness 助手" not in template
     assert "查看本次查询依据" not in template
     assert "data-harness-process" not in template
@@ -343,3 +343,29 @@ def test_template_and_script_keep_host_rendered_accessible_safe_surface() -> Non
     assert ".harness-message--user" in styles
     assert ":focus" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles
+
+
+def test_table_page_pictures_pass_exactly_and_anything_else_is_refused() -> None:
+    import base64
+
+    import pytest
+
+    from console.services.harness import _project_harness_response
+
+    url = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 32).decode()
+    projected = _project_harness_response({"assistant_message": "以下是……", "images": [
+        {"caption": "《测试手册》第 51 页", "data_url": url},
+        {"caption": "《测试手册》第 52 页", "error": "飞书 PDF 下载失败", "fallback": "这一页的文字如下：……"}]})
+    assert projected["images"][0]["data_url"] == url  # never redacted or altered
+    assert projected["images"][1]["error"] == "飞书 PDF 下载失败"
+    for bad in ([{"data_url": "javascript:alert(1)"}], [{"data_url": "data:image/svg+xml;base64,PHN2Zz4="}],
+                [{"caption": "x", "path": "/etc"}], [{}, {}, {}]):
+        with pytest.raises(ValueError):
+            _project_harness_response({"assistant_message": "x", "images": bad})
+
+
+def test_assistant_page_draws_only_png_data_urls() -> None:
+    script = Path(__file__).resolve().parents[1].joinpath("static", "harness.js").read_text(encoding="utf-8")
+    assert "renderPageImages(response.images)" in script
+    assert "/^data:image\\/png;base64,[A-Za-z0-9+/]+={0,2}$/" in script
+    assert "截图没有生成" in script

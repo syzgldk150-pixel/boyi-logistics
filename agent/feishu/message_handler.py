@@ -2628,6 +2628,9 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     reply_text = format_reply(result.get("reply") or UNKNOWN_EXECUTION_REPLY)
     reply_type = "unknown_no_tool" if reply_text == UNKNOWN_EXECUTION_REPLY else "agent_reply"
     await _reply_text(chat_id, reply_text, reply_type=reply_type)
+    if result.get("attachments") and not result.get("replayed"):  # table pages of a quoted answer
+        from feishu.reply_images import send_reply_images
+        await send_reply_images(chat_id, result["attachments"], send_text=_reply_text)
 
 
 # (chat_id, sender_id) -> one plugin write waiting for its sender's "确认".

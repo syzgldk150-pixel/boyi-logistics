@@ -178,6 +178,30 @@
     scrollConversation();
   }
 
+  // Table pages of a quoted knowledge answer: the page picture is the original text.
+  function renderPageImages(images) {
+    if (!thread || !Array.isArray(images)) return;
+    images.slice(0, 2).forEach((image) => {
+      const article = createElement("article", "harness-message harness-message--assistant");
+      const body = createElement("div", "harness-message-body");
+      appendText(body, "span", "harness-message-label", String(image.caption || "原文截图"));
+      const url = String(image.data_url || "");
+      if (/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(url)) {
+        const picture = document.createElement("img");
+        picture.className = "harness-page-image";
+        picture.alt = `${String(image.caption || "原文")}的截图`;
+        picture.src = url;
+        body.append(picture);
+      } else {
+        appendText(body, "p", "harness-message-copy",
+          `截图没有生成：${String(image.error || "原因未知")}。\n${String(image.fallback || "")}`.trim());
+      }
+      article.append(body);
+      thread.append(article);
+    });
+    scrollConversation();
+  }
+
   function renderTools(tools) {
     if (!toolsList || !toolsCount) return;
     toolsList.replaceChildren();
@@ -230,6 +254,7 @@
     if (returnedSessionId) setSession(returnedSessionId);
     if (response.tools !== undefined) renderTools(response.tools);
     appendMessage("assistant", responseText(response));
+    renderPageImages(response.images);
     (response.plugin_invocations || []).forEach((item) => renderPlugin(item, sessionId));
     setState("可以继续提问");
     showModelSettings(false);
