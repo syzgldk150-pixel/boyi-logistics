@@ -304,7 +304,7 @@
   .waybill-photo-tab:disabled { cursor: default; opacity: .55; }
   .waybill-photo-counter { font: 400 var(--fs-caption)/1 var(--font-num); color: var(--text-muted); white-space: nowrap; }
   .waybill-photo-stage { position: relative; display: flex; align-items: center; justify-content: center; height: min(474px, calc(100dvh - 260px)); min-height: 240px; padding: 16px 72px; background: var(--bg-subtle); }
-  .waybill-photo-stage img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--r-block); background: var(--bg-surface); }
+  .waybill-photo-stage img { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; border-radius: var(--r-block); }
   .waybill-photo-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 100%; min-height: 0; color: var(--text-muted); font-size: var(--fs-body); text-align: center; }
   .waybill-photo-nav { position: absolute; top: 50%; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; margin-top: -18px; border: 1px solid var(--line-default); border-radius: 999px; background: var(--bg-surface); color: var(--text-secondary); cursor: pointer; }
   .waybill-photo-nav[data-step="-1"] { left: 20px; }
@@ -599,7 +599,7 @@
           </thead>
           <tbody>
             {% for row in rows %}
-            <tr data-waybill-row="{{ row.source }}:{{ row.id }}">
+            <tr data-waybill-row="{{ row.source }}:{{ row.id }}"{% if row.source in ['ronghui', 'yunda'] and row.status not in ['signed', 'cancelled'] and row.open_date %} data-waybill-unsigned-platform="{{ row.source }}" data-open-date="{{ row.open_date }}"{% endif %}>
               <td class="waybill-col-pick" data-col="pick"><label class="waybill-pick"><input type="checkbox" data-waybill-pick="{{ row.source }}:{{ row.id }}" aria-label="勾选 {{ row.waybill_no }}"></label></td>
               <td class="waybill-col-no" data-col="no">
                 <button class="waybill-no-link" type="button" data-waybill-select="{{ row.source }}:{{ row.id }}">{{ row.waybill_no }}</button>
@@ -1546,6 +1546,67 @@
     }
   }
 
+  // A keyword search reads every stored date, then asks 融辉/韵达 again for the
+  // open dates of the rows still unsigned there, so a parcel signed since the
+  // last sync shows its current state instead of the stored one.
+  const KEYWORD_REFRESH_MAX_DAYS = 31;
+  function unsignedPlatformRange() {
+    const sources = new Set();
+    const dates = [];
+    panel()?.querySelectorAll("[data-waybill-unsigned-platform]").forEach((row) => {
+      const date = String(row.dataset.openDate || "").slice(0, 10).replaceAll("/", "-");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+      sources.add(row.dataset.waybillUnsignedPlatform);
+      dates.push(date);
+    });
+    if (!dates.length) return null;
+    dates.sort();
+    const from = dates[0];
+    const to = dates[dates.length - 1];
+    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000 + 1;
+    if (days > KEYWORD_REFRESH_MAX_DAYS) return { tooWide: true };
+    return { source: sources.size === 1 ? Array.from(sources)[0] : "all", from, to };
+  }
+
+  async function queryKeyword(url) {
+    const stored = { message: "已按关键词搜索全部日期（融辉、韵达为已同步的记录）", kind: "success" };
+    if (!(await loadWaybills(url, { notice: stored }))) return;
+    const range = unsignedPlatformRange();
+    if (!range) return;
+    if (range.tooWide) {
+      setRefreshNotice("已按关键词搜索全部日期；未签收的融辉、韵达运单开单日期跨度超过 31 天，状态为已同步的记录，请缩小关键词后重新查询。", "warning");
+      return;
+    }
+    const sequence = loadNumber;
+    refreshController?.abort();
+    const controller = new AbortController();
+    refreshController = controller;
+    setRefreshNotice("正在向原平台核对未签收运单的最新状态…");
+    setBusy(true);
+    const timeout = window.setTimeout(() => controller.abort(), 105000);
+    try {
+      const response = await fetch("/waybills/source-refresh", {
+        method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: range.source, date_from: range.from, date_to: range.to }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (sequence !== loadNumber || controller !== refreshController) return;
+      if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || "原平台查询失败。");
+      const data = result.data;
+      const warnings = (data.warnings || []).join("；");
+      if (!data.refreshed || !data.complete) throw new Error(warnings || "原平台没有完整返回。");
+      await loadWaybills(url, { pushState: false, notice: { message: `已按关键词搜索全部日期，未签收运单已向原平台核对（${data.refreshed_at}）`, kind: "success" } });
+    } catch (error) {
+      if (sequence !== loadNumber || controller !== refreshController) return;
+      const reason = error?.name === "AbortError" ? "原平台查询超时" : (error.message || "原平台查询失败");
+      setRefreshNotice(`未签收运单没能向原平台核对，状态为已同步的记录：${reason}`, "warning");
+      setBusy(false);
+    } finally {
+      window.clearTimeout(timeout);
+      if (refreshController === controller) refreshController = null;
+    }
+  }
+
   function normalizeParams(params) {
     for (const [key, value] of Array.from(params.entries())) {
       if (value === "" || ((key === "status" || key === "source") && value === "all")) {
@@ -1885,9 +1946,8 @@
       url.search = params.toString();
       const activeQuery = event.submitter?.matches("[data-waybill-query]") === true;
       if (activeQuery && !keywordSearch) queryLive(url);
-      else loadWaybills(url, keywordSearch && activeQuery
-        ? { notice: { message: "已按关键词搜索全部日期（融辉、韵达为已同步的记录）", kind: "success" } }
-        : {});
+      else if (activeQuery) queryKeyword(url);
+      else loadWaybills(url);
     });
 
     current.querySelector("[data-waybill-page-size]")?.addEventListener("change", () => {

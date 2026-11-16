@@ -104,3 +104,89 @@ def test_signed_row_thumbnails_open_the_photo_viewer(app, browser):
         page.keyboard.press("Escape")
         page.wait_for_function("!document.querySelector('[data-waybill-photo-dialog]').open")
         assert not errors
+
+
+def _large_jpeg() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (3000, 4000), (200, 210, 220)).save(buffer, format="JPEG", quality=30)
+    return buffer.getvalue()
+
+
+def test_large_photo_stays_inside_the_viewer(app, browser):
+    large = _large_jpeg()
+    with browser.new_context(viewport={"width": 1600, "height": 900}) as context:
+        context.add_init_script(PRINT_MOCK)
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/waybills":
+                route.fulfill(content_type="text/html", body=render_signed(app))
+            elif parsed.path == "/waybills/photos":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {
+                    "sign": ["/waybills/photo-image?platform=yunda&url=big"], "receipt": [], "receipt_error": ""}}))
+            elif parsed.path == "/waybills/photo-image":
+                route.fulfill(content_type="image/jpeg", body=large)
+            elif parsed.path.startswith("/static/") and (CONSOLE_DIR / parsed.path.lstrip("/")).is_file():
+                route.fulfill(path=str(CONSOLE_DIR / parsed.path.lstrip("/")))
+            else:
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        page.goto(f"{ORIGIN}/waybills")
+        holder = page.locator('[data-waybill-photos][data-waybill-no="900000001"]')
+        holder.locator('button[data-kind="sign"]').click()
+        dialog = page.locator("[data-waybill-photo-dialog]")
+        dialog.locator("[data-waybill-photo-view] img").wait_for()
+        stage = dialog.locator("[data-waybill-photo-stage]").bounding_box()
+        image = dialog.locator("[data-waybill-photo-view] img").bounding_box()
+        assert image["x"] >= stage["x"] - 0.5 and image["y"] >= stage["y"] - 0.5
+        assert image["x"] + image["width"] <= stage["x"] + stage["width"] + 0.5
+        assert image["y"] + image["height"] <= stage["y"] + stage["height"] + 0.5
+
+
+def test_keyword_search_rechecks_unsigned_platform_rows(app, browser):
+    refreshes, lists = [], []
+    with browser.new_context(viewport={"width": 1600, "height": 1100}) as context:
+        context.add_init_script(PRINT_MOCK)
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/waybills":
+                if route.request.headers.get("x-requested-with") == "WaybillAjaxSearch":
+                    lists.append(parse_qs(parsed.query))
+                route.fulfill(content_type="text/html", body=render_signed(app))
+            elif parsed.path == "/waybills/source-refresh":
+                refreshes.append(json.loads(route.request.post_data or "{}"))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {
+                    "refreshed": True, "complete": True, "warnings": [], "messages": [],
+                    "refreshed_at": "2026-01-03 10:00:00", "reused": False,
+                    "date_from": "2026-01-02", "date_to": "2026-01-02"}}))
+            elif parsed.path == "/waybills/photos":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {
+                    "sign": [], "receipt": [], "receipt_error": ""}}))
+            elif parsed.path.startswith("/static/") and (CONSOLE_DIR / parsed.path.lstrip("/")).is_file():
+                route.fulfill(path=str(CONSOLE_DIR / parsed.path.lstrip("/")))
+            else:
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        page.goto(f"{ORIGIN}/waybills")
+        page.fill("#waybillKeyword", "R900000002")
+        page.click("[data-waybill-query]")
+        page.wait_for_function("document.querySelector('[data-waybill-refresh-status]')"
+                               "?.textContent.includes('未签收运单已向原平台核对')")
+        # Only the unsigned 融辉 row asks the platform, for exactly its open date; the list is read before and after.
+        assert refreshes == [{"source": "ronghui", "date_from": SAVED_ROW["open_date"], "date_to": SAVED_ROW["open_date"]}]
+        assert len(lists) == 2 and all(item.get("q") == ["R900000002"] and "date_from" not in item for item in lists)

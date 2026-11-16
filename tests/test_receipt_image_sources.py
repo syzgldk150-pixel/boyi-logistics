@@ -13,6 +13,12 @@ from shared import receipt_image_sources as sources
     ("https://tms.ronghuiwl.com/unauth/download/a.jpg", True),
     ("https://rhk13.obs.cn-east-3.myhuaweicloud.com/x/b.png", True),
     ("https://kyscan.yunda56.com/ws/c.jpeg", True),
+    # Yunda serves sign-for photos on this port (tracking ``monitoring.signedPic``).
+    ("https://kyscan.yunda56.com:28087/ws/sc/20261116/1430/c-1-Q.jpg", True),
+    ("https://kyscan.yunda56.com:28087/other/c.jpg", False),
+    ("https://kyscan.yunda56.com:28088/ws/c.jpg", False),
+    ("https://tms.ronghuiwl.com:28087/unauth/download/a.jpg", False),
+    ("https://rhk13.obs.cn-east-3.myhuaweicloud.com:28087/a.jpg", False),
     ("https://tms.ronghuiwl.com/widget/home.jpg", False),
     ("http://tms.ronghuiwl.com/unauth/download/a.jpg", False),
     ("https://tms.ronghuiwl.com:8443/unauth/download/a.jpg", False),

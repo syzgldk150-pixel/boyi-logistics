@@ -22,6 +22,9 @@ RONGHUI_PUBLIC_DOWNLOAD_PREFIX = "/unauth/download/"
 # Yunda sign-for photos (tracking `monitoring.signedPic`) are login-free under this path.
 YUNDA_SIGN_PHOTO_HOST = "kyscan.yunda56.com"
 YUNDA_SIGN_PHOTO_PREFIX = "/ws/"
+# The tracking result serves these photos on this port (verified 2026-11-16:
+# ``https://kyscan.yunda56.com:28087/ws/...``; port 443 refuses connections).
+YUNDA_SIGN_PHOTO_PORT = 28087
 RECEIPT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 RECEIPT_IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
@@ -50,7 +53,8 @@ def _allowed(source_url: str) -> tuple[bool, bool]:
     public_download = host == RONGHUI_PUBLIC_DOWNLOAD_HOST and (parsed.path or "").startswith(
         RONGHUI_PUBLIC_DOWNLOAD_PREFIX)
     yunda_sign_photo = host == YUNDA_SIGN_PHOTO_HOST and (parsed.path or "").startswith(YUNDA_SIGN_PHOTO_PREFIX)
-    if parsed.scheme.lower() != "https" or parsed.username or parsed.password or port not in {None, 443} or not (
+    allowed_ports = {None, 443, YUNDA_SIGN_PHOTO_PORT} if yunda_sign_photo else {None, 443}
+    if parsed.scheme.lower() != "https" or parsed.username or parsed.password or port not in allowed_ports or not (
             host in RONGHUI_DIRECT_ATTACHMENT_HOSTS or public_download or yunda_sign_photo):
         return False, False
     if Path(parsed.path or "").suffix.lower() not in RECEIPT_IMAGE_SUFFIXES:

@@ -10,7 +10,7 @@ from console.tests.test_manual_saved_print_flow import (
     app as app,
     browser as browser,
 )
-from console.tests.test_waybill_photos_browser import JPEG, render_signed
+from console.tests.test_waybill_photos_browser import JPEG, _large_jpeg, render_signed
 
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -97,6 +97,7 @@ SIGNED_RONGHUI = {
 
 
 def test_signed_tracking_shows_sign_block_and_viewer(app, browser):
+    large = _large_jpeg()
     photo_requests, errors = [], []
     with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
         page = context.new_page()
@@ -117,7 +118,7 @@ def test_signed_tracking_shows_sign_block_and_viewer(app, browser):
                     "sign": ["/waybills/photo-image?platform=ronghui&url=s1", "/waybills/photo-image?platform=ronghui&url=s2"],
                     "receipt": ["/waybills/photo-image?platform=ronghui&url=r1"], "receipt_error": ""}}))
             elif parsed.path == "/waybills/photo-image":
-                route.fulfill(content_type="image/jpeg", body=JPEG)
+                route.fulfill(content_type="image/jpeg", body=large if "url=r1" in parsed.query else JPEG)
             elif not serve_static(route, parsed):
                 route.fulfill(status=404, body="")
 
@@ -145,6 +146,12 @@ def test_signed_tracking_shows_sign_block_and_viewer(app, browser):
         thumbs.nth(2).click()
         viewer = page.locator("#signViewer")
         viewer.locator("[data-sign-viewer-view] img").wait_for()
+        # A large receipt photo is fitted inside the stage instead of spilling over the dialog.
+        stage = viewer.locator(".sign-viewer-stage").bounding_box()
+        image = viewer.locator("[data-sign-viewer-view] img").bounding_box()
+        assert image["x"] >= stage["x"] - 0.5 and image["y"] >= stage["y"] - 0.5
+        assert image["x"] + image["width"] <= stage["x"] + stage["width"] + 0.5
+        assert image["y"] + image["height"] <= stage["y"] + stage["height"] + 0.5
         assert viewer.locator('[data-sign-viewer-tab="receipt"]').get_attribute("aria-selected") == "true"
         assert viewer.locator("[data-sign-viewer-counter]").inner_text() == "第 1 / 1 张 · 2026-01-02"
         assert viewer.locator("[data-sign-viewer-sub]").inner_text() == "R900000003 · 融辉 TMS · 2026-01-02 签收"
