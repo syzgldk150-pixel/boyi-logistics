@@ -370,3 +370,33 @@ def test_site_weight_restriction_is_displayed_without_inventing_missing_times():
     text = "\n".join(result["details"])
     assert "派件重量范围：0 ~ 70公斤" in text
     assert "重量限制时间：无数据 ~ 无数据" in text
+
+
+@pytest.mark.parametrize(("handle_type", "label"), [("FOCUS", "关注"), ("CAUTION", "慎发")])
+def test_focus_and_caution_site_exceptions_still_quote_with_a_notice_first(handle_type, label):
+    """2026-11-17: a province-wide 关注 notice blocked every Best quote; 关注 / 慎发 now quote."""
+    client = FakeClient()
+    related = client.responses["best_address"]["vo"]["siteRelatedInfoVo"]
+    related["siteExceptionInterceptionVoList"] = [{
+        "handleType": handle_type, "siteName": None, "destSiteNamePath": "测试省",
+        "startDate": "2026-05-29 00:00:00", "endDate": "2036-08-29 23:59:59", "reMark": "测试长期提醒",
+    }]
+    result = quote(client, INPUT)
+    assert len(result["quotes"]) == 2  # 派送 and 站点自提 both priced
+    # Right under the prices in the reply: the first detail line, once for both modes.
+    assert result["details"][0] == (f"注意：百世目的站点异常为“{label}”（范围：测试省；说明：测试长期提醒），"
+                                    "价格照常测算，发货前请在原站核实")
+    assert sum("百世目的站点异常为" in line for line in result["details"]) == 1
+    assert "最低保价" in result["warnings"][0]
+    assert any(f"站点异常：{label}" in line for line in result["details"])
+
+
+def test_discontinued_or_unknown_site_exception_level_does_not_quote():
+    for row in ({"handleType": "DISCONTINUATION", "destSiteNamePath": "测试省", "reMark": "测试停发"},
+                {"handleType": "NEW_LEVEL", "destSiteNamePath": "测试省", "reMark": "未知级别"},
+                {"handleType": "FOCUS"} | {"handleType": None}):
+        client = FakeClient()
+        client.responses["best_address"]["vo"]["siteRelatedInfoVo"]["siteExceptionInterceptionVoList"] = [row]
+        with pytest.raises(QuoteError, match="需在原站核实"):
+            quote(client, INPUT)
+        assert not any(name == "best_quote" for name, _, _ in client.calls)

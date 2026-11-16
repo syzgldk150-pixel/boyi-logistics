@@ -69,6 +69,9 @@ _SPECIAL_SERVICES = {
     "SITE_SELF": "站点自提", "DOOR_PICK_UP": "门口提货", "ENTRY_PICK_UP": "进门提货",
 }
 _SITE_EXCEPTIONS = {"CAUTION": "慎发", "DISCONTINUATION": "停发", "FOCUS": "关注"}
+# 2026-11-17 user decision: 关注 / 慎发 still quote with a prominent notice; 停发 (or any level not
+# listed here) does not quote. Previously any site exception blocked the Best quote.
+_QUOTABLE_SITE_EXCEPTIONS = {"FOCUS", "CAUTION"}
 
 
 def _site_details(related):
@@ -176,7 +179,20 @@ def _product(client, site):
     return product, services
 
 
-def _address(client, request, site, product_id, service_id, basic_service, details):
+def _site_exception_notices(rows):
+    """Notices for 关注 / 慎发 site exceptions; 停发 or an unknown level stops the quote."""
+    notices = []
+    for row in rows:
+        kind = row.get("handleType")
+        label = _SITE_EXCEPTIONS.get(kind, _display(kind))
+        scope = f"范围：{_display(row.get('destSiteNamePath'))}；说明：{_display(row.get('reMark'))}"
+        if kind not in _QUOTABLE_SITE_EXCEPTIONS:
+            raise QuoteError(f"百世目的站点{label}（{scope}），需在原站核实")
+        notices.append(f"注意：百世目的站点异常为“{label}”（{scope}），价格照常测算，发货前请在原站核实")
+    return notices
+
+
+def _address(client, request, site, product_id, service_id, basic_service, details, notices):
     response = _request(client, "best_address", {
         "address": request["address"], "addressAIType": "TEXT", "parseType": "DEFAULT",
         "sendSiteId": site, "networkProductId": product_id, "networkServiceId": str(service_id),
@@ -187,8 +203,7 @@ def _address(client, request, site, product_id, service_id, basic_service, detai
     ai = _object(value.get("aiAddressVo"), "行政区划解析")
     if related.get("isBlindArea") is not False:
         raise QuoteError("百世地址处于盲区或覆盖状态不明确")
-    if _rows(related.get("siteExceptionInterceptionVoList"), "站点异常"):
-        raise QuoteError("百世目的站点存在异常限制，需在原站核实")
+    notices.extend(_site_exception_notices(_rows(related.get("siteExceptionInterceptionVoList"), "站点异常")))
     if _rows(related.get("specialAreaList"), "特殊区域"):
         raise QuoteError("百世该地址涉及特殊区域，需在原站选择服务后报价")
     special = _object(related.get("specialServiceVo"), "派送覆盖规则")
@@ -236,12 +251,12 @@ def _fee_sum(rows):
     return format(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
 
 
-def _mode(client, request, site, product, services, basic_service, sequence, details):
+def _mode(client, request, site, product, services, basic_service, sequence, details, notices):
     service = _one([item for item in services if str(item.get("oldServiceId")) == str(basic_service)], "送货方式")
     if service.get("networkServiceType") != "BASIC_SERVICE":
         raise QuoteError("百世送货方式不是基础服务")
     product_id, service_id = _id(product, "id"), _id(service, "networkServiceId")
-    address, site_name = _address(client, request, site, product_id, service_id, basic_service, details)
+    address, site_name = _address(client, request, site, product_id, service_id, basic_service, details, notices)
     allowed = _request(client, "best_services", {
         "networkProductId": product_id, "siteId": address["dispSiteId"], "linkCode": "DISPATCH",
     }).get("voList")
@@ -283,11 +298,12 @@ def _mode(client, request, site, product, services, basic_service, sequence, det
 def quote(client, request):
     site = _site(client)
     product, services = _product(client, site)
-    quotes, warnings, insured_values, detail_groups, destinations = [], [], [], [], []
+    quotes, warnings, insured_values, detail_groups, destinations, notices = [], [], [], [], [], []
     for sequence, basic_service in enumerate((1, 2), start=1):
         details = []
         try:
-            result, insured, destination = _mode(client, request, site, product, services, basic_service, sequence, details)
+            result, insured, destination = _mode(client, request, site, product, services, basic_service, sequence,
+                                                 details, notices)
             quotes.append(result)
             insured_values.append(insured)
             destinations.append((destination, result.get("site_name")))
@@ -300,7 +316,8 @@ def quote(client, request):
         raise QuoteError("；".join(warnings), details=details)
     declared = "、".join(dict.fromkeys(insured_values))
     warnings.insert(0, f"按现付、普通保价测算，本次采用平台最低保价{declared}元；上楼、进仓等附加服务须另行核实")
-    result = {"quotes": quotes, "warnings": warnings, "details": details}
+    # The site-exception notice leads the details, so the reply shows it right under the prices.
+    result = {"quotes": quotes, "warnings": warnings, "details": list(dict.fromkeys(notices)) + details}
     if len(destinations) == 2 and len(set(destinations)) == 1 and destinations[0][1]:
         result["site_name"] = destinations[0][1]
     return result
