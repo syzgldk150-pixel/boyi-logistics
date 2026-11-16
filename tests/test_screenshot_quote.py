@@ -81,11 +81,34 @@ def test_without_a_weight_it_asks_and_the_next_short_reply_finishes_the_quote():
     assert service.follow_up("chat:other", "300") is None  # another person's reply
     assert service.follow_up("chat:ou", "R00024785328 到哪了") is None  # not a weight
     assert service.follow_up("chat:ou", "600斤") is None  # the quote route does not take 斤; stays waiting
-    assert service.follow_up("chat:ou", "300公斤 2方") == "报价 湖南省示例市虚构区样例小区3栋2单101房，300公斤，2方"
+    assert service.follow_up("chat:ou", "300公斤 2方") == "报价 湖南省示例市虚构区样例小区3栋2单101房，300，2"
     assert service.follow_up("chat:ou", "300") is None  # used once
     run(service.read("chat:ou", JPEG, actor_id="ou"))
     now[0] = 901.0
     assert service.follow_up("chat:ou", "300") is None  # 15 minutes passed
+
+
+def test_weight_replies_are_read_the_ways_people_type_them():
+    """2026-11-16: “300公斤6个方” went to the chat model, which no longer knew the address."""
+    address = "湖南省示例市虚构区样例小区3栋2单101房"
+    cases = {
+        "300公斤6个方": "300，6",
+        "300kg 2方": "300，2",
+        "2方，300": "300，2",
+        "300 6方": "300，6",
+        "重量300公斤 体积6立方米左右": "300，6",
+        "大概300公斤": "300",
+        "6个方 300公斤": "300，6",
+        "300.5公斤，1.2m³": "300.5，1.2",
+    }
+    for text, numbers in cases.items():
+        service, _ = _service({"address": address, "source_text": SOURCE})
+        run(service.read("chat:ou", JPEG, actor_id="ou"))
+        assert service.follow_up("chat:ou", text) == f"报价 {address}，{numbers}", text
+    for text in ("600斤", "300公斤 2方 3方", "300公斤 400公斤", "R00024785328 到哪了", "明天300公斤送到", "300公斤6个方送海口"):
+        service, _ = _service({"address": address, "source_text": SOURCE})
+        run(service.read("chat:ou", JPEG, actor_id="ou"))
+        assert service.follow_up("chat:ou", text) is None, text
 
 
 def test_no_address_and_ai_failures_are_told_plainly():

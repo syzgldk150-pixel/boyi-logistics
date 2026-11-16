@@ -21,12 +21,39 @@ from shared.screenshot_quote import (
     quote_text, quoting_reply,
 )
 
-# A follow-up that only gives the weight, optionally with a volume ("300", "300公斤", "300kg 2方", "2方，300").
-_WEIGHT = r"(?P<weight>\d+(?:\.\d+)?\s*(?:公斤|千克|kg)?)"
-_VOLUME = r"(?P<volume>\d+(?:\.\d+)?\s*(?:方|立方|m3|m³))"
-_FOLLOW_UP = re.compile(rf"^\s*(?:重量)?\s*{_WEIGHT}(?:\s*[，,、；;\s]\s*(?:体积)?\s*{_VOLUME})?\s*$"
-                        rf"|^\s*(?:体积)?\s*{_VOLUME.replace('volume', 'volume2')}\s*[，,、；;\s]\s*(?:重量)?\s*"
-                        rf"{_WEIGHT.replace('weight', 'weight2')}\s*$", re.IGNORECASE)
+# A follow-up that gives the weight, optionally with a volume, in the ways people type it:
+# "300", "300公斤", "300kg 2方", "2方，300", "300公斤6个方", "重量300公斤 体积6立方米左右".
+_NUMBER = r"\d+(?:\.\d+)?"
+_VOLUME_TOKEN = re.compile(rf"(?P<value>{_NUMBER})\s*(?:个\s*)?(?:立方米|立方|方|m3|m³)", re.IGNORECASE)
+_WEIGHT_TOKEN = re.compile(rf"(?P<value>{_NUMBER})\s*(?:公斤|千克|kg)", re.IGNORECASE)
+_BARE_NUMBER = re.compile(rf"^(?P<value>{_NUMBER})$")
+# What may surround the numbers without changing their meaning; anything else is not a weight reply.
+_FILLER = re.compile(r"[\s，,、；;。.:：]|重量|体积|大概|大约|约|左右|一共|总共|共|是|货|毛重")
+
+
+def _weight_and_volume(text: str) -> tuple[str, str | None] | None:
+    """``(weight_kg, volume_m3)`` when ``text`` only gives a weight and maybe one volume; otherwise ``None``."""
+    raw = str(text or "").strip()
+    if not raw or len(raw) > 40:
+        return None
+    volumes = list(_VOLUME_TOKEN.finditer(raw))
+    if len(volumes) > 1:
+        return None
+    rest = raw
+    volume = None
+    if volumes:
+        volume = volumes[0].group("value")
+        rest = rest[:volumes[0].start()] + " " + rest[volumes[0].end():]
+    weights = list(_WEIGHT_TOKEN.finditer(rest))
+    if len(weights) > 1:
+        return None
+    if weights:
+        weight = weights[0].group("value")
+        rest = rest[:weights[0].start()] + " " + rest[weights[0].end():]
+        return (weight, volume) if not _FILLER.sub("", rest) else None
+    # Without a unit the one remaining number is the weight ("300", "300 6方").
+    bare = _BARE_NUMBER.match(_FILLER.sub("", rest))
+    return (bare.group("value"), volume) if bare else None
 
 
 @dataclass(frozen=True)
@@ -64,12 +91,12 @@ class ScreenshotQuoteService:
         from agent.direct_tool_router import parse_price_request
 
         pending = self._pending.peek(key)
-        match = _FOLLOW_UP.match(str(text or "")) if pending is not None else None
-        if not match:
+        parsed = _weight_and_volume(text) if pending is not None else None
+        if parsed is None:
             return None
-        weight = match.group("weight") or match.group("weight2")
-        volume = match.group("volume") or match.group("volume2") or pending.volume
-        composed = quote_text(pending.address, weight.strip(), volume.strip() if volume else None)
+        weight, volume = parsed
+        # Bare numbers, as the screenshot path composes them; the quote parser reads them as 公斤 / 立方米.
+        composed = quote_text(pending.address, weight, volume or pending.volume)
         if parse_price_request(composed) is None:  # the quote route's own parser decides what it accepts
             return None
         self._pending.take(key)
