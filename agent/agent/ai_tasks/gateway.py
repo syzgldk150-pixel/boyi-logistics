@@ -11,12 +11,13 @@ is stored. Nothing here saves business data or calls a tool.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import time
 import uuid
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from shared.ai_tasks import AITaskError, AITaskResult, AITaskSpec
 from shared.redaction import redact_sensitive, redact_text
@@ -24,6 +25,18 @@ from shared.redaction import redact_sensitive, redact_text
 logger = logging.getLogger("agent")
 
 _RETRY_PROMPT = "上一次的输出不符合要求：{error}。请修正后重新输出，只返回 JSON。"
+
+
+def _image_type(image: bytes) -> str:
+    if image.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if image[:4] == b"RIFF" and image[8:12] == b"WEBP":
+        return "image/webp"
+    if image[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    raise AITaskError("AI_INPUT_INVALID", "只支持 PNG、JPEG、WebP、GIF 图片。")
 
 
 class AITaskGateway:
@@ -39,7 +52,9 @@ class AITaskGateway:
         *,
         subject_ref: str,
         actor_id: str | None = None,
+        images: Sequence[bytes] = (),
     ) -> AITaskResult:
+        """``images``: pictures sent with the payload (e.g. a quote screenshot); only their hashes are audited."""
         if not isinstance(spec, AITaskSpec):
             raise TypeError("spec must be an AITaskSpec")
         if spec.model_override is not None:
@@ -57,10 +72,18 @@ class AITaskGateway:
         audit.update(provider=runtime.get("provider"), model=runtime.get("model"),
                      config_version_id=runtime.get("config_version_id"))
         user_text = json.dumps(redact_sensitive(dict(payload)), ensure_ascii=False, sort_keys=True, default=str)
-        audit["input_sha256"] = hashlib.sha256(user_text.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(user_text.encode("utf-8"))
+        parts: list[dict[str, Any]] = []
+        for image in images:
+            if not isinstance(image, bytes) or not image:
+                raise AITaskError("AI_INPUT_INVALID", "图片为空，未发送给 AI。", run_id=run_id)
+            digest.update(hashlib.sha256(image).digest())
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{_image_type(image)};base64,"
+                                                                   + base64.b64encode(image).decode("ascii")}})
+        audit["input_sha256"] = digest.hexdigest()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": spec.system_prompt},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": [*parts, {"type": "text", "text": user_text}] if parts else user_text},
         ]
         last_error = ""
         for attempt in range(1, spec.max_retries + 2):

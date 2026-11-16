@@ -1815,7 +1815,7 @@ def handle_im_message(event):
             sender_id=sender_id,
             raw_content=msg.content,
             event_id=event_id,
-            chat_type=chat_type,
+            chat_type=chat_type, message_id=str(getattr(msg, "message_id", "") or ""),
         ))
 
     except Exception as e:
@@ -1844,7 +1844,7 @@ def queue_im_message_payload(event_payload: dict[str, Any], *, event_id: str = "
         sender_id=sender_id,
         raw_content=message.get("content"),
         event_id=stable_event_id,
-        chat_type=str(message.get("chat_type", "") or ""),
+        chat_type=str(message.get("chat_type", "") or ""), message_id=str(message.get("message_id", "") or ""),
     ))
     return True
 
@@ -1902,6 +1902,7 @@ async def _handle_im_message_data(
     raw_content: Any,
     event_id: str = "",
     chat_type: str = "",
+    message_id: str = "",
 ):
     stable_event_id = str(event_id or "").strip()
     token: Token[FeishuCommandContext | None] = _COMMAND_CONTEXT.set(
@@ -1921,7 +1922,7 @@ async def _handle_im_message_data(
                 msg_type=msg_type,
                 chat_id=chat_id,
                 sender_id=sender_id,
-                raw_content=raw_content,
+                raw_content=raw_content, message_id=message_id,
             )
     finally:
         _COMMAND_CONTEXT.reset(token)
@@ -1933,6 +1934,7 @@ async def _handle_im_message_data_inner(
     chat_id: str,
     sender_id: str,
     raw_content: Any,
+    message_id: str = "",
 ):
     normalized_type = str(msg_type or "").strip().lower()
 
@@ -1943,8 +1945,9 @@ async def _handle_im_message_data_inner(
         await _process_and_reply(text, sender_id, chat_id)
         return
 
-    if normalized_type == "image":
-        await _reply_text(chat_id, "图片识别功能开发中，敬请期待")
+    if normalized_type == "image":  # quote from a screenshot (feishu/screenshot_quote.py)
+        from feishu.screenshot_quote import handle_feishu_image
+        await handle_feishu_image(chat_id=chat_id, sender_id=sender_id, message_id=message_id, raw_content=raw_content)
 
 
 async def _handle_menu_action(
@@ -2008,6 +2011,8 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     """处理明确确认、独立插件调用、登录和对话；登录不恢复历史调用。"""
     from feishu.bot import get_agent_core
     from feishu.reply_formatter import format_reply
+    from feishu.screenshot_quote import follow_up_text
+    text = follow_up_text(text, sender_id=sender_id, chat_id=chat_id)  # weight for a waiting screenshot address
 
     if _FEISHU_BINDING_RUNTIME is not None:
         try:

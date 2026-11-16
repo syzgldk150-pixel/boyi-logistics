@@ -763,6 +763,10 @@ async def lifespan(app: FastAPI):
     agent_core.configure_tool_catalog(catalog)
     business_finance_query = BusinessFinanceQueryService(FinanceRepository(runtime.memory.connection_factory))
     ai_task_gateway = AITaskGateway(runtime.llm, AITaskAuditRepository(runtime.memory.connection_factory))
+    # Quote from a screenshot (Feishu/WeChat): the active model reads the address through the same gateway.
+    from agent.screenshot_quote import ScreenshotQuoteService
+    from feishu.screenshot_quote import bind_screenshot_quote
+    bind_screenshot_quote(ScreenshotQuoteService(ai_task_gateway))
     finance_review_advisor = FinanceReviewAdvisor(
         FinanceRepository(runtime.memory.connection_factory), runtime.llm, ai_task_gateway
     )
@@ -996,6 +1000,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Agent service started instance_id=%s", INSTANCE_ID)
     yield
+    bind_screenshot_quote(None)
     knowledge_watch_task.cancel()
     with suppress(asyncio.CancelledError):
         await knowledge_watch_task

@@ -108,6 +108,14 @@ def inbound_text(message: Mapping[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def first_image_item(message: Mapping[str, Any]) -> dict | None:
+    """The ``image_item`` of the first picture in a user message, if any."""
+    for item in message.get("item_list") or ():
+        if isinstance(item, Mapping) and item.get("type") == ITEM_IMAGE and isinstance(item.get("image_item"), Mapping):
+            return dict(item["image_item"])
+    return None
+
+
 def has_unsupported_media(message: Mapping[str, Any]) -> bool:
     return any(
         isinstance(item, Mapping) and item.get("type") in {ITEM_IMAGE, ITEM_FILE, ITEM_VIDEO}

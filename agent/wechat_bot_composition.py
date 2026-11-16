@@ -31,7 +31,7 @@ class WeChatBotRuntime:
         self.tokens = tokens or WeChatTokenStore()
         self.channel = WeChatChannelRuntime(
             devices=self.devices, tokens=self.tokens, client=self.client,
-            lease=WeChatConsumerLease(lease_connect), deliver=self._deliver)
+            lease=WeChatConsumerLease(lease_connect), deliver=self._deliver, deliver_image=self._deliver_image)
         self.service = WeChatBotService(
             devices=self.devices, identities=identities, client=self.client, tokens=self.tokens,
             on_bound=self.channel.device_bound, on_revoked=self.channel.device_revoked)
@@ -39,6 +39,11 @@ class WeChatBotRuntime:
     @staticmethod
     async def _deliver(actor_id: str, text: str, event_id: str) -> None:
         await handle_channel_text(actor_id=actor_id, text=text, event_id=event_id)
+
+    @staticmethod
+    async def _deliver_image(actor_id: str, image: bytes, event_id: str) -> None:
+        from feishu.screenshot_quote import handle_channel_image
+        await handle_channel_image(actor_id=actor_id, image=image, event_id=event_id)
 
     def start(self) -> None:
         bind_channel_reply_sender(WECHAT_ACTOR_PREFIX, self.channel.send)

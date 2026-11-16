@@ -20,6 +20,7 @@ from agent.wechat_bot.ilink import LONG_POLL_TIMEOUT_SECONDS, STALE_TOKEN_ERRCOD
 from agent.wechat_bot.tokens import WeChatTokenStore
 from shared.wechat_bot import (
     MESSAGE_TYPE_USER,
+    first_image_item,
     has_unsupported_media,
     inbound_text,
     keep_line_breaks,
@@ -103,12 +104,14 @@ class WeChatConsumerLease:
 
 class WeChatChannelRuntime:
     def __init__(self, *, devices: WeChatDeviceRepository, tokens: WeChatTokenStore, client: ILinkClient,
-                 lease: WeChatConsumerLease, deliver: Deliver):
+                 lease: WeChatConsumerLease, deliver: Deliver,
+                 deliver_image: Callable[[str, bytes, str], Awaitable[None]] | None = None):
         self._devices = devices
         self._tokens = tokens
         self._client = client
         self._lease = lease
         self._deliver = deliver
+        self._deliver_image = deliver_image  # quote from a screenshot (feishu/screenshot_quote.py)
         self._pollers: dict[str, asyncio.Task] = {}
         self._states: dict[str, str] = {}
         self._contexts: dict[str, tuple[str, str]] = {}  # device_id -> (to_user_id, context_token)
@@ -268,13 +271,28 @@ class WeChatChannelRuntime:
         logger.info("wechat inbound | device=%s | kind=%s | chars=%d", device_id,
                     "text" if text else "media" if has_unsupported_media(message) else "other", len(text))
         if not text:
-            if has_unsupported_media(message):
+            image = first_image_item(message)
+            if image is not None and self._deliver_image is not None:
+                task = asyncio.create_task(self._deliver_picture(actor_id, image, f"{actor_id}:{message_id}"),
+                                           name=f"wechat-image-{device_id}")
+                self._handlers.add(task)
+                task.add_done_callback(self._handler_done)
+            elif has_unsupported_media(message):
                 await self.send(actor_id, UNSUPPORTED_MEDIA_REPLY)
             return
         task = asyncio.create_task(self._deliver(actor_id, text, f"{actor_id}:{message_id}"),
                                    name=f"wechat-message-{device_id}")
         self._handlers.add(task)
         task.add_done_callback(self._handler_done)
+
+    async def _deliver_picture(self, actor_id: str, image_item: dict, event_id: str) -> None:
+        try:
+            image = await self._client.download_image(image_item)
+        except ILinkError as exc:
+            logger.warning("WeChat image not downloaded code=%s", exc.code)
+            await self.send(actor_id, f"图片没有收到：{exc}。可以直接发“报价 地址，重量”。")
+            return
+        await self._deliver_image(actor_id, image, event_id)
 
     def _handler_done(self, task: asyncio.Task) -> None:
         self._handlers.discard(task)

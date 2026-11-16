@@ -2,7 +2,7 @@
 module: 三平台报价
 type: 维护手册
 status: active
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # 三平台报价
@@ -59,3 +59,7 @@ PYTHONPATH=agent:. PYTHON_DOTENV_DISABLED=1 python -m scripts.service_v2_plugin 
 ```
 
 打包前确保源码目录只有 manifest、Python 源码与声明的静态文件，不含浏览器试价生成的缓存或业务资料。ZIP 不可覆盖，重复构建使用新的输出路径。
+
+## 截图报价（2026-11-16）
+
+飞书或微信发来截图（聊天记录、便签、单据）时，由当前激活的模型（2026-11-16 生产为 `deepseek-v4-flash`，可看图）经共用 AI 任务网关的 `quote.read_screenshot` 任务读出收货地址、截图里写明的重量和体积以及相关原文（`shared/screenshot_quote.py`）；代码核对地址和数字出自模型读到的原文，不合格即重试一次后失败。回复先写“识别到的收货地址：…”，再把与手工输入相同的“报价 地址，重量[，体积]”交给现有报价路由，权限、插件调用和结果回复不变；体积未写仍由插件按 0.1 立方米计算。没有重量时询问，同一人 15 分钟内回复只含重量（可带体积，如“300公斤 2方”）即完成报价，拼出的文字须能被现有报价解析器接受，否则按普通消息处理。需要有效身份且有“执行插件”权限，否则不调用模型。实现：`agent/agent/screenshot_quote.py`（识别与等待重量）、`agent/feishu/screenshot_quote.py`（飞书下载图片、微信交来的图片、身份检查、补充重量），微信图片按官方插件 2.4.10 的 `media-download.ts`/`pic-decrypt.ts` 下载并 AES-128-ECB 解密（`agent/agent/wechat_bot/ilink.py` 的 `download_image`）。飞书下载消息图片需要机器人有 `im:resource` 权限。

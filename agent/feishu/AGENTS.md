@@ -6,7 +6,7 @@
 
 飞书身份与对话：所有绑定由后台统一展示和管理；每个绑定属于一个人员，使用该人员身份的“机器人”权限组（迁移 082/083）。“需确认”的插件写入由 `_dispatch_service_v2_feishu_command` 记住指令并等待同一发送者回复“确认”（`_handle_write_confirmation`）；`chat_type` 决定私聊/群聊，财务数据“仅私聊”时群聊不回答。自然语言交给共用 Harness 会话服务，固定指令仍直接执行原插件接口；模型不能提供账号或资源身份。解绑与身份停用后的新查询/调用立即拒绝。 细节见[维护说明](../../docs/identity_and_unified_chat.md)。
 
-知识回答引用到 PDF 表格页时，`reply_images.py` 在文字回复后发送该页截图（截图器由组合根 `bind_page_renderer` 注入；飞书直接上传发送，其他渠道经 `bind_channel_image_sender(prefix, sender)` 注册的发图器），失败时改发该页文字并说明原因。其他一对一聊天渠道（当前为微信个人号设备）经 `bind_channel_reply_sender(prefix, sender)` 注册回复发送器、经 `handle_channel_text` 进入 `_process_and_reply`；发送者编号即会话编号（如 `wechat:<device_id>`），身份仍由 `identity_access.feishu()` 实时解析，绑定码对微信发送者无效。本模块不得导入微信实现。
+图片消息交给 `screenshot_quote.py`（截图报价：有效身份且可执行插件才识别；识别出的地址照常走“报价 地址，重量”路由，缺重量时 `_process_and_reply` 开头用 `follow_up_text` 接上同一人的补充重量），细节见 `../docs/three_platform_quote.md`。知识回答引用到 PDF 表格页时，`reply_images.py` 在文字回复后发送该页截图（截图器由组合根 `bind_page_renderer` 注入；飞书直接上传发送，其他渠道经 `bind_channel_image_sender(prefix, sender)` 注册的发图器），失败时改发该页文字并说明原因。其他一对一聊天渠道（当前为微信个人号设备）经 `bind_channel_reply_sender(prefix, sender)` 注册回复发送器、经 `handle_channel_text` 进入 `_process_and_reply`；发送者编号即会话编号（如 `wechat:<device_id>`），身份仍由 `identity_access.feishu()` 实时解析，绑定码对微信发送者无效。本模块不得导入微信实现。
 
 ## 目录职责
 

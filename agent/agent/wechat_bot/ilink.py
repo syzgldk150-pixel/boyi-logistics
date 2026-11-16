@@ -104,13 +104,59 @@ class QRStatus:
     redirect_host: str = ""
 
 
+MAX_INBOUND_IMAGE_BYTES = 8_000_000
+
+
+def _wechat_https(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (host == "weixin.qq.com" or host.endswith(".weixin.qq.com"))
+
+
+def image_aes_key(image_item: Mapping[str, Any]) -> bytes | None:
+    """The 16-byte key of an inbound picture (src/media/media-download.ts, src/cdn/pic-decrypt.ts)."""
+    hex_key = str(image_item.get("aeskey") or "")
+    if hex_key:
+        try:
+            key = bytes.fromhex(hex_key)
+        except ValueError:
+            key = b""
+        if len(key) != 16:
+            raise ILinkError("ILINK_IMAGE_KEY_INVALID", "图片密钥格式无效")
+        return key
+    media = image_item.get("media") if isinstance(image_item.get("media"), Mapping) else {}
+    encoded = str(media.get("aes_key") or "")
+    if not encoded:
+        return None
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except ValueError:
+        decoded = b""
+    if len(decoded) == 16:
+        return decoded
+    if len(decoded) == 32 and all(chr(byte) in "0123456789abcdefABCDEF" for byte in decoded):
+        return bytes.fromhex(decoded.decode("ascii"))
+    raise ILinkError("ILINK_IMAGE_KEY_INVALID", "图片密钥格式无效")
+
+
+def image_download_url(image_item: Mapping[str, Any]) -> str:
+    media = image_item.get("media") if isinstance(image_item.get("media"), Mapping) else {}
+    full = str(media.get("full_url") or "").strip()
+    if full:
+        if not _wechat_https(full):
+            raise ILinkError("ILINK_IMAGE_URL_INVALID", "图片地址不是微信的 HTTPS 地址")
+        return full
+    param = str(media.get("encrypt_query_param") or "")
+    if not param:
+        raise ILinkError("ILINK_IMAGE_URL_MISSING", "消息里没有图片地址")
+    return f"{CDN_BASE_URL}/download?encrypted_query_param={quote(param, safe='')}"
+
+
 def cdn_upload_url(ticket: Mapping[str, Any], filekey: str) -> str:
     """The CDN address from ``getuploadurl``: its full URL, or the plugin's documented fallback."""
     full = str(ticket.get("upload_full_url") or "").strip()
     if full:
-        parsed = urlparse(full)
-        host = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or not (host == "weixin.qq.com" or host.endswith(".weixin.qq.com")):
+        if not _wechat_https(full):
             raise ILinkError("ILINK_UPLOAD_URL_INVALID", "图片上传地址不是微信的 HTTPS 地址")
         return full
     param = str(ticket.get("upload_param") or "")
@@ -251,6 +297,25 @@ class ILinkClient:
             raise ILinkError("ILINK_SEND_TIMEOUT", "发送图片超时，图片可能未送达") from None
         if data.get("ret") not in (None, 0):
             raise ILinkError("ILINK_SEND_FAILED", f"发送图片失败 ret={data.get('ret')}")
+
+    async def download_image(self, image_item: Mapping[str, Any]) -> bytes:
+        """Download one inbound picture from the CDN and decrypt it (AES-128-ECB) when it carries a key."""
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import unpad
+
+        url, key = image_download_url(image_item), image_aes_key(image_item)
+        try:
+            response = await self._client.get(url, timeout=API_TIMEOUT_SECONDS)
+        except httpx.HTTPError as exc:
+            raise ILinkError("ILINK_IMAGE_DOWNLOAD_FAILED", f"图片下载网络失败（{type(exc).__name__}）") from None
+        if response.status_code != 200 or not response.content or len(response.content) > MAX_INBOUND_IMAGE_BYTES + 16:
+            raise ILinkError("ILINK_IMAGE_DOWNLOAD_FAILED", f"图片下载失败 HTTP {response.status_code}")
+        if key is None:
+            return response.content
+        try:
+            return unpad(AES.new(key, AES.MODE_ECB).decrypt(response.content), 16)
+        except ValueError:
+            raise ILinkError("ILINK_IMAGE_DECRYPT_FAILED", "图片解密失败") from None
 
     async def _upload_to_cdn(self, url: str, ciphertext: bytes) -> str:
         for attempt in range(1, CDN_UPLOAD_ATTEMPTS + 1):
