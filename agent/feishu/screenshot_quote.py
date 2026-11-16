@@ -5,7 +5,8 @@ the active model (``agent.screenshot_quote``); the recognised address is shown,
 and the usual ``报价 地址，重量[，体积]`` text goes through the normal message
 path, so the quote's permissions, plugin call and reply are unchanged. A
 missing weight is asked and the next short reply with a weight finishes the
-quote. The service is bound by the composition root; this module never imports
+quote; a reply in other words is understood by the model and turned into the
+same standard text. The service is bound by the composition root; this module never imports
 the WeChat implementation (the WeChat channel hands over decrypted bytes).
 """
 from __future__ import annotations
@@ -102,11 +103,23 @@ async def handle_channel_image(*, actor_id: str, image: bytes, event_id: str) ->
                               actor_id=actor_id, text=text, event_id=f"{event_id}:quote"))
 
 
-def follow_up_text(text: str, *, sender_id: str, chat_id: str) -> str:
-    """A short weight reply to a waiting screenshot address becomes the full quote text."""
+async def follow_up_text(text: str, *, sender_id: str, chat_id: str) -> str | None:
+    """The text to process next for a reply to a waiting screenshot address; ``None`` when answered here.
+
+    A weight (in any wording the model understands) becomes the full quote text, shown first with what
+    was understood; a corrected address asks for the weight again; a cancel ends it; anything else is
+    returned unchanged as an ordinary message.
+    """
+    from feishu import message_handler
+
     if _SERVICE is None:
         return text
-    return _SERVICE.follow_up(_key(chat_id, sender_id), text) or text
+    outcome = await _SERVICE.follow_up(_key(chat_id, sender_id), text, actor_id=str(sender_id))
+    if outcome is None:
+        return text
+    if outcome.reply:
+        await message_handler._reply_text(chat_id, outcome.reply, reply_type="screenshot_quote")
+    return outcome.quote_text
 
 
 __all__ = ["bind_screenshot_quote", "follow_up_text", "handle_channel_image", "handle_feishu_image"]

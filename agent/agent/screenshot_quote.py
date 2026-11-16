@@ -3,7 +3,10 @@
 The active model reads the delivery address (and any written weight / volume)
 through the shared AI task gateway (``shared.screenshot_quote.READ_SCREENSHOT``).
 With a weight, the caller runs the normal ``报价 地址，重量[，体积]`` text; without
-one, the address waits here for 15 minutes for the same person's weight. This
+one, the address waits here for 15 minutes for the same person's reply. A plain
+weight ("300公斤6个方") is read by code; any other wording is understood by the
+active model (``quote.read_follow_up``: give the weight, correct the address,
+cancel, or something else), whose numbers and address must appear in the reply. This
 module has no Feishu or tool imports; channels call it through
 ``feishu/screenshot_quote.py``.
 """
@@ -17,8 +20,8 @@ from typing import Any, Callable
 from agent.agent_actions.pending import PendingConfirmations
 from shared.ai_tasks import AITaskError
 from shared.screenshot_quote import (
-    MAX_IMAGE_BYTES, NO_ADDRESS_REPLY, PENDING_TTL_SECONDS, READ_SCREENSHOT, PendingQuote, ask_weight_reply,
-    quote_text, quoting_reply,
+    CANCELLED_REPLY, MAX_IMAGE_BYTES, NO_ADDRESS_REPLY, PENDING_TTL_SECONDS, READ_SCREENSHOT, PendingQuote,
+    ask_weight_reply, follow_up_task, quote_text, quoting_reply,
 )
 
 # A follow-up that gives the weight, optionally with a volume, in the ways people type it:
@@ -86,21 +89,83 @@ class ScreenshotQuoteService:
         self._pending.take(key)
         return ScreenshotOutcome(quoting_reply(address, weight, volume), quote_text(address, weight, volume))
 
-    def follow_up(self, key: str, text: str) -> str | None:
-        """The quote text when ``text`` only gives the weight for a waiting address; otherwise ``None``."""
-        from agent.direct_tool_router import parse_price_request
+    async def follow_up(self, key: str, text: str, *, actor_id: str) -> ScreenshotOutcome | None:
+        """What a reply means for a waiting address; ``None`` sends it on as an ordinary message.
 
+        ``quote_text`` set: run that quote (``reply`` may say what was understood). Only ``reply``:
+        answered here, nothing else runs. The address stays waiting for anything unrelated.
+        """
         pending = self._pending.peek(key)
-        parsed = _weight_and_volume(text) if pending is not None else None
-        if parsed is None:
+        raw = str(text or "").strip()
+        if pending is None or not raw:
             return None
-        weight, volume = parsed
-        # Bare numbers, as the screenshot path composes them; the quote parser reads them as 公斤 / 立方米.
-        composed = quote_text(pending.address, weight, volume or pending.volume)
-        if parse_price_request(composed) is None:  # the quote route's own parser decides what it accepts
+        quick = _weight_and_volume(raw)
+        if quick is not None:
+            composed = _composed(pending.address, quick[0], quick[1] or pending.volume)
+            if composed is not None:
+                self._pending.take(key)
+                return ScreenshotOutcome("", composed)
+        if _belongs_elsewhere(raw):
+            if _is_cancel(raw):  # "取消" also clears the waiting address, and still reaches its own route
+                self._pending.take(key)
+            return None
+        try:
+            reading = (await self._gateway.run(
+                follow_up_task(raw),
+                {"waiting_address": pending.address, "waiting_volume_m3": pending.volume, "reply": raw},
+                subject_ref=f"screenshot-follow-up:{key}", actor_id=actor_id)).result
+        except AITaskError:
+            return None  # not understood: an ordinary message, the address keeps waiting
+        if self._pending.peek(key) != pending:
+            return None  # answered or expired meanwhile
+        intent = reading["intent"]
+        if intent == "cancel":
+            self._pending.take(key)
+            return ScreenshotOutcome(CANCELLED_REPLY)
+        address = reading["address"] or pending.address
+        volume = reading["volume_m3"] or pending.volume
+        if intent == "address":
+            self._pending.remember(key, PendingQuote(address, volume))
+            return ScreenshotOutcome(ask_weight_reply(address, volume))
+        if intent != "quote":
+            return None
+        composed = _composed(address, reading["weight_kg"], volume)
+        if composed is None:
             return None
         self._pending.take(key)
-        return composed
+        return ScreenshotOutcome(quoting_reply(address, reading["weight_kg"], volume), composed)
+
+
+def _composed(address: str, weight: str, volume: str | None) -> str | None:
+    """The quote text, when the quote route's own parser accepts it."""
+    from agent.direct_tool_router import parse_price_request
+
+    text = quote_text(address, weight.strip(), volume.strip() if volume else None)
+    return text if parse_price_request(text) is not None else None
+
+
+def _is_cancel(text: str) -> bool:
+    from agent.direct_tool_router import is_cancel_text
+
+    return is_cancel_text(text)
+
+
+def _belongs_elsewhere(text: str) -> bool:
+    """Replies another route owns exactly; they never go to the model or change the waiting quote."""
+    from agent.direct_tool_router import (
+        direct_tool_request_from_text, is_confirm_text, is_reserved_feishu_command_text, parse_price_request,
+    )
+
+    if len(text) > 200 or is_confirm_text(text) or _is_cancel(text) or parse_price_request(text) is not None:
+        return True
+    request = direct_tool_request_from_text(text)
+    # A reply the quote route only half-recognises ("地址改成…，一共1.5吨" → "请提供完整收货地址和重量")
+    # is exactly what the model should read; any other recognised command keeps its own route.
+    local = request.get("local_result") if isinstance(request, dict) else None
+    if (isinstance(request, dict) and request.get("mode") == "service_v2_quote"
+            and isinstance(local, dict) and local.get("success") is False):
+        return False
+    return request is not None or is_reserved_feishu_command_text(text)
 
 
 __all__ = ["ScreenshotOutcome", "ScreenshotQuoteService"]

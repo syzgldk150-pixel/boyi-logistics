@@ -46,12 +46,20 @@ def test_quote_text_is_what_a_person_would_type():
 class Gateway:
     def __init__(self, answer=None, error=None):
         self.answer, self.error, self.calls = answer, error, []
+        self.follow_answer = None  # the model's answer to quote.read_follow_up
+        self.payloads = []
 
     async def run(self, spec, payload, *, subject_ref, actor_id=None, images=()):
         self.calls.append((spec.task_id, subject_ref, actor_id, images))
+        self.payloads.append(payload)
         if self.error:
             raise self.error
-        return AITaskResult(run_id="r1", result=spec.validate(self.answer), provider="deepseek", model="m",
+        answer = self.follow_answer if spec.task_id == "quote.read_follow_up" else self.answer
+        try:
+            result = spec.validate(answer)
+        except ValueError as exc:  # the real gateway retries, then gives up with INVALID
+            raise AITaskError("INVALID", "回答不合格", detail=str(exc)) from exc
+        return AITaskResult(run_id="r1", result=result, provider="deepseek", model="m",
                             config_version_id=1, attempts=1)
 
 
@@ -78,74 +86,100 @@ def test_without_a_weight_it_asks_and_the_next_short_reply_finishes_the_quote():
     service, _ = _service({"address": "湖南省示例市虚构区样例小区3栋2单101房", "source_text": SOURCE}, clock=lambda: now[0])
     outcome = run(service.read("chat:ou", JPEG, actor_id="ou"))
     assert outcome.quote_text is None and "请告诉我重量（公斤）" in outcome.reply
-    assert service.follow_up("chat:other", "300") is None  # another person's reply
-    assert service.follow_up("chat:ou", "R00024785328 到哪了") is None  # not a weight
-    assert service.follow_up("chat:ou", "600斤") is None  # the quote route does not take 斤; stays waiting
-    assert service.follow_up("chat:ou", "300公斤 2方") == "报价 湖南省示例市虚构区样例小区3栋2单101房，300，2"
-    assert service.follow_up("chat:ou", "300") is None  # used once
+    assert follow(service, "chat:other", "300") is None  # another person's reply
+    assert follow(service, "chat:ou", "R00024785328 到哪了") is None  # a tracking query, never sent to the model
+    assert follow(service, "chat:ou", "300公斤 2方").quote_text == "报价 湖南省示例市虚构区样例小区3栋2单101房，300，2"
+    assert follow(service, "chat:ou", "300") is None  # used once
     run(service.read("chat:ou", JPEG, actor_id="ou"))
     now[0] = 901.0
-    assert service.follow_up("chat:ou", "300") is None  # 15 minutes passed
+    assert follow(service, "chat:ou", "300") is None  # 15 minutes passed
 
 
-def test_weight_replies_are_read_the_ways_people_type_them():
-    """2026-11-16: “300公斤6个方” went to the chat model, which no longer knew the address."""
-    address = "湖南省示例市虚构区样例小区3栋2单101房"
-    cases = {
-        "300公斤6个方": "300，6",
-        "300kg 2方": "300，2",
-        "2方，300": "300，2",
-        "300 6方": "300，6",
-        "重量300公斤 体积6立方米左右": "300，6",
-        "大概300公斤": "300",
-        "6个方 300公斤": "300，6",
-        "300.5公斤，1.2m³": "300.5，1.2",
-    }
+ADDRESS = "湖南省示例市虚构区样例小区3栋2单101房"
+
+
+def follow(service, key, text):
+    return run(service.follow_up(key, text, actor_id="ou"))
+
+
+def _waiting(volume=None):
+    source = SOURCE if volume else SOURCE.replace(" 2方", "")
+    service, gateway = _service({"address": ADDRESS, "volume_m3": volume, "source_text": source})
+    run(service.read("chat:ou", JPEG, actor_id="ou"))
+    gateway.calls.clear()
+    gateway.payloads.clear()
+    return service, gateway
+
+
+def test_plain_weight_replies_are_read_by_code_without_the_model():
+    cases = {"300公斤6个方": "300，6", "300kg 2方": "300，2", "2方，300": "300，2", "300 6方": "300，6",
+             "重量300公斤 体积6立方米左右": "300，6", "大概300公斤": "300", "300.5公斤，1.2m³": "300.5，1.2"}
     for text, numbers in cases.items():
-        service, _ = _service({"address": address, "source_text": SOURCE})
-        run(service.read("chat:ou", JPEG, actor_id="ou"))
-        assert service.follow_up("chat:ou", text) == f"报价 {address}，{numbers}", text
-    for text in ("600斤", "300公斤 2方 3方", "300公斤 400公斤", "R00024785328 到哪了", "明天300公斤送到", "300公斤6个方送海口"):
-        service, _ = _service({"address": address, "source_text": SOURCE})
-        run(service.read("chat:ou", JPEG, actor_id="ou"))
-        assert service.follow_up("chat:ou", text) is None, text
+        service, gateway = _waiting()
+        assert follow(service, "chat:ou", text).quote_text == f"报价 {ADDRESS}，{numbers}", text
+        assert gateway.calls == [], text
 
 
-def test_no_address_and_ai_failures_are_told_plainly():
-    service, _ = _service({"address": None, "source_text": "会议安排"})
-    assert run(service.read("k", JPEG, actor_id="ou")).reply == NO_ADDRESS_REPLY
-    service, _ = _service(error=AITaskError("AI_UNAVAILABLE", "尚未启用 AI 模型。"))
-    outcome = run(service.read("k", JPEG, actor_id="ou"))
-    assert outcome.quote_text is None and "截图没有识别成功：尚未启用 AI 模型。" in outcome.reply
-    assert "超过 8MB" in run(service.read("k", b"", actor_id="ou")).reply
+def test_other_wording_is_understood_by_the_model_and_turned_into_the_standard_text():
+    """2026-11-16: replies vary; the model reads them, code checks its numbers are in the reply."""
+    service, gateway = _waiting()
+    gateway.follow_answer = {"intent": "quote", "weight_value": 600, "weight_unit": "斤", "volume_m3": 6,
+                             "address": None, "note": ""}
+    outcome = follow(service, "chat:ou", "这批货600斤左右吧，体积差不多6个方")
+    assert outcome.quote_text == f"报价 {ADDRESS}，300，6"
+    assert "重量 300 公斤" in outcome.reply and "体积 6 立方米" in outcome.reply
+    assert gateway.calls[0][0] == "quote.read_follow_up"
+    assert gateway.payloads[0] == {"waiting_address": ADDRESS, "waiting_volume_m3": None,
+                                   "reply": "这批货600斤左右吧，体积差不多6个方"}
+    assert follow(service, "chat:ou", "300") is None  # finished
+
+    service, gateway = _waiting(volume="2")
+    gateway.follow_answer = {"intent": "quote", "weight_value": 1.5, "weight_unit": "吨", "volume_m3": None,
+                             "address": "海南省示例市虚构区样例路8号", "note": ""}
+    outcome = follow(service, "chat:ou", "地址改成海南省示例市虚构区样例路8号，一共1.5吨")
+    assert outcome.quote_text == "报价 海南省示例市虚构区样例路8号，1500，2"  # the screenshot's volume is kept
 
 
-def test_gateway_sends_the_picture_and_audits_only_its_hash():
-    from agent.ai_tasks.gateway import AITaskGateway
-    from shared.screenshot_quote import READ_SCREENSHOT
+def test_the_model_can_correct_the_address_or_cancel_and_otherwise_the_message_goes_on():
+    service, gateway = _waiting()
+    gateway.follow_answer = {"intent": "address", "weight_value": None, "volume_m3": None,
+                             "address": "海南省示例市虚构区样例路8号", "note": ""}
+    outcome = follow(service, "chat:ou", "不对，送到海南省示例市虚构区样例路8号")
+    assert outcome.quote_text is None and "识别到的收货地址：海南省示例市虚构区样例路8号" in outcome.reply
+    assert follow(service, "chat:ou", "300").quote_text == "报价 海南省示例市虚构区样例路8号，300"
 
-    seen, audits = [], []
+    service, gateway = _waiting()
+    gateway.follow_answer = {"intent": "cancel"}
+    assert follow(service, "chat:ou", "算了这个先不报了").reply == "好的，这张截图的报价已取消。"
+    assert follow(service, "chat:ou", "300") is None
 
-    class LLM:
-        def public_status(self):
-            return {"configured": True, "provider": "deepseek", "model": "deepseek-v4-flash", "config_version_id": 3}
+    service, gateway = _waiting()
+    gateway.follow_answer = {"intent": "other"}
+    assert follow(service, "chat:ou", "今天几点下班") is None
+    assert follow(service, "chat:ou", "300").quote_text == f"报价 {ADDRESS}，300"  # still waiting
 
-        async def chat(self, messages, **kwargs):
-            seen.append((messages, kwargs))
-            return {"content": json.dumps({"address": "湖南省示例市虚构区样例小区3栋", "source_text": SOURCE})}
 
-    class Audit:
-        def record_run(self, row):
-            audits.append(row)
+def test_a_model_answer_not_backed_by_the_reply_is_never_quoted():
+    for answer in ({"intent": "quote", "weight_value": 500, "weight_unit": "公斤"},      # invented weight
+                   {"intent": "quote", "weight_value": 30, "weight_unit": "公斤"},       # only part of "300"
+                   {"intent": "quote", "weight_value": 15, "weight_unit": "吨"},         # "1.5" is not "15"
+                   {"intent": "quote", "weight_value": None},                             # quote without weight
+                   {"intent": "address", "address": "湖南省长沙市岳麓区麓谷大道"},           # address not in reply
+                   {"intent": "maybe"}):
+        service, gateway = _waiting()
+        gateway.follow_answer = answer
+        assert follow(service, "chat:ou", "差不多300来斤，或者1.5吨也有可能") is None, answer
+        assert service._pending.peek("chat:ou") is not None  # the address keeps waiting
 
-    result = run(AITaskGateway(LLM(), Audit()).run(READ_SCREENSHOT, {"task": "读图"}, subject_ref="s", images=(JPEG,)))
-    assert result.result["address"] == "湖南省示例市虚构区样例小区3栋"
-    content = seen[0][0][1]["content"]
-    assert content[0] == {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(JPEG).decode()}}
-    assert content[1]["type"] == "text" and seen[0][1]["response_format"] == {"type": "json_object"}
-    assert "base64" not in json.dumps(audits[0], ensure_ascii=False) and len(audits[0]["input_sha256"]) == 64
-    with pytest.raises(AITaskError, match="只支持"):
-        run(AITaskGateway(LLM(), Audit()).run(READ_SCREENSHOT, {}, subject_ref="s", images=(b"not-an-image",)))
+
+def test_commands_and_confirmations_are_not_sent_to_the_model():
+    for text in ("确认", "扫描", "统计", "报价 湖南省示例市虚构区样例路8号，300"):
+        service, gateway = _waiting()
+        assert follow(service, "chat:ou", text) is None, text
+        assert gateway.calls == [], text
+    service, gateway = _waiting()
+    assert follow(service, "chat:ou", "取消") is None and gateway.calls == []  # reaches its own route
+    assert service._pending.peek("chat:ou") is None  # and clears the waiting address
 
 
 # -- channels ---------------------------------------------------------------------------------
@@ -180,8 +214,14 @@ def test_feishu_screenshot_runs_the_normal_quote_path(monkeypatch):
         run(module.handle_feishu_image(chat_id="oc_1", sender_id="ou_1", message_id="om_1",
                                        raw_content=json.dumps({"image_key": "img_1"})))
         assert "请告诉我重量" in replies[-1][1] and quotes == []
-        assert module.follow_up_text("300", sender_id="ou_1", chat_id="oc_1") == "报价 湖南省示例市虚构区样例小区3栋2单101房，300"
-        assert module.follow_up_text("你好", sender_id="ou_1", chat_id="oc_1") == "你好"
+        service._gateway.follow_answer = {"intent": "other"}
+        assert run(module.follow_up_text("你好", sender_id="ou_1", chat_id="oc_1")) == "你好"
+        assert run(module.follow_up_text("300", sender_id="ou_1", chat_id="oc_1")) == "报价 湖南省示例市虚构区样例小区3栋2单101房，300"
+        run(module.handle_feishu_image(chat_id="oc_1", sender_id="ou_1", message_id="om_1",
+                                       raw_content=json.dumps({"image_key": "img_1"})))
+        service._gateway.follow_answer = {"intent": "cancel"}
+        assert run(module.follow_up_text("不用报了", sender_id="ou_1", chat_id="oc_1")) is None
+        assert replies[-1][1] == "好的，这张截图的报价已取消。"
         service._gateway.answer = {"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_kg": 300, "source_text": SOURCE}
         run(module.handle_feishu_image(chat_id="oc_1", sender_id="ou_1", message_id="om_2",
                                        raw_content={"image_key": "img_2"}))

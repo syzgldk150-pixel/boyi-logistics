@@ -2012,7 +2012,10 @@ async def _process_and_reply(text: str, sender_id: str, chat_id: str):
     from feishu.bot import get_agent_core
     from feishu.reply_formatter import format_reply
     from feishu.screenshot_quote import follow_up_text
-    text = follow_up_text(text, sender_id=sender_id, chat_id=chat_id)  # weight for a waiting screenshot address
+    # A reply to a waiting screenshot address: the standard quote text, or answered there (None).
+    text = await follow_up_text(text, sender_id=sender_id, chat_id=chat_id)
+    if text is None:
+        return
 
     if _FEISHU_BINDING_RUNTIME is not None:
         try:
