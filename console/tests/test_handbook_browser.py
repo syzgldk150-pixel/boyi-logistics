@@ -129,13 +129,15 @@ def test_editor_sees_workflow_and_no_approval(browser):
         assert "这条说明正在生效中" in page.inner_text("[data-handbook-editor]")
         result = page.inner_text("[data-handbook-result]")
         assert "需要你确认 1 项歧义" in result and "不会生效" in result and "还差 1 项" in result
-        assert page.locator("[data-review-open]").count() == 0
+        assert page.locator("[data-handbook-approve]").count() == 0
         assert page.locator("[data-handbook-tab='entries'] [data-tab-count]").inner_text() == "1"
         _shot(page, "52-entries")
         page.click("[data-handbook-tab='fees']")
         page.click(f"[data-fee-open='{RULE_ID}']")
         page.wait_for_selector(".hb-fold")
         assert "缺出处" in page.inner_text("[data-fee-editor]")
+        assert "1 处缺出处" in page.inner_text(".hb-side")
+        page.fill("[data-meta='version_label']", "示例手册 V1 草稿二")
         assert page.locator("[data-fee-action='submit']").is_disabled()
         _shot(page, "54-fees")
         page.click("[data-fee-tab='trial']")
@@ -154,7 +156,8 @@ def test_editor_sees_workflow_and_no_approval(browser):
         page.fill("[data-try-question]", "上楼费怎么收？")
         page.press("[data-try-question]", "Enter")
         page.wait_for_selector(".hb-timeline")
-        assert "未执行插件" in page.inner_text("[data-try-answer]")
+        answer = page.inner_text("[data-try-answer]")
+        assert "按手册计算费用" in answer and "示例物流手册" in answer
         _shot(page, "57-try")
         assert errors == []
 
@@ -167,12 +170,11 @@ def test_super_admin_review_needs_confirmation(browser):
         ready["versions"][0]["blockers"] = []
         page.route(f"**/handbook/entries/{ENTRY_ID}", lambda route: route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": ready}, ensure_ascii=False)))
         page.click(f"[data-entry='{ENTRY_ID}']")
-        page.click("[data-review-open]")
-        page.wait_for_selector(".hb-review__grid")
-        _shot(page, "53-review")
+        page.wait_for_selector("[data-handbook-approve]")
         page.click("[data-handbook-approve]")
         dialog = page.locator("dialog.hb-dialog")
         assert re.search("V2", dialog.inner_text())
+        _shot(page, "53-approve")
         dialog.locator("button[value='cancel']").click()
         assert not [path for path, _body in posts if path.endswith("/approve")]
         assert errors == []

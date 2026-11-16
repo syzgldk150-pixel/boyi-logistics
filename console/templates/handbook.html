@@ -3,7 +3,7 @@
 {% block breadcrumb %}业务手册{% endblock %}
 {% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261116-spec52">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261116-spec52b">{% endblock %}
 {% block content %}
 {# frontend-spec 52–58: 四个页签都是工作台；动作按身份隐藏，状态与阻塞项常驻可见。 #}
 <section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-label="业务手册">
@@ -30,11 +30,6 @@
         </div>
         <div class="hb-list__tools">
           <label class="hb-search"><i data-feather="search"></i><span class="sr-only">搜索说明</span><input type="search" placeholder="搜索标题" data-entries-search></label>
-          <div class="hb-filter" role="group" aria-label="筛选" data-entries-filter>
-            <button type="button" data-filter="all" aria-pressed="true">全部 <span data-filter-count="all"></span></button>
-            <button type="button" data-filter="todo" aria-pressed="false">待处理 <span data-filter-count="todo"></span></button>
-            <button type="button" data-filter="DRAFT" aria-pressed="false">草稿 <span data-filter-count="DRAFT"></span></button>
-          </div>
         </div>
         <ul class="hb-rows" data-handbook-entries></ul>
         <p class="hb-card__foot" data-entries-foot></p>
@@ -42,7 +37,6 @@
       <section class="hb-card hb-editor" aria-labelledby="handbook-editor-title" data-handbook-editor></section>
       <section class="hb-card hb-result" aria-labelledby="handbook-result-title" data-handbook-result></section>
     </div>
-    <div class="hb-review" data-entries-review hidden></div>
   </div>
 
   <div id="handbook-panel-fees" role="tabpanel" aria-labelledby="handbook-tab-fees" class="hb-panel" data-fee-rules hidden>
@@ -86,7 +80,6 @@
     </section>
     <div class="hb-section-head">
       <h2>变化提醒 <span class="hb-count-pill" data-reminder-count hidden></span></h2><span class="hb-meta">只提醒，不自动改规则</span>
-      {% if can_edit %}<button class="hb-link" type="button" data-sources-check-all hidden>全部标记已检查</button>{% endif %}
     </div>
     <ul class="hb-reminders" data-sources-reminders></ul>
     <section class="hb-card hb-docs" aria-labelledby="documents-title">
@@ -110,10 +103,6 @@
         <label class="hb-field"><span class="hb-field__label">问题 <span class="hb-counter" data-try-counter>0 / 500</span></span>
           <textarea rows="6" maxlength="500" data-try-question placeholder="例如：R000XXXXXXXX 送 5 楼没电梯，200 公斤，上楼费多少？"></textarea>
           <span class="hb-field__hint">回车发送，Shift + 回车换行</span></label>
-        <div class="hb-examples"><span class="hb-field__label">试试这样问</span>
-          <div><button type="button" class="hb-example" data-try-example>破损件怎么处理？</button>
-            <button type="button" class="hb-example" data-try-example>上楼费怎么收？</button>
-            <button type="button" class="hb-example" data-try-example>回单多久寄回？</button></div></div>
         <div class="hb-actions"><button class="primary-btn hb-btn-lg" type="button" data-try-send><i data-feather="send"></i><span>试问</span></button><span class="hb-meta" data-try-status role="status" aria-live="polite"></span></div>
         <div class="hb-block">
           <h3>本次试问的边界</h3>
@@ -124,12 +113,11 @@
           </ul>
           <p class="hb-alert" data-tone="warn"><i data-feather="info"></i>报价金额请到飞书或微信里试，试问不返回报价。</p>
         </div>
-        <div class="hb-block" data-try-recent-block hidden><h3>最近试问 <span class="hb-meta">仅本页打开期间保留</span></h3><ul class="hb-recent" data-try-recent></ul></div>
         <p class="hb-alert" data-tone="ok"><i data-feather="check-circle"></i><span><b>按你本人的机器人权限运行</b><br>实时查询原平台；结果只在本页显示。</span></p>
         <p class="hb-card__foot">试问不会改变线上数据，也不会通知任何人。</p>
       </section>
       <section class="hb-card hb-answer" aria-labelledby="try-answer-title" data-try-answer>
-        <div class="hb-card__head"><h2 id="try-answer-title">机器人会回复</h2><button class="hb-link" type="button" data-try-copy hidden><i data-feather="copy"></i>复制回答</button></div>
+        <div class="hb-card__head"><h2 id="try-answer-title">机器人会回复</h2></div>
         <div data-try-result><div class="hb-empty"><i data-feather="message-circle"></i><p>在左侧输入问题，这里会显示机器人的回复、引用的原文和执行步骤。</p></div></div>
       </section>
     </div>
@@ -137,9 +125,9 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/handbook_common.js?v=20261116-spec52"></script>
-<script src="/static/handbook.js?v=20261116-spec52"></script>
-<script src="/static/handbook_fee_rules.js?v=20261116-spec52"></script>
-<script src="/static/handbook_try.js?v=20261116-spec52"></script>
-<script src="/static/handbook_sources.js?v=20261116-spec52"></script>
+<script src="/static/handbook_common.js?v=20261116-spec52b"></script>
+<script src="/static/handbook.js?v=20261116-spec52b"></script>
+<script src="/static/handbook_fee_rules.js?v=20261116-spec52b"></script>
+<script src="/static/handbook_try.js?v=20261116-spec52b"></script>
+<script src="/static/handbook_sources.js?v=20261116-spec52b"></script>
 {% endblock %}

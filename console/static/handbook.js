@@ -5,7 +5,6 @@
   // validates every compile, trial and approval; this page only shows and forwards.
   const ACTION_TEXT = { none: "直接回答", ask_user: "反问", error: "调用失败", unknown: "未知动作" };
   const VERSION_TEXT = { DRAFT: "草稿", COMPILED: "已编译", ACTIVE: "已生效", SUPERSEDED: "已被替换" };
-  const TIPS = ["一条说明只讲一件事，便于单独审核和回滚", "写出大家怎么说：术语、别名、口语", "写出什么时候必须先问，避免机器人替人决定"];
 
   function init() {
     const root = document.querySelector("[data-handbook-entries-panel]");
@@ -18,18 +17,12 @@
     const base = "/handbook/entries";
     const $ = (selector) => root.querySelector(selector);
     const feedback = UI.feedback($("[data-handbook-status]"));
-    const state = { entries: [], current: null, busy: false, dirty: false, filter: "all", query: "", review: false, allDescribed: false, trialTable: false };
+    const state = { entries: [], current: null, busy: false, dirty: false, query: "", allDescribed: false, trialTable: false };
 
     // -- derived facts -----------------------------------------------------------------
 
     function latestOf(entry) {
       return entry ? (entry.versions || []).find((item) => item.version === entry.latest_version) || null : null;
-    }
-
-    function displayStatus(entry, latest) {
-      if (!entry) return "DRAFT";
-      if (latest && latest.status === "COMPILED" && !(latest.blockers || []).length && entry.active_version !== latest.version) return "PENDING";
-      return entry.status;
     }
 
     function ambiguityState(latest) {
@@ -49,11 +42,11 @@
       let check = "todo";
       if (validation.ok === false) check = "error";
       else if (compiled) check = amb.open ? "current" : "done";
-      let trial = "todo";
-      if (check === "done") trial = latest.trial ? "done" : "current";
+      // 试跑 is optional for the Agent; 审核 opens once approval_blockers is empty.
+      const trial = latest?.trial ? "done" : "todo";
       let review = "todo";
       if (live) review = "done";
-      else if (trial === "done" && !(latest.blockers || []).length) review = "current";
+      else if (latest?.status === "COMPILED" && !(latest.blockers || []).length) review = "current";
       return [["编写", write], ["编译", compile], ["校验", check], ["试跑", trial], ["审核", review]];
     }
 
@@ -64,31 +57,25 @@
 
     // -- list --------------------------------------------------------------------------
 
-    const isTodo = (entry) => entry.status === "DRAFT" || entry.status === "PAUSED";
-
     function renderList() {
       const entries = state.entries;
-      const counts = { all: entries.length, todo: entries.filter(isTodo).length, DRAFT: entries.filter((item) => item.status === "DRAFT").length };
-      Object.entries(counts).forEach(([key, value]) => { const node = root.querySelector(`[data-filter-count="${key}"]`); if (node) node.textContent = value; });
-      root.querySelectorAll("[data-filter]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.filter === state.filter)));
-      $("[data-entries-summary]").textContent = `${counts.all} 条说明 · ${counts.todo} 条待处理`;
-      UI.setTabCount("entries", counts.all);
+      $("[data-entries-summary]").textContent = `${entries.length} 条说明`;
+      UI.setTabCount("entries", entries.length);
       const query = state.query.trim().toLowerCase();
-      const visible = entries.filter((entry) => (state.filter === "all" || (state.filter === "todo" ? isTodo(entry) : entry.status === state.filter))
-        && (!query || entry.title.toLowerCase().includes(query) || `v${entry.latest_version}`.includes(query)));
+      const visible = entries.filter((entry) => !query || entry.title.toLowerCase().includes(query));
       const list = $("[data-handbook-entries]");
       if (!entries.length) {
         list.innerHTML = `<li class="hb-empty hb-empty--row"><i data-feather="file-text"></i><p>还没有业务说明。</p>
           ${canEdit ? '<button class="hb-link" type="button" data-handbook-new-empty>新建第一条说明</button>' : ""}</li>`;
       } else if (!visible.length) {
-        list.innerHTML = '<li class="hb-empty hb-empty--row"><p>没有符合条件的说明，换个筛选试试。</p></li>';
+        list.innerHTML = '<li class="hb-empty hb-empty--row"><p>没有标题包含这个词的说明。</p></li>';
       } else {
         list.innerHTML = visible.map((entry) => `<li><button class="hb-row" type="button" data-entry="${escapeHtml(entry.entry_id)}" aria-current="${state.current?.entry_id === entry.entry_id}">
           <span class="hb-row__top"><span class="hb-row__title">${escapeHtml(entry.title)}</span>${badge(entry.status)}</span>
           <span class="hb-row__meta">V${entry.latest_version} · ${entry.active_version ? `当前生效 V${entry.active_version}` : "尚未生效"}</span>
           <span class="hb-row__time">${escapeHtml(formatTime(entry.updated_at))}</span></button></li>`).join("");
       }
-      $("[data-entries-foot]").textContent = `共 ${counts.all} 条（已作废的不在列表中）`;
+      $("[data-entries-foot]").textContent = "已作废的说明不在列表中";
       if (window.feather) window.feather.replace();
     }
 
@@ -98,7 +85,6 @@
       const entry = state.current;
       const latest = latestOf(entry);
       const readonly = canEdit ? "" : " readonly";
-      const status = displayStatus(entry, latest);
       let notice = "";
       if (entry?.status === "ACTIVE" && canEdit) {
         notice = `<div class="hb-alert" data-tone="warn"><i data-feather="alert-triangle"></i><span><b>这条说明正在生效中</b><br>保存后会立即暂停 V${entry.active_version}，直到新版本审核通过。</span></div>`;
@@ -109,7 +95,7 @@
       const title = entry ? entry.title : "";
       $("[data-handbook-editor]").innerHTML = `
         <div class="hb-card__head">
-          <div><h2 id="handbook-editor-title">${entry ? "编辑说明" : "新建说明"}${entry ? ` <span class="hb-chip hb-chip--sm">V${entry.latest_version} · ${escapeHtml(status === "PENDING" ? "待审核" : (VERSION_TEXT[latest?.status] || ""))}</span>` : ""}</h2>
+          <div><h2 id="handbook-editor-title">${entry ? "编辑说明" : "新建说明"}${entry ? ` <span class="hb-chip hb-chip--sm">V${entry.latest_version} · ${escapeHtml(VERSION_TEXT[latest?.status] || "")}</span>` : ""}</h2>
             <p class="hb-card__sub">${entry ? (entry.active_version ? `基于 V${entry.active_version} 修改${entry.status === "ACTIVE" ? " · 保存后会暂停线上版本" : ""}` : "尚未生效的说明") : "用平常的话写，保存后交给 AI 编译"}</p></div>
           ${entry && (entry.versions || []).length > 1 ? '<button class="hb-link" type="button" data-history-toggle><i data-feather="clock"></i>版本历史</button>' : ""}
         </div>
@@ -119,7 +105,6 @@
         <label class="hb-field hb-field--grow"><span class="hb-field__label">说明 <span class="hb-counter" data-count-for="body">${body.length} / 4000</span></span>
           <textarea maxlength="4000" data-handbook-body placeholder="例如：大家说“岳麓店”就是长沙岳麓区网点。“报个价”“问个价”都是要三平台报价。"${readonly}>${escapeHtml(body)}</textarea>
           <span class="hb-field__hint">支持换行分段；编译时会按段落理解。</span></label>
-        <div class="hb-tips"><h3>写作提示</h3><ul>${TIPS.map((tip) => `<li><i data-feather="check"></i>${tip}</li>`).join("")}</ul></div>
         <div class="hb-history" data-history hidden><h3>版本历史</h3><ul>${(entry?.versions || []).map((item) => `<li><b>V${item.version}</b><span>${escapeHtml(VERSION_TEXT[item.status] || item.status)}${entry.active_version === item.version ? " · 当前线上" : ""}</span><span class="hb-meta">${escapeHtml(formatTime(item.updated_at))}</span></li>`).join("")}</ul></div>
         <div class="hb-card__bar">
           <span class="hb-meta" data-saved>${entry ? `<i class="hb-dot" data-tone="ok"></i>已保存 ${escapeHtml(formatTime(entry.updated_at))}` : "尚未保存"}</span>
@@ -212,79 +197,17 @@
         if (superAdmin) controls.push('<button class="primary-btn" type="button" disabled>审核生效</button>');
       } else {
         line = '<span class="hb-meta" data-tone="ok"><i data-feather="check-circle"></i>已满足生效条件</span>';
-        controls.push(superAdmin ? '<button class="primary-btn" type="button" data-review-open><i data-feather="check"></i><span>进入审核</span></button>'
+        controls.push(superAdmin ? '<button class="primary-btn" type="button" data-handbook-approve><i data-feather="check"></i><span>审核通过并生效</span></button>'
           : '<span class="hb-meta">等待超级管理员审核生效</span>');
       }
       const retire = superAdmin ? '<button class="hb-link" data-tone="danger" type="button" data-handbook-status-action="retire">作废</button>' : "";
       return `<div class="hb-submit">${line}<div class="hb-actions">${retire}${controls.join("")}</div></div>`;
     }
 
-    // -- review (spec 53, super administrators) -----------------------------------------
-
-    function renderReview() {
-      const node = $("[data-entries-review]");
-      const work = $("[data-entries-work]");
-      const entry = state.current;
-      const latest = latestOf(entry);
-      if (!state.review || !entry || !latest?.compiled || !superAdmin) {
-        node.hidden = true; node.innerHTML = ""; work.hidden = false; state.review = false; return;
-      }
-      const amb = ambiguityState(latest);
-      const blockers = blockerList(entry, latest);
-      const trial = latest.trial;
-      const unsupported = latest.compiled.unsupported || [];
-      const ready = !blockers.length;
-      work.hidden = true;
-      node.hidden = false;
-      node.innerHTML = `
-        <div class="hb-review__head">
-          <div class="hb-review__crumb"><button class="hb-link" type="button" data-review-close><i data-feather="arrow-left"></i>返回说明列表</button><span class="hb-meta">/ ${escapeHtml(entry.title)}</span></div>
-          <div class="hb-review__title"><h2>${escapeHtml(entry.title)}</h2>${badge(ready ? "PENDING" : "DRAFT", ready ? "待审核" : "未满足条件")}</div>
-          <p class="hb-meta">V${latest.version} · 最后修改 ${escapeHtml(formatTime(latest.updated_at))}</p>
-        </div>
-        <div class="hb-review__grid">
-          <div class="hb-review__main">
-            <div class="hb-alert" data-tone="${ready ? "ok" : "warn"}"><i data-feather="${ready ? "check-circle" : "alert-triangle"}"></i><span>
-              <b>${ready ? "已满足生效条件" : `还差 ${blockers.length} 项`}</b><br>校验${latest.validation?.ok ? "通过" : "未通过"} · ${amb.list.length - amb.open} / ${amb.list.length} 项歧义已确认 · ${trial ? `${trial.cases} 条试跑（${trial.passed} 通过 / ${trial.improved} 改善）` : "尚未试跑"}
-              ${ready ? "" : `<br>${escapeHtml(blockers.join("；"))}`}</span>${unsupported.length ? `<span class="hb-badge" data-tone="pending">开发需求 ${unsupported.length} 项</span>` : ""}</div>
-            <section class="hb-card"><div class="hb-card__head"><h3>AI 的中文复述</h3></div><p class="hb-quote">${escapeHtml(latest.compiled.restatement)}</p></section>
-            ${amb.list.length ? `<section class="hb-card"><div class="hb-card__head"><h3>需要确认的歧义</h3><span class="hb-badge" data-tone="${amb.open ? "pending" : "active"}">${amb.list.length - amb.open} / ${amb.list.length} 已确认</span></div>
-              <ol class="hb-numbered">${amb.list.map((item, index) => `<li>${escapeHtml(item)} <span class="hb-meta" data-tone="${amb.acknowledged.has(index) ? "ok" : "warn"}">${amb.acknowledged.has(index) ? "已确认" : "未确认"}</span></li>`).join("")}</ol>
-              <p class="hb-meta">全部歧义确认后，版本才可审核。</p></section>` : ""}
-            <section class="hb-card"><div class="hb-card__head"><h3>将生效的内容</h3><span class="hb-meta">${(latest.described || []).length} 条</span></div>
-              <ol class="hb-numbered">${(latest.described || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ol></section>
-            <section class="hb-card"><div class="hb-card__head"><h3>试跑结果</h3>${trial ? `<span class="hb-badge" data-tone="active">${trial.passed} 通过 · ${trial.improved} 改善</span>` : ""}</div>
-              ${trial ? trialTable(trial) : '<p class="hb-meta">尚未试跑。</p>'}<p class="hb-meta">按已保存的 V${latest.version} 内容试跑，只看机器人选择，不执行任何操作。</p></section>
-          </div>
-          <aside class="hb-review__side">
-            <section class="hb-card"><div class="hb-card__head"><h3>审核决定</h3>${badge(ready ? "PENDING" : "DRAFT", ready ? "待审核" : "未满足")}</div>
-              <p class="hb-meta">仅超级管理员可审核</p>
-              <ul class="hb-checklist">
-                <li data-tone="${latest.validation?.ok ? "ok" : "danger"}">校验<span>${latest.validation?.ok ? "通过" : "未通过"}</span></li>
-                <li data-tone="${amb.open ? "warn" : "ok"}">歧义 ${amb.list.length - amb.open} / ${amb.list.length}<span>${amb.open ? "待确认" : "已确认"}</span></li>
-                <li data-tone="${trial ? "ok" : "warn"}">试跑<span>${trial ? `${trial.passed} / ${trial.cases}` : "未试跑"}</span></li>
-                <li data-tone="${blockers.length ? "warn" : "ok"}">阻塞项<span>${blockers.length} 项</span></li>
-              </ul>
-              <div class="hb-impact"><b>生效后会发生什么</b><span>V${latest.version} 立即替换机器人的理解${entry.active_version && entry.active_version !== latest.version ? `，V${entry.active_version} 自动停用` : ""}；进行中的对话不受影响。</span></div>
-              <div class="hb-actions hb-actions--split"><button class="ghost-btn" type="button" data-review-close>返回编辑</button>
-                <button class="primary-btn" type="button" data-handbook-approve ${ready ? "" : "disabled"}><i data-feather="check"></i><span>通过并生效</span></button></div>
-              ${ready ? "" : `<p class="hb-meta" data-tone="warn">${escapeHtml(blockers.join("；"))}</p>`}
-              <div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-handbook-status-action="retire"><i data-feather="trash-2"></i>作废这条说明</button><span class="hb-meta">作废不可恢复，需二次确认</span></div>
-            </section>
-            <section class="hb-card"><div class="hb-card__head"><h3>版本历史</h3></div>
-              <ul class="hb-history-list">${(entry.versions || []).map((item) => `<li aria-current="${item.version === latest.version}"><b>V${item.version}</b>
-                <span>${item.version === latest.version ? "当前审核版本" : entry.active_version === item.version ? "当前线上版本" : ""}</span>
-                <span class="hb-meta">${escapeHtml(formatTime(item.updated_at))}</span>${badge(item.status === "ACTIVE" ? "ACTIVE" : item.status === "SUPERSEDED" ? "RETIRED" : "DRAFT", VERSION_TEXT[item.status] || item.status)}</li>`).join("")}</ul></section>
-          </aside>
-        </div>`;
-      if (window.feather) window.feather.replace();
-    }
-
     function renderAll() {
       renderList();
       renderEditor();
       renderResult();
-      renderReview();
     }
 
     // -- data --------------------------------------------------------------------------
@@ -342,14 +265,12 @@
       const entry = state.current;
       const latest = latestOf(entry);
       const url = (action) => `${base}/${encodeURIComponent(entry.entry_id)}/${action}`;
-      if (target.dataset.filter) { state.filter = target.dataset.filter; renderList(); return; }
       if (target.dataset.entry) {
         if (target.dataset.entry === entry?.entry_id || !(await leaveOk())) return;
-        state.review = false;
         run("正在读取……", () => openEntry(target.dataset.entry));
       } else if (target.hasAttribute("data-handbook-new") || target.hasAttribute("data-handbook-new-empty")) {
         if (!(await leaveOk())) return;
-        state.current = null; state.review = false;
+        state.current = null;
         renderAll();
         root.querySelector("[data-handbook-title]")?.focus();
       } else if (target.hasAttribute("data-history-toggle")) {
@@ -358,10 +279,6 @@
         state.allDescribed = !state.allDescribed; renderResult();
       } else if (target.hasAttribute("data-trial-toggle")) {
         state.trialTable = !state.trialTable; renderResult();
-      } else if (target.hasAttribute("data-review-open")) {
-        state.review = true; renderReview(); window.scrollTo({ top: 0 });
-      } else if (target.hasAttribute("data-review-close")) {
-        state.review = false; renderReview();
       } else if (target.hasAttribute("data-handbook-save")) {
         const title = $("[data-handbook-title]").value.trim();
         const body = $("[data-handbook-body]").value;
@@ -400,7 +317,6 @@
         if (!(await confirmAction({ title: "审核通过并生效？", body: `生效后，飞书、微信和后台 AI 助手立即按 V${latest.version} 理解这条说明${replaced}。`, confirm: "通过并生效" }))) return;
         run("正在生效……", async () => {
           await request(url("approve"), { version: latest.version });
-          state.review = false;
           await openEntry(entry.entry_id);
           await loadList();
         }, `V${latest.version} 已生效`);
@@ -414,7 +330,7 @@
         if (!(await confirmAction(dialogs[action]))) return;
         run("正在处理……", async () => {
           await request(url(action), { row_version: entry.row_version });
-          if (action === "retire") { state.current = null; state.review = false; renderAll(); } else { await openEntry(entry.entry_id); }
+          if (action === "retire") { state.current = null; renderAll(); } else { await openEntry(entry.entry_id); }
           await loadList();
         }, { retire: "已作废", pause: "已暂停", resume: "已恢复生效" }[action]);
       }

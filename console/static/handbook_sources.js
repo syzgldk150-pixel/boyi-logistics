@@ -41,8 +41,6 @@
       const count = $("[data-reminder-count]");
       count.hidden = !open.length;
       count.textContent = `• ${open.length}`;
-      const checkAll = $("[data-sources-check-all]");
-      if (checkAll) checkAll.hidden = open.length < 2;
       const list = $("[data-sources-reminders]");
       list.innerHTML = reminders.length ? reminders.map((item) => {
         const [kindText, kindTone] = KIND[item.kind] || [item.kind, "muted"];
@@ -103,12 +101,6 @@
         run("正在检查知识库，可能需要十几秒……", async () => { await request("/handbook/sources/scan", {}); await reload(); }, "检查完成");
       } else if (target.dataset.check) {
         run("正在保存……", async () => { await request(`/handbook/sources/reminders/${encodeURIComponent(target.dataset.check)}/check`, {}); await reload(); }, "已标记已检查");
-      } else if (target.hasAttribute("data-sources-check-all")) {
-        const ids = (state.data?.reminders || []).filter((item) => item.status === "OPEN").map((item) => item.reminder_id);
-        run("正在标记……", async () => {
-          for (const id of ids) await request(`/handbook/sources/reminders/${encodeURIComponent(id)}/check`, {});
-          await reload();
-        }, `已标记 ${ids.length} 条`);
       }
     });
     // The list is read from the database only, so it also loads up front for the tab count.

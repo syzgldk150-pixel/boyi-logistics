@@ -31,7 +31,7 @@
     const base = "/handbook/fee-rules";
     const $ = (selector) => root.querySelector(selector);
     const feedback = UI.feedback($("[data-fee-status]"));
-    const state = { versions: [], current: null, busy: false, dirty: false, tab: "content", expanded: new Set(["base"]), trial: null, trialRuns: 0, allBoundary: false };
+    const state = { versions: [], current: null, busy: false, dirty: false, tab: "content", expanded: new Set(["base"]), trial: null, allBoundary: false };
 
     // -- helpers -----------------------------------------------------------------------
 
@@ -79,17 +79,16 @@
       }
     }
 
-    // Draft checks shown on the right; submission needs the first three.
+    // The Agent's approval conditions (shared/handbook_fee_rules.approval_blockers):
+    // valid content (every block needs its 出处), an effective date, every check ticked.
     function checks(record) {
-      const content = record.content || {};
-      const sources = sourceList(content);
+      const sources = sourceList(record.content || {});
       const okSources = sources.filter((item) => item.ok).length;
       const open = (record.checks || []).filter((item) => !item.done).length;
       return [
-        { key: "basic", label: "基本信息", ok: Boolean(record.version_label && record.effective_from), detail: !record.effective_from ? "执行日期未填" : !record.version_label ? "版本名称未填" : "已填写", gate: true },
-        { key: "content", label: "规则内容", ok: okSources === sources.length, detail: `${okSources} / ${sources.length} 项出处完整`, gate: true, tab: "content" },
-        { key: "checks", label: "待核对", ok: open === 0, detail: open ? `${open} 项未勾选` : `${(record.checks || []).length} 项已勾选`, gate: true, tab: "checks" },
-        { key: "trial", label: "试算", ok: state.trialRuns > 0, detail: state.trialRuns ? `本次已试算 ${state.trialRuns} 次` : "建议提交前试算", tab: "trial" },
+        { label: "规则内容", ok: okSources === sources.length, detail: okSources === sources.length ? "出处齐全；其余格式由系统在提交时校验" : `${sources.length - okSources} 处缺出处`, tab: "content" },
+        { label: "执行日期", ok: Boolean(record.effective_from), detail: record.effective_from || "未填写" },
+        { label: "待核对", ok: open === 0, detail: open ? `${open} 项未勾选` : "全部已勾选", tab: "checks" },
       ];
     }
 
@@ -240,45 +239,38 @@
 
     function renderSide(record) {
       const list = checks(record);
-      const gates = list.filter((item) => item.gate && !item.ok);
-      const passed = list.filter((item) => item.ok).length;
-      const items = list.map((item) => `<li data-tone="${item.ok ? "ok" : item.gate ? "warn" : "muted"}">${item.tab ? `<button class="hb-link" type="button" data-fee-tab="${item.tab}">${item.label}</button>` : `<b>${item.label}</b>`}<span>${escapeHtml(item.detail)}</span></li>`).join("");
+      const missing = list.filter((item) => !item.ok);
+      const items = list.map((item) => `<li data-tone="${item.ok ? "ok" : "warn"}">${item.tab ? `<button class="hb-link" type="button" data-fee-tab="${item.tab}">${item.label}</button>` : `<b>${item.label}</b>`}<span>${escapeHtml(item.detail)}</span></li>`).join("");
       if (record.status === "DRAFT") {
-        return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>生效检查</h3><span class="hb-meta" data-tone="${gates.length ? "warn" : "ok"}">${gates.length ? `还差 ${gates.length} 项` : "可提交"}</span></div>
-          <div class="hb-progress"><span style="width:${(passed / list.length) * 100}%"></span></div><p class="hb-meta">${passed} / ${list.length} 项通过</p>
+        return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>生效条件</h3><span class="hb-meta" data-tone="${missing.length ? "warn" : "ok"}">${missing.length ? `还差 ${missing.length} 项` : "已满足"}</span></div>
           <ul class="hb-checklist hb-checklist--stack">${items}</ul>
-          <p class="hb-alert" data-tone="info"><i data-feather="lock"></i><span><b>草稿状态仅限内部核对</b><br>不会对外报价，也不影响线上单据。</span></p></section>`;
+          <p class="hb-meta">提交审核后，三项都满足，超级管理员才能生效。待核对也可以在审核中继续勾选。</p>
+          <p class="hb-alert" data-tone="info"><i data-feather="lock"></i><span>草稿只能试算，机器人不会按它报金额。</span></p></section>`;
       }
       if (record.status === "PENDING") {
-        const ready = !gates.length;
         const date = record.effective_from || "（未填执行日期）";
         return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>审核</h3>${badge("PENDING")}</div>
-          <p class="hb-meta" data-tone="${ready ? "ok" : "warn"}"><i data-feather="${ready ? "check-circle" : "alert-triangle"}"></i>${ready ? "已满足生效条件" : `还差 ${gates.length} 项：${escapeHtml(gates.map((item) => item.detail).join("；"))}`}</p>
           <ul class="hb-checklist hb-checklist--stack">${items}</ul>
           <div class="hb-impact"><b>通过并生效后</b><span>开单日期在 ${escapeHtml(date)}（含）之后的单据按这版规则计算；之前的单据不受影响。</span></div>
-          <div class="hb-impact"><b>生效时点</b><span>${escapeHtml(date)} 00:00 · 以总部通知为准</span></div>
           ${canEdit ? `<div class="hb-actions hb-actions--split"><button class="ghost-btn" type="button" data-fee-action="withdraw">退回草稿</button>
-            ${superAdmin ? `<button class="primary-btn" type="button" data-fee-action="approve" ${ready ? "" : "disabled"}><i data-feather="check"></i><span>通过并生效</span></button>` : ""}</div>` : ""}
-          ${superAdmin ? '<div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-fee-action="retire"><i data-feather="trash-2"></i>作废此版本</button><span class="hb-meta">不可恢复，需二次确认</span></div>' : '<p class="hb-meta">已提交，等待超级管理员审核。</p>'}
-          ${(record.events || []).length ? `<div class="hb-block"><h3>操作记录</h3>${renderEventsTab({ events: record.events.slice(0, 4) })}</div>` : ""}</section>`;
+            ${superAdmin ? `<button class="primary-btn" type="button" data-fee-action="approve" ${missing.length ? "disabled" : ""}><i data-feather="check"></i><span>通过并生效</span></button>` : ""}</div>` : ""}
+          ${superAdmin ? '<div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-fee-action="retire"><i data-feather="trash-2"></i>作废此版本</button><span class="hb-meta">不可恢复</span></div>' : '<p class="hb-meta">等待超级管理员审核。</p>'}</section>`;
       }
       return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>已生效</h3>${badge("ACTIVE")}</div>
         <div class="hb-impact"><b>适用范围</b><span>开单日期在 ${escapeHtml(record.effective_from || "")}（含）之后、下一版执行日期之前的单据按这版计算。</span></div>
         <p class="hb-meta">已生效的版本不能修改；要改单价或档位，请复制为新草稿。</p>
         ${canEdit ? '<button class="primary-btn" type="button" data-fee-action="copy"><i data-feather="copy"></i><span>复制为新草稿</span></button>' : ""}
-        ${superAdmin ? '<div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-fee-action="retire"><i data-feather="trash-2"></i>作废此版本</button><span class="hb-meta">不可恢复，需二次确认</span></div>' : ""}</section>`;
+        ${superAdmin ? '<div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-fee-action="retire"><i data-feather="trash-2"></i>作废此版本</button><span class="hb-meta">不可恢复</span></div>' : ""}</section>`;
     }
 
     function renderBar(record) {
-      const gates = checks(record).filter((item) => item.gate && !item.ok);
       if (record.status === "DRAFT") {
         const saved = state.dirty ? '<i class="hb-dot" data-tone="warn"></i>有未保存的修改' : `<i class="hb-dot" data-tone="ok"></i>已保存 ${escapeHtml(formatTime(record.updated_at))}`;
         if (!canEdit) return `<div class="hb-card__bar"><span class="hb-meta">${saved}</span></div>`;
-        const reason = state.dirty ? "请先保存草稿" : gates.length ? `还差 ${gates.length} 项，补齐后可提交` : "";
         return `<div class="hb-card__bar"><span class="hb-meta" data-fee-saved>${saved}</span><div class="hb-actions">
           ${superAdmin ? '<button class="hb-btn-danger-text" type="button" data-fee-action="retire">作废</button>' : ""}
           <button class="ghost-btn" type="button" data-fee-action="save">保存草稿</button>
-          <span class="hb-submit-wrap"><button class="primary-btn" type="button" data-fee-action="submit" ${reason ? "disabled" : ""}>提交审核</button>${reason ? `<span class="hb-meta" data-tone="warn">${escapeHtml(reason)}</span>` : ""}</span></div></div>`;
+          <span class="hb-submit-wrap"><button class="primary-btn" type="button" data-fee-action="submit" ${state.dirty ? "disabled" : ""}>提交审核</button>${state.dirty ? '<span class="hb-meta" data-tone="warn">请先保存草稿</span>' : ""}</span></div></div>`;
       }
       if (record.status === "PENDING") return `<div class="hb-card__bar"><span class="hb-meta">已提交 ${escapeHtml(formatTime(record.submitted_at))}<br><i data-feather="lock"></i>审核中，规则内容不可修改；退回草稿后可继续编辑</span></div>`;
       return `<div class="hb-card__bar"><span class="hb-meta">生效于 ${escapeHtml(formatTime(record.approved_at))}<br><i data-feather="lock"></i>已生效版本只读；要修改请复制为新草稿</span></div>`;
@@ -325,7 +317,7 @@
 
     async function openVersion(ruleId) {
       const record = await request(`${base}/${encodeURIComponent(ruleId)}`);
-      if (state.current?.rule_id !== ruleId) { state.trial = null; state.trialRuns = 0; state.tab = record.status === "PENDING" ? "trial" : "content"; state.expanded = new Set(["base"]); }
+      if (state.current?.rule_id !== ruleId) { state.trial = null; state.tab = record.status === "PENDING" ? "trial" : "content"; state.expanded = new Set(["base"]); }
       state.current = record;
       state.dirty = false;
       renderList();
@@ -378,7 +370,6 @@
           settlement_weight_kg: weight, elevator: values.elevator === "true", floor, piece_counts: counts, pieces_over_limit: over, boundary,
         });
         state.trial = { ...data, inputs: { weight, floor, elevator: values.elevator === "true" } };
-        state.trialRuns += 1;
         renderEditor();
       });
     }
