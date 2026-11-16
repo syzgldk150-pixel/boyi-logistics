@@ -3,7 +3,7 @@ module: 客户共享
 type: 模块说明
 tags: [回单, 签收图, 寄件单, 共享链接, NAS]
 status: active
-updated: 2026-11-14
+updated: 2026-11-16
 ---
 
 # 客户共享链接
@@ -44,7 +44,7 @@ updated: 2026-11-14
 - 打包下载按当前筛选，一次最多 500 张，包内文件名与页面一致。
 - 对外服务与 Agent、Console 同为 `boyce` 用户运行，`receipt-share.service` 用 `InaccessiblePaths` 屏蔽 Agent／Console 的 `.env`、`nas.env`、`~/.ssh`、发布回滚目录、平台账号登录态与插件运行目录：即使该进程被攻破也读不到这些密钥。修改单元文件后需重新安装并 `daemon-reload`。
 - 数据库或 NAS 故障时返回不带细节的 503；未读取的请求体会关闭连接，避免被当成下一条请求解析。
-- 平台图片抓取（Agent 拉取与后台回单页共用 `shared/receipt_image_sources.py`）只跟随指向白名单图片地址的跳转，不会被跳转到内网或其他主机。
+- 平台图片抓取（Agent 拉取与后台回单页共用 `shared/receipt_image_sources.py`）只跟随指向白名单图片地址的跳转，不会被跳转到内网或其他主机。白名单只接受 HTTPS 默认端口，唯一例外是韵达签收图 `kyscan.yunda56.com` 的 `/ws/` 路径另放行 28087 端口（原平台实际地址，2026-11-16 起；此前共享页的韵达签收图同样取不到）。
 
 ## 部署期配置（不进仓库）
 
