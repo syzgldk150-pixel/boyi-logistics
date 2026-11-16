@@ -1,145 +1,293 @@
 (() => {
   "use strict";
 
-  // Business handbook page (robot agent layer P2). The Agent validates every
-  // compile, trial and approval; this page only shows and forwards.
-  const STATUS_TEXT = { DRAFT: "草稿", ACTIVE: "已生效", PAUSED: "已暂停", RETIRED: "已作废" };
+  // 业务手册 → 说明条目 (frontend-spec 52 写作与编译, 53 审核生效). The Agent
+  // validates every compile, trial and approval; this page only shows and forwards.
   const ACTION_TEXT = { none: "直接回答", ask_user: "反问", error: "调用失败", unknown: "未知动作" };
-
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
-  }
+  const VERSION_TEXT = { DRAFT: "草稿", COMPILED: "已编译", ACTIVE: "已生效", SUPERSEDED: "已被替换" };
+  const TIPS = ["一条说明只讲一件事，便于单独审核和回滚", "写出大家怎么说：术语、别名、口语", "写出什么时候必须先问，避免机器人替人决定"];
 
   function init() {
-    const root = document.querySelector("[data-handbook]");
-    if (!root || root.dataset.bound === "true") return;
+    const root = document.querySelector("[data-handbook-entries-panel]");
+    const page = document.querySelector("[data-handbook]");
+    if (!root || !page || !window.HandbookUI || root.dataset.bound === "true") return;
     root.dataset.bound = "true";
+    const UI = window.HandbookUI;
+    const { escapeHtml, badge, formatTime, request, confirmAction } = UI;
+    const { canEdit, superAdmin } = UI.role(page);
     const base = "/handbook/entries";
-    // Display only: the Console and the Agent both enforce who may edit or approve.
-    const canEdit = root.dataset.canEdit === "true";
-    const superAdmin = root.dataset.superAdmin === "true";
-    const pageFetch = window.ConsoleUI?.pageRequest ? window.ConsoleUI.pageRequest() : window.fetch.bind(window);
     const $ = (selector) => root.querySelector(selector);
-    const state = { entries: [], current: null, busy: false };
+    const feedback = UI.feedback($("[data-handbook-status]"));
+    const state = { entries: [], current: null, busy: false, dirty: false, filter: "all", query: "", review: false, allDescribed: false, trialTable: false };
 
-    function status(text, tone = "") {
-      const node = $("[data-handbook-status]");
-      node.textContent = text || "";
-      node.dataset.tone = tone;
+    // -- derived facts -----------------------------------------------------------------
+
+    function latestOf(entry) {
+      return entry ? (entry.versions || []).find((item) => item.version === entry.latest_version) || null : null;
     }
 
-    async function request(url, payload) {
-      const options = payload === undefined ? { headers: { Accept: "application/json" } } : {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Browser-Request-UUID": window.crypto.randomUUID() },
-        body: JSON.stringify(payload),
-      };
-      const response = await pageFetch(url, options);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) throw new Error(data.message || data.error?.message || `HTTP ${response.status}`);
-      return data.data || {};
+    function displayStatus(entry, latest) {
+      if (!entry) return "DRAFT";
+      if (latest && latest.status === "COMPILED" && !(latest.blockers || []).length && entry.active_version !== latest.version) return "PENDING";
+      return entry.status;
     }
 
-    async function run(label, work) {
-      if (state.busy) return;
-      state.busy = true;
-      root.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-      status(label);
-      try {
-        await work();
-        status("");
-      } catch (error) {
-        status(error.message || "操作失败", "error");
-      } finally {
-        state.busy = false;
-        root.querySelectorAll("button").forEach((button) => { button.disabled = false; });
-      }
+    function ambiguityState(latest) {
+      const list = latest?.compiled?.ambiguities || [];
+      const acknowledged = new Set(latest?.acknowledged || []);
+      return { list, acknowledged, open: list.filter((_item, index) => !acknowledged.has(index)).length };
     }
+
+    // 编写 → 编译 → 校验 → 试跑 → 审核; each step is done / current / error / todo.
+    function steps(entry, latest) {
+      const compiled = latest && latest.status !== "DRAFT" && latest.compiled;
+      const validation = latest?.validation || {};
+      const amb = ambiguityState(latest);
+      const live = entry && entry.status === "ACTIVE" && entry.active_version === latest?.version;
+      const write = latest ? "done" : "current";
+      const compile = !latest ? "todo" : (compiled || validation.ok === false) && latest.status !== "DRAFT" ? "done" : "current";
+      let check = "todo";
+      if (validation.ok === false) check = "error";
+      else if (compiled) check = amb.open ? "current" : "done";
+      let trial = "todo";
+      if (check === "done") trial = latest.trial ? "done" : "current";
+      let review = "todo";
+      if (live) review = "done";
+      else if (trial === "done" && !(latest.blockers || []).length) review = "current";
+      return [["编写", write], ["编译", compile], ["校验", check], ["试跑", trial], ["审核", review]];
+    }
+
+    function stepper(entry, latest) {
+      return `<ol class="hb-steps">${steps(entry, latest).map(([label, tone], index) => `<li data-tone="${tone}">
+        <span class="hb-steps__dot">${tone === "done" ? "✓" : tone === "error" || (tone === "current" && index === 2) ? "!" : index + 1}</span><span>${label}</span></li>`).join("")}</ol>`;
+    }
+
+    // -- list --------------------------------------------------------------------------
+
+    const isTodo = (entry) => entry.status === "DRAFT" || entry.status === "PAUSED";
 
     function renderList() {
+      const entries = state.entries;
+      const counts = { all: entries.length, todo: entries.filter(isTodo).length, DRAFT: entries.filter((item) => item.status === "DRAFT").length };
+      Object.entries(counts).forEach(([key, value]) => { const node = root.querySelector(`[data-filter-count="${key}"]`); if (node) node.textContent = value; });
+      root.querySelectorAll("[data-filter]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.filter === state.filter)));
+      $("[data-entries-summary]").textContent = `${counts.all} 条说明 · ${counts.todo} 条待处理`;
+      UI.setTabCount("entries", counts.all);
+      const query = state.query.trim().toLowerCase();
+      const visible = entries.filter((entry) => (state.filter === "all" || (state.filter === "todo" ? isTodo(entry) : entry.status === state.filter))
+        && (!query || entry.title.toLowerCase().includes(query) || `v${entry.latest_version}`.includes(query)));
       const list = $("[data-handbook-entries]");
-      list.innerHTML = state.entries.length ? state.entries.map((entry) => `<li>
-        <button class="handbook__entry" type="button" data-entry="${escapeHtml(entry.entry_id)}" aria-current="${state.current?.entry_id === entry.entry_id}">
-          <span>${escapeHtml(entry.title)}</span>
-          <span class="handbook__badge" data-status="${escapeHtml(entry.status)}">${escapeHtml(STATUS_TEXT[entry.status] || entry.status)}</span>
-        </button></li>`).join("") : '<li class="handbook__lead">还没有业务说明。</li>';
+      if (!entries.length) {
+        list.innerHTML = `<li class="hb-empty hb-empty--row"><i data-feather="file-text"></i><p>还没有业务说明。</p>
+          ${canEdit ? '<button class="hb-link" type="button" data-handbook-new-empty>新建第一条说明</button>' : ""}</li>`;
+      } else if (!visible.length) {
+        list.innerHTML = '<li class="hb-empty hb-empty--row"><p>没有符合条件的说明，换个筛选试试。</p></li>';
+      } else {
+        list.innerHTML = visible.map((entry) => `<li><button class="hb-row" type="button" data-entry="${escapeHtml(entry.entry_id)}" aria-current="${state.current?.entry_id === entry.entry_id}">
+          <span class="hb-row__top"><span class="hb-row__title">${escapeHtml(entry.title)}</span>${badge(entry.status)}</span>
+          <span class="hb-row__meta">V${entry.latest_version} · ${entry.active_version ? `当前生效 V${entry.active_version}` : "尚未生效"}</span>
+          <span class="hb-row__time">${escapeHtml(formatTime(entry.updated_at))}</span></button></li>`).join("");
+      }
+      $("[data-entries-foot]").textContent = `共 ${counts.all} 条（已作废的不在列表中）`;
+      if (window.feather) window.feather.replace();
     }
 
-    function latestVersion() {
+    // -- editor ------------------------------------------------------------------------
+
+    function renderEditor() {
       const entry = state.current;
-      return entry ? entry.versions.find((item) => item.version === entry.latest_version) : null;
+      const latest = latestOf(entry);
+      const readonly = canEdit ? "" : " readonly";
+      const status = displayStatus(entry, latest);
+      let notice = "";
+      if (entry?.status === "ACTIVE" && canEdit) {
+        notice = `<div class="hb-alert" data-tone="warn"><i data-feather="alert-triangle"></i><span><b>这条说明正在生效中</b><br>保存后会立即暂停 V${entry.active_version}，直到新版本审核通过。</span></div>`;
+      } else if (entry?.status === "PAUSED") {
+        notice = '<div class="hb-alert" data-tone="danger"><i data-feather="pause-circle"></i><span><b>这条说明已暂停</b><br>机器人暂不使用它；新版本审核通过后恢复，超级管理员也可直接恢复原版本。</span></div>';
+      }
+      const body = latest ? latest.body : "";
+      const title = entry ? entry.title : "";
+      $("[data-handbook-editor]").innerHTML = `
+        <div class="hb-card__head">
+          <div><h2 id="handbook-editor-title">${entry ? "编辑说明" : "新建说明"}${entry ? ` <span class="hb-chip hb-chip--sm">V${entry.latest_version} · ${escapeHtml(status === "PENDING" ? "待审核" : (VERSION_TEXT[latest?.status] || ""))}</span>` : ""}</h2>
+            <p class="hb-card__sub">${entry ? (entry.active_version ? `基于 V${entry.active_version} 修改${entry.status === "ACTIVE" ? " · 保存后会暂停线上版本" : ""}` : "尚未生效的说明") : "用平常的话写，保存后交给 AI 编译"}</p></div>
+          ${entry && (entry.versions || []).length > 1 ? '<button class="hb-link" type="button" data-history-toggle><i data-feather="clock"></i>版本历史</button>' : ""}
+        </div>
+        ${notice}
+        <label class="hb-field"><span class="hb-field__label">标题 <span class="hb-counter" data-count-for="title">${title.length} / 100</span></span>
+          <input type="text" maxlength="100" data-handbook-title value="${escapeHtml(title)}" placeholder="例如：网点简称与报价说法"${readonly}></label>
+        <label class="hb-field hb-field--grow"><span class="hb-field__label">说明 <span class="hb-counter" data-count-for="body">${body.length} / 4000</span></span>
+          <textarea maxlength="4000" data-handbook-body placeholder="例如：大家说“岳麓店”就是长沙岳麓区网点。“报个价”“问个价”都是要三平台报价。"${readonly}>${escapeHtml(body)}</textarea>
+          <span class="hb-field__hint">支持换行分段；编译时会按段落理解。</span></label>
+        <div class="hb-tips"><h3>写作提示</h3><ul>${TIPS.map((tip) => `<li><i data-feather="check"></i>${tip}</li>`).join("")}</ul></div>
+        <div class="hb-history" data-history hidden><h3>版本历史</h3><ul>${(entry?.versions || []).map((item) => `<li><b>V${item.version}</b><span>${escapeHtml(VERSION_TEXT[item.status] || item.status)}${entry.active_version === item.version ? " · 当前线上" : ""}</span><span class="hb-meta">${escapeHtml(formatTime(item.updated_at))}</span></li>`).join("")}</ul></div>
+        <div class="hb-card__bar">
+          <span class="hb-meta" data-saved>${entry ? `<i class="hb-dot" data-tone="ok"></i>已保存 ${escapeHtml(formatTime(entry.updated_at))}` : "尚未保存"}</span>
+          ${canEdit ? `<div class="hb-actions"><button class="ghost-btn" type="button" data-handbook-save>保存说明</button>
+            ${entry ? '<button class="primary-btn" type="button" data-handbook-compile><i data-feather="zap"></i><span>交给 AI 编译</span></button>' : ""}</div>` : ""}
+        </div>
+        ${canEdit ? '<p class="hb-card__foot">AI 编译通常 20–40 秒，可以离开此页；编译结果不会自动发布。</p>' : ""}`;
+      state.dirty = false;
     }
 
-    function actionTitle(id, title) {
-      return ACTION_TEXT[id] || title || id;
+    // -- result ------------------------------------------------------------------------
+
+    function blockerList(entry, latest) {
+      if (!latest) return ["先保存说明"];
+      if (latest.status === "DRAFT") return [latest.validation?.ok === false ? "校验未通过，请修改说明后重新编译" : "交给 AI 编译"];
+      return latest.blockers || [];
     }
 
     function renderResult() {
       const node = $("[data-handbook-result]");
       const entry = state.current;
-      const latest = latestVersion();
-      $("[data-handbook-compile]").hidden = !entry;
-      if (!entry || !latest) { node.hidden = true; node.innerHTML = ""; return; }
-      const compiled = latest.compiled;
-      const validation = latest.validation || {};
-      const parts = [];
+      const latest = latestOf(entry);
+      const head = `<div class="hb-card__head"><h2 id="handbook-result-title">AI 编译结果</h2>
+        ${latest?.compiled && latest.status !== "DRAFT" ? `<span class="hb-meta" data-tone="ok">✓ ${escapeHtml(formatTime(latest.updated_at))}</span>` : ""}</div>`;
+      if (!entry) {
+        node.innerHTML = `${head}<div class="hb-empty"><i data-feather="zap"></i><p>${canEdit ? "保存说明后，交给 AI 编译，这里会显示 AI 理解了什么、哪些会生效、还差哪一步。" : "选择一条说明查看编译结果。"}</p></div>`;
+        if (window.feather) window.feather.replace();
+        return;
+      }
+      const compiled = latest && latest.status !== "DRAFT" ? latest.compiled : null;
+      const validation = latest?.validation || {};
+      const amb = ambiguityState(latest);
+      const parts = [head, stepper(entry, latest)];
       if (validation.ok === false) {
-        parts.push(`<div class="handbook__block"><h3>校验未通过</h3><ul>${(validation.errors || []).map((item) => `<li class="handbook__error">${escapeHtml(item)}</li>`).join("")}</ul><p>请修改说明后重新编译。</p></div>`);
+        parts.push(`<div class="hb-alert" data-tone="danger"><i data-feather="alert-triangle"></i><span><b>校验未通过 · ${(validation.errors || []).length} 个错误</b>
+          <ul>${(validation.errors || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>请修改说明后重新编译。</span></div>`);
+      }
+      if (!compiled && validation.ok !== false) {
+        parts.push(`<div class="hb-empty"><p>还没有编译${state.dirty ? "，请先保存修改" : ""}。${canEdit ? "点“交给 AI 编译”，通常 20–40 秒。" : ""}</p></div>`);
       }
       if (compiled) {
-        parts.push(`<div class="handbook__block"><h3>中文复述</h3><p>${escapeHtml(compiled.restatement)}</p></div>`);
-        parts.push(`<div class="handbook__block"><h3>将生效的内容</h3><ul>${(latest.described || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul></div>`);
-        if (compiled.ambiguities?.length) {
-          const acknowledged = new Set(latest.acknowledged || []);
-          parts.push(`<div class="handbook__block"><h3>需要人确认的歧义</h3>
-            ${compiled.ambiguities.map((item, index) => `<label class="handbook__check"><input type="checkbox" data-ack value="${index}" ${acknowledged.has(index) ? "checked" : ""}><span>${escapeHtml(item)}</span></label>`).join("")}
-            <p class="handbook__lead">每一条都要么修改说明消除，要么勾选表示“已核实，按复述执行”。</p>
-            <div class="handbook__actions"${canEdit ? "" : " hidden"}><button class="ghost-btn" type="button" data-handbook-ack>保存勾选</button></div></div>`);
+        if (amb.list.length) {
+          parts.push(`<div class="hb-alert" data-tone="${amb.open ? "warn" : "ok"}"><i data-feather="${amb.open ? "alert-triangle" : "check-circle"}"></i><span>
+            <b>${amb.open ? `需要你确认 ${amb.open} 项歧义` : `歧义 ${amb.list.length} / ${amb.list.length} 已确认`}</b>
+            ${amb.open ? "<br>每一条都要么修改说明消除，要么勾选表示“已核实，按复述执行”；确认后才能审核。" : ""}
+            <span class="hb-checks">${amb.list.map((item, index) => `<label><input type="checkbox" data-ack value="${index}" ${amb.acknowledged.has(index) ? "checked" : ""} ${canEdit ? "" : "disabled"}><span>${escapeHtml(item)}</span></label>`).join("")}</span>
+            ${canEdit ? '<button class="ghost-btn hb-btn-sm" type="button" data-handbook-ack>保存确认</button>' : ""}</span></div>`);
         }
+        parts.push(`<div class="hb-block"><h3>AI 的理解</h3><p class="hb-quote">${escapeHtml(compiled.restatement)}</p></div>`);
+        const described = latest.described || [];
+        const shown = state.allDescribed ? described : described.slice(0, 3);
+        parts.push(`<div class="hb-block"><h3>将生效的内容 ${described.length > 3 ? `<button class="hb-link" type="button" data-described-toggle>${state.allDescribed ? "收起" : `查看 ${described.length} 条`}</button>` : ""}</h3>
+          <ol class="hb-numbered">${shown.map((line) => `<li>${escapeHtml(line)}</li>`).join("") || "<li>没有可生效的条目</li>"}</ol></div>`);
         if (compiled.unsupported?.length) {
-          parts.push(`<div class="handbook__block"><h3 class="handbook__warn">开发需求（现有功能做不到，不会生效）</h3><ul>${compiled.unsupported.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`);
+          parts.push(`<div class="hb-alert" data-tone="warn"><i data-feather="file-text"></i><span><b>开发需求</b> <span class="hb-badge" data-tone="pending">不会生效</span>
+            <ul>${compiled.unsupported.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>现有功能做不到，已整理为开发需求；系统要求先从说明里删去这部分才能审核。</span></div>`);
         }
         const trial = latest.trial;
-        parts.push(`<div class="handbook__block"><h3>试跑</h3>
-          <p class="handbook__lead">用说明里的说法问一遍 AI：生效前、生效后各会选择什么。只看选择，不执行任何操作。</p>
-          ${trial ? `<p>${trial.passed} / ${trial.cases} 条按预期选择，其中 ${trial.improved} 条是这次说明带来的改进。</p>
-            <table class="handbook__trial"><thead><tr><th>说法</th><th>应选</th><th>生效前</th><th>生效后</th></tr></thead><tbody>
-            ${trial.rows.map((row) => `<tr><td>${escapeHtml(row.utterance)}</td><td>${escapeHtml(row.expected_title)}</td><td>${escapeHtml(actionTitle(row.before, row.before_title))}</td><td class="${row.pass ? "" : "handbook__error"}">${escapeHtml(actionTitle(row.after, row.after_title))}</td></tr>`).join("")}
-            </tbody></table>` : ""}
-          <div class="handbook__actions"${canEdit ? "" : " hidden"}><button class="ghost-btn" type="button" data-handbook-trial><i data-feather="play"></i><span>试跑</span></button></div></div>`);
+        parts.push(`<div class="hb-block"><h3>试跑 ${trial ? `<button class="hb-link" type="button" data-trial-toggle>${state.trialTable ? "收起试跑表" : "查看试跑表"}</button>` : ""}</h3>
+          ${trial ? `<div class="hb-stats"><span><b data-tone="ok">${trial.passed}</b>通过</span><span><b data-tone="warn">${trial.improved}</b>改善</span><span><b>${trial.passed} / ${trial.cases}</b>全部说法</span></div>
+            ${state.trialTable ? trialTable(trial) : ""}` : '<p class="hb-meta">用说明里的说法问 AI 两次（生效前、生效后），只看选择，不执行任何操作。</p>'}
+          ${canEdit && validation.ok !== false ? `<button class="ghost-btn hb-btn-sm" type="button" data-handbook-trial><i data-feather="play"></i><span>${trial ? "重新试跑" : "试跑"}</span></button>` : ""}</div>`);
+        parts.push(`<div class="hb-impact"><b>发布后会发生什么</b><span>V${latest.version} 审核通过后立即替换机器人的理解${entry.active_version && entry.active_version !== latest.version ? `，V${entry.active_version} 自动停用` : ""}；进行中的对话不受影响。</span></div>`);
       }
-      const blockers = latest.blockers || [];
-      const controls = [];
-      if (latest.status === "COMPILED") {
-        if (blockers.length) {
-          controls.push(`<ul>${blockers.map((item) => `<li class="handbook__warn">${escapeHtml(item)}</li>`).join("")}</ul>`);
-        } else if (superAdmin) {
-          controls.push('<button class="primary-btn" type="button" data-handbook-approve><i data-feather="check"></i><span>审核通过并生效</span></button>');
-        } else {
-          controls.push('<p>已可审核，请超级管理员审核生效。</p>');
-        }
-      }
-      if (canEdit && entry.status === "ACTIVE") controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="pause">暂停</button>');
-      if (superAdmin && entry.status === "PAUSED" && entry.active_version === entry.latest_version) controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="resume">恢复生效</button>');
-      if (superAdmin) controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="retire">作废</button>');
-      parts.push(`<div class="handbook__block"><h3>审核</h3><div class="handbook__actions">${controls.join("")}</div></div>`);
+      parts.push(submitArea(entry, latest));
       node.innerHTML = parts.join("");
-      node.hidden = false;
       if (window.feather) window.feather.replace();
     }
 
-    function renderEditor() {
-      const entry = state.current;
-      const latest = latestVersion();
-      $("[data-handbook-editor-title]").textContent = entry ? `${entry.title}（第 ${entry.latest_version} 版）` : "新建业务说明";
-      const badge = $("[data-handbook-entry-status]");
-      badge.hidden = !entry;
-      if (entry) { badge.textContent = STATUS_TEXT[entry.status] || entry.status; badge.dataset.status = entry.status; }
-      $("[data-handbook-title]").value = entry ? entry.title : "";
-      $("[data-handbook-body]").value = latest ? latest.body : "";
-      renderResult();
-      renderList();
+    function trialTable(trial) {
+      return `<div class="hb-table-wrap"><table class="hb-table hb-table--trial"><thead><tr><th>说法</th><th>应选动作</th><th>生效前</th><th>生效后</th><th>结果</th></tr></thead><tbody>
+        ${trial.rows.map((row) => `<tr><td>${escapeHtml(row.utterance)}</td><td>${escapeHtml(row.expected_title)}</td>
+          <td>${escapeHtml(ACTION_TEXT[row.before] || row.before_title || row.before)}</td><td>${escapeHtml(ACTION_TEXT[row.after] || row.after_title || row.after)}</td>
+          <td data-tone="${row.pass ? "ok" : "danger"}">${row.pass ? "✓ 通过" : "✕ 未通过"}</td></tr>`).join("")}</tbody></table></div>`;
     }
+
+    function submitArea(entry, latest) {
+      const blockers = blockerList(entry, latest);
+      const live = entry.status === "ACTIVE" && entry.active_version === latest?.version;
+      const controls = [];
+      let line = "";
+      if (live) {
+        line = `<span class="hb-meta" data-tone="ok"><i data-feather="check-circle"></i>V${latest.version} 正在生效</span>`;
+        if (canEdit) controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="pause">暂停</button>');
+      } else if (entry.status === "PAUSED" && entry.active_version === entry.latest_version) {
+        line = `<span class="hb-meta" data-tone="danger">V${entry.active_version} 已暂停</span>`;
+        if (superAdmin) controls.push('<button class="primary-btn" type="button" data-handbook-status-action="resume">恢复生效</button>');
+      } else if (blockers.length) {
+        line = `<span class="hb-meta" data-tone="warn"><i data-feather="lock"></i>还差 ${blockers.length} 项：${escapeHtml(blockers.join("；"))}</span>`;
+        if (superAdmin) controls.push('<button class="primary-btn" type="button" disabled>审核生效</button>');
+      } else {
+        line = '<span class="hb-meta" data-tone="ok"><i data-feather="check-circle"></i>已满足生效条件</span>';
+        controls.push(superAdmin ? '<button class="primary-btn" type="button" data-review-open><i data-feather="check"></i><span>进入审核</span></button>'
+          : '<span class="hb-meta">等待超级管理员审核生效</span>');
+      }
+      const retire = superAdmin ? '<button class="hb-link" data-tone="danger" type="button" data-handbook-status-action="retire">作废</button>' : "";
+      return `<div class="hb-submit">${line}<div class="hb-actions">${retire}${controls.join("")}</div></div>`;
+    }
+
+    // -- review (spec 53, super administrators) -----------------------------------------
+
+    function renderReview() {
+      const node = $("[data-entries-review]");
+      const work = $("[data-entries-work]");
+      const entry = state.current;
+      const latest = latestOf(entry);
+      if (!state.review || !entry || !latest?.compiled || !superAdmin) {
+        node.hidden = true; node.innerHTML = ""; work.hidden = false; state.review = false; return;
+      }
+      const amb = ambiguityState(latest);
+      const blockers = blockerList(entry, latest);
+      const trial = latest.trial;
+      const unsupported = latest.compiled.unsupported || [];
+      const ready = !blockers.length;
+      work.hidden = true;
+      node.hidden = false;
+      node.innerHTML = `
+        <div class="hb-review__head">
+          <div class="hb-review__crumb"><button class="hb-link" type="button" data-review-close><i data-feather="arrow-left"></i>返回说明列表</button><span class="hb-meta">/ ${escapeHtml(entry.title)}</span></div>
+          <div class="hb-review__title"><h2>${escapeHtml(entry.title)}</h2>${badge(ready ? "PENDING" : "DRAFT", ready ? "待审核" : "未满足条件")}</div>
+          <p class="hb-meta">V${latest.version} · 最后修改 ${escapeHtml(formatTime(latest.updated_at))}</p>
+        </div>
+        <div class="hb-review__grid">
+          <div class="hb-review__main">
+            <div class="hb-alert" data-tone="${ready ? "ok" : "warn"}"><i data-feather="${ready ? "check-circle" : "alert-triangle"}"></i><span>
+              <b>${ready ? "已满足生效条件" : `还差 ${blockers.length} 项`}</b><br>校验${latest.validation?.ok ? "通过" : "未通过"} · ${amb.list.length - amb.open} / ${amb.list.length} 项歧义已确认 · ${trial ? `${trial.cases} 条试跑（${trial.passed} 通过 / ${trial.improved} 改善）` : "尚未试跑"}
+              ${ready ? "" : `<br>${escapeHtml(blockers.join("；"))}`}</span>${unsupported.length ? `<span class="hb-badge" data-tone="pending">开发需求 ${unsupported.length} 项</span>` : ""}</div>
+            <section class="hb-card"><div class="hb-card__head"><h3>AI 的中文复述</h3></div><p class="hb-quote">${escapeHtml(latest.compiled.restatement)}</p></section>
+            ${amb.list.length ? `<section class="hb-card"><div class="hb-card__head"><h3>需要确认的歧义</h3><span class="hb-badge" data-tone="${amb.open ? "pending" : "active"}">${amb.list.length - amb.open} / ${amb.list.length} 已确认</span></div>
+              <ol class="hb-numbered">${amb.list.map((item, index) => `<li>${escapeHtml(item)} <span class="hb-meta" data-tone="${amb.acknowledged.has(index) ? "ok" : "warn"}">${amb.acknowledged.has(index) ? "已确认" : "未确认"}</span></li>`).join("")}</ol>
+              <p class="hb-meta">全部歧义确认后，版本才可审核。</p></section>` : ""}
+            <section class="hb-card"><div class="hb-card__head"><h3>将生效的内容</h3><span class="hb-meta">${(latest.described || []).length} 条</span></div>
+              <ol class="hb-numbered">${(latest.described || []).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ol></section>
+            <section class="hb-card"><div class="hb-card__head"><h3>试跑结果</h3>${trial ? `<span class="hb-badge" data-tone="active">${trial.passed} 通过 · ${trial.improved} 改善</span>` : ""}</div>
+              ${trial ? trialTable(trial) : '<p class="hb-meta">尚未试跑。</p>'}<p class="hb-meta">按已保存的 V${latest.version} 内容试跑，只看机器人选择，不执行任何操作。</p></section>
+          </div>
+          <aside class="hb-review__side">
+            <section class="hb-card"><div class="hb-card__head"><h3>审核决定</h3>${badge(ready ? "PENDING" : "DRAFT", ready ? "待审核" : "未满足")}</div>
+              <p class="hb-meta">仅超级管理员可审核</p>
+              <ul class="hb-checklist">
+                <li data-tone="${latest.validation?.ok ? "ok" : "danger"}">校验<span>${latest.validation?.ok ? "通过" : "未通过"}</span></li>
+                <li data-tone="${amb.open ? "warn" : "ok"}">歧义 ${amb.list.length - amb.open} / ${amb.list.length}<span>${amb.open ? "待确认" : "已确认"}</span></li>
+                <li data-tone="${trial ? "ok" : "warn"}">试跑<span>${trial ? `${trial.passed} / ${trial.cases}` : "未试跑"}</span></li>
+                <li data-tone="${blockers.length ? "warn" : "ok"}">阻塞项<span>${blockers.length} 项</span></li>
+              </ul>
+              <div class="hb-impact"><b>生效后会发生什么</b><span>V${latest.version} 立即替换机器人的理解${entry.active_version && entry.active_version !== latest.version ? `，V${entry.active_version} 自动停用` : ""}；进行中的对话不受影响。</span></div>
+              <div class="hb-actions hb-actions--split"><button class="ghost-btn" type="button" data-review-close>返回编辑</button>
+                <button class="primary-btn" type="button" data-handbook-approve ${ready ? "" : "disabled"}><i data-feather="check"></i><span>通过并生效</span></button></div>
+              ${ready ? "" : `<p class="hb-meta" data-tone="warn">${escapeHtml(blockers.join("；"))}</p>`}
+              <div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-handbook-status-action="retire"><i data-feather="trash-2"></i>作废这条说明</button><span class="hb-meta">作废不可恢复，需二次确认</span></div>
+            </section>
+            <section class="hb-card"><div class="hb-card__head"><h3>版本历史</h3></div>
+              <ul class="hb-history-list">${(entry.versions || []).map((item) => `<li aria-current="${item.version === latest.version}"><b>V${item.version}</b>
+                <span>${item.version === latest.version ? "当前审核版本" : entry.active_version === item.version ? "当前线上版本" : ""}</span>
+                <span class="hb-meta">${escapeHtml(formatTime(item.updated_at))}</span>${badge(item.status === "ACTIVE" ? "ACTIVE" : item.status === "SUPERSEDED" ? "RETIRED" : "DRAFT", VERSION_TEXT[item.status] || item.status)}</li>`).join("")}</ul></section>
+          </aside>
+        </div>`;
+      if (window.feather) window.feather.replace();
+    }
+
+    function renderAll() {
+      renderList();
+      renderEditor();
+      renderResult();
+      renderReview();
+    }
+
+    // -- data --------------------------------------------------------------------------
 
     async function loadList() {
       state.entries = (await request(base)).entries || [];
@@ -148,67 +296,131 @@
 
     async function openEntry(entryId) {
       state.current = await request(`${base}/${encodeURIComponent(entryId)}`);
-      renderEditor();
+      state.allDescribed = false;
+      renderAll();
     }
 
-    root.addEventListener("click", (event) => {
+    async function run(progress, work, success = "") {
+      if (state.busy) return;
+      state.busy = true;
+      const unlock = UI.lockButtons(root);
+      feedback.progress(...(Array.isArray(progress) ? progress : [progress]));
+      try {
+        await work();
+        if (success) feedback.success(success); else feedback.clear();
+      } catch (error) {
+        feedback.error("操作没有完成", error.message || "操作失败");
+      } finally {
+        state.busy = false;
+        unlock();
+      }
+    }
+
+    async function leaveOk() {
+      if (!state.dirty) return true;
+      return confirmAction({ title: "有未保存的修改", body: "离开后本次编辑不会保存，已有的编译结果也不会更新。", confirm: "放弃并离开", cancel: "继续编辑", danger: true });
+    }
+
+    // -- events ------------------------------------------------------------------------
+
+    root.addEventListener("input", (event) => {
+      const target = event.target;
+      if (target.matches("[data-entries-search]")) { state.query = target.value; renderList(); return; }
+      if (target.matches("[data-handbook-title], [data-handbook-body]")) {
+        state.dirty = true;
+        const key = target.matches("[data-handbook-title]") ? "title" : "body";
+        const counter = root.querySelector(`[data-count-for="${key}"]`);
+        if (counter) counter.textContent = `${target.value.length} / ${key === "title" ? 100 : 4000}`;
+        const saved = $("[data-saved]");
+        if (saved) saved.innerHTML = '<i class="hb-dot" data-tone="warn"></i>有未保存的修改';
+      }
+    });
+
+    root.addEventListener("click", async (event) => {
       const target = event.target.closest("button");
-      if (!target) return;
+      if (!target || target.disabled || state.busy) return;
       const entry = state.current;
-      const latest = latestVersion();
+      const latest = latestOf(entry);
+      const url = (action) => `${base}/${encodeURIComponent(entry.entry_id)}/${action}`;
+      if (target.dataset.filter) { state.filter = target.dataset.filter; renderList(); return; }
       if (target.dataset.entry) {
+        if (target.dataset.entry === entry?.entry_id || !(await leaveOk())) return;
+        state.review = false;
         run("正在读取……", () => openEntry(target.dataset.entry));
-      } else if (target.hasAttribute("data-handbook-new")) {
-        state.current = null;
-        renderEditor();
+      } else if (target.hasAttribute("data-handbook-new") || target.hasAttribute("data-handbook-new-empty")) {
+        if (!(await leaveOk())) return;
+        state.current = null; state.review = false;
+        renderAll();
+        root.querySelector("[data-handbook-title]")?.focus();
+      } else if (target.hasAttribute("data-history-toggle")) {
+        const node = $("[data-history]"); node.hidden = !node.hidden;
+      } else if (target.hasAttribute("data-described-toggle")) {
+        state.allDescribed = !state.allDescribed; renderResult();
+      } else if (target.hasAttribute("data-trial-toggle")) {
+        state.trialTable = !state.trialTable; renderResult();
+      } else if (target.hasAttribute("data-review-open")) {
+        state.review = true; renderReview(); window.scrollTo({ top: 0 });
+      } else if (target.hasAttribute("data-review-close")) {
+        state.review = false; renderReview();
       } else if (target.hasAttribute("data-handbook-save")) {
-        const title = $("[data-handbook-title]").value;
+        const title = $("[data-handbook-title]").value.trim();
         const body = $("[data-handbook-body]").value;
-        if (entry?.status === "ACTIVE" && !window.confirm("这条说明正在生效，保存修改后会立即暂停，直到新版本审核通过。继续吗？")) return;
+        if (!title || !body.trim()) { feedback.error("还不能保存", "标题和说明都要填写。"); return; }
+        if (entry?.status === "ACTIVE" && !(await confirmAction({ title: "保存并暂停线上版本？", body: `这条说明正在生效。保存后 V${entry.active_version} 会立即暂停，直到新版本审核通过。`, confirm: "保存并暂停" }))) return;
         run("正在保存……", async () => {
           if (entry) {
-            await request(`${base}/${encodeURIComponent(entry.entry_id)}/save`, { title, body, row_version: entry.row_version });
+            await request(url("save"), { title, body, row_version: entry.row_version });
             await openEntry(entry.entry_id);
           } else {
             const created = await request(base, { title, body });
             await openEntry(created.entry_id);
           }
           await loadList();
-        });
+        }, "已保存");
       } else if (target.hasAttribute("data-handbook-compile") && entry) {
-        run("AI 正在编译，通常需要几十秒……", async () => {
-          await request(`${base}/${encodeURIComponent(entry.entry_id)}/compile`, {});
+        if (state.dirty) { feedback.error("请先保存说明", "编译使用已保存的内容；保存后再交给 AI 编译。"); return; }
+        run(["AI 正在编译", "通常需要 20–40 秒；可以离开此页，完成后结果留在右侧。"], async () => {
+          await request(url("compile"), {});
           await openEntry(entry.entry_id);
-        });
+          await loadList();
+        }, "编译完成");
       } else if (target.hasAttribute("data-handbook-trial") && entry) {
-        run("正在试跑，每条说法会问 AI 两次……", async () => {
-          await request(`${base}/${encodeURIComponent(entry.entry_id)}/trial`, {});
+        run(["正在试跑", "每条说法会问 AI 两次（生效前、生效后）。"], async () => {
+          await request(url("trial"), {});
           await openEntry(entry.entry_id);
-        });
+        }, "试跑完成");
       } else if (target.hasAttribute("data-handbook-ack") && entry && latest) {
         const indices = [...root.querySelectorAll("[data-ack]:checked")].map((input) => Number(input.value));
-        run("正在保存……", async () => {
-          await request(`${base}/${encodeURIComponent(entry.entry_id)}/acknowledge`, { version: latest.version, indices });
+        run("正在保存确认……", async () => {
+          await request(url("acknowledge"), { version: latest.version, indices });
           await openEntry(entry.entry_id);
-        });
+        }, "已保存确认");
       } else if (target.hasAttribute("data-handbook-approve") && entry && latest) {
-        if (!window.confirm("确认按上面的中文复述生效？生效后飞书、微信和后台 AI 助手立即使用。")) return;
+        const replaced = entry.active_version && entry.active_version !== latest.version ? `，V${entry.active_version} 自动停用` : "";
+        if (!(await confirmAction({ title: "审核通过并生效？", body: `生效后，飞书、微信和后台 AI 助手立即按 V${latest.version} 理解这条说明${replaced}。`, confirm: "通过并生效" }))) return;
         run("正在生效……", async () => {
-          await request(`${base}/${encodeURIComponent(entry.entry_id)}/approve`, { version: latest.version });
+          await request(url("approve"), { version: latest.version });
+          state.review = false;
           await openEntry(entry.entry_id);
           await loadList();
-        });
+        }, `V${latest.version} 已生效`);
       } else if (target.dataset.handbookStatusAction && entry) {
         const action = target.dataset.handbookStatusAction;
-        if (action === "retire" && !window.confirm("作废后这条说明不再显示，也不能恢复。继续吗？")) return;
+        const dialogs = {
+          retire: { title: "作废这条说明？", body: "作废后机器人不再使用这条说明，列表中也不再显示，无法恢复。", confirm: "确认作废", danger: true },
+          pause: { title: "暂停这条说明？", body: "暂停后机器人立即停止使用这条说明；超级管理员可以恢复。", confirm: "暂停" },
+          resume: { title: "恢复生效？", body: `恢复后机器人立即按 V${entry.active_version} 理解这条说明。`, confirm: "恢复生效" },
+        };
+        if (!(await confirmAction(dialogs[action]))) return;
         run("正在处理……", async () => {
-          await request(`${base}/${encodeURIComponent(entry.entry_id)}/${action}`, { row_version: entry.row_version });
-          if (action === "retire") { state.current = null; renderEditor(); } else { await openEntry(entry.entry_id); }
+          await request(url(action), { row_version: entry.row_version });
+          if (action === "retire") { state.current = null; state.review = false; renderAll(); } else { await openEntry(entry.entry_id); }
           await loadList();
-        });
+        }, { retire: "已作废", pause: "已暂停", resume: "已恢复生效" }[action]);
       }
     });
 
+    renderAll();
     run("正在读取……", loadList);
   }
 

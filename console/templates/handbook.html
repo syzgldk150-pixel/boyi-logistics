@@ -1,104 +1,145 @@
 {% extends "base.html" %}
-
 {% block title %}业务手册 · {{ app_title }}{% endblock %}
 {% block breadcrumb %}业务手册{% endblock %}
 {% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261116-module">{% endblock %}
-
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261116-spec52">{% endblock %}
 {% block content %}
-<section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-labelledby="handbook-list-title">
-  <nav class="handbook__tabs" role="tablist" aria-label="业务手册">
-    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-entries" aria-selected="true" aria-controls="handbook-panel-entries" data-handbook-tab="entries">说明条目</button>
-    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="false" aria-controls="handbook-panel-fees" data-handbook-tab="fees" tabindex="-1">计算规则</button>
-    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-sources" aria-selected="false" aria-controls="handbook-panel-sources" data-handbook-tab="sources" tabindex="-1">知识来源</button>
-    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-try" aria-selected="false" aria-controls="handbook-panel-try" data-handbook-tab="try" tabindex="-1">试问</button>
-  </nav>
-  <div id="handbook-panel-entries" role="tabpanel" aria-labelledby="handbook-tab-entries" class="handbook__tabpanel">
-  <p class="handbook__lead">用平常的话写业务说明，机器人据此理解大家的说法。一条说明要经过<b>编译 → 系统校验 → 试跑 → 超级管理员审核</b>才生效；生效后再修改会<b>立即暂停</b>，直到新版本审核通过。说明只能帮助机器人理解，<b>不能扩大任何人的权限</b>；现有功能做不到的要求会整理成开发需求，不会生效。{% if not can_edit %}当前身份只能查看。{% elif not is_super_admin %}你可以编写和试跑，审核生效由超级管理员完成。{% endif %}</p>
-  <div class="handbook__status" data-handbook-status role="status" aria-live="polite"></div>
-
-  <div class="handbook__layout">
-    <aside class="handbook__panel handbook__list" aria-labelledby="handbook-list-title">
-      <div class="handbook__panel-head">
-        <h2 id="handbook-list-title">业务说明</h2>
-        {% if can_edit %}<button class="ghost-btn" type="button" data-handbook-new><i data-feather="plus"></i><span>新建</span></button>{% endif %}
-      </div>
-      <ul class="handbook__entries" data-handbook-entries></ul>
-    </aside>
-
-    <section class="handbook__panel handbook__editor" aria-labelledby="handbook-editor-title" data-handbook-editor>
-      <div class="handbook__panel-head">
-        <h2 id="handbook-editor-title" data-handbook-editor-title>新建业务说明</h2>
-        <span class="handbook__badge" data-handbook-entry-status hidden></span>
-      </div>
-      <label class="handbook__field"><span>标题</span>
-        <input type="text" maxlength="100" data-handbook-title{% if not can_edit %} readonly{% endif %} placeholder="例如：网点简称与报价说法">
-      </label>
-      <label class="handbook__field"><span>说明</span>
-        <textarea rows="8" maxlength="4000" data-handbook-body{% if not can_edit %} readonly{% endif %} placeholder="例如：大家说“岳麓店”就是长沙岳麓区网点。“报个价”“问个价”都是要三平台报价。到货清单同步只能在下午 3 点后由仓库主管发起，其他人要先问。"></textarea>
-      </label>
-      <div class="handbook__actions"{% if not can_edit %} hidden{% endif %}>
-        <button class="primary-btn" type="button" data-handbook-save><i data-feather="save"></i><span>保存说明</span></button>
-        <button class="ghost-btn" type="button" data-handbook-compile hidden><i data-feather="cpu"></i><span>交给 AI 编译</span></button>
-      </div>
-      <div data-handbook-result hidden></div>
-    </section>
-  </div>
+{# frontend-spec 52–58: 四个页签都是工作台；动作按身份隐藏，状态与阻塞项常驻可见。 #}
+<section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-label="业务手册">
+  <div class="hb-tabbar">
+    <nav class="hb-tabs" role="tablist" aria-label="业务手册">
+      <button class="hb-tab" type="button" role="tab" id="handbook-tab-entries" aria-selected="true" aria-controls="handbook-panel-entries" data-handbook-tab="entries">说明条目<span class="hb-tab__count" data-tab-count hidden></span></button>
+      <button class="hb-tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="false" aria-controls="handbook-panel-fees" data-handbook-tab="fees" tabindex="-1">计算规则<span class="hb-tab__count" data-tab-count hidden></span></button>
+      <button class="hb-tab" type="button" role="tab" id="handbook-tab-sources" aria-selected="false" aria-controls="handbook-panel-sources" data-handbook-tab="sources" tabindex="-1">知识来源<span class="hb-tab__count" data-tab-count hidden></span></button>
+      <button class="hb-tab" type="button" role="tab" id="handbook-tab-try" aria-selected="false" aria-controls="handbook-panel-try" data-handbook-tab="try" tabindex="-1">试问</button>
+    </nav>
+    {% if is_super_admin %}<span class="hb-role" data-tone="admin"><i data-feather="shield"></i>超级管理员 · 可审核</span>
+    {% elif can_edit %}<span class="hb-role"><i data-feather="shield"></i>可编辑 · 审核由超级管理员完成</span>
+    {% else %}<span class="hb-role" data-tone="viewer"><i data-feather="eye"></i>只读 · 仅查看</span>{% endif %}
   </div>
 
-  <div id="handbook-panel-fees" role="tabpanel" aria-labelledby="handbook-tab-fees" class="handbook__tabpanel" data-fee-rules hidden>
-    <p class="handbook__lead">机器人算钱只按这里<b>审核生效</b>的规则。计算方式由系统固定，单价、档位、执行日期和出处在这里填写；每一项都要写明出处（文档名和页码或条款）。流程是<b>编辑草稿 → 提交审核 → 超级管理员审核生效</b>，生效的版本不能再改，要改就复制成新草稿。单据按<b>开单日期</b>选用当时生效的版本；草稿和待审核版本只能试算，不会对外报金额。</p>
-    <div class="handbook__status" data-fee-status role="status" aria-live="polite"></div>
-    <div class="handbook__layout">
-      <aside class="handbook__panel" aria-labelledby="fee-list-title">
-        <div class="handbook__panel-head"><h2 id="fee-list-title">规则版本</h2></div>
-        <ul class="handbook__entries" data-fee-list></ul>
+  <div id="handbook-panel-entries" role="tabpanel" aria-labelledby="handbook-tab-entries" class="hb-panel" data-handbook-entries-panel>
+    <div class="hb-feedback" data-handbook-status role="status" aria-live="polite" hidden></div>
+    {% if not can_edit %}<p class="hb-note"><i data-feather="lock"></i>当前身份只能查看：可以看说明、编译结果和试问，编辑和审核操作已隐藏。</p>{% endif %}
+    <div class="hb-work hb-work--entries" data-entries-work>
+      <aside class="hb-card hb-list" aria-labelledby="handbook-list-title">
+        <div class="hb-card__head">
+          <div><h2 id="handbook-list-title">说明条目</h2><p class="hb-card__sub" data-entries-summary>正在读取……</p></div>
+          {% if can_edit %}<button class="primary-btn hb-btn-sm" type="button" data-handbook-new><i data-feather="plus"></i><span>新建</span></button>{% endif %}
+        </div>
+        <div class="hb-list__tools">
+          <label class="hb-search"><i data-feather="search"></i><span class="sr-only">搜索说明</span><input type="search" placeholder="搜索标题" data-entries-search></label>
+          <div class="hb-filter" role="group" aria-label="筛选" data-entries-filter>
+            <button type="button" data-filter="all" aria-pressed="true">全部 <span data-filter-count="all"></span></button>
+            <button type="button" data-filter="todo" aria-pressed="false">待处理 <span data-filter-count="todo"></span></button>
+            <button type="button" data-filter="DRAFT" aria-pressed="false">草稿 <span data-filter-count="DRAFT"></span></button>
+          </div>
+        </div>
+        <ul class="hb-rows" data-handbook-entries></ul>
+        <p class="hb-card__foot" data-entries-foot></p>
       </aside>
-      <section class="handbook__panel" aria-labelledby="fee-editor-title" data-fee-editor>
-        <p class="handbook__empty" data-fee-empty>从左侧选择一个版本。</p>
+      <section class="hb-card hb-editor" aria-labelledby="handbook-editor-title" data-handbook-editor></section>
+      <section class="hb-card hb-result" aria-labelledby="handbook-result-title" data-handbook-result></section>
+    </div>
+    <div class="hb-review" data-entries-review hidden></div>
+  </div>
+
+  <div id="handbook-panel-fees" role="tabpanel" aria-labelledby="handbook-tab-fees" class="hb-panel" data-fee-rules hidden>
+    <div class="hb-feedback" data-fee-status role="status" aria-live="polite" hidden></div>
+    <div class="hb-work hb-work--fees">
+      <aside class="hb-card hb-list" aria-labelledby="fee-list-title">
+        <div class="hb-card__head"><div><h2 id="fee-list-title">计算规则</h2><p class="hb-card__sub" data-fee-summary>正在读取……</p></div></div>
+        <ul class="hb-rows" data-fee-list></ul>
+        <div class="hb-rules-note">
+          <h3>规则说明</h3>
+          <ul>
+            <li>计算方式由系统固定，这里只填数字与出处</li>
+            <li>单据按开单日期选用当时生效的版本</li>
+            <li>草稿 / 待审核只可试算，不对外报金额</li>
+            <li>已生效版本不可修改，复制为新草稿</li>
+          </ul>
+        </div>
+      </aside>
+      <section class="hb-card hb-fee" aria-labelledby="fee-editor-title" data-fee-editor>
+        <div class="hb-empty"><i data-feather="file-text"></i><p>从左侧选择一个规则版本。</p></div>
       </section>
     </div>
   </div>
 
-  <div id="handbook-panel-sources" role="tabpanel" aria-labelledby="handbook-tab-sources" class="handbook__tabpanel" data-handbook-sources hidden>
-    <p class="handbook__lead">机器人能读的飞书知识库文档，以及它们被哪条计算规则引用。系统每天 08:30 检查一次：<b>被引用的文档有改动</b>，或出现<b>标题像收费通知的新文档</b>，会推送给超级管理员并列在下面。系统<b>只提醒，不会自动修改规则</b>；检查过规则后请标记“已检查”。</p>
-    <div class="handbook__status" data-sources-status role="status" aria-live="polite"></div>
-    <section class="handbook__panel" aria-labelledby="reminders-title">
-      <div class="handbook__panel-head"><h2 id="reminders-title">提醒</h2>
-        {% if can_edit %}<button class="ghost-btn" type="button" data-sources-scan><i data-feather="refresh-cw"></i><span>立即检查</span></button>{% endif %}</div>
-      <p class="fee__hint" data-sources-last></p>
-      <ul class="handbook__entries" data-sources-reminders></ul>
+  <div id="handbook-panel-sources" role="tabpanel" aria-labelledby="handbook-tab-sources" class="hb-panel" data-handbook-sources hidden>
+    <div class="hb-feedback" data-sources-status role="status" aria-live="polite" hidden></div>
+    <section class="hb-card hb-sources-overview" aria-labelledby="sources-title">
+      <div class="hb-overview__head">
+        <div><h2 id="sources-title">知识源检查</h2><p class="hb-card__sub">机器人能读的飞书文档，以及它们被哪些计算规则引用。</p></div>
+        <div class="hb-overview__actions"><span class="hb-meta" data-sources-last></span>
+          {% if can_edit %}<button class="primary-btn" type="button" data-sources-scan><i data-feather="refresh-cw"></i><span>立即检查</span></button>{% endif %}</div>
+      </div>
+      <div class="hb-metrics" data-sources-metrics></div>
+      <div class="hb-chips">
+        <span class="hb-chip"><i data-feather="clock"></i>每天 08:30 自动检查</span>
+        <span class="hb-chip" data-tone="warn"><i data-feather="alert-triangle"></i>文档改动 / 新收费通知</span>
+        <span class="hb-chip"><i data-feather="arrow-right"></i>推送给超级管理员</span>
+        <span class="hb-chip" data-tone="ok"><i data-feather="check"></i>只提醒，不自动改规则</span>
+        <span class="hb-meta hb-chips__scope" data-sources-scope></span>
+      </div>
     </section>
-    <section class="handbook__panel" aria-labelledby="documents-title">
-      <h2 id="documents-title">知识库文档</h2>
-      <div class="sources__table-wrap"><table class="handbook__trial"><thead><tr><th scope="col">文档</th><th scope="col">空间</th><th scope="col">最后编辑</th><th scope="col">被规则引用</th></tr></thead>
+    <div class="hb-section-head">
+      <h2>变化提醒 <span class="hb-count-pill" data-reminder-count hidden></span></h2><span class="hb-meta">只提醒，不自动改规则</span>
+      {% if can_edit %}<button class="hb-link" type="button" data-sources-check-all hidden>全部标记已检查</button>{% endif %}
+    </div>
+    <ul class="hb-reminders" data-sources-reminders></ul>
+    <section class="hb-card hb-docs" aria-labelledby="documents-title">
+      <div class="hb-card__head">
+        <div><h2 id="documents-title">知识库文档</h2><p class="hb-card__sub" data-sources-doc-count></p></div>
+        <label class="hb-search hb-search--inline"><i data-feather="search"></i><span class="sr-only">搜索文档</span><input type="search" placeholder="搜索文档标题或空间" data-sources-search></label>
+      </div>
+      <div class="hb-table-wrap"><table class="hb-table hb-table--docs">
+        <colgroup><col style="width:354px"><col style="width:170px"><col style="width:170px"><col style="width:376px"></colgroup>
+        <thead><tr><th scope="col">文档</th><th scope="col">所在空间</th><th scope="col">最后编辑</th><th scope="col">被规则引用</th></tr></thead>
         <tbody data-sources-documents></tbody></table></div>
+      <p class="hb-card__foot"><span>只显示机器人可读的飞书文档 · 由系统同步</span><span><i class="hb-dot" data-tone="ok"></i>绿色点 = 正在被规则引用</span></p>
     </section>
   </div>
 
-  <div id="handbook-panel-try" role="tabpanel" aria-labelledby="handbook-tab-try" class="handbook__tabpanel" data-handbook-try hidden>
-    <p class="handbook__lead">输入一个问题，看机器人会怎么回答：会引用哪段原文、按哪条规则算出多少。按<b>你自己的机器人权限</b>，用与飞书、微信相同的模型、知识库、业务手册和计算规则；只做查询和计算，<b>不执行插件、不写入、不发到飞书或微信</b>。会实际调用模型并实时查询原平台。</p>
-    <section class="handbook__panel" aria-labelledby="try-title">
-      <h2 id="try-title">试问</h2>
-      <label class="handbook__field"><span>问题</span>
-        <textarea rows="3" maxlength="500" data-try-question placeholder="例如：破损件怎么处理？ / R000XXXXXXXX 送5楼没电梯，上楼费多少？"></textarea></label>
-      <div class="handbook__actions"><button class="primary-btn" type="button" data-try-send><i data-feather="send"></i><span>试问</span></button></div>
-      <div class="handbook__status" data-try-status role="status" aria-live="polite"></div>
-      <div data-try-result hidden>
-        <h3>机器人会回复</h3>
-        <pre class="try__reply" data-try-reply></pre>
-        <h3>依据与步骤</h3>
-        <ul data-try-steps></ul>
-      </div>
-    </section>
+  <div id="handbook-panel-try" role="tabpanel" aria-labelledby="handbook-tab-try" class="hb-panel" data-handbook-try hidden>
+    <div class="hb-work hb-work--try">
+      <section class="hb-card hb-ask" aria-labelledby="try-title">
+        <div class="hb-card__head"><h2 id="try-title">试问</h2><span class="hb-badge" data-tone="active">只读演练</span></div>
+        <p class="hb-card__sub">用和飞书、微信相同的模型、知识库与业务手册试一次；只查询和计算，不执行插件、不写入、不发送。</p>
+        <label class="hb-field"><span class="hb-field__label">问题 <span class="hb-counter" data-try-counter>0 / 500</span></span>
+          <textarea rows="6" maxlength="500" data-try-question placeholder="例如：R000XXXXXXXX 送 5 楼没电梯，200 公斤，上楼费多少？"></textarea>
+          <span class="hb-field__hint">回车发送，Shift + 回车换行</span></label>
+        <div class="hb-examples"><span class="hb-field__label">试试这样问</span>
+          <div><button type="button" class="hb-example" data-try-example>破损件怎么处理？</button>
+            <button type="button" class="hb-example" data-try-example>上楼费怎么收？</button>
+            <button type="button" class="hb-example" data-try-example>回单多久寄回？</button></div></div>
+        <div class="hb-actions"><button class="primary-btn hb-btn-lg" type="button" data-try-send><i data-feather="send"></i><span>试问</span></button><span class="hb-meta" data-try-status role="status" aria-live="polite"></span></div>
+        <div class="hb-block">
+          <h3>本次试问的边界</h3>
+          <ul class="hb-bounds">
+            <li><i data-feather="lock"></i>不执行插件、不改单据</li>
+            <li><i data-feather="edit-3"></i>不写入任何数据</li>
+            <li><i data-feather="arrow-right"></i>不发送到飞书、微信</li>
+          </ul>
+          <p class="hb-alert" data-tone="warn"><i data-feather="info"></i>报价金额请到飞书或微信里试，试问不返回报价。</p>
+        </div>
+        <div class="hb-block" data-try-recent-block hidden><h3>最近试问 <span class="hb-meta">仅本页打开期间保留</span></h3><ul class="hb-recent" data-try-recent></ul></div>
+        <p class="hb-alert" data-tone="ok"><i data-feather="check-circle"></i><span><b>按你本人的机器人权限运行</b><br>实时查询原平台；结果只在本页显示。</span></p>
+        <p class="hb-card__foot">试问不会改变线上数据，也不会通知任何人。</p>
+      </section>
+      <section class="hb-card hb-answer" aria-labelledby="try-answer-title" data-try-answer>
+        <div class="hb-card__head"><h2 id="try-answer-title">机器人会回复</h2><button class="hb-link" type="button" data-try-copy hidden><i data-feather="copy"></i>复制回答</button></div>
+        <div data-try-result><div class="hb-empty"><i data-feather="message-circle"></i><p>在左侧输入问题，这里会显示机器人的回复、引用的原文和执行步骤。</p></div></div>
+      </section>
+    </div>
   </div>
 </section>
 {% endblock %}
-
 {% block scripts %}
-<script src="/static/handbook.js?v=20261116-module"></script>
-<script src="/static/handbook_fee_rules.js?v=20261116-fees"></script>
-<script src="/static/handbook_try.js?v=20261116-try"></script>
-<script src="/static/handbook_sources.js?v=20261116-sources"></script>
+<script src="/static/handbook_common.js?v=20261116-spec52"></script>
+<script src="/static/handbook.js?v=20261116-spec52"></script>
+<script src="/static/handbook_fee_rules.js?v=20261116-spec52"></script>
+<script src="/static/handbook_try.js?v=20261116-spec52"></script>
+<script src="/static/handbook_sources.js?v=20261116-spec52"></script>
 {% endblock %}

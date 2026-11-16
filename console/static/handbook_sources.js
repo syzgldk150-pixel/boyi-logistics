@@ -1,139 +1,118 @@
 (() => {
   "use strict";
 
-  // 业务手册 → 知识来源: lists documents and reminders; scans and checks are decided by the Agent.
-  const KIND_TEXT = { CHANGED: "文档有改动", NEW: "新文档" };
-
-  function formatTime(value) {
-    const text = String(value || "");
-    if (/^\d{10,13}$/.test(text)) {
-      const date = new Date(Number(text.length === 10 ? text + "000" : text));
-      return Number.isNaN(date.getTime()) ? text : date.toLocaleString("zh-CN", { hour12: false });
-    }
-    return text.slice(0, 16).replace("T", " ");
-  }
+  // 业务手册 → 知识来源 (frontend-spec 56): change checks and rule citations.
+  // Scans and checks are decided by the Agent; the system only reminds and never edits rules.
+  const KIND = { CHANGED: ["文档有改动", "warn"], NEW: ["新文档", "muted"] };
 
   function init() {
     const root = document.querySelector("[data-handbook-sources]");
     const page = document.querySelector("[data-handbook]");
-    if (!root || !page || root.dataset.bound === "true") return;
+    if (!root || !page || !window.HandbookUI || root.dataset.bound === "true") return;
     root.dataset.bound = "true";
-    const canEdit = page.dataset.canEdit === "true";
-    const pageFetch = window.ConsoleUI?.pageRequest ? window.ConsoleUI.pageRequest() : window.fetch.bind(window);
+    const UI = window.HandbookUI;
+    const { escapeHtml, formatTime, request } = UI;
+    const { canEdit } = UI.role(page);
     const $ = (selector) => root.querySelector(selector);
-    let loaded = false;
-    let busy = false;
+    const feedback = UI.feedback($("[data-sources-status]"));
+    const state = { data: null, busy: false, query: "" };
 
-    function status(text, tone = "") {
-      const node = $("[data-sources-status]");
-      node.textContent = text || "";
-      node.dataset.tone = tone;
-    }
-
-    async function request(url, post) {
-      const options = post ? { method: "POST", headers: { "Content-Type": "application/json",
-        "X-Browser-Request-UUID": window.crypto.randomUUID() }, body: "{}" } : { headers: { Accept: "application/json" } };
-      const response = await pageFetch(url, options);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) throw new Error(data.message || data.error?.message || `HTTP ${response.status}`);
-      return data.data || {};
-    }
-
-    function cell(row, text) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      row.append(td);
-    }
-
-    function render(data) {
+    function render() {
+      const data = state.data || { documents: [], reminders: [] };
+      const documents = data.documents || [];
+      const reminders = data.reminders || [];
+      const open = reminders.filter((item) => item.status === "OPEN");
+      const byToken = new Map(documents.map((doc) => [doc.node_token, doc]));
+      const cited = documents.filter((doc) => (doc.cited_by || []).length);
+      const citations = new Set(documents.flatMap((doc) => doc.cited_by || []));
       const last = data.last_scan;
-      $("[data-sources-last]").textContent = last
-        ? `上次检查：${formatTime(last.at)}，${last.documents} 篇文档，${last.baseline ? "首次检查只记录现状" : `新提醒 ${last.reminders} 条`}`
-        : "本次服务启动后还没有检查过；每天 08:30 自动检查。";
+      UI.setTabCount("sources", open.length || null, open.length ? "warn" : "");
+
+      $("[data-sources-last]").innerHTML = last
+        ? `<span data-tone="${last.reminders ? "warn" : "ok"}">${last.reminders ? "!" : "✓"} 上次检查 ${escapeHtml(formatTime(last.at))} · ${last.baseline ? "首次检查只记录现状" : last.reminders ? `发现 ${last.reminders} 项变化` : "全部正常"}</span>`
+        : "本次服务启动后还没有检查过；每天 08:30 自动检查";
+      $("[data-sources-metrics]").innerHTML = [
+        [cited.length, "篇", "引用文档", ""],
+        [last && !last.baseline ? last.reminders : "—", "项", "本次变化", last?.reminders ? "warn" : ""],
+        [open.length, "项", "待处理提醒", open.length ? "warn" : ""],
+      ].map(([value, unit, label, tone]) => `<div class="hb-metric"><b data-tone="${tone}">${escapeHtml(value)}</b><span>${unit}</span><p>${label}</p></div>`).join("");
+      $("[data-sources-scope]").textContent = `检查范围：${documents.length} 篇可读文档 · ${citations.size} 条规则引用`;
+
+      const count = $("[data-reminder-count]");
+      count.hidden = !open.length;
+      count.textContent = `• ${open.length}`;
+      const checkAll = $("[data-sources-check-all]");
+      if (checkAll) checkAll.hidden = open.length < 2;
       const list = $("[data-sources-reminders]");
-      list.replaceChildren();
-      (data.reminders || []).forEach((item) => {
-        const li = document.createElement("li");
-        li.className = "sources__reminder";
-        const text = document.createElement("span");
-        text.textContent = `${KIND_TEXT[item.kind] || item.kind}《${item.title}》：${item.detail}（${formatTime(item.detected_at)}）`;
-        li.append(text);
-        if (item.status === "OPEN" && canEdit) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "ghost-btn";
-          button.textContent = "已检查";
-          button.dataset.check = String(item.reminder_id);
-          li.append(button);
-        } else {
-          const badge = document.createElement("span");
-          badge.className = "handbook__badge";
-          badge.textContent = item.status === "OPEN" ? "待检查" : "已检查";
-          li.append(badge);
-        }
-        list.append(li);
-      });
-      if (!list.children.length) {
-        const li = document.createElement("li");
-        li.className = "handbook__empty";
-        li.textContent = "没有提醒。";
-        list.append(li);
-      }
-      const body = $("[data-sources-documents]");
-      body.replaceChildren();
-      (data.documents || []).forEach((doc) => {
-        const row = document.createElement("tr");
-        cell(row, doc.title || "（无标题）");
-        cell(row, doc.space || "");
-        cell(row, formatTime(doc.edit_time));
-        cell(row, (doc.cited_by || []).join("、") || "—");
-        body.append(row);
-      });
-      if (!body.children.length) {
-        const row = document.createElement("tr");
-        cell(row, "还没有检查记录，点“立即检查”或等每天 08:30 自动检查。");
-        body.append(row);
-      }
+      list.innerHTML = reminders.length ? reminders.map((item) => {
+        const [kindText, kindTone] = KIND[item.kind] || [item.kind, "muted"];
+        const doc = byToken.get(item.node_token);
+        const rules = doc?.cited_by || [];
+        const checked = item.status !== "OPEN";
+        return `<li class="hb-card hb-reminder" data-checked="${checked}">
+          <div class="hb-reminder__top"><span class="hb-chip hb-chip--sm" data-tone="${kindTone}">${escapeHtml(kindText)}</span>
+            <span class="hb-badge" data-tone="${checked ? "retired" : "pending"}">${checked ? "已检查" : "未检查"}</span></div>
+          <h3>《${escapeHtml(item.title)}》</h3>
+          <p>${escapeHtml(item.detail)}</p>
+          <p class="hb-meta">${doc?.space ? `空间：${escapeHtml(doc.space)} · ` : ""}${escapeHtml(formatTime(item.detected_at))} 检查${checked && item.checked_at ? ` · ${escapeHtml(formatTime(item.checked_at))} 已检查` : ""}</p>
+          <p class="hb-meta">${rules.length ? `<i class="hb-dot" data-tone="ok"></i>关联规则：${escapeHtml(rules.join("、"))}` : "尚未被规则引用"}</p>
+          ${!checked && canEdit ? `<div class="hb-actions"><button class="ghost-btn hb-btn-sm" type="button" data-check="${item.reminder_id}">标记已检查</button></div>` : ""}</li>`;
+      }).join("") : `<li class="hb-card hb-empty hb-empty--wide"><i data-feather="check-circle"></i><p>没有需要处理的变化。</p>${last ? `<span class="hb-meta">上次检查 ${escapeHtml(formatTime(last.at))}</span>` : ""}</li>`;
+
+      const query = state.query.trim().toLowerCase();
+      const visible = documents.filter((doc) => !query || `${doc.title} ${doc.space}`.toLowerCase().includes(query));
+      $("[data-sources-doc-count]").textContent = `共 ${documents.length} 篇 · 机器人只读取有权限的飞书文档`;
+      const newTokens = new Set(reminders.filter((item) => item.kind === "NEW" && item.status === "OPEN").map((item) => item.node_token));
+      $("[data-sources-documents]").innerHTML = visible.length ? visible.map((doc) => {
+        const rules = doc.cited_by || [];
+        return `<tr><td><span class="hb-doc"><i data-feather="file-text"></i>《${escapeHtml(doc.title || "无标题")}》</span></td><td>${escapeHtml(doc.space || "")}</td>
+          <td class="hb-num">${escapeHtml(formatTime(doc.edit_time))}</td>
+          <td>${rules.length ? `<i class="hb-dot" data-tone="ok"></i>${escapeHtml(rules.join("、"))}` : '<span class="hb-meta">未被规则引用</span>'}${newTokens.has(doc.node_token) ? ' <span class="hb-badge" data-tone="pending">新</span>' : ""}</td></tr>`;
+      }).join("") : `<tr><td colspan="4" class="hb-meta">${documents.length ? "没有符合的文档。" : "还没有检查记录：等每天 08:30 自动检查，或点“立即检查”。"}</td></tr>`;
+      if (window.feather) window.feather.replace();
     }
 
-    async function run(label, work) {
-      if (busy) return;
-      busy = true;
-      root.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-      status(label);
+    async function run(progress, work, success = "") {
+      if (state.busy) return;
+      state.busy = true;
+      const unlock = UI.lockButtons(root);
+      const scan = $("[data-sources-scan] span");
+      if (scan && progress.startsWith("正在检查")) scan.textContent = "检查中…";
+      feedback.progress(progress);
       try {
         await work();
-        status("");
+        if (success) feedback.success(success); else feedback.clear();
       } catch (error) {
-        status(error.message || "操作失败", "error");
+        feedback.error("没有完成", `${error.message || "操作失败"}。可以稍后重试。`);
       } finally {
-        busy = false;
-        root.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+        state.busy = false;
+        if (scan) scan.textContent = "立即检查";
+        unlock();
       }
     }
 
-    const load = () => run("正在读取……", async () => render(await request("/handbook/sources")));
+    const reload = async () => { state.data = await request("/handbook/sources"); render(); };
+
+    root.addEventListener("input", (event) => {
+      if (event.target.matches("[data-sources-search]")) { state.query = event.target.value; render(); }
+    });
     root.addEventListener("click", (event) => {
       const target = event.target.closest("button");
-      if (!target) return;
+      if (!target || target.disabled) return;
       if (target.hasAttribute("data-sources-scan")) {
-        run("正在检查知识库，可能需要十几秒……", async () => {
-          await request("/handbook/sources/scan", true);
-          render(await request("/handbook/sources"));
-        });
+        run("正在检查知识库，可能需要十几秒……", async () => { await request("/handbook/sources/scan", {}); await reload(); }, "检查完成");
       } else if (target.dataset.check) {
-        run("正在保存……", async () => {
-          await request(`/handbook/sources/reminders/${encodeURIComponent(target.dataset.check)}/check`, true);
-          render(await request("/handbook/sources"));
-        });
+        run("正在保存……", async () => { await request(`/handbook/sources/reminders/${encodeURIComponent(target.dataset.check)}/check`, {}); await reload(); }, "已标记已检查");
+      } else if (target.hasAttribute("data-sources-check-all")) {
+        const ids = (state.data?.reminders || []).filter((item) => item.status === "OPEN").map((item) => item.reminder_id);
+        run("正在标记……", async () => {
+          for (const id of ids) await request(`/handbook/sources/reminders/${encodeURIComponent(id)}/check`, {});
+          await reload();
+        }, `已标记 ${ids.length} 条`);
       }
     });
-    // Load when the tab is first shown, so other tabs do not wait on the knowledge base.
-    const panelObserver = new MutationObserver(() => {
-      if (!root.hidden && !loaded) { loaded = true; load(); }
-    });
-    panelObserver.observe(root, { attributes: true, attributeFilter: ["hidden"] });
-    if (!root.hidden) { loaded = true; load(); }
+    // The list is read from the database only, so it also loads up front for the tab count.
+    run("正在读取……", reload);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
