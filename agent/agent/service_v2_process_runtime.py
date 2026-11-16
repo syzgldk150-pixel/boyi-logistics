@@ -78,6 +78,9 @@ class ServiceV2ProcessRuntime:
     def selection_tools(self, actor: Actor):
         return self._harness.selection_tools(actor)
 
+    def trial_sidecar(self, actor: Actor, request_id: str):
+        return self._harness.trial_sidecar(actor, request_id)
+
     def harness_status(self) -> HarnessRuntimeStatus:
         return self._harness.status()
 

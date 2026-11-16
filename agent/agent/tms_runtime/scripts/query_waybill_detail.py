@@ -48,6 +48,11 @@ DETAIL_FIELD_MAP = {
     "shipping_fee": "FREIGHT",
     "payment_type": "PAYMENT_TYPE",
     "pay_on_arrival": "TOPAYMENT",
+    # Upstairs fee (业务手册 → 计算规则): the billing date picks the rule version;
+    # the two service flags are shown to people, never used as floor or elevator facts.
+    "billing_date": "REGISTER_DATE",
+    "upstairs_service": "BL_UPSTAIRS",
+    "elevator_service": "BL_ELVATOR",
 }
 
 def _normalize_bill_code(value: Any) -> str:

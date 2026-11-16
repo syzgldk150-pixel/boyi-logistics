@@ -16,14 +16,23 @@ _REQUEST_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 
 class ReviewsServiceMixin:
+    def _reviews_context(self, handler: BaseHTTPRequestHandler, *, write: bool) -> dict[str, Any] | None:
+        context = self._control_plane_write_context(handler) if write else self._control_plane_read_context(handler)
+        if context is None:
+            return None
+        if "super_admin" not in list(context.get("actor_roles") or []):
+            self._control_plane_error(handler, HTTPStatus.FORBIDDEN, "SUPER_ADMIN_REQUIRED", "只有超级管理员可以处理复核请求。")
+            return None
+        return context
+
     def _render_reviews(self, handler: BaseHTTPRequestHandler) -> None:
-        if self._handbook_context(handler, write=False) is None:
+        if self._reviews_context(handler, write=False) is None:
             return
         template = self.template_env.get_template("reviews.html")
         self._send_html(handler, template.render(app_title=self.settings.app_title))
 
     def _handle_reviews_list(self, handler: BaseHTTPRequestHandler) -> None:
-        context = self._handbook_context(handler, write=False)
+        context = self._reviews_context(handler, write=False)
         if context is None:
             return
         result = self._agent_request("GET", "/internal/v1/admin/reviews", timeout=15,
@@ -31,7 +40,7 @@ class ReviewsServiceMixin:
         self._handbook_reply(handler, result, "复核请求暂时无法读取。")
 
     def _handle_review_action(self, handler: BaseHTTPRequestHandler, request_id: str, action: str) -> None:
-        context = self._handbook_context(handler, write=True)
+        context = self._reviews_context(handler, write=True)
         if context is None:
             return
         if not _REQUEST_ID.fullmatch(request_id) or action not in {"approve", "reject"}:

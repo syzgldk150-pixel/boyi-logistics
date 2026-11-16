@@ -1,0 +1,126 @@
+{
+ "fee_kind": "upstairs",
+ "version_label": "V6.1-草稿1",
+ "content": {
+  "base": {
+   "fixed": "10",
+   "per_kg": "0.12",
+   "source": {
+    "document": "融辉物流网络管理手册 V6.1",
+    "location": "第五篇第五章 第 50 页",
+    "link": ""
+   }
+  },
+  "elevator": {
+   "fixed": "5",
+   "per_kg": "0.06",
+   "source": {
+    "document": "融辉物流网络管理手册 V6.1",
+    "location": "第五篇第五章 第 50 页",
+    "link": ""
+   }
+  },
+  "floor_tiers": [
+   {
+    "floor_from": 2,
+    "floor_to": 2,
+    "per_kg": "0",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第五章 第 50 页",
+     "link": ""
+    }
+   },
+   {
+    "floor_from": 3,
+    "floor_to": 4,
+    "per_kg": "0.05",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第五章 第 50 页",
+     "link": ""
+    }
+   },
+   {
+    "floor_from": 5,
+    "floor_to": 6,
+    "per_kg": "0.10",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第五章 第 50 页",
+     "link": ""
+    }
+   },
+   {
+    "floor_from": 7,
+    "floor_to": 7,
+    "per_kg": "0.15",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第五章 第 50 页",
+     "link": ""
+    }
+   }
+  ],
+  "max_floor_without_elevator": 7,
+  "max_floor_source": {
+   "document": "融辉物流网络管理手册 V6.1",
+   "location": "第五篇第五章 第 50 页",
+   "link": ""
+  },
+  "first_floor": "MANUAL",
+  "piece_tiers": [
+   {
+    "over_kg": "50",
+    "up_to_kg": "100",
+    "per_piece": "10",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第五章 第 50 页",
+     "link": ""
+    }
+   },
+   {
+    "over_kg": "100",
+    "up_to_kg": "120",
+    "per_piece": "30",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第五章 第 50 页",
+     "link": ""
+    }
+   }
+  ],
+  "piece_limit_kg": "120",
+  "piece_limit_source": {
+   "document": "融辉物流网络管理手册 V6.1",
+   "location": "第五篇第五章 第 50 页",
+   "link": ""
+  },
+  "reminders": [
+   "如同时产生卸货费，两者取大值，不同时收取。"
+  ]
+ },
+ "checks": [
+  {
+   "text": "数字按方案文字层读数录入，需逐格对照手册第 50–53 页原表核对。",
+   "done": false
+  },
+  {
+   "text": "送到 1 楼是否收取上楼费，草稿未写明，目前按“需人工判断”。",
+   "done": false
+  },
+  {
+   "text": "单件 100 公斤恰好落在“50–100”还是“100–120”档，需对照原文。",
+   "done": false
+  },
+  {
+   "text": "床垫类、整托与木箱的收费表尚未录入。",
+   "done": false
+  },
+  {
+   "text": "执行日期以总部通知为准，尚未填写。",
+   "done": false
+  }
+ ]
+}

@@ -25,6 +25,7 @@ _READ_POSTS = frozenset({
     "/receipts/shares/senders", "/receipts/shares/customers",
     "/tracking/query", "/waybills/source-refresh", "/waybills/photos", "/waybills/quote-options",
     "/automations/tasks/output", "/warehouse-monitor/lookup",
+    "/handbook/try",
 })
 # Business operations that only read.
 _READ_OPERATIONS = frozenset({"customer-service-query", "customer-service-detail", "customer-service-fetch-attachment"})
@@ -47,6 +48,10 @@ def console_permission(method: str, path: str) -> str:
         return "ai_assistant:view"
     if _under(path, "/automation-accounts"):
         return _level("accounts.manage", read)
+    if path == "/settings/llm/handbook":
+        return "handbook:view"  # old address, redirects to the module
+    if _under(path, "/handbook"):
+        return handbook_permission(path, read)
     if not read and path.startswith("/finance/periods/") and path.endswith(("/close", "/reopen")):
         return SUPER_ADMIN
     # Ledger structure, the start month and cancelling posted vouchers.
@@ -85,6 +90,16 @@ def console_permission(method: str, path: str) -> str:
     if read and path.startswith("/automations/projects/") and path.endswith("/invocations"):
         return "plugins.execute:view"
     return SUPER_ADMIN
+
+
+# Taking effect (approve, resume) and permanent removal stay with super administrators.
+_HANDBOOK_SUPER_ADMIN_ACTIONS = ("/approve", "/resume", "/retire")
+
+
+def handbook_permission(path: str, read: bool) -> str:
+    if not read and path.endswith(_HANDBOOK_SUPER_ADMIN_ACTIONS):
+        return SUPER_ADMIN
+    return _level("handbook", read)
 
 
 def business_permission(operation: str) -> str:
@@ -128,6 +143,10 @@ def agent_permission(method: str, path: str) -> str:
         return "receipt.share:operate"
     if _under(path, "/internal/v1/admin/finance"):
         return _level("finance", read)
+    if path == "/internal/v1/admin/handbook-try":
+        return "handbook:view"  # 试问 only reads: the same answer the robot would give, nothing sent or written
+    if _under(path, "/internal/v1/admin/handbook") or _under(path, "/internal/v1/admin/fee-rules"):
+        return handbook_permission(path, read)
     if path.startswith("/internal/v1/automation-projects/module-slots/waybill-entry"):
         return "waybill.write:view" if read else "waybill.write:operate"
     if path in {"/internal/v1/automation/plugins/catalog", "/internal/v1/automation-project-policies", "/internal/v1/scheduled-tasks"}:

@@ -30,6 +30,7 @@ updated: 2026-10-07
 - `agent/plugin_core_adapters/shipment_source.py`：宿主用途绑定、真实登录网点复核和计费重量类型转换；复用寄件原生分页，完整刷新及零行、分页变化、错站、缺重、绑定变动和发布静默验证见 `tests/test_shipment_source.py`。
 - `agent/tools/feishu_knowledge.py`、`feishu_knowledge_pdf.py`：固定只读 CLI 参数、强制 bot，空间仅「融辉红头文件」「韵达红头文件」，同名不唯一即拒绝；核对节点、正文和读取后的更新时间。不持久缓存正文，每次重新核验权限；并发、时长、目录规模和正文大小有界，超时终止真实进程组。
 - `agent/agent/knowledge_answers.py`：引用只来自本次读取对象；失败和无命中不靠模型记忆回答。缺少链接时保留标题和来源编号，不造 URL。知识正文不能改变工具、账户或写权限，附件与嵌入内容明确未读。
+- **原文回答**（2026-11-16 用户确定）：业务知识问题只回复文档原文，不由 AI 转述。模型读取正文后调用 `quote_knowledge`（`source_id` + 一字不差的原文），`knowledge_answers.quote_knowledge` 核对它是本轮实际读取正文中连续的一段（忽略空白与 Markdown 记号，6–1200 字，太短且重复出现时要求多复制），从正文本身取出原样文字，开头写“以下是《标题》第 N 页 / “最近小标题”部分的原文：”，末尾附链接。模型读了正文却自己写回答时先提醒一次改用引用，仍不改或引用两次核对失败，只回复“没有定位到能直接回答的原文段落”并列出文档，不发送模型措辞。读取失败或无命中仍按原规则说明。表格页截图见收尾第 4b 步。
 
 已核对 ECS 的 `lark-cli 1.0.3` 与 Feishu bot 身份。使用 `wiki spaces list/get_node`、`wiki nodes list`、`docs +fetch`；该版本全文 `docs +search` 只支持 user，故本次使用明确标记的范围内正文主题检索，没有切换共享 CLI 身份。协议依据为 [官方 v1.0.3 源码](https://github.com/larksuite/cli/tree/v1.0.3)。
 

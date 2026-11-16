@@ -1,4 +1,4 @@
-"""Immutable, code-owned catalog for the fifteen fixed Console modules.
+"""Immutable, code-owned catalog for the sixteen fixed Console modules.
 
 Legacy lifecycle records remain readable for audit compatibility only. They
 never supply a module implementation, menu entry, permission, runtime
@@ -121,8 +121,8 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
     """Validate the exact source-owned module set once, at import time."""
 
     catalog = tuple(items)
-    if len(catalog) != 15:
-        raise ValueError("business module catalog must contain exactly 15 current menu identities")
+    if len(catalog) != 16:
+        raise ValueError("business module catalog must contain exactly 16 current menu identities")
     if any(not isinstance(item, BusinessModuleCode) for item in catalog):
         raise TypeError("business module catalog entries must be BusinessModuleCode")
     codes = tuple(item.module_code for item in catalog)
@@ -130,8 +130,8 @@ def register_business_modules(items: Iterable[BusinessModuleCode]) -> tuple[Busi
         raise ValueError("business module codes must be unique")
     if set(codes) != {
         "overview", "waybill_entry", "waybill_query", "tracking", "receipts", "customer_service",
-        "finance", "dispatch", "line_haul", "automations", "warehouse_monitor", "harness", "automation_accounts",
-        "llm_settings", "system_settings",
+        "finance", "dispatch", "line_haul", "automations", "warehouse_monitor", "harness", "handbook",
+        "automation_accounts", "llm_settings", "system_settings",
     }:
         raise ValueError("business module catalog must cover the exact current Console menu identities")
     if {item.module_code for item in catalog if not item.disable_allowed} != CORE_MODULE_CODES:
@@ -163,6 +163,7 @@ BUSINESS_MODULE_CATALOG = register_business_modules(
         _module("automations", "/automations", "自动化", disable_allowed=False, api_prefixes=("/automations",), page_prefixes=("/workspaces/automations",), internal_extensions=("automations.signed_action_package_platform", "notification.feishu.background")),
         _module("warehouse_monitor", "/warehouse-monitor", "监控查询", disable_allowed=True, api_prefixes=("/warehouse-monitor",)),
         _module("harness", "/harness", "Harness 助手", disable_allowed=False, api_prefixes=("/harness",)),
+        _module("handbook", "/handbook", "业务手册", disable_allowed=True, api_prefixes=("/handbook",)),
         _module("automation_accounts", "/automation-accounts", "业务账号", disable_allowed=False, api_prefixes=("/automation-accounts",)),
         _module("llm_settings", "/settings/llm", "智能模型", disable_allowed=False, api_prefixes=("/settings/llm",)),
         _module("system_settings", "/settings/accounts", "系统管理", disable_allowed=False, api_prefixes=("/settings/accounts",)),

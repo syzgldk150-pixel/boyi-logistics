@@ -138,7 +138,9 @@ from agent.business_query import (
     MySQLAutomationOperationsRepository,
 )
 from agent.business_modules_api import create_business_module_router
+from agent.fee_rules_api import create_fee_rules_router
 from agent.handbook_api import create_handbook_router
+from agent.handbook_try_api import create_handbook_try_router
 from agent.review_api import create_review_router
 from agent.automation_plugins.production import (
     ProductionAutomationPluginRuntime,
@@ -248,6 +250,8 @@ finance_review_advisor: "FinanceReviewAdvisor | None" = None
 customer_service_ai: "CustomerServiceAIService | None" = None
 plugin_flow_editor: "PluginFlowEditor | None" = None
 agent_handbook_service = None
+fee_rule_repository = None
+handbook_try_runtime = None
 agent_review_service = None
 receipt_share_runtime: "ReceiptShareRuntime | None" = None
 wechat_bot_runtime: "WeChatBotRuntime | None" = None
@@ -685,7 +689,8 @@ async def _monitor_tms_session_alerts(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
-    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service, agent_review_service
+    global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service, agent_review_service, fee_rule_repository
+    global handbook_try_runtime
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -892,6 +897,8 @@ async def lifespan(app: FastAPI):
         AgentHandbookRepository(runtime.memory.connection_factory), ai_task_gateway, catalog_provider=handbook_catalog,
         trial_runner=HandbookTrial(runtime.llm, lambda actor: process_service_v2_runtime.selection_tools(actor),
                                    active=lambda: agent_handbook_service.snapshot()))
+    from shared.fee_rule_repository import FeeRuleRepository
+    fee_rule_repository = FeeRuleRepository(runtime.memory.connection_factory)
     agent_review_service = _agent_review_service(runtime, project_policy_service, business_service)
     agent_business_actions = _agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
                                                      project_policy_service.identity_access)
@@ -910,6 +917,7 @@ async def lifespan(app: FastAPI):
             automation_id
         ).display_name,
     )
+    handbook_try_runtime = process_service_v2_runtime
     harness_runtime_status = await asyncio.to_thread(process_service_v2_runtime.start)
     runtime.configure_conversations(process_service_v2_runtime.conversations)
     logger.info("AI assistant runtime status=%s availability=%s", harness_runtime_status.status, harness_runtime_status.availability)
@@ -1054,8 +1062,22 @@ app.include_router(
     )
 )
 app.include_router(
+    create_handbook_try_router(
+        runtime_provider=lambda: handbook_try_runtime,
+        admin_provider=lambda request: _require_console_admin_request(request),
+    )
+)
+app.include_router(
+    create_fee_rules_router(
+        repository_provider=lambda: fee_rule_repository,
+        admin_provider=lambda request: _require_console_admin_request(request),
+        super_admin_provider=lambda request: _require_console_super_admin_request(request),
+    )
+)
+app.include_router(
     create_handbook_router(
         service_provider=lambda: agent_handbook_service,
+        admin_provider=lambda request: _require_console_admin_request(request),
         super_admin_provider=lambda request: _require_console_super_admin_request(request),
     )
 )
@@ -1726,7 +1748,10 @@ def _agent_business_actions(business_service, runtime, loop, identity_access):
                 accounts.append({"platform": str(provider), "account_id": str(account_id), "name": str(name or account_id)})
         return accounts
 
-    return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access)
+    from shared.fee_rule_repository import FeeRuleRepository
+    fee_rules = FeeRuleRepository(runtime.memory.connection_factory)
+    return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access,
+                           fee_rules=fee_rules.approved)
 
 
 def _require_console_super_admin_request(request: Request) -> Actor:

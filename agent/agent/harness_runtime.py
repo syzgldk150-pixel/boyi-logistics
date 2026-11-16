@@ -595,6 +595,21 @@ class HarnessRuntime:
                 reviews=self._review_service,
             )
 
+    def trial_sidecar(self, actor: Actor, request_id: str) -> OnlineHarnessSidecar:
+        """业务手册 → 试问: the same model, knowledge, handbook and rules this person's chats use,
+        with read actions only — no plugins, no writes, state apart from real chats."""
+        self._require_ready()
+        with self._catalog_snapshot():
+            return OnlineHarnessSidecar(
+                catalog=self._catalog(actor, request_id),
+                llm=self._llm,
+                plugin_turn=None,
+                handbook=self._handbook_provider() if self._handbook_provider is not None else None,
+                business_turn=(self._business_actions.turn(actor, request_id, trial=True)
+                               if self._business_actions is not None else None),
+                reviews=None,
+            )
+
     def selection_tools(self, actor: Actor) -> tuple[list[dict], dict[str, str], dict[str, str], str]:
         """The model tools this person would see, for handbook compile/trial (agent layer P2).
 

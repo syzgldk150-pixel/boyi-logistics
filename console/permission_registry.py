@@ -77,6 +77,7 @@ CONSOLE_PERMISSION_REGISTRATIONS = register_console_permissions(
         ConsolePermissionRegistration("console.menu.automations.view", "automations", "查看自动化", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.warehouse_monitor.view", "warehouse_monitor", "查看监控查询", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.harness.view", "harness", "查看 AI 助手", _ALL_ADMIN_ROLES),
+        ConsolePermissionRegistration("console.menu.handbook.view", "handbook", "查看业务手册", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.automation_accounts.view", "automation_accounts", "查看业务账号", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.llm_settings.view", "llm_settings", "查看智能模型", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.system_settings.view", "system_settings", "查看系统管理", _ALL_ADMIN_ROLES),

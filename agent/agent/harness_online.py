@@ -26,7 +26,7 @@ from shared.redaction import is_sensitive_key, redact_text
 from agent.agent_actions.recorder import audit_before_write
 from agent.plugin_conversations import PLUGIN_CHAT_INSTRUCTIONS, ConversationPluginRequest, PluginConversationTurn
 from agent.shipment_conversation import ShipmentConversation
-from agent.knowledge_answers import cite_knowledge
+from agent.knowledge_answers import QUOTE_MAX_CHARS, QUOTE_TOOL, QuoteError, cite_knowledge, quote_knowledge, unquoted_reply
 from shared.shipment_metrics import ShipmentQueryError, format_shipment_result
 
 
@@ -57,6 +57,16 @@ _ASK_USER_TOOL = {"type": "function", "function": {
         "question": {"type": "string", "minLength": 1, "maxLength": 300},
         "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "minLength": 1, "maxLength": 60}}}},
 }}
+_QUOTE_TOOL = {"type": "function", "function": {
+    "name": QUOTE_TOOL,
+    "description": "回答业务知识问题的唯一方式：从本轮知识查询返回的正文里，一字不差地复制最能回答问题的那一段原文。"
+                   "不要改写、总结、拼接或省略；只引用一段。系统核对后原样发给用户，并注明出处。",
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["source_id", "quote"], "properties": {
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "quote": {"type": "string", "minLength": 1, "maxLength": QUOTE_MAX_CHARS * 2}}},
+}}
+_QUOTE_NUDGE = ("业务知识问题不能用自己的话回答。请调用 quote_knowledge，从刚才返回的正文中一字不差地复制最能回答问题的那一段；"
+                "正文里没有能直接回答的段落就不要调用。")
 _RULE_BOUND_QUERY = re.compile(r"知识库|文档|按.*(?:最新规则|我们的统计口径|现行规定)")
 _PRIVATE_MODEL_KEY_PARTS = (
     "token",
@@ -103,7 +113,8 @@ _CONVERSATION_RULES = ("\n发货吨位必须调用查询工具，不能引用旧
             "不要自行拆词或换成更宽泛的词连续检索来兜底，也不要将版本说明扩写为制度细则。"
             "引用只能来自实际工具返回的 source_id/title/url，不得生成链接。附件和嵌入表格未读取时必须说明。"
             "PDF 返回的是所列页码的文字层摘录，不是整本正文；仅据实际返回页回答。图示和表格版面未核验，不能推测缺失内容。"
-            "没有读取到明确支持的统计口径时，不能声称按最新规则计算。")
+            "没有读取到明确支持的统计口径时，不能声称按最新规则计算。"
+            "回答业务知识问题时不要自己转述：读取正文后调用 quote_knowledge，原样复制最能回答问题的那一段原文。")
 
 
 def build_system_prompt(*, clock_hint: str, query_context: Mapping[str, Any] | None, with_plugins: bool) -> str:
@@ -268,6 +279,7 @@ class OnlineHarnessSidecar:
         self._plugins = plugin_turn
         self._shipments = ShipmentConversation()
         self._knowledge_results = []
+        self.quotes = []  # verbatim passages sent in this turn (tables get a page picture in step 4b)
         self._completed_result = None
         self._decisions: list[ActionDecision] = []
         self._plugin_requests: tuple[ConversationPluginRequest, ...] = ()
@@ -354,6 +366,8 @@ class OnlineHarnessSidecar:
         descriptors = visible_descriptors(self._catalog)
         model_tools, name_to_id = _model_tools(descriptors)
         model_tools.append(_ASK_USER_TOOL)
+        if any(descriptor.tool_id == "knowledge.search" for descriptor in descriptors):
+            model_tools.append(_QUOTE_TOOL)
         if self._business is not None:
             model_tools.extend(self._business.model_tools())
         if self._plugins is not None:
@@ -377,6 +391,8 @@ class OnlineHarnessSidecar:
         )
         started = time.monotonic()
         calls = 0
+        quote_failures = 0
+        nudged = False
 
         while True:
             remaining = timeout_seconds - (time.monotonic() - started)
@@ -395,7 +411,17 @@ class OnlineHarnessSidecar:
                     # A model sentence is never an execution receipt. A real question
                     # back passes (P1); invented results and vague promises do not.
                     content = NO_EXECUTION_REPLY
-                content = cite_knowledge(content, self._knowledge_results)
+                if self._has_knowledge_evidence():
+                    # Knowledge answers are the document's own words, never the model's.
+                    if not nudged:
+                        nudged = True
+                        transcript.append({"role": "assistant", "content": content})
+                        transcript.append({"role": "user", "content": _QUOTE_NUDGE})
+                        continue
+                    self._decide("knowledge.quote", "read", "REJECT", error_code="KNOWLEDGE_NOT_QUOTED")
+                    content = unquoted_reply(self._knowledge_results)
+                else:
+                    content = cite_knowledge(content, self._knowledge_results)
                 self._completed_result = self._result(content=content, tool_calls=calls)
                 return self._completed_result
             if not isinstance(raw_calls, list) or not raw_calls:
@@ -413,7 +439,8 @@ class OnlineHarnessSidecar:
                 if not call_id or not isinstance(function, Mapping):
                     raise _error("智能模型工具请求无法读取", "HARNESS_PROTOCOL_INVALID")
                 name = str(function.get("name") or "").strip()
-                tool_id = (ASK_USER if name == ASK_USER else name if self._business is not None and self._business.handles(name)
+                tool_id = (ASK_USER if name == ASK_USER else QUOTE_TOOL if name == QUOTE_TOOL
+                           else name if self._business is not None and self._business.handles(name)
                            else name_to_id.get(name))
                 if self._plugins is not None and name in self._plugins.choices:
                     tool_id = name
@@ -454,6 +481,26 @@ class OnlineHarnessSidecar:
             asked = [arguments for _, tool_id, arguments in resolved_calls if tool_id == ASK_USER]
             if asked:
                 return self._ask(asked[0], calls)
+            quoted = [arguments for _, tool_id, arguments in resolved_calls if tool_id == QUOTE_TOOL]
+            if quoted:
+                try:
+                    quote = quote_knowledge(quoted[0], self._knowledge_results)
+                except QuoteError as exc:
+                    quote_failures += 1
+                    self._decide("knowledge.quote", "read", "REJECT", error_code="KNOWLEDGE_QUOTE_INVALID")
+                    if quote_failures >= 2:
+                        self._completed_result = self._result(content=unquoted_reply(self._knowledge_results),
+                                                              tool_calls=calls + len(resolved_calls))
+                        return self._completed_result
+                    for call_id, _tool_id, _arguments in resolved_calls:
+                        transcript.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps(
+                            {"ok": False, "code": "KNOWLEDGE_QUOTE_INVALID", "message": str(exc)}, ensure_ascii=False)})
+                    calls += len(resolved_calls)
+                    continue
+                self._decide("knowledge.quote", "read", "EXECUTE", arguments={"source_id": quote.source_id})
+                self.quotes.append(quote)
+                self._completed_result = self._result(content=quote.render(), tool_calls=calls + len(resolved_calls))
+                return self._completed_result
             business = [(tool_id, arguments) for _, tool_id, arguments in resolved_calls
                         if self._business is not None and self._business.handles(tool_id)]
             if business:
@@ -519,6 +566,10 @@ class OnlineHarnessSidecar:
                 calls += 1
             if selected:
                 return self._start_plugins(selected, calls)
+
+    def _has_knowledge_evidence(self) -> bool:
+        return any(result.get("ok") is True and result.get("items") for result in self._knowledge_results
+                   if isinstance(result, Mapping))
 
     def _ask(self, arguments, calls):
         # A question carries no business data; mask secrets, phones and e-mails only

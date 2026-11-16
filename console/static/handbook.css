@@ -1,4 +1,9 @@
 .handbook { display: grid; gap: 16px; max-width: 1200px; }
+.handbook__tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.handbook__tab { min-height: 44px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: none; font: inherit; color: var(--muted); cursor: pointer; }
+.handbook__tab[aria-selected="true"] { color: var(--text-strong); border-bottom-color: var(--accent, var(--text-strong)); }
+.handbook__tab:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: -2px; }
+.handbook__tabpanel { display: grid; gap: 16px; }
 .handbook__lead { margin: 0; color: var(--muted); font-size: var(--fs-body); line-height: 1.7; }
 .handbook__lead b { color: var(--text-strong); }
 .handbook__status:empty { display: none; }
@@ -28,3 +33,20 @@
 .handbook__trial th, .handbook__trial td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 @media (max-width: 760px) { .handbook__layout { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { .handbook * { transition: none !important; } }
+.handbook__empty { margin: 0; color: var(--muted); font-size: var(--fs-body); }
+.fee__group { display: grid; gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); min-width: 0; }
+.fee__group legend { padding: 0 4px; font-size: var(--fs-body); color: var(--text-strong); }
+.fee__row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.fee__tier { padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
+.fee__tier:last-of-type { border-bottom: 0; }
+.fee__tier-no { flex: 0 0 100%; font-size: 12px; color: var(--muted); }
+.fee__cell { display: grid; gap: 4px; flex: 1 1 110px; min-width: 0; font-size: 12px; color: var(--muted); }
+.fee__cell--doc { flex: 2 1 200px; }
+.fee__cell input, .fee__cell select, .fee__check-text { width: 100%; box-sizing: border-box; min-height: 36px; font: inherit; font-size: var(--fs-body); padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); color: var(--text); }
+.fee__cell input:disabled, .fee__cell select:disabled, .fee__check-text:disabled { background: var(--surface-muted, transparent); color: var(--text); }
+.fee__check { align-items: center; }
+.fee__check input[type="checkbox"] { appearance: auto; width: 18px; height: 18px; flex: none; }
+.fee__remove { flex: none; }
+.fee__hint { margin: 0; color: var(--muted); font-size: var(--fs-body); }
+.handbook__trial caption { text-align: left; padding: 4px 0; color: var(--muted); }
+.try__reply { margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted, transparent); font: inherit; font-size: var(--fs-body); line-height: 1.7; }

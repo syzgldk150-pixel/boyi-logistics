@@ -310,3 +310,48 @@ def test_sidecar_prompts_with_handbook_and_blocks_forbidden_fixed_query():
     assert "“这票到哪了”应选择「查询运单信息」" in prompts[0][0]["content"]
     assert "HANDBOOK_FORBIDDEN" in prompts[1][-1]["content"]
     assert result.decisions[0].decision == "REJECT"
+
+
+def test_api_lets_module_editors_edit_but_only_super_admins_take_effect():
+    """The 业务手册 module grants editing; approve, resume and retire need a super administrator."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from agent.handbook_api import create_handbook_router
+
+    calls = []
+
+    class Service:
+        def save(self, entry_id, **kwargs):
+            calls.append("save")
+            return 2
+
+        def approve(self, entry_id, version, *, actor_id):
+            calls.append("approve")
+
+        def pause(self, entry_id, *, row_version):
+            calls.append("pause")
+
+        def resume(self, entry_id, *, row_version):
+            calls.append("resume")
+
+        def retire(self, entry_id, *, row_version):
+            calls.append("retire")
+
+    def admin(request):
+        return SimpleNamespace(actor_id="7")
+
+    def super_admin(request):
+        raise PermissionError("super administrator required")
+
+    app = FastAPI()
+    app.include_router(create_handbook_router(service_provider=Service, admin_provider=admin,
+                                              super_admin_provider=super_admin))
+    client = TestClient(app, raise_server_exceptions=False)
+    entry = "11111111-2222-4333-8444-555555555555"
+    base = f"/internal/v1/admin/handbook/{entry}"
+    assert client.post(f"{base}/save", json={"title": "t", "body": "b", "row_version": 1}).status_code == 200
+    assert client.post(f"{base}/pause", json={"row_version": 1}).status_code == 200
+    for action, payload in (("approve", {"version": 2}), ("resume", {"row_version": 1}), ("retire", {"row_version": 1})):
+        assert client.post(f"{base}/{action}", json=payload).status_code == 500
+    assert calls == ["save", "pause"]

@@ -125,7 +125,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - `routes/automation.py`
   - `services/automation_plugin_management.py`
   - `static/style.css`
-- 改业务手册页（机器人 Agent 层 P2）：`templates/handbook.html`、`static/handbook.js`、`static/handbook.css`、`services/handbook.py`、`routes/handbook.py`。入口 `/settings/llm/handbook`，从“智能模型”页右上角进入，不新增固定模块或菜单；路由不在权限映射里，按规则只有超级管理员可用。Console 不判断编译结果是否合规，编译、试跑、确认歧义、审核、暂停/恢复/作废都转发 Agent `/internal/v1/admin/handbook/*`。回归见 `tests/test_handbook_console.py`。同目录的复核请求页（P4）为 `/settings/llm/reviews`：`templates/reviews.html`、`static/reviews.js`、`services/reviews.py`，只转发同意/拒绝到 Agent `/internal/v1/admin/reviews/*`；身份管理的机器人写类能力新增“需他人复核”选项（`templates/identity_management.html`）。
+- 改业务手册模块（机器人 Agent 层；2026-11-16 起为第 16 个固定模块“业务手册”，一级菜单）：`templates/handbook.html`、`static/handbook.js`、`static/handbook.css`、`services/handbook.py`、`routes/handbook.py`。入口 `/handbook`，页面按页签组织（“说明条目”；“计算规则”由 `static/handbook_fee_rules.js` 承载，Console `/handbook/fee-rules*` 只转发白名单字段到 Agent `/internal/v1/admin/fee-rules/*`；“试问”由 `static/handbook_try.js` 承载，`/handbook/try` 只转发问题到 Agent `/internal/v1/admin/handbook-try`（`agent/agent/handbook_try_api.py`：按本人机器人权限、同一模型与知识库、只读动作、不执行插件不写入、状态与真实对话分开；只需“业务手册”可见）；知识来源随后加入）；旧 `/settings/llm/handbook` 只重定向。权限由 `shared/identity_routes.handbook_permission` 决定：身份“后台页面”的“业务手册”可见即可查看，可操作即可编写、编译、试跑、确认歧义和暂停；审核生效、恢复生效和作废只允许超级管理员（Console 与 Agent 各自检查），页面只按身份隐藏按钮。Console 不判断编译结果是否合规，编译、试跑、确认歧义、审核、暂停/恢复/作废都转发 Agent `/internal/v1/admin/handbook/*`。回归见 `tests/test_handbook_console.py`。复核请求页（P4）仍在“智能模型”下 `/settings/llm/reviews`，仅超级管理员（`services/reviews.py` 自带检查）：`templates/reviews.html`、`static/reviews.js`、`services/reviews.py`，只转发同意/拒绝到 Agent `/internal/v1/admin/reviews/*`；身份管理的机器人写类能力新增“需他人复核”选项（`templates/identity_management.html`）。
 - 改插件处理流程页（阶段 5，声明了 `flow` 的插件在卡片上显示“处理流程”）：
   - `templates/automation_plugin_flow.html`、`static/plugin_flow.js`、`services/automation_plugin_flow.py`、`routes/automation.py`
   - 仅超级管理员；Console 不判断流程是否合规，查看、AI 调整、试运行都转发 Agent `/internal/v1/automation/instances/{id}/flow*`，保存读取设置上下文后只替换 `config.flow`，经 `plugin-settings` 带配置版本保存。宿主简单设置的表单跳过 `flow` 字段（`automation_catalog_projection.plugin_flow_declared`）。回归见 `tests/test_automation_plugin_flow.py`。
@@ -296,10 +296,10 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 物流跟踪扫描轨迹按扫描时间倒序（最新在上，无时间的平台提示行排最后）；“当前状态”为签收时显示绿色。
 - 物流跟踪“运单详情”页签底部的“签收与回单”区块（规格 ⑥a/⑥b）：只在当前状态为签收（不含“未签收”“应签收”）且轨迹中有带时间的签收扫描时显示；韵达“快件最晚应签收时间”提示行不算签收（Agent `_infer_status` 同步排除）；签收时间、签收网点取该签收扫描行，回单编号（融辉 `getBillByCode` 的 `R_BILLCODE`）／回单号（韵达 INMS 的 `ReturnLogisticsId`）由 Agent 放入 `waybill_stub.receipt_number`。签收人尚无已核实的平台字段，暂不显示。缩略图用真实签收／回单照片（复用 `GET /waybills/photos`，最多 3 张），点开 900×660“签收凭证”查看层：签收单／回单页签带张数、翻页、下载原图。
 - 切换页签时 `console_ui.js` 的 `activateTab` 关闭被隐藏页签中仍打开的模态 `dialog`，否则整页保持 inert、无法点击（2026-11-12：寄件查询详情里点“轨迹跟踪”后物流跟踪页点不动）。
-- 唯一菜单注册目录：`navigation.py`。15 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 唯一菜单注册目录：`navigation.py`。16 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
 - 桌面侧栏分组只由 `navigation.py` 的 `NAVIGATION_GROUPS` 与注册项 `group` 字段决定（当前“运单业务”收纳运单录入、寄件运单查询、物流跟踪、回单管理）；模板按连续同组项渲染可折叠分组，移动底栏和更多面板仍为平铺。侧栏“搜索页面（⌘K）”只在浏览器内过滤已有导航项；收起侧栏与分组展开状态是浏览器本地便利偏好，不进入 `ui_preferences_json`。视觉令牌与组件尺寸以根目录 `DESIGN.md` 为准。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
-- 模块代码注册状态目录：`module_status_registry.py`。它按 15 个固定模块顺序登记唯一 `code_registered`；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
+- 模块代码注册状态目录：`module_status_registry.py`。它按 16 个固定模块顺序登记唯一 `code_registered`；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
 - 系统区可见固定模块顺序为“智能模型 → 系统管理”，不再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。原事项中心 `/work-items` 已于 2026-11 删除。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。
 - 偏好存储：`admin_users.ui_preferences_json`，由 `agent/migrations/008_admin_ui_preferences.sql` 在部署期创建；运行时只能校验和读写，不得执行 DDL。Basic Auth 没有管理员 ID，必须返回明确的不可同步错误。
 - 统一 Logo：使用内容哈希命名的 `static/assets/boyi-logistics-logo-7e1f2994.webp`。字体按首屏、常用字与完整回退分层存放在 `static/assets/fonts/`，中文固定用思源黑体，英文和数字固定用 Inter；Feather 图标固定使用 `static/vendor/feather-4.29.2.min.js`。不得引入在线字体或图标服务。发布白名单只允许 `console/static/` 下的源码 WebP，不得扩大到运行时图片目录。移动公共交互位于 `templates/base.html`、`static/style.css`、`static/console_ui.js`，需保持安全区、44px 触控、键盘焦点、焦点锁定与 `prefers-reduced-motion` 支持。
@@ -317,7 +317,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 
 ## 固定业务模块
 
-- 15 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新调用 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
+- 16 个固定模块不再由旧数据库生命周期状态、版本或 Agent 可达性控制；导航、页面、API 与新调用 只依赖代码注册、既有登录/角色权限和各业务自身前置条件。不得重新引入生命周期状态门禁，也不得改变现有模块权限。
 - 插件管理不是固定业务模块，只在“自动化”页投影 Agent 真实 Catalog 中的 `SERVICE_V2` 包；不得把固定模块包装成插件，也不得虚构尚未实现的 Connector 类型。
 - `/settings/modules` 只重定向到 `/settings/accounts`；旧 `/settings/modules/data`、详情和 audit 路径仅为真实 MySQL `super_admin` 保留签名只读兼容，生命周期 POST 不再路由。原 `/settings/system-status` 页面、菜单与 `console.menu.system_status.view` 权限已删除（返回 404）。
 

@@ -2,24 +2,26 @@
 
 {% block title %}业务手册 · {{ app_title }}{% endblock %}
 {% block breadcrumb %}业务手册{% endblock %}
-{% block subtitle %}智能模型 / 机器人业务手册{% endblock %}
+{% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261115-p2">{% endblock %}
-
-{% block page_actions %}
-<a class="ghost-btn" data-console-navigate href="/settings/llm"><i data-feather="arrow-left"></i>返回智能模型</a>
-{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261116-module">{% endblock %}
 
 {% block content %}
-<section class="handbook" data-handbook aria-labelledby="handbook-list-title">
-  <p class="handbook__lead">用平常的话写业务说明，机器人据此理解大家的说法。一条说明要经过<b>编译 → 系统校验 → 试跑 → 超级管理员审核</b>才生效；生效后再修改会<b>立即暂停</b>，直到新版本审核通过。说明只能帮助机器人理解，<b>不能扩大任何人的权限</b>；现有功能做不到的要求会整理成开发需求，不会生效。</p>
+<section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-labelledby="handbook-list-title">
+  <nav class="handbook__tabs" role="tablist" aria-label="业务手册">
+    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-entries" aria-selected="true" aria-controls="handbook-panel-entries" data-handbook-tab="entries">说明条目</button>
+    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="false" aria-controls="handbook-panel-fees" data-handbook-tab="fees" tabindex="-1">计算规则</button>
+    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-try" aria-selected="false" aria-controls="handbook-panel-try" data-handbook-tab="try" tabindex="-1">试问</button>
+  </nav>
+  <div id="handbook-panel-entries" role="tabpanel" aria-labelledby="handbook-tab-entries" class="handbook__tabpanel">
+  <p class="handbook__lead">用平常的话写业务说明，机器人据此理解大家的说法。一条说明要经过<b>编译 → 系统校验 → 试跑 → 超级管理员审核</b>才生效；生效后再修改会<b>立即暂停</b>，直到新版本审核通过。说明只能帮助机器人理解，<b>不能扩大任何人的权限</b>；现有功能做不到的要求会整理成开发需求，不会生效。{% if not can_edit %}当前身份只能查看。{% elif not is_super_admin %}你可以编写和试跑，审核生效由超级管理员完成。{% endif %}</p>
   <div class="handbook__status" data-handbook-status role="status" aria-live="polite"></div>
 
   <div class="handbook__layout">
     <aside class="handbook__panel handbook__list" aria-labelledby="handbook-list-title">
       <div class="handbook__panel-head">
         <h2 id="handbook-list-title">业务说明</h2>
-        <button class="ghost-btn" type="button" data-handbook-new><i data-feather="plus"></i><span>新建</span></button>
+        {% if can_edit %}<button class="ghost-btn" type="button" data-handbook-new><i data-feather="plus"></i><span>新建</span></button>{% endif %}
       </div>
       <ul class="handbook__entries" data-handbook-entries></ul>
     </aside>
@@ -30,21 +32,55 @@
         <span class="handbook__badge" data-handbook-entry-status hidden></span>
       </div>
       <label class="handbook__field"><span>标题</span>
-        <input type="text" maxlength="100" data-handbook-title placeholder="例如：网点简称与报价说法">
+        <input type="text" maxlength="100" data-handbook-title{% if not can_edit %} readonly{% endif %} placeholder="例如：网点简称与报价说法">
       </label>
       <label class="handbook__field"><span>说明</span>
-        <textarea rows="8" maxlength="4000" data-handbook-body placeholder="例如：大家说“岳麓店”就是长沙岳麓区网点。“报个价”“问个价”都是要三平台报价。到货清单同步只能在下午 3 点后由仓库主管发起，其他人要先问。"></textarea>
+        <textarea rows="8" maxlength="4000" data-handbook-body{% if not can_edit %} readonly{% endif %} placeholder="例如：大家说“岳麓店”就是长沙岳麓区网点。“报个价”“问个价”都是要三平台报价。到货清单同步只能在下午 3 点后由仓库主管发起，其他人要先问。"></textarea>
       </label>
-      <div class="handbook__actions">
+      <div class="handbook__actions"{% if not can_edit %} hidden{% endif %}>
         <button class="primary-btn" type="button" data-handbook-save><i data-feather="save"></i><span>保存说明</span></button>
         <button class="ghost-btn" type="button" data-handbook-compile hidden><i data-feather="cpu"></i><span>交给 AI 编译</span></button>
       </div>
       <div data-handbook-result hidden></div>
     </section>
   </div>
+  </div>
+
+  <div id="handbook-panel-fees" role="tabpanel" aria-labelledby="handbook-tab-fees" class="handbook__tabpanel" data-fee-rules hidden>
+    <p class="handbook__lead">机器人算钱只按这里<b>审核生效</b>的规则。计算方式由系统固定，单价、档位、执行日期和出处在这里填写；每一项都要写明出处（文档名和页码或条款）。流程是<b>编辑草稿 → 提交审核 → 超级管理员审核生效</b>，生效的版本不能再改，要改就复制成新草稿。单据按<b>开单日期</b>选用当时生效的版本；草稿和待审核版本只能试算，不会对外报金额。</p>
+    <div class="handbook__status" data-fee-status role="status" aria-live="polite"></div>
+    <div class="handbook__layout">
+      <aside class="handbook__panel" aria-labelledby="fee-list-title">
+        <div class="handbook__panel-head"><h2 id="fee-list-title">规则版本</h2></div>
+        <ul class="handbook__entries" data-fee-list></ul>
+      </aside>
+      <section class="handbook__panel" aria-labelledby="fee-editor-title" data-fee-editor>
+        <p class="handbook__empty" data-fee-empty>从左侧选择一个版本。</p>
+      </section>
+    </div>
+  </div>
+
+  <div id="handbook-panel-try" role="tabpanel" aria-labelledby="handbook-tab-try" class="handbook__tabpanel" data-handbook-try hidden>
+    <p class="handbook__lead">输入一个问题，看机器人会怎么回答：会引用哪段原文、按哪条规则算出多少。按<b>你自己的机器人权限</b>，用与飞书、微信相同的模型、知识库、业务手册和计算规则；只做查询和计算，<b>不执行插件、不写入、不发到飞书或微信</b>。会实际调用模型并实时查询原平台。</p>
+    <section class="handbook__panel" aria-labelledby="try-title">
+      <h2 id="try-title">试问</h2>
+      <label class="handbook__field"><span>问题</span>
+        <textarea rows="3" maxlength="500" data-try-question placeholder="例如：破损件怎么处理？ / R000XXXXXXXX 送5楼没电梯，上楼费多少？"></textarea></label>
+      <div class="handbook__actions"><button class="primary-btn" type="button" data-try-send><i data-feather="send"></i><span>试问</span></button></div>
+      <div class="handbook__status" data-try-status role="status" aria-live="polite"></div>
+      <div data-try-result hidden>
+        <h3>机器人会回复</h3>
+        <pre class="try__reply" data-try-reply></pre>
+        <h3>依据与步骤</h3>
+        <ul data-try-steps></ul>
+      </div>
+    </section>
+  </div>
 </section>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/handbook.js?v=20261115-p2"></script>
+<script src="/static/handbook.js?v=20261116-module"></script>
+<script src="/static/handbook_fee_rules.js?v=20261116-fees"></script>
+<script src="/static/handbook_try.js?v=20261116-try"></script>
 {% endblock %}

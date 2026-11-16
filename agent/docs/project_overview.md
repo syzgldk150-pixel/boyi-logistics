@@ -4,7 +4,7 @@ type: 架构文档
 tags: [项目总览, Agent控制平面, OCR, 价格获取, 财务工作台, 财务对账, 车辆调度, AI客服]
 related: [code_navigation_index.md, database_migrations.md, ocr/module_overview.md, finance_module.md, dispatch/module_overview.md, ai_service/module_overview.md]
 status: active
-updated: 2026-11-15
+updated: 2026-11-16
 ---
 
 # 物流 Agent 项目总览
@@ -56,7 +56,7 @@ updated: 2026-11-15
 ## 项目定位
 
 `物流 Agent` 是统一承接物流业务数据、流程和服务的 Agent + Console 双服务项目，不是单一 OCR
-工具。`shared/business_modules.py` 是当前 15 个 Console 菜单身份的唯一不可变代码目录：
+工具。`shared/business_modules.py` 是当前 16 个 Console 菜单身份的唯一不可变代码目录：
 
 | 模块代码 | 菜单 | 主页面 | 运行身份 |
 |---|---|---|---|

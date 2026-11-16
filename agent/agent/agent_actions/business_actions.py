@@ -9,6 +9,10 @@ Console pages use), always live against the platform:
   result*; the reply text must be the person's own words; always confirmed;
 * ``query_receipts``  — receipts on the platforms, by date window.
 
+* ``upstairs_fee``    — upstairs fee for one Ronghui waybill by the rules approved
+  in 业务手册 → 计算规则 (see ``fee_actions``); floor and elevator come only
+  from the person's words and are asked when missing.
+
 Dates are closed options resolved by code in China time; result lists are
 rendered by code, capped, and numbered so a follow-up can say "第 2 条".
 Receipt audit and mark-read are not offered yet (see the module docs).
@@ -21,6 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Sequence
 
+from agent.agent_actions import fee_actions
 from agent.agent_actions.gateway import ActionGateway, GatewayDecision
 from agent.agent_actions.pending import PendingConfirmations
 from agent.agent_actions.spec import ActionSpec
@@ -64,6 +69,12 @@ SPECS: dict[str, tuple[ActionSpec, str]] = {
             "direction": {"type": "string", "enum": ["send", "receive"]},
             "waybill_no": {"type": "string", "maxLength": 100}}}),
         "实时查询原平台回单。direction：send 寄件回单（默认），receive 派件回单（仅融辉）；period 同上；waybill_no 只填用户原话里的单号。"),
+    "upstairs_fee": (ActionSpec(
+        action_id="fee.upstairs", title="计算上楼费", effect="read", capability="business.query",
+        input_schema={"type": "object", "additionalProperties": False, "properties": {
+            "tracking_number": {"type": "string", "maxLength": 40}}}),
+        "按后台“业务手册 → 计算规则”里已生效的上楼费规则，计算一票融辉运单的上楼费。tracking_number 只填用户原话里的完整单号；"
+        "用户在补充楼层或电梯（例如“5楼 无电梯”）时不填单号，沿用上一次。楼层和电梯由系统从用户原话里读取，不要填写。"),
 }
 
 Invoke = Callable[[str, dict[str, Any], Mapping[str, Any], str], Mapping[str, Any]]
@@ -108,21 +119,29 @@ class BusinessActions:
 
     def __init__(self, *, invoke: Invoke, cs_accounts: Callable[[], Sequence[Mapping[str, str]]],
                  identity_access: Any = None, today: Callable[[], date] | None = None,
-                 clock: Callable[[], float] = time.monotonic, reviews: Any = None) -> None:
-        self._invoke, self._cs_accounts, self.reviews = invoke, cs_accounts, reviews
+                 clock: Callable[[], float] = time.monotonic, reviews: Any = None,
+                 fee_rules: Callable[[str], Sequence[Mapping[str, Any]]] | None = None) -> None:
+        self._invoke, self._cs_accounts, self.reviews, self._fee_rules = invoke, cs_accounts, reviews, fee_rules
         self.gateway = ActionGateway(identity_access=identity_access)
         self._today = today or (lambda: datetime.now(CHINA).date())
         self._results: PendingConfirmations[list[dict[str, Any]]] = PendingConfirmations(RESULT_TTL_SECONDS, clock=clock)
         self._pending: PendingConfirmations[PendingReply] = PendingConfirmations(CONFIRM_TTL_SECONDS, clock=clock)
+        self._upstairs: PendingConfirmations[fee_actions.UpstairsState] = PendingConfirmations(
+            fee_actions.STATE_TTL_SECONDS, clock=clock)
 
-    def turn(self, actor: Any, request_id: str = "") -> "BusinessTurn":
-        return BusinessTurn(self, actor, request_id)
+    def turn(self, actor: Any, request_id: str = "", *, trial: bool = False) -> "BusinessTurn":
+        """``trial``: 业务手册 → 试问 — read actions only, in state kept apart from the person's real chats."""
+        return BusinessTurn(self, actor, request_id, trial=trial)
 
 
 class BusinessTurn:
-    def __init__(self, actions: BusinessActions, actor: Any, request_id: str = "") -> None:
+    def __init__(self, actions: BusinessActions, actor: Any, request_id: str = "", *, trial: bool = False) -> None:
         self.actions, self.actor, self.request_id = actions, actor, request_id or str(uuid.uuid4())
-        self._key = str(getattr(actor, "actor_id", ""))
+        self.trial = trial
+        self._key = str(getattr(actor, "actor_id", "")) + (":trial" if trial else "")
+        if trial:
+            self.model_tools = self._trial_model_tools
+            self.handles = self._trial_handles
 
     # -- model surface -----------------------------------------------------------------
 
@@ -135,6 +154,15 @@ class BusinessTurn:
     @staticmethod
     def handles(name: str) -> bool:
         return name.startswith(PREFIX) and name[len(PREFIX):] in SPECS
+
+    @staticmethod
+    def _trial_model_tools() -> list[dict[str, Any]]:
+        return [tool for tool in BusinessTurn.model_tools()
+                if not SPECS[tool["function"]["name"][len(PREFIX):]][0].writes]
+
+    @staticmethod
+    def _trial_handles(name: str) -> bool:
+        return BusinessTurn.handles(name) and not SPECS[name[len(PREFIX):]][0].writes
 
     @staticmethod
     def titles() -> dict[str, str]:
@@ -192,6 +220,12 @@ class BusinessTurn:
             return f"{spec.title}：{decision.reason}，没有执行。", record("REJECT", decision.error_code)
         if spec.action_id == "cs.reply_problem":
             return self._prepare_reply(decision, record, review=decision.decision == "REVIEW")
+        if spec.action_id == "fee.upstairs":
+            try:
+                text, kind = self._upstairs_fee(decision.arguments, message)
+            except fee_actions.FeeActionError as exc:
+                return str(exc), record("REJECT", exc.code)
+            return text, record(kind)
         try:
             text = (self._query_problems if spec.action_id == "cs.query_problems" else self._query_receipts)(decision.arguments)
         except BusinessActionError as exc:
@@ -220,6 +254,35 @@ class BusinessTurn:
         minutes = CONFIRM_TTL_SECONDS // 60
         return (f"将{pending.describe()}。回复“确认”提交，回复“取消”放弃；{minutes} 分钟内有效。",
                 record("CONFIRM"))
+
+    def _upstairs_fee(self, arguments: Mapping[str, Any], message: str) -> tuple[str, str]:
+        """Read the waybill live once per conversation thread; ask for what the waybill cannot tell."""
+        if self.actions._fee_rules is None:
+            raise fee_actions.FeeActionError("FEE_RULES_UNAVAILABLE", "计算规则当前不可用。")
+        from agent.tracking_number_validation import infer_tracking_provider
+
+        store, key = self.actions._upstairs, (self._key, "upstairs")
+        state = store.peek(key)
+        tracking = arguments.get("tracking_number")
+        if tracking and (state is None or state.tracking_number != tracking):
+            if infer_tracking_provider(tracking) != "ronghui":
+                raise fee_actions.FeeActionError("FEE_PLATFORM_UNSUPPORTED", "上楼费目前只按融辉运单计算，请发融辉单号。")
+            result = self._call("query_waybill_detail", {"bill_codes": [tracking], "decrypt_masked": False})
+            if not result.get("ok"):
+                raise fee_actions.FeeActionError(str(result.get("error_code") or "WAYBILL_QUERY_FAILED"),
+                                                 f"查询运单失败：{redact_text(result.get('error') or '原平台未返回')[:160]}")
+            facts = fee_actions.waybill_facts(tracking, result.get("data"))
+            state = fee_actions.UpstairsState(tracking, facts, notes=fee_actions.reminders(facts))
+        if state is None:
+            return "请把要计算上楼费的融辉运单号发给我。", "CLARIFY"
+        floor, elevator = fee_actions.parse_floor(message), fee_actions.parse_elevator(message)
+        state.floor = floor if floor is not None else state.floor
+        state.elevator = elevator if elevator is not None else state.elevator
+        if state.floor is None or state.elevator is None:
+            store.remember(key, state)
+            return fee_actions.missing_question(state), "CLARIFY"
+        store.remember(key, state)  # "那 3 楼呢" recalculates the same waybill without asking again
+        return fee_actions.render(state, lambda: self.actions._fee_rules("upstairs")), "EXECUTE"
 
     def _accounts(self, platform: str) -> list[Mapping[str, str]]:
         accounts = [item for item in self.actions._cs_accounts() if platform in {"all", item.get("platform")}]

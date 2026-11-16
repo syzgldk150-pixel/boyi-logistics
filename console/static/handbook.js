@@ -14,7 +14,10 @@
     const root = document.querySelector("[data-handbook]");
     if (!root || root.dataset.bound === "true") return;
     root.dataset.bound = "true";
-    const base = "/settings/llm/handbook/entries";
+    const base = "/handbook/entries";
+    // Display only: the Console and the Agent both enforce who may edit or approve.
+    const canEdit = root.dataset.canEdit === "true";
+    const superAdmin = root.dataset.superAdmin === "true";
     const pageFetch = window.ConsoleUI?.pageRequest ? window.ConsoleUI.pageRequest() : window.fetch.bind(window);
     const $ = (selector) => root.querySelector(selector);
     const state = { entries: [], current: null, busy: false };
@@ -91,7 +94,7 @@
           parts.push(`<div class="handbook__block"><h3>需要人确认的歧义</h3>
             ${compiled.ambiguities.map((item, index) => `<label class="handbook__check"><input type="checkbox" data-ack value="${index}" ${acknowledged.has(index) ? "checked" : ""}><span>${escapeHtml(item)}</span></label>`).join("")}
             <p class="handbook__lead">每一条都要么修改说明消除，要么勾选表示“已核实，按复述执行”。</p>
-            <div class="handbook__actions"><button class="ghost-btn" type="button" data-handbook-ack>保存勾选</button></div></div>`);
+            <div class="handbook__actions"${canEdit ? "" : " hidden"}><button class="ghost-btn" type="button" data-handbook-ack>保存勾选</button></div></div>`);
         }
         if (compiled.unsupported?.length) {
           parts.push(`<div class="handbook__block"><h3 class="handbook__warn">开发需求（现有功能做不到，不会生效）</h3><ul>${compiled.unsupported.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`);
@@ -103,18 +106,22 @@
             <table class="handbook__trial"><thead><tr><th>说法</th><th>应选</th><th>生效前</th><th>生效后</th></tr></thead><tbody>
             ${trial.rows.map((row) => `<tr><td>${escapeHtml(row.utterance)}</td><td>${escapeHtml(row.expected_title)}</td><td>${escapeHtml(actionTitle(row.before, row.before_title))}</td><td class="${row.pass ? "" : "handbook__error"}">${escapeHtml(actionTitle(row.after, row.after_title))}</td></tr>`).join("")}
             </tbody></table>` : ""}
-          <div class="handbook__actions"><button class="ghost-btn" type="button" data-handbook-trial><i data-feather="play"></i><span>试跑</span></button></div></div>`);
+          <div class="handbook__actions"${canEdit ? "" : " hidden"}><button class="ghost-btn" type="button" data-handbook-trial><i data-feather="play"></i><span>试跑</span></button></div></div>`);
       }
       const blockers = latest.blockers || [];
       const controls = [];
       if (latest.status === "COMPILED") {
-        controls.push(blockers.length
-          ? `<ul>${blockers.map((item) => `<li class="handbook__warn">${escapeHtml(item)}</li>`).join("")}</ul>`
-          : '<button class="primary-btn" type="button" data-handbook-approve><i data-feather="check"></i><span>审核通过并生效</span></button>');
+        if (blockers.length) {
+          controls.push(`<ul>${blockers.map((item) => `<li class="handbook__warn">${escapeHtml(item)}</li>`).join("")}</ul>`);
+        } else if (superAdmin) {
+          controls.push('<button class="primary-btn" type="button" data-handbook-approve><i data-feather="check"></i><span>审核通过并生效</span></button>');
+        } else {
+          controls.push('<p>已可审核，请超级管理员审核生效。</p>');
+        }
       }
-      if (entry.status === "ACTIVE") controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="pause">暂停</button>');
-      if (entry.status === "PAUSED" && entry.active_version === entry.latest_version) controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="resume">恢复生效</button>');
-      controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="retire">作废</button>');
+      if (canEdit && entry.status === "ACTIVE") controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="pause">暂停</button>');
+      if (superAdmin && entry.status === "PAUSED" && entry.active_version === entry.latest_version) controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="resume">恢复生效</button>');
+      if (superAdmin) controls.push('<button class="ghost-btn" type="button" data-handbook-status-action="retire">作废</button>');
       parts.push(`<div class="handbook__block"><h3>审核</h3><div class="handbook__actions">${controls.join("")}</div></div>`);
       node.innerHTML = parts.join("");
       node.hidden = false;

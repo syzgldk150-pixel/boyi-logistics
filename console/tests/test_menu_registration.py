@@ -45,6 +45,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "automations",
         "warehouse_monitor",
         "harness",
+        "handbook",
         "automation_accounts",
         "llm_settings",
         "system_settings",
@@ -69,7 +70,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
 
 
 def test_system_status_menu_is_retired() -> None:
-    assert len(BUSINESS_MODULE_CATALOG) == 15
+    assert len(BUSINESS_MODULE_CATALOG) == 16
     assert CONSOLE_MENU_REGISTRATIONS[-1].menu_id == "system_settings"
     assert "/settings/system-status" not in NAVIGATION_BY_ROUTE
     assert "/settings/modules" not in {item["route"] for item in MOBILE_NAVIGATION_CANDIDATES}

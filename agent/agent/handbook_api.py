@@ -1,4 +1,11 @@
-"""Signed Console API for the business handbook (agent layer P2); super administrators only."""
+"""Signed Console API for the business handbook (agent layer P2).
+
+The request middleware already checked the live identity against
+``shared.identity_routes.agent_permission``: the 业务手册 module grants reading
+and editing; taking effect (approve, resume) and retiring need a super
+administrator. Each route here still requires a live Console administrator and
+re-checks the super-administrator actions itself.
+"""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -49,6 +56,7 @@ def _failure(exc: HandbookError) -> JSONResponse:
 
 
 def create_handbook_router(*, service_provider: Callable[[], Any],
+                           admin_provider: Callable[[Request], Any],
                            super_admin_provider: Callable[[Request], Any]) -> APIRouter:
     router = APIRouter(prefix="/internal/v1/admin/handbook", route_class=EnvelopedRoute)
 
@@ -60,7 +68,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.get("")
     async def list_entries(request: Request):
-        super_admin_provider(request)
+        admin_provider(request)
         try:
             return api_success({"entries": await run_in_threadpool(service().list_entries)})
         except HandbookError as exc:
@@ -68,7 +76,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("")
     async def create_entry(req: NoteRequest, request: Request):
-        actor = super_admin_provider(request)
+        actor = admin_provider(request)
         try:
             entry_id = await run_in_threadpool(lambda: service().create(title=req.title, body=req.body,
                                                                         actor_id=actor.actor_id))
@@ -78,7 +86,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.get("/{entry_id}")
     async def get_entry(entry_id: str, request: Request):
-        actor = super_admin_provider(request)
+        actor = admin_provider(request)
         try:
             return api_success(await run_in_threadpool(lambda: service().get_entry(entry_id, actor=actor)))
         except HandbookError as exc:
@@ -86,7 +94,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("/{entry_id}/save")
     async def save_entry(entry_id: str, req: SaveRequest, request: Request):
-        actor = super_admin_provider(request)
+        actor = admin_provider(request)
         try:
             version = await run_in_threadpool(lambda: service().save(
                 entry_id, title=req.title, body=req.body, actor_id=actor.actor_id, row_version=req.row_version))
@@ -96,7 +104,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("/{entry_id}/compile")
     async def compile_entry(entry_id: str, request: Request):
-        actor = super_admin_provider(request)
+        actor = admin_provider(request)
         try:
             return api_success(await service().compile(entry_id, actor=actor))
         except HandbookError as exc:
@@ -104,7 +112,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("/{entry_id}/trial")
     async def trial_entry(entry_id: str, request: Request):
-        actor = super_admin_provider(request)
+        actor = admin_provider(request)
         try:
             return api_success(await service().trial(entry_id, actor=actor))
         except HandbookError as exc:
@@ -112,7 +120,7 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("/{entry_id}/acknowledge")
     async def acknowledge(entry_id: str, req: AcknowledgeRequest, request: Request):
-        super_admin_provider(request)
+        admin_provider(request)
         try:
             await run_in_threadpool(lambda: service().acknowledge(entry_id, req.version, req.indices))
             return api_success({"acknowledged": sorted(set(req.indices))})
@@ -130,10 +138,10 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("/{entry_id}/{action}")
     async def change_status(entry_id: str, action: str, req: StatusRequest, request: Request):
-        super_admin_provider(request)
         handlers = {"pause": "pause", "retire": "retire", "resume": "resume"}
         if action not in handlers:
             return JSONResponse(status_code=404, content=api_failure("NOT_FOUND", "不支持的操作"))
+        (admin_provider if action == "pause" else super_admin_provider)(request)
         try:
             await run_in_threadpool(lambda: getattr(service(), handlers[action])(entry_id, row_version=req.row_version))
             return api_success({"action": action})

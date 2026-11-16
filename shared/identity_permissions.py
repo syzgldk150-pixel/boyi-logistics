@@ -35,6 +35,7 @@ CONSOLE_MODULES = {
     "plugins.execute": ("自动化", "可见：查看插件与执行记录；可操作：手动执行、确认候选", True),
     "finance": ("财务", "可见：查看单据、汇总和分析；可操作：制单、采集与处理财务单据", True),
     "accounts.manage": ("业务账号", "可见：查看各平台账号状态；可操作：维护账号与登录", True),
+    "handbook": ("业务手册", "可见：查看机器人业务说明；可操作：编写、编译、试跑并提交审核（审核生效只能由超级管理员）", True),
     "ai_assistant": ("AI 助手", "打开后台 AI 助手页面；能问什么、能执行什么按“机器人”权限", False),
 }
 CONSOLE_LEVELS = ("view", "operate")
