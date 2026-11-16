@@ -11,6 +11,7 @@
   <nav class="handbook__tabs" role="tablist" aria-label="业务手册">
     <button class="handbook__tab" type="button" role="tab" id="handbook-tab-entries" aria-selected="true" aria-controls="handbook-panel-entries" data-handbook-tab="entries">说明条目</button>
     <button class="handbook__tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="false" aria-controls="handbook-panel-fees" data-handbook-tab="fees" tabindex="-1">计算规则</button>
+    <button class="handbook__tab" type="button" role="tab" id="handbook-tab-sources" aria-selected="false" aria-controls="handbook-panel-sources" data-handbook-tab="sources" tabindex="-1">知识来源</button>
     <button class="handbook__tab" type="button" role="tab" id="handbook-tab-try" aria-selected="false" aria-controls="handbook-panel-try" data-handbook-tab="try" tabindex="-1">试问</button>
   </nav>
   <div id="handbook-panel-entries" role="tabpanel" aria-labelledby="handbook-tab-entries" class="handbook__tabpanel">
@@ -60,6 +61,22 @@
     </div>
   </div>
 
+  <div id="handbook-panel-sources" role="tabpanel" aria-labelledby="handbook-tab-sources" class="handbook__tabpanel" data-handbook-sources hidden>
+    <p class="handbook__lead">机器人能读的飞书知识库文档，以及它们被哪条计算规则引用。系统每天 08:30 检查一次：<b>被引用的文档有改动</b>，或出现<b>标题像收费通知的新文档</b>，会推送给超级管理员并列在下面。系统<b>只提醒，不会自动修改规则</b>；检查过规则后请标记“已检查”。</p>
+    <div class="handbook__status" data-sources-status role="status" aria-live="polite"></div>
+    <section class="handbook__panel" aria-labelledby="reminders-title">
+      <div class="handbook__panel-head"><h2 id="reminders-title">提醒</h2>
+        {% if can_edit %}<button class="ghost-btn" type="button" data-sources-scan><i data-feather="refresh-cw"></i><span>立即检查</span></button>{% endif %}</div>
+      <p class="fee__hint" data-sources-last></p>
+      <ul class="handbook__entries" data-sources-reminders></ul>
+    </section>
+    <section class="handbook__panel" aria-labelledby="documents-title">
+      <h2 id="documents-title">知识库文档</h2>
+      <div class="sources__table-wrap"><table class="handbook__trial"><thead><tr><th scope="col">文档</th><th scope="col">空间</th><th scope="col">最后编辑</th><th scope="col">被规则引用</th></tr></thead>
+        <tbody data-sources-documents></tbody></table></div>
+    </section>
+  </div>
+
   <div id="handbook-panel-try" role="tabpanel" aria-labelledby="handbook-tab-try" class="handbook__tabpanel" data-handbook-try hidden>
     <p class="handbook__lead">输入一个问题，看机器人会怎么回答：会引用哪段原文、按哪条规则算出多少。按<b>你自己的机器人权限</b>，用与飞书、微信相同的模型、知识库、业务手册和计算规则；只做查询和计算，<b>不执行插件、不写入、不发到飞书或微信</b>。会实际调用模型并实时查询原平台。</p>
     <section class="handbook__panel" aria-labelledby="try-title">
@@ -83,4 +100,5 @@
 <script src="/static/handbook.js?v=20261116-module"></script>
 <script src="/static/handbook_fee_rules.js?v=20261116-fees"></script>
 <script src="/static/handbook_try.js?v=20261116-try"></script>
+<script src="/static/handbook_sources.js?v=20261116-sources"></script>
 {% endblock %}

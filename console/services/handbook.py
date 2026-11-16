@@ -138,3 +138,21 @@ class HandbookServiceMixin:
         result = self._agent_request("POST", "/internal/v1/admin/handbook-try", payload={"question": question.strip()},
                                      timeout=75, console_principal=context["_console_principal"])
         self._handbook_reply(handler, result, "试问失败，请稍后重试。")
+
+    # -- 知识来源 -------------------------------------------------------------------------
+
+    def _handle_knowledge_sources(self, handler: BaseHTTPRequestHandler, action: str, reminder_id: int | None) -> None:
+        """List documents and reminders, run a scan, or mark one reminder checked (all decided by the Agent)."""
+        context = self._handbook_context(handler, write=action != "view")
+        if context is None:
+            return
+        principal = context["_console_principal"]
+        if action == "view":
+            result = self._agent_request("GET", "/internal/v1/admin/knowledge-sources", timeout=15, console_principal=principal)
+        elif action == "scan":
+            result = self._agent_request("POST", "/internal/v1/admin/knowledge-sources/scan", payload={}, timeout=60,
+                                         console_principal=principal)
+        else:
+            result = self._agent_request("POST", f"/internal/v1/admin/knowledge-sources/reminders/{int(reminder_id)}/check",
+                                         payload={}, timeout=15, console_principal=principal)
+        self._handbook_reply(handler, result, "知识来源暂时无法读取。")

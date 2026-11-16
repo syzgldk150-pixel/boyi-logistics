@@ -50,3 +50,5 @@
 .fee__hint { margin: 0; color: var(--muted); font-size: var(--fs-body); }
 .handbook__trial caption { text-align: left; padding: 4px 0; color: var(--muted); }
 .try__reply { margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-muted, transparent); font: inherit; font-size: var(--fs-body); line-height: 1.7; }
+.sources__reminder { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-body); }
+.sources__table-wrap { overflow-x: auto; }

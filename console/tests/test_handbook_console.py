@@ -220,3 +220,24 @@ class HandbookTryConsoleTests(_ConsoleCase):
         html = HandbookPageTests()._render({"id": 1, "role": "super_admin", "is_legacy_basic_auth": False})
         self.assertIn('data-handbook-tab="try"', html)
         self.assertIn("/static/handbook_try.js", html)
+
+
+class KnowledgeSourcesConsoleTests(_ConsoleCase):
+    def test_routes_and_forwarding(self):
+        from routes import handbook
+        seen = []
+        app = types.SimpleNamespace(_handle_knowledge_sources=lambda h, action, rid: seen.append((action, rid)))
+        self.assertTrue(handbook.handle_get(app, None, "/handbook/sources", "", {}))
+        self.assertTrue(handbook.handle_post(app, None, "/handbook/sources/scan", "", {}))
+        self.assertTrue(handbook.handle_post(app, None, "/handbook/sources/reminders/12/check", "", {}))
+        self.assertFalse(handbook.handle_post(app, None, "/handbook/sources/reminders/x/check", "", {}))
+        self.assertEqual([("view", None), ("scan", None), ("check", 12)], seen)
+        app, calls = self._app(lambda *a: {"ok": True, "data": {}}, roles=("admin",))
+        app._handle_knowledge_sources(_handler({}), "check", 12)
+        self.assertEqual("/internal/v1/admin/knowledge-sources/reminders/12/check", calls[0]["endpoint"])
+        self.assertEqual({}, calls[0]["payload"])
+
+    def test_page_has_the_sources_tab(self):
+        html = HandbookPageTests()._render({"id": 1, "role": "super_admin", "is_legacy_basic_auth": False})
+        self.assertIn('data-handbook-tab="sources"', html)
+        self.assertIn("/static/handbook_sources.js", html)

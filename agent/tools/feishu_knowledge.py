@@ -298,6 +298,25 @@ class FeishuKnowledgeSource:
                 "body_complete": not is_pdf, "embedded_content_read": False, **pdf_metadata,
                 "authority": "untrusted_business_document"}
 
+    def list_documents(self) -> list[dict]:
+        """Every node of the authorized spaces (title, kind, last edit), for 业务手册 → 知识来源; no bodies are read."""
+        if not self._slots.acquire(blocking=False):
+            _fail("KNOWLEDGE_BUSY", "知识读取暂忙，请稍后重试。")
+        deadline = time.monotonic() + 25
+        try:
+            documents = []
+            for space_name, space_id in self._spaces(deadline):
+                for node in self._nodes(space_id, deadline):
+                    title = node.get("title")
+                    documents.append({"space": space_name, "node_token": _identity(node.get("node_token")),
+                                      "obj_token": node.get("obj_token") if isinstance(node.get("obj_token"), str) else "",
+                                      "obj_type": str(node.get("obj_type") or ""),
+                                      "title": title.strip()[:200] if isinstance(title, str) else "",
+                                      "edit_time": str(node.get("obj_edit_time") or "")[:40]})
+            return documents
+        finally:
+            self._slots.release()
+
     def search(self, query: str, limit: int) -> dict:
         if not isinstance(query, str) or not query.strip() or len(query) > 500 or type(limit) is not int or not 1 <= limit <= 20:
             return {"ok": False, "status": "invalid", "code": "KNOWLEDGE_ARGUMENT_INVALID", "message": "请提供明确的知识查询词。"}

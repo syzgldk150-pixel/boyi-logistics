@@ -9,6 +9,8 @@ updated: 2026-11-16
 
 # 数据库迁移
 
+`088_agent_knowledge_watch.sql` 新建运行库 `agent_knowledge_documents`（业务手册“知识来源”：授权知识库每篇文档的节点编号、空间、标题、类型、最后编辑时间、首次与最近看到、是否仍在列表）与 `agent_knowledge_reminders`（被计算规则引用的文档改动、或出现标题像收费通知的新文档时的提醒：类型 CHANGED/NEW、状态 OPEN/CHECKED、检查人与时间）。读写只在 `shared/knowledge_watch_repository.py`，判断规则在 `shared/knowledge_watch.py`；一次检查的文档状态与提醒在同一事务写入，首次检查只记录现状。
+
 `087_agent_fee_rules.sql` 新建运行库 `agent_fee_rule_versions`（业务手册“计算规则”版本：费用类型、版本名称、状态 DRAFT/PENDING/APPROVED/RETIRED、执行日期、规则内容与待核对事项 JSON、提交/生效/作废人与时间、`row_version`）与 `agent_fee_rule_events`（每次保存、勾选、提交、退回、生效、作废、复制的记录），并以固定编号写入原代码中的上楼费 V6.1 草稿（状态 DRAFT，`INSERT IGNORE`）。读写只在 `shared/fee_rule_repository.py`，校验在 `shared/handbook_fee_rules.py`；已生效版本不改，修改需复制为新草稿；同一费用同一执行日期只能有一个生效版本（生效事务内锁定检查）。
 
 `086_agent_review_requests.sql` 新建运行库 `agent_review_requests`（“需他人复核”请求：6 位编号唯一、类型、状态 PENDING/APPROVED/REJECTED/EXPIRED/EXECUTED/FAILED、计划、发起人、原会话、有效期、处理人与结果）。只有 `CREATE TABLE IF NOT EXISTS`，可重复执行；新旧代码兼容。注意：身份可以设为 `review` 档后若回退旧代码，旧代码的权限校验会拒绝该档位，回退前须先把相关身份改回“需确认”或“直接执行”。

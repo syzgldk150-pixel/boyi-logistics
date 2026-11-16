@@ -141,6 +141,7 @@ from agent.business_modules_api import create_business_module_router
 from agent.fee_rules_api import create_fee_rules_router
 from agent.handbook_api import create_handbook_router
 from agent.handbook_try_api import create_handbook_try_router
+from agent.knowledge_watch_api import create_knowledge_watch_router
 from agent.review_api import create_review_router
 from agent.automation_plugins.production import (
     ProductionAutomationPluginRuntime,
@@ -252,6 +253,7 @@ plugin_flow_editor: "PluginFlowEditor | None" = None
 agent_handbook_service = None
 fee_rule_repository = None
 handbook_try_runtime = None
+knowledge_watch_service = None
 agent_review_service = None
 receipt_share_runtime: "ReceiptShareRuntime | None" = None
 wechat_bot_runtime: "WeChatBotRuntime | None" = None
@@ -690,7 +692,7 @@ async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
     global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service, agent_review_service, fee_rule_repository
-    global handbook_try_runtime
+    global handbook_try_runtime, knowledge_watch_service
     global automation_project_entrypoints
     global feishu_binding_service
     load_agent_environment()
@@ -900,6 +902,7 @@ async def lifespan(app: FastAPI):
     from shared.fee_rule_repository import FeeRuleRepository
     fee_rule_repository = FeeRuleRepository(runtime.memory.connection_factory)
     agent_review_service = _agent_review_service(runtime, project_policy_service, business_service)
+    knowledge_watch_service = _knowledge_watch_service(runtime, fee_rule_repository)
     agent_business_actions = _agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
                                                      project_policy_service.identity_access)
     agent_business_actions.reviews = agent_review_service
@@ -987,8 +990,15 @@ async def lifespan(app: FastAPI):
         name="workflow-resource-catalog-warm-up",
     )
 
+    from agent.knowledge_watch import run_daily as run_daily_knowledge_scan
+    knowledge_watch_task = asyncio.create_task(run_daily_knowledge_scan(knowledge_watch_service),
+                                               name="knowledge-sources-daily-scan")
+
     logger.info("Agent service started instance_id=%s", INSTANCE_ID)
     yield
+    knowledge_watch_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await knowledge_watch_task
 
     logger.info("Agent service shutting down instance_id=%s", INSTANCE_ID)
     if receipt_share_runtime is not None:
@@ -1059,6 +1069,12 @@ app.include_router(
         scheduler_project_sync_provider=lambda automation_id: (
             _automation_plugins().service_effect_driver.refresh_project_schedule(automation_id)
         ),
+    )
+)
+app.include_router(
+    create_knowledge_watch_router(
+        service_provider=lambda: knowledge_watch_service,
+        admin_provider=lambda request: _require_console_admin_request(request),
     )
 )
 app.include_router(
@@ -1753,6 +1769,25 @@ def _agent_business_actions(business_service, runtime, loop, identity_access):
     fee_rules = FeeRuleRepository(runtime.memory.connection_factory)
     return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access,
                            fee_rules=fee_rules.approved)
+
+
+def _knowledge_watch_service(runtime, fee_rules):
+    """业务手册 → 知识来源: daily scan of the authorized spaces; reminders go to super administrators' Feishu."""
+    from agent.knowledge_watch import KnowledgeWatchService
+    from feishu.notify import send_text_sync
+    from shared.agent_review_repository import AgentReviewRepository
+    from shared.knowledge_watch_repository import KnowledgeWatchRepository
+    from tools.feishu_knowledge import FeishuKnowledgeSource
+
+    reviewers = AgentReviewRepository(runtime.memory.connection_factory)
+
+    def notify(text):
+        for open_id in reviewers.super_admin_open_ids():
+            send_text_sync(open_id, text, receive_id_type="open_id")
+
+    return KnowledgeWatchService(repository=KnowledgeWatchRepository(runtime.memory.connection_factory),
+                                 list_documents=FeishuKnowledgeSource().list_documents,
+                                 rule_versions=fee_rules.list_versions, notify=notify)
 
 
 def _knowledge_page_image(document_id: str, page: int) -> bytes:

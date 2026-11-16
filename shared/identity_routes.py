@@ -145,7 +145,8 @@ def agent_permission(method: str, path: str) -> str:
         return _level("finance", read)
     if path == "/internal/v1/admin/handbook-try":
         return "handbook:view"  # 试问 only reads: the same answer the robot would give, nothing sent or written
-    if _under(path, "/internal/v1/admin/handbook") or _under(path, "/internal/v1/admin/fee-rules"):
+    if any(_under(path, prefix) for prefix in ("/internal/v1/admin/handbook", "/internal/v1/admin/fee-rules",
+                                              "/internal/v1/admin/knowledge-sources")):
         return handbook_permission(path, read)
     if path.startswith("/internal/v1/automation-projects/module-slots/waybill-entry"):
         return "waybill.write:view" if read else "waybill.write:operate"
