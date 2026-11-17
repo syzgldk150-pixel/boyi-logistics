@@ -3,7 +3,9 @@
 The active model reads the delivery address (and any written weight / volume)
 through the shared AI task gateway (``shared.screenshot_quote.READ_SCREENSHOT``).
 With a weight, the caller runs the normal ``报价 地址，重量[，体积]`` text; without
-one, the address waits here for 15 minutes for the same person's reply. A plain
+one, the address waits here for 15 minutes for the same person's reply. A reading
+with doubts (a weight range, an unclear piece count) is shown and waits for
+"按这个报" (or a corrected weight) instead of quoting at once. A plain
 weight ("300公斤6个方") is read by code; any other wording is understood by the
 active model (``quote.read_follow_up``: give the weight, correct the address,
 cancel, or something else), whose numbers and address must appear in the reply. This
@@ -14,14 +16,14 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from agent.agent_actions.pending import PendingConfirmations
 from shared.ai_tasks import AITaskError
 from shared.screenshot_quote import (
     CANCELLED_REPLY, MAX_IMAGE_BYTES, NO_ADDRESS_REPLY, PENDING_TTL_SECONDS, READ_SCREENSHOT, PendingQuote,
-    ask_weight_reply, follow_up_task, quote_text, quoting_reply,
+    ask_weight_reply, confirm_reply, follow_up_task, is_go_ahead, quote_text, quoting_reply,
 )
 
 # A follow-up that gives the weight, optionally with a volume, in the ways people type it:
@@ -80,14 +82,18 @@ class ScreenshotQuoteService:
         except AITaskError as exc:
             return ScreenshotOutcome(f"截图没有识别成功：{exc.message}可以直接发“报价 地址，重量”。")
         address, weight, volume = reading["address"], reading["weight_kg"], reading["volume_m3"]
+        basis, doubts = tuple(reading.get("basis") or ()), tuple(reading.get("doubts") or ())
         if not address:
             self._pending.take(key)
             return ScreenshotOutcome(NO_ADDRESS_REPLY)
         if weight is None:
-            self._pending.remember(key, PendingQuote(address, volume))
-            return ScreenshotOutcome(ask_weight_reply(address, volume))
+            self._pending.remember(key, PendingQuote(address, volume, basis=basis))
+            return ScreenshotOutcome(ask_weight_reply(address, volume, basis, doubts))
+        if doubts:  # unsure: show what was read and let the person say "按这个报" or correct it
+            self._pending.remember(key, PendingQuote(address, volume, weight, basis))
+            return ScreenshotOutcome(confirm_reply(address, weight, volume, basis, doubts))
         self._pending.take(key)
-        return ScreenshotOutcome(quoting_reply(address, weight, volume), quote_text(address, weight, volume))
+        return ScreenshotOutcome(quoting_reply(address, weight, volume, basis), quote_text(address, weight, volume))
 
     async def follow_up(self, key: str, text: str, *, actor_id: str) -> ScreenshotOutcome | None:
         """What a reply means for a waiting address; ``None`` sends it on as an ordinary message.
@@ -99,6 +105,12 @@ class ScreenshotQuoteService:
         raw = str(text or "").strip()
         if pending is None or not raw:
             return None
+        if pending.weight is not None and is_go_ahead(raw):
+            composed = _composed(pending.address, pending.weight, pending.volume)
+            if composed is not None:
+                self._pending.take(key)
+                return ScreenshotOutcome(quoting_reply(pending.address, pending.weight, pending.volume, pending.basis),
+                                         composed)
         quick = _weight_and_volume(raw)
         if quick is not None:
             composed = _composed(pending.address, quick[0], quick[1] or pending.volume)
@@ -125,8 +137,10 @@ class ScreenshotQuoteService:
         address = reading["address"] or pending.address
         volume = reading["volume_m3"] or pending.volume
         if intent == "address":
-            self._pending.remember(key, PendingQuote(address, volume))
-            return ScreenshotOutcome(ask_weight_reply(address, volume))
+            self._pending.remember(key, replace(pending, address=address, volume=volume))
+            if pending.weight is not None:
+                return ScreenshotOutcome(confirm_reply(address, pending.weight, volume, pending.basis, ("收货地址已按你说的改了",)))
+            return ScreenshotOutcome(ask_weight_reply(address, volume, pending.basis))
         if intent != "quote":
             return None
         composed = _composed(address, reading["weight_kg"], volume)
