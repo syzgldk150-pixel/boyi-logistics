@@ -21,18 +21,37 @@ JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 
 
 def test_reading_is_kept_only_when_address_and_numbers_are_in_the_text_read():
-    reading = validate_reading({"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_kg": 300, "volume_m3": "2",
+    reading = validate_reading({"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_value": 300, "volume_m3": "2",
                                 "source_text": SOURCE, "note": ""})
     assert reading == {"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_kg": "300", "volume_m3": "2", "note": ""}
     assert validate_reading({"address": None, "source_text": "", "weight_kg": None})["address"] is None
     stripped = validate_reading({"address": "湖南省示例市虚构区样例小区3栋2单101房13800000000", "source_text": SOURCE + "13800000000"})
     assert "13800000000" not in stripped["address"]
     for bad, message in (({"address": "湖南省长沙市岳麓区麓谷大道", "source_text": SOURCE}, "source_text"),
-                         ({"address": "湖南省示例市虚构区样例小区3栋", "weight_kg": 500, "source_text": SOURCE}, "weight_kg"),
+                         ({"address": "湖南省示例市虚构区样例小区3栋", "weight_value": 500, "source_text": SOURCE}, "weight_value"),
                          ({"address": "湖南省示例市虚构区样例小区3栋", "volume_m3": -1, "source_text": SOURCE}, "volume_m3"),
                          ([], "JSON")):
         with pytest.raises(ValueError, match=message):
             validate_reading(bad)
+
+
+def test_ton_weights_and_decimal_numbers_are_read_as_written():
+    # Regression (2026-11-17): "下单重量：0.35吨 货物体积：2.2方" could not be quoted. The check
+    # dropped the decimal point and the model had to convert tons, so the numbers never matched.
+    source = "收货地址：江苏省示例市虚构区样例镇滨海大道8号\n货物尺寸：175×100×120cm\n下单重量：0.35吨\n货物体积：2.2方"
+    address = "江苏省示例市虚构区样例镇滨海大道8号"
+    reading = validate_reading({"address": address, "weight_value": 0.35, "weight_unit": "吨", "volume_m3": 2.2,
+                                "source_text": source})
+    assert (reading["weight_kg"], reading["volume_m3"]) == ("350", "2.2")
+    assert quote_text(address, reading["weight_kg"], reading["volume_m3"]) == f"报价 {address}，350，2.2"
+    assert validate_reading({"address": address, "weight_value": "300", "weight_unit": "斤", "source_text": source + " 300斤"})[
+        "weight_kg"] == "150"
+    for bad, message in (({"weight_value": 35, "weight_unit": "吨"}, "weight_value"),  # "0.35" is not "35"
+                         ({"weight_value": 350}, "weight_value"),  # converted by the model, not written
+                         ({"volume_m3": 22}, "volume_m3"),
+                         ({"weight_value": 0.35, "weight_unit": "箱"}, "weight_unit")):
+        with pytest.raises(ValueError, match=message):
+            validate_reading({"address": address, "source_text": source, **bad})
 
 
 def test_quote_text_is_what_a_person_would_type():
@@ -74,7 +93,7 @@ def run(coroutine):
 
 
 def test_with_a_weight_the_quote_runs_at_once():
-    service, gateway = _service({"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_kg": 300, "source_text": SOURCE})
+    service, gateway = _service({"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_value": 300, "source_text": SOURCE})
     outcome = run(service.read("chat:ou", JPEG, actor_id="ou"))
     assert outcome.quote_text == "报价 湖南省示例市虚构区样例小区3栋2单101房，300"
     assert "识别到的收货地址：湖南省示例市虚构区样例小区3栋2单101房" in outcome.reply and "按 0.1 立方米" in outcome.reply
@@ -222,7 +241,7 @@ def test_feishu_screenshot_runs_the_normal_quote_path(monkeypatch):
         service._gateway.follow_answer = {"intent": "cancel"}
         assert run(module.follow_up_text("不用报了", sender_id="ou_1", chat_id="oc_1")) is None
         assert replies[-1][1] == "好的，这张截图的报价已取消。"
-        service._gateway.answer = {"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_kg": 300, "source_text": SOURCE}
+        service._gateway.answer = {"address": "湖南省示例市虚构区样例小区3栋2单101房", "weight_value": 300, "source_text": SOURCE}
         run(module.handle_feishu_image(chat_id="oc_1", sender_id="ou_1", message_id="om_2",
                                        raw_content={"image_key": "img_2"}))
         assert quotes == [("报价 湖南省示例市虚构区样例小区3栋2单101房，300", "ou_1", "oc_1")]

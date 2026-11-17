@@ -29,9 +29,11 @@ SYSTEM_PROMPT = (
     "以及截图里明确写出的货物重量（公斤）和体积（立方米）。\n"
     "规则：1. 地址写省、市、区县和详细地址，不要姓名、电话、公司名以外的内容；截图里有多个地址时，选收货/送货的那个，无法判断就填 null 并在 note 说明。"
     "2. 重量、体积只填截图里明确写出的数字，没写就填 null，不要按货物种类估算；车长（如 13 米挂车）不是体积。"
+    "weight_value 照抄截图里写的重量数字，不要换算（“0.35吨”填 0.35），weight_unit 填它的单位（公斤、千克、kg、斤、吨之一，只写数字没写单位填公斤）；"
+    "volume_m3 照抄截图里写的体积数字（方、立方、立方米都是立方米）。"
     "3. source_text 照抄你读到的、与地址和重量体积有关的原文（可以多行），不要改写。"
-    "只输出 JSON：{\"address\": \"…或 null\", \"weight_kg\": 数字或 null, \"volume_m3\": 数字或 null, "
-    "\"source_text\": \"…\", \"note\": \"…\"}")
+    "只输出 JSON：{\"address\": \"…或 null\", \"weight_value\": 数字或 null, \"weight_unit\": \"…或 null\", "
+    "\"volume_m3\": 数字或 null, \"source_text\": \"…\", \"note\": \"…\"}")
 
 
 class ScreenshotQuoteError(ValueError):
@@ -59,8 +61,35 @@ def _figures(number: Decimal) -> str:
     return text[:-2] if text.endswith(".0") else text
 
 
+_WEIGHT_UNITS = {"公斤": Decimal("1"), "千克": Decimal("1"), "kg": Decimal("1"), "斤": Decimal("0.5"),
+                 "吨": Decimal("1000")}
+
+
+def _number_in_text(number: Decimal, text: str) -> bool:
+    """Whether ``number`` is written in ``text`` with its decimal point kept ("0.35吨" holds 0.35, not 35)."""
+    flat = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or "")))
+    return re.search(rf"(?<![\d.]){re.escape(_figures(number))}(?![\d]|\.\d)", flat) is not None
+
+
+def _kilograms(value: Decimal | None, unit: Any) -> Decimal | None:
+    if value is None:
+        return None
+    unit_text = str(unit or "公斤").strip().lower()
+    if unit_text not in _WEIGHT_UNITS:
+        raise ValueError("weight_unit 只能是 公斤、千克、kg、斤、吨")
+    weight = value * _WEIGHT_UNITS[unit_text]
+    if weight > Decimal("100000"):
+        raise ValueError("重量超出合理范围")
+    return weight
+
+
 def validate_reading(answer: Any) -> dict[str, Any]:
-    """The model's reading, kept only when its address and numbers are in the text it says it read."""
+    """The model's reading, kept only when its address and numbers are in the text it says it read.
+
+    The weight comes as written (value and unit) and is converted here, so "0.35吨" is
+    checked as 0.35 in the text and quoted as 350 kg (2026-11-17: a ton weight and any
+    decimal number used to fail the check, so such screenshots could not be quoted).
+    """
     if not isinstance(answer, Mapping):
         raise ValueError("回答必须是 JSON 对象")
     source = str(answer.get("source_text") or "").strip()
@@ -72,25 +101,23 @@ def validate_reading(answer: Any) -> dict[str, Any]:
             raise ValueError("地址长度不合理")
         if not compact(address) or compact(address) not in compact(source):
             raise ValueError("address 必须是 source_text 里原样出现的文字")
-    weight = _number(answer.get("weight_kg"), "weight_kg", Decimal("100000"))
+    value = _number(answer.get("weight_value"), "weight_value", Decimal("200000"))
     volume = _number(answer.get("volume_m3"), "volume_m3", Decimal("1000"))
-    flat = compact(source)
-    for label, number in (("weight_kg", weight), ("volume_m3", volume)):
-        if number is not None and _figures(number) not in flat:
+    for label, number in (("weight_value", value), ("volume_m3", volume)):
+        if number is not None and not _number_in_text(number, source):
             raise ValueError(f"{label} 的数字必须出现在 source_text 里")
+    weight = _kilograms(value, answer.get("weight_unit"))
     return {"address": address, "weight_kg": None if weight is None else _figures(weight),
             "volume_m3": None if volume is None else _figures(volume),
             "note": str(answer.get("note") or "")[:200]}
 
 
-READ_SCREENSHOT = AITaskSpec(task_id="quote.read_screenshot", prompt_version="2026-11-16.1",
+READ_SCREENSHOT = AITaskSpec(task_id="quote.read_screenshot", prompt_version="2026-11-17.1",
                              system_prompt=SYSTEM_PROMPT, validate=validate_reading, max_retries=1,
                              timeout_seconds=45.0)
 
 
 FOLLOW_UP_INTENTS = ("quote", "address", "cancel", "other")
-_WEIGHT_UNITS = {"公斤": Decimal("1"), "千克": Decimal("1"), "kg": Decimal("1"), "斤": Decimal("0.5"),
-                 "吨": Decimal("1000")}
 
 FOLLOW_UP_PROMPT = (
     "你在物流公司帮同事报价。机器人刚从一张截图里识别出收货地址（waiting_address），正在等这位同事补充货物重量；"
@@ -123,19 +150,10 @@ def validate_follow_up(answer: Any, reply: str) -> dict[str, Any]:
             raise ValueError("address 必须是 reply 里原样出现的文字")
     value = _number(answer.get("weight_value"), "weight_value", Decimal("200000"))
     volume = _number(answer.get("volume_m3"), "volume_m3", Decimal("1000"))
-    # Numbers are matched with their decimal point kept ("1.5吨" is not "15").
-    figures_text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(reply or "")))
     for label, number in (("weight_value", value), ("volume_m3", volume)):
-        if number is not None and not re.search(rf"(?<![\d.]){re.escape(_figures(number))}(?![\d]|\.\d)", figures_text):
+        if number is not None and not _number_in_text(number, reply):
             raise ValueError(f"{label} 的数字必须出现在 reply 里")
-    weight = None
-    if value is not None:
-        unit = str(answer.get("weight_unit") or "公斤").strip().lower()
-        if unit not in _WEIGHT_UNITS:
-            raise ValueError("weight_unit 只能是 公斤、千克、kg、斤、吨")
-        weight = value * _WEIGHT_UNITS[unit]
-        if weight > Decimal("100000"):
-            raise ValueError("重量超出合理范围")
+    weight = _kilograms(value, answer.get("weight_unit"))
     if intent == "quote" and weight is None:
         raise ValueError("intent=quote 必须给出 reply 里写的重量")
     if intent == "address" and address is None:
