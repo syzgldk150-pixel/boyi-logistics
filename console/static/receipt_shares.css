@@ -58,6 +58,8 @@
 .share-dialog-foot { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 0 20px; border-top: 1px solid var(--line-subtle); flex: 0 0 auto; }
 .share-foot-note { margin-right: auto; font-size: var(--fs-caption); color: var(--text-muted); }
 .share-foot-note[data-kind="error"] { color: #a8322a; }
+.share-foot-note[data-kind="success"] { color: #1f7a3d; font-weight: 500; }
+.share-foot-note[data-kind="warn"] { color: #9a5b00; font-weight: 500; }
 .share-field { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .share-field > label, .share-field > legend { padding: 0; font-size: var(--fs-body); font-weight: 500; color: var(--text-primary); }
 .share-field em { color: #a8322a; font-style: normal; }

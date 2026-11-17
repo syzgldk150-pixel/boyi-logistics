@@ -431,8 +431,13 @@
     }
   });
 
+  const customerSubmit = $("[data-share-customer-submit]");
   $("[data-share-customer-form]").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (customerSubmit.disabled) return;
+    customerSubmit.disabled = true;
+    customerSubmit.textContent = "保存中…";
+    feedback(customerFeedback, "正在保存…");
     try {
       const data = await post("/receipts/shares/customers", {
         customer_id: customerPick.value ? Number(customerPick.value) : null,
@@ -445,9 +450,16 @@
       refreshCustomerSwitch();
       customerPick.value = String(data.customer_id);
       loadCustomer();
-      feedback(customerFeedback, `已保存，当前规则匹配 ${data.matching_waybills} 张运单`);
+      if (Number(data.matching_waybills) > 0) {
+        feedback(customerFeedback, `✓ 已保存，当前规则匹配 ${data.matching_waybills} 张运单`, "success");
+      } else {
+        feedback(customerFeedback, "已保存，但目前没有匹配到运单，请用下方“查找发货人”核对规则", "warn");
+      }
     } catch (error) {
       feedback(customerFeedback, error.message, "error");
+    } finally {
+      customerSubmit.disabled = false;
+      customerSubmit.textContent = "保存客户";
     }
   });
 

@@ -160,6 +160,8 @@ def test_customer_rules_dialog_and_empty_state(app, browser):
         page.set_default_timeout(5000)
         page.on("pageerror", lambda error: errors.append(str(error)))
 
+        save_matches = [26]
+
         def serve(route):
             parsed, request = urlparse(route.request.url), route.request
             if parsed.netloc != "console.test":
@@ -176,7 +178,7 @@ def test_customer_rules_dialog_and_empty_state(app, browser):
             if request.method == "POST":
                 posts.append((parsed.path, request.post_data_json))
                 data = {"matching_waybills": 26, "capped": False, "sample": ["R00024852187"]} if parsed.path.endswith("/preview") \
-                    else {"customer_id": 1, "matching_waybills": 26}
+                    else {"customer_id": 1, "matching_waybills": save_matches[0]}
                 return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": data}))
             path = CONSOLE_DIR / parsed.path.lstrip("/")
             if parsed.path.startswith("/static/") and path.is_file():
@@ -206,13 +208,22 @@ def test_customer_rules_dialog_and_empty_state(app, browser):
         page.wait_for_function("document.querySelector('[data-share-customer-feedback]').textContent.includes('26 张运单')")
         dialog.get_by_role("button", name="保存客户").click()
         page.wait_for_function("document.querySelector('[data-share-customer-feedback]').textContent.includes('已保存')")
+        feedback_note = dialog.locator("[data-share-customer-feedback]")
+        assert feedback_note.get_attribute("data-kind") == "success" and "26 张运单" in feedback_note.inner_text()
+        save_button = dialog.locator("[data-share-customer-submit]")
+        assert save_button.inner_text() == "保存客户" and save_button.is_enabled()  # busy state cleared
+        # Regression (2026-11-17): a save that matched nothing looked like the button did nothing.
+        save_matches[0] = 0
+        save_button.click()
+        page.wait_for_function("document.querySelector('[data-share-customer-feedback]').dataset.kind === 'warn'")
+        assert "没有匹配到运单" in feedback_note.inner_text() and save_button.is_enabled()
         # After saving, the picker appears with the customer selected, plus a button to start a new one.
         assert dialog.locator("[data-share-customer-switch]").is_visible()
         assert dialog.locator("[data-share-customer-mode]").inner_text() == "正在修改：勇胜贸易有限公司"
         dialog.locator("[data-share-customer-new]").click()
         assert dialog.locator("[data-share-customer-mode]").inner_text() == "新建客户"
         assert dialog.locator("[data-share-customer-name]").input_value() == ""
-        path, body = posts[-1]
+        path, body = next(item for item in posts if item[0] == "/receipts/shares/customers")
         assert path == "/receipts/shares/customers"
         assert {key: body[key] for key in ("customer_id", "name", "short_name", "match")} == {
             "customer_id": None, "name": "勇胜贸易有限公司", "short_name": "勇胜",

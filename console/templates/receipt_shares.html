@@ -6,7 +6,7 @@
 {% block subtitle %}回单管理 / 按客户单位生成只读的图片共享链接{% endblock %}
 
 {% block content %}
-<link rel="stylesheet" href="/static/receipt_shares.css?v=20261114-c">
+<link rel="stylesheet" href="/static/receipt_shares.css?v=20261117-a">
 <div class="share-page" data-share-page>
   <div class="share-notice">
     <span class="share-notice-icon" aria-hidden="true">i</span>
@@ -154,7 +154,7 @@
       <span class="share-foot-note" data-share-customer-feedback></span>
       <button class="ghost-btn" type="button" data-share-rule-preview>试算匹配运单</button>
       <button class="ghost-btn" type="button" data-share-close>关闭</button>
-      <button class="primary-btn" type="submit">保存客户</button>
+      <button class="primary-btn" type="submit" data-share-customer-submit>保存客户</button>
     </footer>
   </form>
 </dialog>
@@ -184,5 +184,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/receipt_shares.js?v=20261114-c"></script>
+<script src="/static/receipt_shares.js?v=20261117-a"></script>
 {% endblock %}
