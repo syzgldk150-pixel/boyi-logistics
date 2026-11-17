@@ -170,7 +170,7 @@
     "collections": [],
     "kv": false
   },
-  "version": "1.0.7",
+  "version": "1.0.8",
   "http_requests": [
     {
       "name": "ronghui_destination_name",

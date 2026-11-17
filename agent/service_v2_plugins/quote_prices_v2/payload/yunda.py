@@ -283,6 +283,11 @@ def _amount(response, form):
 
 
 def _quote_mode(client, page, base, request, delivery, match):
+    """The 一口价 quote for one delivery way, and the non-一口价 price as a detail line.
+
+    2026-11-17 user decision: show both, 一口价 first. The non-一口价 price is a detail, not a quote,
+    so the Console comparison (cheapest quote per way) still uses 一口价.
+    """
     form = dict(base)
     form["ServiceType"] = page.option("ServiceType", delivery)
     form["ShippingMethods"] = page.option("ShippingMethods", "送货") if delivery == "派送" else ""
@@ -293,11 +298,33 @@ def _quote_mode(client, page, base, request, delivery, match):
         ratio != 0 and gross > volume * Decimal(1000000) / ratio
         and gross > page.thresholds["$HeavyMinWeight"]
     )
+    fixed_error = None
+    try:
+        amount = _price(client, form, request, gross, heavy=heavy, fixed=True)
+    except QuoteError as exc:
+        fixed_error = exc
+    try:
+        other = f"{_price(client, form, request, gross, heavy=heavy, fixed=False)}元"
+    except QuoteError as exc:
+        other = f"无报价（{exc}）"
+    other_line = f"韵达{delivery}（非一口价）：{other}"
+    if fixed_error is not None:
+        raise QuoteError(str(fixed_error), details=[other_line])
+    quote = {"label": f"韵达{delivery}（一口价）", "amount": amount, "delivery_method": delivery}
+    if match["site_name"]:
+        quote["site_name"] = match["site_name"]
+    options = "韵重货＋一口价" if heavy else "仅一口价（韵重货不适用）"
+    return quote, f"韵达{delivery}报价选项：{options}", other_line
+
+
+def _price(client, base_form, request, gross, *, heavy, fixed):
+    """One price with the page's product options: 一口价 ticked or not, 韵重货 when the page allows it."""
+    form = dict(base_form)
     # Selecting fixed/heavy clears bulk on the page and recalculates weight.
     # The weight and price requests must use the same requested product options.
     form.update(
         GrossWeight=request["weight"], Volume=request["volume"],
-        CheckFixedCost="1", CheckHeavyWeight="1" if heavy else "0", CheckBulkCargo="0",
+        CheckFixedCost="1" if fixed else "0", CheckHeavyWeight="1" if heavy else "0", CheckBulkCargo="0",
     )
     weight = _success(client.request("yunda_weight", {
         "current_time": form["current_time"], "vol": request["volume"],
@@ -314,7 +341,7 @@ def _quote_mode(client, page, base, request, delivery, match):
     if bulk not in {"0", "1", "2"}:
         raise QuoteError("韵达计费重量返回的开关无效")
     if bulk == "1":
-        raise QuoteError("平台计重结果要求大票货，无法按一口价报价，请在原页核实")
+        raise QuoteError("平台计重结果要求大票货，无法按" + ("一口价" if fixed else "非一口价") + "报价，请在原页核实")
     form["SettlementTotalNumber"] = _page_number(max(gross, money(weight["data"])))
     if money(form["SettlementTotalNumber"]) <= 0:
         raise QuoteError("韵达计费重量不足原页最小精度")
@@ -329,26 +356,25 @@ def _quote_mode(client, page, base, request, delivery, match):
     if not minimum <= money(form["InsuredAmount"]) <= maximum:
         form["InsuredAmount"] = format(minimum, "f")
     result = client.request("yunda_price", {key: value for key, value in form.items() if key not in LOCAL_ONLY})
-    quote = {"label": "韵达" + delivery, "amount": _amount(result, form), "delivery_method": delivery}
-    if match["site_name"]:
-        quote["site_name"] = match["site_name"]
-    options = "韵重货＋一口价" if heavy else "仅一口价（韵重货不适用）"
-    return quote, f"韵达{delivery}报价选项：{options}"
+    return _amount(result, form)
 
 
 def quote(client, request):
     page, base = _context(client.request("yunda_entry", text=True))
-    quotes, warnings, matches, option_details = [], [], [], []
+    quotes, warnings, matches, option_details, other_prices = [], [], [], [], []
     for delivery in ("自提", "派送"):
         match = {}
         matches.append((delivery, match))
         try:
-            mode_quote, mode_options = _quote_mode(client, page, base, request, delivery, match)
+            mode_quote, mode_options, other_line = _quote_mode(client, page, base, request, delivery, match)
             quotes.append(mode_quote)
             option_details.append(mode_options)
+            other_prices.append(other_line)
         except QuoteError as exc:
             warnings.append(f"韵达{delivery}：{exc}")
-    details = _notice_details(matches) + _match_details(matches) + option_details
+            other_prices.extend(getattr(exc, "details", None) or [])
+    # The non-一口价 prices come right under the 一口价 quotes in the reply.
+    details = other_prices + _notice_details(matches) + _match_details(matches) + option_details
     if not quotes:
         raise QuoteError("；".join(warnings), details=details)
     result = {"quotes": quotes, "warnings": warnings, "details": details}

@@ -85,18 +85,19 @@ def test_both_options_are_selected_before_weight_and_preserved_in_both_quotes():
     result = yunda.quote(client, REQUEST)
     assert result["warnings"] == []
     assert result["quotes"] == [
-        {"label": "韵达自提", "amount": "12.39", "delivery_method": "自提", "site_name": "虚构网点甲"},
-        {"label": "韵达派送", "amount": "12.39", "delivery_method": "派送", "site_name": "虚构网点甲"},
+        {"label": "韵达自提（一口价）", "amount": "12.39", "delivery_method": "自提", "site_name": "虚构网点甲"},
+        {"label": "韵达派送（一口价）", "amount": "12.39", "delivery_method": "派送", "site_name": "虚构网点甲"},
     ]
     assert result["site_name"] == "虚构网点甲"
     assert result["details"] == [
+        "韵达自提（非一口价）：12.39元", "韵达派送（非一口价）：12.39元",  # right under the 一口价 prices
         "自提/派送匹配网点：虚构网点甲", "网点地址：测试市虚构站点路1号",
         "查件电话：000-00000001", "客服电话：000-00000002",
         "派送范围：测试区内", "特殊区域：虚构园区需预约",
         "韵达自提报价选项：韵重货＋一口价", "韵达派送报价选项：韵重货＋一口价",
     ]
     assert [call[0] for call in client.calls].count("yunda_entry") == 1
-    prices = [body for name, body, _ in client.calls if name == "yunda_price"]
+    prices = [body for name, body, _ in client.calls if name == "yunda_price" and body["CheckFixedCost"] == "1"]
     assert [p["ShippingMethods"] for p in prices] == ["", "180"]
     for body in prices:
         assert body["InsuredAmount"] == "200"
@@ -109,9 +110,11 @@ def test_both_options_are_selected_before_weight_and_preserved_in_both_quotes():
         assert body["InGoodsType"] == ""  # The current original page leaves this empty.
         assert "DispatchSms" not in body  # Added by the page after pricing, not by the API.
     weights = [body for name, body, _ in client.calls if name == "yunda_weight"]
-    assert len(weights) == 2
-    assert all(body["CheckHeavyWeight"] == body["CheckFixedCost"] == "1" for body in weights)
-    assert all(body["CheckBulkCargo"] == "0" for body in weights)
+    assert [body["CheckFixedCost"] for body in weights] == ["1", "0", "1", "0"]  # 一口价, then 非一口价, per way
+    assert all(body["CheckHeavyWeight"] == "1" and body["CheckBulkCargo"] == "0" for body in weights)
+    others = [body for name, body, _ in client.calls if name == "yunda_price" and body["CheckFixedCost"] == "0"]
+    assert [p["ShippingMethods"] for p in others] == ["", "180"]
+    assert all(body["CheckHeavyWeight"] == "1" and body["CheckBulkCargo"] == "0" for body in others)
 
 
 def test_large_volume_uses_only_fixed_cost_and_its_fresh_mode_weight():
@@ -123,14 +126,14 @@ def test_large_volume_uses_only_fixed_cost_and_its_fresh_mode_weight():
         },
     )
     result = yunda.quote(client, {**REQUEST, "volume": "2"})
-    prices = [body for name, body, _ in client.calls if name == "yunda_price"]
+    prices = [body for name, body, _ in client.calls if name == "yunda_price" and body["CheckFixedCost"] == "1"]
     assert [(body["ServiceType"], body["SettlementTotalNumber"]) for body in prices] == [
         ("112", "500.00"), ("111", "600.00"),
     ]
     for name, body, _ in client.calls:
         if name in {"yunda_weight", "yunda_price"}:
             assert body["CheckHeavyWeight"] == "0"
-            assert body["CheckFixedCost"] == "1"
+            assert body["CheckFixedCost"] in {"0", "1"}
             assert body["CheckBulkCargo"] == "0"
     assert result["details"][-2:] == [
         "韵达自提报价选项：仅一口价（韵重货不适用）",
@@ -155,8 +158,8 @@ def test_heavy_eligibility_uses_strict_current_page_thresholds(
     assert len(result["quotes"]) == 2
     for name, body, _ in client.calls:
         if name in {"yunda_weight", "yunda_price"}:
-            assert body["CheckHeavyWeight"] == expected_heavy
-            assert body["CheckFixedCost"] == "1"
+            assert body["CheckHeavyWeight"] == expected_heavy  # 韵重货 follows the page rule with or without 一口价
+            assert body["CheckFixedCost"] in {"0", "1"}
             assert body["CheckBulkCargo"] == "0"
 
 
@@ -205,7 +208,8 @@ def test_site_notice_info_2_still_quotes_and_keeps_notice():
     site = {**SITE, "info": "2", "servicemsg": "虚构海运货品提示，请谨慎开单"}
     result = yunda.quote(Client(replacements={"yunda_address": {"info": 1, "data": {"a": site}}}), REQUEST)
     assert len(result["quotes"]) == 2
-    assert result["details"][0] == "自提/派送原页弹窗提示：虚构海运货品提示，请谨慎开单"
+    # First after the two 非一口价 price lines.
+    assert result["details"][2] == "自提/派送原页弹窗提示：虚构海运货品提示，请谨慎开单"
     assert not any(line.startswith("服务限制") for line in result["details"])
 
 
@@ -269,7 +273,8 @@ def test_bulk_failure_in_one_mode_keeps_only_other_mode_quote_and_options():
     assert [item["delivery_method"] for item in result["quotes"]] == ["自提"]
     assert result["warnings"] == ["韵达派送：平台计重结果要求大票货，无法按一口价报价，请在原页核实"]
     assert [line for line in result["details"] if "报价选项" in line] == ["韵达自提报价选项：韵重货＋一口价"]
-    assert [body["ServiceType"] for name, body, _ in client.calls if name == "yunda_price"] == ["112"]
+    assert [body["ServiceType"] for name, body, _ in client.calls if name == "yunda_price"] == ["112", "112"]
+    assert "韵达派送（非一口价）：无报价（平台计重结果要求大票货，无法按非一口价报价，请在原页核实）" in result["details"]
 
 
 @pytest.mark.parametrize("field", ["data", "Tfr", "Del"])
@@ -354,6 +359,7 @@ def test_missing_site_fields_are_explicit_without_replacing_a_valid_price():
     assert "site_name" not in result
     assert all("site_name" not in item for item in result["quotes"])
     assert result["details"] == [
+        "韵达自提（非一口价）：12.39元", "韵达派送（非一口价）：12.39元",
         "自提/派送匹配网点：无数据", "网点地址：无数据", "查件电话：无数据",
         "客服电话：无数据", "派送范围：无数据", "特殊区域：无数据",
         "韵达自提报价选项：韵重货＋一口价", "韵达派送报价选项：韵重货＋一口价",
@@ -405,3 +411,38 @@ def test_failed_price_keeps_the_failed_modes_own_site_details():
     assert "site_name" not in result
     assert "派送匹配网点：虚构网点乙" in result["details"]
     assert "费用计算失败" in result["warnings"][0]
+
+
+def test_fixed_cost_is_the_quote_and_the_other_price_follows_it():
+    """2026-11-17: show 一口价 and 非一口价, 一口价 first; only 一口价 is a quote (the Console compares quotes)."""
+    client = Client()
+    prices = iter(["30.00", "25.50", "40.00", "33.30"])  # 自提 一口价, 自提 非一口价, 派送 一口价, 派送 非一口价
+    original = client.request
+
+    def request(name, body=None, *, text=False):
+        response = original(name, body, text=text)
+        if name == "yunda_price":
+            response["data"]["CostTotal"] = next(prices)
+        return response
+
+    client.request = request
+    result = yunda.quote(client, REQUEST)
+    assert [(q["label"], q["amount"]) for q in result["quotes"]] == [
+        ("韵达自提（一口价）", "30.05"), ("韵达派送（一口价）", "40.05")]
+    # The page's own JavaScript addition then truncation: 33.30 + 0.05 shows as 33.34.
+    assert result["details"][:2] == ["韵达自提（非一口价）：25.55元", "韵达派送（非一口价）：33.34元"]
+
+
+def test_fixed_cost_failure_still_shows_the_other_price():
+    client = Client(replacements={})
+    original = client.request
+
+    def request(name, body=None, *, text=False):
+        if name == "yunda_weight" and body["CheckFixedCost"] == "1":
+            return {"info": 1, "data": 250, "Tfr": 250, "Del": 250, "CheckBulkCargo": 1}
+        return original(name, body, text=text)
+
+    client.request = request
+    with pytest.raises(QuoteError, match="无法按一口价报价") as caught:
+        yunda.quote(client, REQUEST)
+    assert caught.value.details[:2] == ["韵达自提（非一口价）：12.39元", "韵达派送（非一口价）：12.39元"]
