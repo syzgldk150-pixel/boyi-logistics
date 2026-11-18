@@ -179,6 +179,20 @@ class RonghuiSourcesTests(unittest.TestCase):
         self.assertEqual("older", second["items"][0]["id"])
         self.assertFalse(second["has_more"])
 
+    def test_problem_notice_without_content_column_shows_summary(self):
+        self.route(notices=[{
+            "GUID": "notice-1", "TITLE": "问题件:SYNTHETIC-WAYBILL", "NOTICE_DATETIME": "2026-10-15 08:00:00",
+            "NOTICE_NAME_TEXT": "问题件", "SEND_SITE": "虚构网点", "PERSON": "虚构网点(管理员)", "BILL_CODE": "SYNTHETIC-WAYBILL",
+        }])
+        result = source.collect_items(self.current, "ronghui:announcements", 1)
+        self.assertEqual("ok", result["status"])
+        self.assertEqual("类型：问题件\n发送网点：虚构网点\n发送人：虚构网点(管理员)\n运单号：SYNTHETIC-WAYBILL",
+                         result["items"][0]["content"])
+        self.assertEqual("SYNTHETIC-WAYBILL", result["items"][0]["waybill_no"])
+        self.route(notices=[{"TITLE": "缺编号", "NOTICE_DATETIME": "2026-10-15 08:00:00"}])
+        with self.assertRaises(source.RonghuiMonitoringError):
+            source.collect_items(self.current, "ronghui:announcements", 1)
+
     def test_old_announcements_are_hidden(self):
         self.route(notices=[
             {"GUID": "old", "TITLE": "旧公告", "CONTENT": "一", "NOTICE_DATETIME": "2026-10-12 23:59:59"},

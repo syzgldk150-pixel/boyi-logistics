@@ -245,10 +245,14 @@ def _work_order_item(row: dict[str, Any], history: tuple[list, int] | None, stat
 
 def _announcement_item(row: dict[str, Any], title: str) -> dict[str, Any]:
     identifier = str(row.get("GUID") or "").strip()
-    if not identifier or "CONTENT" not in row:
-        raise RonghuiMonitoringError("融辉消息或工单缺少编号/正文字段，请检查原系统。")
+    if not identifier:
+        raise RonghuiMonitoringError("融辉消息缺少编号字段，请检查原系统。")
     content = "\n".join(filter(None, [plain_text(row.get("CONTENT")), plain_text(row.get("CONTENT1")),
                                       plain_text(row.get("CONTENT2"))]))
+    if not content:
+        # 实测 2026-11-18：“问题件”类通知不返回 CONTENT 列，只有类型、发送网点、发送人和运单号。
+        summary = (("类型", "NOTICE_NAME_TEXT"), ("发送网点", "SEND_SITE"), ("发送人", "PERSON"), ("运单号", "BILL_CODE"))
+        content = "\n".join(f"{label}：{plain_text(row.get(key))}" for label, key in summary if plain_text(row.get(key)))
     return {
         "id": identifier, "title": str(row.get("TITLE") or title), "content": content or "原系统正文为空",
         "occurred_at": str(row.get("NOTICE_DATETIME") or ""), "status_label": "未读",
