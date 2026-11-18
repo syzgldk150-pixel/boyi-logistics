@@ -434,7 +434,14 @@
       </form>{% endif %}
       <div class="waybill-detail-action-group">
         <a class="ghost-btn" href="{{ row.tracking_url }}" data-console-navigate><i data-feather="map-pin"></i> 轨迹跟踪</a>
+        {% set linked_label = {'ronghui': '融辉', 'yunda': '韵达'}.get(row.linked_platform) if row.source == 'manual' and row.linked_waybill_no else none %}
+        {% if linked_label %}
+        {# 绑定了融辉/韵达单号的博益开单：两种面单都可打印（2026-11-18 用户确认） #}
+        <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}&label=boyi"><i data-feather="printer"></i> 打印博益面单</button>
+        <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}"><i data-feather="printer"></i> 打印{{ linked_label }}面单</button>
+        {% else %}
         <button class="ghost-btn" type="button" data-waybill-print data-print-data-url="{{ row.print_data_url }}"><i data-feather="printer"></i> 打印</button>
+        {% endif %}
         {% if row.source == 'manual' and row.status != 'cancelled' %}<button class="primary-btn" type="button" data-waybill-edit><i data-feather="edit-2"></i> 修改运单</button>{% endif %}
       </div>
     </footer>

@@ -101,3 +101,33 @@ def test_unreviewed_lodop_call_is_never_applied(app, browser):
         page.wait_for_function(f"{STATUS}.includes('未核实的打印指令')")
         assert page.evaluate("window.__lodopCalls") == [] and logs == []
     _run(app, browser, 1, check, bad)
+
+
+def test_linked_boyi_waybill_offers_both_labels(app):
+    import re
+    from html import unescape
+
+    from console.tests.test_manual_saved_print_flow import SAVED_ROW
+
+    def render(row):
+        html = app.template_env.get_template("waybills.html").render(
+            app_title="离线合成测试",
+            filters={"q": "", "date_from": "2026-01-02", "date_to": "2026-01-02", "status": "all", "source": "all",
+                     "payment_method": "", "delivery_method": "", "sort": "open_date_desc"},
+            rows=[row], summary={"total": 1, "invalid_money_count": 0, "opening_cost_total": "0"},
+            pagination={"page": 1, "page_size": 50, "total": 1, "total_pages": 1, "offset": 0,
+                        "has_prev": False, "has_next": False},
+            source_options=[], status_options=[], payment_options=[""], delivery_options=[""], sort_options=[],
+            current_url="/waybills", prev_url="", next_url="", db_error="", message="", page_links=[1],
+            page_url_base="/waybills?page=", sync_status={"messages": [], "warnings": []},
+            source_refresh={"source": "all", "date_from": "2026-01-02", "date_to": "2026-01-02"})
+        found = re.findall(r'data-print-data-url="([^"]+)"><i data-feather="printer"></i> ([^<]+)</button>', html)
+        return [(unescape(url), text) for url, text in found]
+
+    base = {**SAVED_ROW, "print_data_url": "/waybills/41/print-data?source=manual", "tracking_url": "/tracking"}
+    assert render({**base, "linked_platform": "yunda", "linked_waybill_no": "900000001"}) == [
+        ("/waybills/41/print-data?source=manual&label=boyi", "打印博益面单"),
+        ("/waybills/41/print-data?source=manual", "打印韵达面单")]
+    assert render({**base, "linked_platform": "best", "linked_waybill_no": "B1"}) == [
+        ("/waybills/41/print-data?source=manual", "打印")]
+    assert render(base) == [("/waybills/41/print-data?source=manual", "打印")]

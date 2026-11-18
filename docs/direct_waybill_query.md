@@ -123,7 +123,7 @@ isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests
 
 ## 原站面单打印（2026-11-18）
 
-寄件运单查询详情的“打印”：融辉寄件、韵达寄件，以及绑定了融辉/韵达平台单号的博益开单（绑定单须在平台运单表中唯一且未作废），打印平台原站面单；其他博益开单/OCR 与绑定百世的博益单仍打博益面单（百世原站打印暂不接入）。平台账号只用该运单行的 `source_account_id`，缺失时明确拒绝。实现见 `agent/agent/tms_runtime/platform_waybill_print.py`，2026-11-18 用 ECS 会话只读核实：
+寄件运单查询详情的“打印”：融辉寄件、韵达寄件打印平台原站面单；绑定了融辉/韵达平台单号的博益开单同时提供“打印博益面单”和“打印融辉/韵达面单”两个按钮，后者打绑定单的原站面单（绑定单须在平台运单表中唯一且未作废）；其他博益开单/OCR 与绑定百世的博益单仍打博益面单（百世原站打印暂不接入）。平台账号只用该运单行的 `source_account_id`，缺失时明确拒绝。实现见 `agent/agent/tms_runtime/platform_waybill_print.py`，2026-11-18 用 ECS 会话只读核实：
 
 - 融辉：“运单管理 / 主面单打印”页（补打）。菜单入口的 `authenticationKey/pageId` 作请求头，`FIDN_FACE_SINGLE_PRINT_ONE4`（`BILL_CODE`）返回该单打印数据，不带页面头会被拒为“非法的请求”。页面 `printBillNew` 整理数据、`printKH` 画默认“客户联”（页面默认：不打印运费、手机号不加密、不显示 LOGO、收件人不加密），`PRINT_INITA(0mm,0mm,80mm,100mm)` + `SET_PRINT_PAGESIZE(0,75mm,90mm)`。Agent 逐行移植并对两函数源码（去空白、内嵌图片掩码）做 SHA-256 指纹，融辉改动页面代码即停止打印并提示到原站打印；“扫码下单”图片每次从页面读取。实际打印后按页面 `updateBillPrintTime` 以 `TAB_PRINT_COUNT_ADD` 经 `saveTables` 记录，写前后各读一次 `PRINT_NUM`，加 1 才算核实。寄件账号（大祥站）有该菜单；操作场账号查不到寄件单。
 - 韵达：INMS 主单打印弹窗 `printer/main/index.html`。先按开单日期在寄件列表找到该单的 `Id`（填仓列表中的单明确拒绝，原站打印未核实），`printer/main/info.html`（`ids`、`getTemplateType=new`）返回面单数据，`printer/getTemplate/.html`（`method=Print_Template`）返回 C-Lodop 模板；按页面做法对每个数据键做一次 `String.replace`，再解析为只含字面量参数的 `LODOP.X(...)` 语句。原弹窗预览隐藏了打印按钮（打印走弹窗“打印”），这里去掉该设置以便在预览中打印。打印记录为 `printer/insertPrintLog/.html`（`method=main`、`print_data[0][Logistics_Id]`），原站没有可回读的打印次数，结果标为“已提交、无法核实”。
