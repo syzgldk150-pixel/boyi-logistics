@@ -1183,6 +1183,23 @@ class DocumentRepository:
             raise ValueError("waybill number is ambiguous; specify a verified source identity")
         return self._row_to_waybill(rows[0]) if rows else None
 
+    def get_linked_platform_waybill(self, platform: str, waybill_no: str) -> dict[str, Any]:
+        """The one platform row a Boyi waybill is linked to, as _boyi_linked_route_columns matches it."""
+        table = waybill_table(platform)
+        sql = (f"SELECT waybill_no, open_date, status, source_account_id FROM {table} "
+               f"WHERE source = {self.placeholder} AND waybill_no = {self.placeholder} LIMIT 2")
+        with self.connect() as connection:
+            cursor = connection.cursor()
+            cursor.execute(sql, [platform, str(waybill_no or "").strip()])
+            rows = [dict(row) for row in cursor.fetchall()]
+        if not rows:
+            raise LookupError("绑定的平台运单尚未入库，请先在寄件运单查询中查询该平台运单。")
+        if len(rows) > 1:
+            raise LookupError("绑定的平台运单号在平台运单表中不唯一，未打印。")
+        if rows[0].get("status") == "cancelled":
+            raise LookupError("绑定的平台运单已作废，未打印。")
+        return rows[0]
+
     def upsert_provider_waybill(
         self,
         payload: dict[str, Any],

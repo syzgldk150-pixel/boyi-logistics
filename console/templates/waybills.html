@@ -10,6 +10,7 @@
 <script src="/static/js/waybill_label_lodop.js?v=20261011-75x100"></script>
 <script src="/static/js/clodop_loader.js?v=20260812"></script>
 <script src="/static/js/waybill_print_preview.js?v=20261013-prewarm"></script>
+<script src="/static/js/platform_label_print.js?v=20261118-original"></script>
 {% endblock %}
 
 {% block page_actions %}
@@ -1315,6 +1316,40 @@
     }
   }
 
+  // 融辉/韵达的原站面单：预览中实际打印后，按原站的做法记一次原站打印次数。
+  async function previewPlatformLabel(button, label, setStatus) {
+    if (!window.BoyiPlatformLabel?.preview) throw new Error("打印组件未加载，请刷新页面重试。");
+    const name = label.platform_name || "平台";
+    const { printed } = await window.BoyiPlatformLabel.preview(label);
+    setStatus(`已打开${name}原站面单预览，在预览窗口中打印。`);
+    // Not awaited: the print button is usable again while the preview is open.
+    printed.then((count) => recordPlatformPrint(button, name, count, setStatus));
+  }
+
+  async function recordPlatformPrint(button, name, count, setStatus) {
+    if (count === null) {
+      setStatus(`${name}原站面单预览已关闭；未取得打印结果，原站打印次数未记录。`);
+      return;
+    }
+    if (count < 1) {
+      setStatus(`${name}原站面单预览已关闭，未打印。`);
+      return;
+    }
+    setStatus(`已打印，正在记录${name}原站打印次数…`);
+    const requestId = crypto.randomUUID();
+    const logUrl = button.dataset.printDataUrl.replace("/print-data?", "/platform-print-log?");
+    try {
+      const response = await fetch(logUrl, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Browser-Request-UUID": requestId },
+        body: JSON.stringify({ request_id: requestId }),
+      });
+      const outcome = await response.json().catch(() => ({}));
+      setStatus(outcome.message || (response.ok ? `已记录${name}原站打印次数。` : `${name}原站打印次数未能记录。`));
+    } catch (error) {
+      setStatus(`已打印，但${name}原站打印次数记录请求失败：${error.message || "网络错误"}。`);
+    }
+  }
+
   function bindDetail(scope) {
     const detail = scope.querySelector("[data-waybill-detail-dialog]");
     detail?.addEventListener("click", (event) => {
@@ -1373,14 +1408,19 @@
       setStatus("正在读取运单并打开打印预览…");
       window.BoyiWaybillPrint?.prepare?.();
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 15000);
+      // 原站面单由 Agent 实时读取平台（韵达需先找到当天寄件记录），给足时间。
+      const timeout = window.setTimeout(() => controller.abort(), 45000);
       try {
         const response = await fetch(button.dataset.printDataUrl, { signal: controller.signal });
         const result = await response.json();
-        if (!response.ok || result.ok !== true || !result.waybill) {
+        if (!response.ok || result.ok !== true || !(result.waybill || result.platform_label)) {
           throw new Error(result.message || "运单读取失败，请重试。");
         }
         window.clearTimeout(timeout);
+        if (result.platform_label) {
+          await previewPlatformLabel(button, result.platform_label, setStatus);
+          return;
+        }
         if (!window.BoyiWaybillPrint?.preview) throw new Error("打印组件未加载，请刷新页面重试。");
         await window.BoyiWaybillPrint.preview(result.waybill);
         setStatus("已打开 C-Lodop 打印预览。");

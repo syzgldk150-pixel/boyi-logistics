@@ -2016,7 +2016,7 @@
         return;
       }
       try {
-        const printData = await requestManualJSON(`/waybills/${encodeURIComponent(savedManualWaybillId)}/print-data?source=manual`);
+        const printData = await requestManualJSON(`/waybills/${encodeURIComponent(savedManualWaybillId)}/print-data?source=manual&label=boyi`);
         savedPrintWaybill = printData.waybill;
       } catch (error) {
         setManualFeedback(`运单 ${savedEntry.waybill_no} 已修改，但读取打印内容失败（${error.message}）。请点击“重新打开已保存单预览”重试，勿重复保存。`, "error");

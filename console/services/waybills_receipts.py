@@ -4,7 +4,7 @@ import ssl
 
 from console.app_support import *  # noqa: F403
 from console.services.business_calls import call_business
-from console.services.waybill_printing import build_waybill_print_data
+from console.services.waybill_printing import PLATFORM_LABEL_SOURCES, build_waybill_print_data, platform_print_target
 
 
 # One live provider query per (source, date range) at a time; identical
@@ -1505,6 +1505,19 @@ class WaybillsReceiptsServiceMixin:
         if not waybill:
             self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "运单不存在。"})
             return
+        # The entry frame prints the Boyi label it just saved (label=boyi).
+        boyi_label = str(query.get("label", [""])[0]) == "boyi" and source == "manual"
+        try:
+            target = None if boyi_label else platform_print_target(waybill, self.repository.get_linked_platform_waybill)
+        except LookupError as exc:
+            self._send_json(handler, HTTPStatus.CONFLICT, {"ok": False, "message": str(exc)})
+            return
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "运单读取失败，请稍后重试。"})
+            return
+        if target is not None:
+            self._send_platform_label(handler, target)
+            return
         try:
             print_data = build_waybill_print_data(waybill)
         except ValueError:
@@ -1513,6 +1526,55 @@ class WaybillsReceiptsServiceMixin:
             })
             return
         self._send_json(handler, HTTPStatus.OK, {"ok": True, "waybill": print_data})
+
+    def _send_platform_label(self, handler: BaseHTTPRequestHandler, target: dict[str, str]) -> None:
+        """Read the original-site label live through Agent; nothing is cached or stored."""
+        context = self._receipt_attachment_context()
+        if context is None:
+            self._send_json(handler, HTTPStatus.FORBIDDEN, {"ok": False, "message": "打印原站面单需要真实管理员会话。"})
+            return
+        result = call_business(self, "platform-waybill-print", dict(target), trusted_context=context, timeout_sec=60)
+        data = result.get("data") if result.get("ok") else None
+        calls = data.get("calls") if isinstance(data, dict) else None
+        if (not isinstance(calls, list) or data.get("platform") != target["platform"]
+                or data.get("waybill_no") != target["waybill_no"]):
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": str(
+                result.get("error") or "原站面单读取失败，请稍后重试。")})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "platform_label": {
+            "platform": target["platform"], "platform_name": PLATFORM_LABEL_SOURCES[target["platform"]],
+            "waybill_no": target["waybill_no"], "calls": calls}})
+
+    def _handle_waybill_platform_print_log(self, handler: BaseHTTPRequestHandler, waybill_id: int, query: dict) -> None:
+        """After a real print from the preview, record it on the platform as the original page does."""
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        source = str(query.get("source", [""])[0]).strip()
+        body = self._parse_json_body(handler)
+        request_id = self._normalize_browser_request_uuid(handler.headers.get("X-Browser-Request-UUID"))
+        if source not in {"manual", "yunda", "ronghui"} or not request_id or body.get("request_id") != request_id:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "打印记录请求无效，原站打印次数未记录。"})
+            return
+        try:
+            waybill = self.repository.get_waybill(waybill_id, source=source)
+            target = platform_print_target(waybill, self.repository.get_linked_platform_waybill) if waybill else None
+        except LookupError as exc:
+            self._send_json(handler, HTTPStatus.CONFLICT, {"ok": False, "message": str(exc)})
+            return
+        except Exception:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "运单读取失败，原站打印次数未记录。"})
+            return
+        if target is None:
+            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "这张运单不打印原站面单。"})
+            return
+        result = call_business(self, "platform-waybill-print-log", dict(target), trusted_context=trusted_context,
+                               request_id=request_id, timeout_sec=60, write=True)
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        verified = result.get("ok") is True and data.get("verified") is True
+        self._send_json(handler, HTTPStatus.OK if verified or data.get("submitted") else HTTPStatus.BAD_GATEWAY, {
+            "ok": verified, "submitted": data.get("submitted") is True,
+            "message": str(data.get("message") or result.get("error") or "原站打印次数未能记录。")})
 
     @staticmethod
     def _first_tracking_text(row: dict[str, Any], *keys: str) -> str:

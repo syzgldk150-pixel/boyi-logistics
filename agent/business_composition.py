@@ -6,6 +6,7 @@ from agent.tms_runtime.direct_business import DirectBusinessService
 from agent.tms_runtime.direct_execution import call_blocking
 from agent.tms_runtime.receipts_query import fetch_receipt_image_async, query_receipts_async
 from agent.tms_runtime.waybill_photos import query_waybill_photos_async
+from agent.tms_runtime.platform_waybill_print import build_print_log_handler, platform_label_async
 from agent.send_waybills_business import build_direct_waybill_query_service
 from tools.phase7_mysql_store import list_scan_times_for_tracking
 from plugin_core_adapters.waybill_query import prepare_waybill_sources, waybill_connection
@@ -18,6 +19,9 @@ def build_business_service(*, catalog, plugin_catalog, invocations):
         params, timeout_sec, read_lifecycle=invocations))
     service.register_read("waybill-photos", lambda params, timeout_sec: query_waybill_photos_async(
         params, timeout_sec, read_lifecycle=invocations))
+    # 寄件查询的“打印”：融辉/韵达原站面单（只读），打印后回写原站打印记录（写）。
+    service.register_read("platform-waybill-print", platform_label_async)
+    service.register_call("platform-waybill-print-log", build_print_log_handler(invocations))
     service.register_read("send-waybills-query", build_direct_waybill_query_service(
         connection_factory=waybill_connection,
         # Ronghui accounts come from plugin instances, not the tool registry.
