@@ -46,6 +46,10 @@
   let activeSource = 'all';
   let pendingState = { available: false, total: null };
   let pendingActive = false;
+  // “全部” merges the pending problems and every category that has messages; it is the default tab.
+  let allActive = true;
+  let pendingItems = [];
+  let latestAllKey = '';
 
   function pageHidden() {
     return disposed || document.hidden || Boolean(pageRoot?.hidden);
@@ -96,7 +100,7 @@
 
   function setItemsBusy(busy) {
     els.items.setAttribute('aria-busy', String(busy));
-    els.reload.disabled = busy || !activeCategory?.items_supported;
+    els.reload.disabled = busy || !(allActive || activeCategory?.items_supported);
     els.prev.disabled = busy || currentPage <= 1;
     els.next.disabled = busy || els.next.dataset.hasMore !== 'true';
   }
@@ -162,7 +166,7 @@
     button.dataset.categoryId = item.category_id;
     button.dataset.tone = item.tone || 'info';
     button.dataset.count = typeof item.count === 'number' ? String(item.count) : 'unknown';
-    const active = !pendingActive && categoryKey(item) === categoryKey(activeCategory);
+    const active = !pendingActive && !allActive && categoryKey(item) === categoryKey(activeCategory);
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-selected', String(active));
     if (activeSource === 'all') button.append(element('span', 'monitor-category-source', shortSource(item.source_label, item.system)));
@@ -172,6 +176,32 @@
     const status = [item.status_label, item.message].filter(Boolean).join(' · ');
     button.title = (failed ? status : item.status_label) || (item.items_supported ? '查看消息正文' : '暂未提供正文，请打开原系统查看');
     return button;
+  }
+
+  function sourcePendingItems() {
+    return pendingItems.filter((item) => activeSource === 'all' || (item.platform === 'yunda' ? 'yunda' : 'ronghui') === activeSource);
+  }
+
+  function allTabCount(shown) {
+    const counts = shown.map((item) => item.count);
+    if (pendingState.available) counts.push(activeSource === 'all' ? pendingState.total : sourcePendingItems().length);
+    return counts.every((value) => typeof value === 'number') ? counts.reduce((sum, value) => sum + value, 0) : null;
+  }
+
+  function createAllTab(shown) {
+    const button = element('button', 'monitor-category monitor-category--all');
+    button.type = 'button';
+    button.setAttribute('role', 'tab');
+    button.dataset.monitoringAllTab = '';
+    button.classList.toggle('is-active', allActive);
+    button.setAttribute('aria-selected', String(allActive));
+    button.append(element('span', 'monitor-category-title', '全部'), element('span', 'monitor-category-count', fmt(allTabCount(shown))));
+    button.title = '合并显示所有有消息的分类';
+    return button;
+  }
+
+  function pendingVisible() {
+    return pendingState.available && (pendingState.total !== 0 || pendingActive);
   }
 
   function createPendingTab() {
@@ -216,7 +246,7 @@
         setText(node.querySelector('[data-monitoring-metric-note]'),
           def.note.map(([id, label]) => `${label} ${fmt(byId.get(id)?.count)}`).join(' · '));
       }
-      const active = !pendingActive && def.sum.includes(activeCategory?.category_id);
+      const active = !pendingActive && !allActive && def.sum.includes(activeCategory?.category_id);
       node.classList.toggle('is-active', active);
       node.setAttribute('aria-pressed', String(active));
     });
@@ -225,8 +255,12 @@
 
   function selectCategory(item) {
     if (!item) return;
-    if (pendingActive || categoryKey(item) !== categoryKey(activeCategory)) { clearItems(); currentPage = 1; }
+    if (pendingActive || allActive || categoryKey(item) !== categoryKey(activeCategory)) { clearItems(); currentPage = 1; }
     pendingActive = false;
+    allActive = false;
+    const allTab = els.systems.querySelector('[data-monitoring-all-tab]');
+    allTab?.classList.remove('is-active');
+    allTab?.setAttribute('aria-selected', 'false');
     if (els.pendingMore) els.pendingMore.hidden = true;
     activeCategory = item;
     els.systems.querySelectorAll('[data-monitoring-category]').forEach((node) => {
@@ -253,10 +287,10 @@
     const categories = allCategories(snapshot);
     const previousKey = categoryKey(activeCategory);
     const sourceCategories = categories.filter((item) => activeSource === 'all' || item.system === activeSource);
-    activeCategory = pendingActive ? null : sourceCategories.find((item) => categoryKey(item) === previousKey)
+    activeCategory = pendingActive || allActive ? null : sourceCategories.find((item) => categoryKey(item) === previousKey)
       || sourceCategories.find((item) => item.items_supported && item.is_exception && item.count > 0)
       || sourceCategories.find((item) => item.items_supported && item.count > 0)
-      || sourceCategories.find((item) => item.items_supported) || null;
+      || sourceCategories.find((item) => item.items_supported && item.count !== 0) || null;
     renderTabs(snapshot, categories);
     const alerts = (Array.isArray(snapshot.systems) ? snapshot.systems : [])
       .filter((system) => system.status === 'error' || system.status === 'auth_required' || system.stale || (system.message && system.status !== 'ok'))
@@ -267,10 +301,15 @@
     renderMetrics(categories);
     if (window.feather) window.feather.replace();
     if (pendingActive) return;
+    if (allActive) {
+      const allKey = JSON.stringify([snapshot.updated_at, activeSource]);
+      if (allKey !== latestAllKey) { latestAllKey = allKey; fetchAll(); }
+      return;
+    }
     if (!activeCategory) {
       clearItems();
-      setText(els.detailSubtitle, '暂无可读取正文的分类');
-      setItemsStatus('请查看来源状态，或选择分类了解原因。');
+      setText(els.detailSubtitle, '暂无待处理消息');
+      setItemsStatus('各分类目前都没有待处理消息。');
       return;
     }
     if (categoryKey(activeCategory) !== previousKey) {
@@ -294,15 +333,16 @@
   function renderTabs(snapshot, categories) {
     const visible = categories.filter((item) => activeSource === 'all' || item.system === activeSource);
     // Categories with readable bodies first, exceptions before notices; idle categories collapse into a note.
-    const content = visible.filter((item) => item.items_supported)
+    // A category with a known count of 0 has nothing to show and is left out.
+    const content = visible.filter((item) => item.items_supported && item.count !== 0)
       .sort((a, b) => Number(Boolean(b.is_exception)) - Number(Boolean(a.is_exception)));
     const other = visible.filter((item) => !item.items_supported && item.count !== 0);
     const idle = visible.length - content.length - other.length;
-    const tabs = [];
-    if (pendingState.available) tabs.push(createPendingTab());
+    const tabs = [createAllTab([...content, ...other])];
+    if (pendingVisible()) tabs.push(createPendingTab());
     tabs.push(...content.map(createCategoryButton), ...other.map(createCategoryButton));
     if (idle > 0) tabs.push(element('span', 'monitor-other-empty', `其余 ${idle} 类无待办`));
-    if (!tabs.length) tabs.push(element('p', 'monitor-empty', snapshot?.systems?.length ? '当前来源没有可读取的消息分类。' : '当前没有可读取的消息来源。'));
+    if (tabs.length === 1 && !snapshot?.systems?.length) tabs.push(element('p', 'monitor-empty', snapshot?.systems?.length ? '当前来源没有可读取的消息分类。' : '当前没有可读取的消息来源。'));
     els.systems.replaceChildren(...tabs);
     els.sourceSwitch?.querySelectorAll('[data-source]').forEach((button) => {
       const active = button.dataset.source === activeSource;
@@ -315,6 +355,7 @@
     if (!pendingState.available) return;
     clearItems();
     pendingActive = true;
+    allActive = false;
     activeCategory = null;
     renderTabs(latestSnapshot, allCategories(latestSnapshot));
     renderMetrics(allCategories(latestSnapshot));
@@ -337,12 +378,13 @@
     setItemsBusy(false);
   }
 
-  function createMessageItem(item, expanded) {
+  function createMessageItem(item, expanded, category = activeCategory) {
     const row = element('li', 'monitor-item');
+    row.dataset.sortTime = String(item.occurred_at || '');
     const title = item.title || '消息';
     const head = element('div', 'monitor-item-head');
-    head.append(sourceTag(shortSource(activeCategory.source_label, activeCategory.system), activeCategory.system),
-      element('span', 'monitor-item-kind', activeCategory.title || '消息'),
+    head.append(sourceTag(shortSource(category.source_label, category.system), category.system),
+      element('span', 'monitor-item-kind', category.title || '消息'),
       element('span', 'monitor-item-title', title));
     const aside = element('div', 'monitor-item-aside');
     aside.append(element('span', 'monitor-item-status is-status', item.status_label || '状态未确认'),
@@ -363,7 +405,7 @@
     head.append(aside);
     const meta = element('div', 'monitor-item-meta');
     // Ronghui labels repeat the selected category; Yunda labels name the push channel.
-    const source = item.source_label && !item.source_label.endsWith(activeCategory.title) ? item.source_label : '';
+    const source = item.source_label && !item.source_label.endsWith(category.title) ? item.source_label : '';
     [item.waybill_no ? `运单 ${item.waybill_no}` : '', source]
       .filter(Boolean).forEach((text) => meta.append(element('span', '', text)));
     row.append(head);
@@ -449,6 +491,79 @@
     }
   }
 
+  function sortTime(node) {
+    const time = Date.parse(String(node.dataset.sortTime || '').replace(' ', 'T'));
+    return Number.isFinite(time) ? time : -Infinity;
+  }
+
+  async function fetchAll(force = false) {
+    if (!allActive || pageHidden()) return;
+    itemsRequest?.controller.abort();
+    const seq = ++itemsRequestSeq;
+    const controller = new AbortController();
+    itemsRequest = { key: 'all', controller };
+    const categories = allCategories(latestSnapshot)
+      .filter((item) => (activeSource === 'all' || item.system === activeSource) && item.items_supported && item.count !== 0);
+    setText(els.detailSubtitle, '全部 · 所有有消息的分类，按时间排序');
+    setOpenUrl('');
+    els.pagination.hidden = true;
+    els.next.dataset.hasMore = 'false';
+    setItemsBusy(true);
+    setItemsStatus(els.items.childElementCount ? '正在更新消息…' : '正在读取消息正文…');
+    const results = await Promise.all(categories.map(async (category) => {
+      const params = new URLSearchParams({ system: category.system, category_id: category.category_id, page: '1' });
+      if (force) params.set('force', '1');
+      try {
+        const payload = await fetchMonitoringJson(`/monitoring/items?${params}`, controller, true, monitoringItemsTimeoutMs);
+        if (payload.ok === false) throw new Error(payload.message || '读取失败');
+        if (!Array.isArray(payload.items)) throw new Error('响应不完整');
+        return { category, payload };
+      } catch (error) {
+        return { category, error: error?.name === 'AbortError' ? '读取超时' : (error.message || '读取失败') };
+      }
+    }));
+    if (seq !== itemsRequestSeq || pageHidden()) return;
+    const expanded = new Set(Array.from(els.items.querySelectorAll('details[open]')).map((node) => node.dataset.itemId));
+    const rows = [];
+    results.forEach(({ category, payload }) => {
+      if (payload) payload.items.forEach((item) => rows.push(createMessageItem(item, expanded, category)));
+    });
+    if (pendingState.available) {
+      const holder = document.createElement('ul');
+      root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: holder, status: null, platform: activeSource } }));
+      rows.push(...Array.from(holder.children));
+    }
+    rows.sort((a, b) => sortTime(b) - sortTime(a));
+    els.items.replaceChildren(...rows);
+    if (window.feather) window.feather.replace();
+    displayedItemsKey = 'all';
+    const failed = results.filter((result) => result.error)
+      .map(({ category, error }) => `${shortSource(category.source_label, category.system)}·${category.title || '消息分类'}${error}`);
+    const truncated = results.some(({ payload }) => payload && payload.has_more === true);
+    const notes = [];
+    if (!rows.length && !failed.length) notes.push('目前没有待处理消息。');
+    if (truncated) notes.push('每个分类只显示最新一页，点分类标签查看更多');
+    if (failed.length) notes.push(`以下分类读取失败：${failed.join('；')}`);
+    setItemsStatus(notes.join('；') || '合并显示所有有消息的分类，按时间排序', failed.length ? 'error' : '');
+    if (seq === itemsRequestSeq) {
+      itemsRequest = null;
+      setItemsBusy(false);
+    }
+  }
+
+  function selectAll() {
+    if (allActive) return;
+    clearItems();
+    allActive = true;
+    pendingActive = false;
+    activeCategory = null;
+    if (els.pendingMore) els.pendingMore.hidden = true;
+    renderTabs(latestSnapshot, allCategories(latestSnapshot));
+    renderMetrics(allCategories(latestSnapshot));
+    latestAllKey = JSON.stringify([latestSnapshot?.updated_at, activeSource]);
+    fetchAll();
+  }
+
   function preferCachedQueryValue(preferCached) {
     return preferCached ? 'prefer_cached=1' : 'prefer_cached=0';
   }
@@ -492,11 +607,13 @@
   });
   els.reload.addEventListener('click', () => {
     if (pendingActive) { root.dispatchEvent(new CustomEvent('overview:pending-reload')); return; }
+    if (allActive) { fetchAll(true); return; }
     fetchItems(true);
   });
   els.prev.addEventListener('click', () => { if (currentPage > 1) { currentPage -= 1; fetchItems(); } });
   els.next.addEventListener('click', () => { if (els.next.dataset.hasMore === 'true') { currentPage += 1; fetchItems(); } });
   els.systems.addEventListener('click', (event) => {
+    if (event.target.closest('[data-monitoring-all-tab]')) { selectAll(); return; }
     if (event.target.closest('[data-monitoring-pending-tab]')) { selectPending(); return; }
     const button = event.target.closest('[data-monitoring-category]');
     if (!button || !els.systems.contains(button)) return;
@@ -514,14 +631,18 @@
   function onPendingState(event) {
     const detail = event.detail || {};
     pendingState = { available: Boolean(detail.available), total: typeof detail.total === 'number' ? detail.total : null };
+    pendingItems = Array.isArray(detail.items) ? detail.items : [];
     if (!pendingState.available && pendingActive) {
       pendingActive = false;
+      allActive = true;
+      latestAllKey = '';
       if (els.pendingMore) els.pendingMore.hidden = true;
       latestSnapshotKey = '';
       if (latestSnapshot) renderSnapshot(latestSnapshot);
       return;
     }
     renderTabs(latestSnapshot, allCategories(latestSnapshot));
+    if (allActive && latestSnapshot) fetchAll();
     if (pendingActive) root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: els.items, status: els.itemsStatus } }));
   }
   root.addEventListener('overview:pending', onPendingState);

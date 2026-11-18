@@ -41,11 +41,12 @@
     const blocks = () => Array.from(page.querySelectorAll("[data-overview-pending]"));
     const publish = (available) => {
       dashboard.dispatchEvent(new CustomEvent("overview:pending", {
-        detail: { available, total: latest ? Number(latest.total || 0) : null },
+        detail: { available, total: latest ? Number(latest.total || 0) : null, items: latest ? (latest.items || []) : [] },
       }));
     };
 
-    function render(list, status) {
+    // ``platform`` (yunda/ronghui) limits the rows for the message center's “全部” tab.
+    function render(list, status, platform) {
       if (!list) return;
       if (failure) {
         list.innerHTML = "";
@@ -56,14 +57,15 @@
         if (status) status.textContent = "正在读取待确认问题件…";
         return;
       }
-      const items = latest.items || [];
+      const items = (latest.items || []).filter((item) => !platform || platform === "all"
+        || (item.platform === "yunda" ? "yunda" : "ronghui") === platform);
       list.innerHTML = items.map((item) => {
         const key = [item.source_id, item.external_id, item.source_direction].join("|");
         const href = `/modules/customer-service?open=${encodeURIComponent(key)}&q=${encodeURIComponent(item.waybill_no || "")}`;
         const wait = waited(item.updated_at || item.created_at);
         const system = item.platform === "yunda" ? "yunda" : "ronghui";
         const title = `${item.problem_type ? `【${item.problem_type}】` : ""}${item.problem_text || "问题件"}`;
-        return `<li class="monitor-item monitor-item--pending">
+        return `<li class="monitor-item monitor-item--pending" data-sort-time="${escapeHtml(item.updated_at || item.created_at || "")}">
           <div class="monitor-item-head">
             <span class="monitor-source-tag" data-system="${system}">${system === "yunda" ? "韵达" : "融辉"}</span>
             <span class="monitor-item-kind">问题件</span>
@@ -120,7 +122,7 @@
       }
     }
 
-    dashboard.addEventListener("overview:pending-render", (event) => render(event.detail?.list, event.detail?.status));
+    dashboard.addEventListener("overview:pending-render", (event) => render(event.detail?.list, event.detail?.status, event.detail?.platform));
     dashboard.addEventListener("overview:pending-reload", () => { load(); });
     load();
   }
