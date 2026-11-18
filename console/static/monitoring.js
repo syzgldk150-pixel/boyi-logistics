@@ -20,9 +20,9 @@
     'ronghui-work': { sum: ['ronghui:work_response', 'ronghui:work_processing'], tone: 'warning',
       note: [['ronghui:work_response', '待响应'], ['ronghui:work_processing', '待处理']] },
     'yunda-work': { sum: ['yunda:work_orders'], tone: 'warning', note: [['yunda:work_order_replies', '催单待回复']] },
-    announcements: { sum: ['yunda:announcements', 'ronghui:announcements'],
-      note: [['yunda:announcements', '韵达'], ['ronghui:announcements', '融辉']] },
-    'yunda-notifications': { sum: ['yunda:notifications'], note: [] }
+    'yunda-problems': { sum: ['yunda:problems'], tone: 'warning', note: [] },
+    'yunda-arbitration': { sum: ['yunda:arbitrations', 'yunda:transfers'], tone: 'warning',
+      note: [['yunda:arbitrations', '仲裁'], ['yunda:transfers', '调拨件待接单']] }
   };
   const monitoringRequestTimeoutMs = 8000;
   const monitoringItemsTimeoutMs = 75000;
@@ -75,7 +75,9 @@
     try {
       const url = new URL(value);
       const official = ['ronghuiwl.com', 'yunda56.com'].some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`));
-      return url.protocol === 'https:' && official && !url.username && !url.password && !url.port ? url.href : '';
+      // 韵达仲裁系统原页固定在 8090 端口；其他地址不允许端口。
+      const portAllowed = !url.port || (url.hostname === 'kyzc.yunda56.com' && url.port === '8090');
+      return url.protocol === 'https:' && official && !url.username && !url.password && portAllowed ? url.href : '';
     } catch (_) {
       return '';
     }

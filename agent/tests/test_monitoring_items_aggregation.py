@@ -31,7 +31,7 @@ def test_adapter_failure_is_not_converted_to_success_or_cached(status, code):
     broker = Mock()
     with (patch.object(monitoring, "get_session_broker", return_value=broker),
           patch.object(monitoring_yunda, "collect_items", return_value=item_page(status=status, total=None))):
-        result = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications")
+        result = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
     assert result["ok"] is False
     assert result["error_code"] == code
     assert result["total"] is None
@@ -43,7 +43,7 @@ def test_adapter_failure_is_not_converted_to_success_or_cached(status, code):
 def test_unknown_quantity_is_not_zeroed_in_page_or_combined_total():
     with (patch.object(monitoring, "get_session_broker", return_value=Mock()),
           patch.object(monitoring_yunda, "collect_items", return_value=item_page(total=None))):
-        page = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications")
+        page = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
     assert page["total"] is None
     totals = monitoring._build_totals([
         {"system": "yunda", "total_count": None, "exception_count": None},
@@ -84,10 +84,10 @@ def test_unknown_category_is_rejected_before_session_or_adapter(system, category
 
 def test_detail_link_uses_server_category_target_and_ignores_browser_url():
     trusted = "https://ky-client.yunda56.com/#/server-owned-category"
-    snapshot = {"systems": [{"categories": [{"category_id": "yunda:notifications", "title": "通知", "open_url": trusted}]}]}
+    snapshot = {"systems": [{"categories": [{"category_id": "yunda:problems", "title": "通知", "open_url": trusted}]}]}
     with patch.object(monitoring, "build_monitoring_snapshot", return_value=snapshot):
         link = monitoring.build_monitoring_detail_link({
-            "system": "yunda", "category_id": "yunda:notifications",
+            "system": "yunda", "category_id": "yunda:problems",
             "url": "https://untrusted.test/", "open_url": "https://untrusted.test/",
             "resource_id": "other", "target_title": "Other", "account_id": "other",
         })
@@ -107,21 +107,21 @@ def test_forced_refresh_never_runs_the_capability_health_matrix():
           patch.object(monitoring_yunda, "collect_categories", return_value=[]),
           patch.object(monitoring_yunda, "collect_items", return_value=item_page())):
         monitoring._collect_system_snapshot("yunda", force=True, updated_at="synthetic-time")
-        monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications", force=True)
+        monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems", force=True)
     broker.validate_health_matrix.assert_not_called()
     assert all(call.kwargs == {"validate": False} for call in broker.build_requests_session.call_args_list)
 
 
 def test_cache_is_scoped_to_server_profile_category_and_page():
-    foreign_key = ("yunda", "other-profile", "yunda:notifications", 1)
+    foreign_key = ("yunda", "other-profile", "yunda:problems", 1)
     monitoring._ITEM_CACHE[foreign_key] = (time.time(), item_page(total=999))
     broker = Mock()
     with (patch.object(monitoring, "get_session_broker", return_value=broker) as resolve,
           patch.object(monitoring_yunda, "collect_items", side_effect=[item_page(total=1), item_page(total=2, page=2)]) as collect,
           patch.object(monitoring_ronghui, "collect_items", return_value=item_page(total=3))):
-        first = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications")
-        cached = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications")
-        second = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications", page=2)
+        first = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
+        cached = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
+        second = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems", page=2)
         ronghui = monitoring.build_monitoring_items(system="ronghui", category_id="ronghui:announcements")
     assert first["total"] == cached["total"] == 1
     assert cached["cached"] is True
@@ -130,8 +130,8 @@ def test_cache_is_scoped_to_server_profile_category_and_page():
     assert collect.call_count == 2
     assert [call.args[0] for call in resolve.call_args_list] == ["yunda", "yunda", "default"]
     assert set(monitoring._ITEM_CACHE) == {
-        foreign_key, ("yunda", "yunda", "yunda:notifications", 1),
-        ("yunda", "yunda", "yunda:notifications", 2), ("ronghui", "default", "ronghui:announcements", 1),
+        foreign_key, ("yunda", "yunda", "yunda:problems", 1),
+        ("yunda", "yunda", "yunda:problems", 2), ("ronghui", "default", "ronghui:announcements", 1),
     }
 
 
@@ -140,8 +140,8 @@ def test_forced_refresh_reports_failure_instead_of_reusing_previous_success():
           patch.object(monitoring_yunda, "collect_items", side_effect=[
               item_page(total=2), item_page(status="error", total=None),
           ]) as collect):
-        original = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications")
-        failure = monitoring.build_monitoring_items(system="yunda", category_id="yunda:notifications", force=True)
+        original = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
+        failure = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems", force=True)
     assert failure["ok"] is False
     assert failure["total"] is None
     assert original["total"] == 2
@@ -170,17 +170,17 @@ def test_concurrent_reads_of_same_page_share_one_collection():
         assert release_collection.wait(timeout=5)
         return item_page(total=7)
 
-    key = ("yunda", "yunda", "yunda:notifications", 1)
+    key = ("yunda", "yunda", "yunda:problems", 1)
     monitoring._ITEM_LOCKS[key] = (ObservedLock(), 0)
     with (patch.object(monitoring, "get_session_broker", return_value=Mock()),
           patch.object(monitoring_yunda, "collect_items", side_effect=collect_page) as collect,
           ThreadPoolExecutor(max_workers=2) as executor):
         first = executor.submit(monitoring.build_monitoring_items, system="yunda",
-                                category_id="yunda:notifications", force=True)
+                                category_id="yunda:problems", force=True)
         try:
             assert collection_started.wait(timeout=5)
             second = executor.submit(monitoring.build_monitoring_items, system="yunda",
-                                     category_id="yunda:notifications", force=True)
+                                     category_id="yunda:problems", force=True)
             assert waiter_blocked.wait(timeout=5)
         finally:
             release_collection.set()

@@ -214,7 +214,7 @@ class MonitoringParsingTests(unittest.TestCase):
         broker = Mock()
         broker.build_requests_session.return_value = session
         categories = [{
-            "category_id": "yunda:notifications", "count": 2, "include_in_total": False,
+            "category_id": "yunda:problems", "count": 2, "include_in_total": False,
             "status": "pending", "status_label": "待处理", "items_supported": True,
         }]
         with (

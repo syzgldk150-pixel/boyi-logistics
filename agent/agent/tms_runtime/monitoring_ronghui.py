@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 from agent.tms_runtime.errors import TMSAuthStateError
+from agent.tms_runtime.monitoring_window import RECENT_NOTE, is_recent, latest_activity
 from agent.tms_runtime.scripts.customer_service_problem import (
     _resolve_ronghui_page_context,
     _ronghui_headers,
@@ -21,6 +22,12 @@ SOURCES = {
     "ronghui:work_processing": ("收到工单 · 待处理", WORK_MENU, "3"),
 }
 STATE_LABELS = {"2": "待责任方响应", "3": "待责任方处理"}
+FINISHED_STATE = "已完结"
+# 用户确认（2026-11-18）：只有这四个网点为责任方的工单属于博益。
+OWN_RESPONSIBLE_PARTIES = frozenset({"邵阳大祥站", "邵阳大祥S站", "邵阳操作场", "邵阳自提部"})
+WORK_FETCH_PAGE_SIZE = 50
+MAX_WORK_ORDERS = 1000
+WORK_SCOPE_NOTE = "只显示责任方为邵阳大祥站、邵阳大祥S站、邵阳操作场、邵阳自提部的未完结工单。"
 
 
 class RonghuiMonitoringError(ValueError):
@@ -110,6 +117,79 @@ def _query(session, context, state, page, page_size):
     }, paged=True)
 
 
+def _own_work_orders(session, context, state) -> list[dict[str, Any]]:
+    """Read every received order in one state, then keep only Boyi's sites."""
+    rows: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        page_rows, total = _query(session, context, state, page, WORK_FETCH_PAGE_SIZE)
+        if total > MAX_WORK_ORDERS:
+            raise RonghuiMonitoringError("融辉收到工单数量过多，请打开原系统核对。")
+        rows.extend(page_rows)
+        if page * WORK_FETCH_PAGE_SIZE >= total:
+            break
+        page += 1
+    own: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        code = str(row.get("WORK_ORDER_CODE") or "").strip()
+        if not code or "WORK_CONTENT" not in row or "RESPONSIBLE_PARTY" not in row:
+            raise RonghuiMonitoringError("融辉工单缺少编号、正文或责任方字段，请检查原系统。")
+        if code in seen:
+            raise RonghuiMonitoringError("融辉列表出现重复编号，无法确认分页数量。")
+        seen.add(code)
+        work_state = row.get("WORK_STATE")
+        if work_state == FINISHED_STATE:
+            continue
+        if work_state != STATE_LABELS[state]:
+            raise RonghuiMonitoringError("融辉返回了非待处理工单，已停止展示该查询结果。")
+        if str(row.get("RESPONSIBLE_PARTY") or "").strip() in OWN_RESPONSIBLE_PARTIES:
+            own.append(row)
+    return own
+
+
+def _read_history(session, context, code: str) -> tuple[list[dict[str, Any]], int]:
+    history, total = _read(session, context, "FIND_TAB_WORK_ORDER_DETAILS", {
+        "WORK_ORDER_CODE": code, "pageIndex": 0, "pageSize": 20,
+        "sortField": "HANDLE_DATE", "sortOrder": "desc",
+    }, paged=True, timeout=8)
+    if any(str(entry.get("WORK_ORDER_CODE") or "").strip() != code
+           or "HANDLE_CONTENT" not in entry or not entry.get("HANDLE_DATE") for entry in history):
+        raise RonghuiMonitoringError("工单处理记录字段缺失或所属编号不符。")
+    history.sort(key=lambda entry: str(entry["HANDLE_DATE"]), reverse=True)
+    return history, total
+
+
+def _recent_work_orders(session, context, state) -> list[tuple[dict[str, Any], tuple[list, int] | None]]:
+    """Boyi's open orders whose registration or latest handling record is recent.
+
+    A failed history read keeps the order visible (its recency cannot be disproved)."""
+    rows = _own_work_orders(session, context, state)
+    if not rows:
+        return []
+
+    def load(row):
+        try:
+            return _read_history(session, context, str(row["WORK_ORDER_CODE"]).strip())
+        except Exception:
+            return None
+
+    # Only bounded read requests run concurrently; account/session settings stay unchanged.
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="ronghui-history") as executor:
+        histories = list(executor.map(load, rows))
+    result = []
+    for row, history in zip(rows, histories):
+        times = [row.get("REGISTER_DATE")] + ([entry["HANDLE_DATE"] for entry in history[0]] if history else [])
+        if history is None or is_recent(times):
+            result.append((row, history))
+    return result
+
+
+def _recent_announcements(session, context) -> list[dict[str, Any]]:
+    rows, _ = _query(session, context, "", 1, 1)
+    return [row for row in rows if is_recent([row.get("NOTICE_DATETIME")])]
+
+
 def collect_categories(session) -> list[dict[str, Any]]:
     categories = []
     contexts = {}
@@ -123,10 +203,11 @@ def collect_categories(session) -> list[dict[str, Any]]:
         try:
             if menu not in contexts:
                 contexts[menu] = _context(session, menu)
-            rows, total = _query(session, contexts[menu], state, 1, 1)
-            if state and any(row.get("WORK_STATE") != STATE_LABELS[state] for row in rows):
-                raise RonghuiMonitoringError("融辉工单筛选状态不符，无法确认待办数量。")
-            category.update(count=total, status="ok", message="",
+            if state:
+                total = len(_recent_work_orders(session, contexts[menu], state))
+            else:
+                total = len(_recent_announcements(session, contexts[menu]))
+            category.update(count=total, status="ok", message=RECENT_NOTE + (WORK_SCOPE_NOTE if state else ""),
                             status_label=(STATE_LABELS[state] if state else "未读") if total else "暂无待办")
         except Exception as exc:
             category.update(count=None, status="auth_required" if isinstance(exc, TMSAuthStateError) else "error",
@@ -136,6 +217,45 @@ def collect_categories(session) -> list[dict[str, Any]]:
     return categories
 
 
+def _work_order_item(row: dict[str, Any], history: tuple[list, int] | None, state: str, title: str) -> dict[str, Any]:
+    content = plain_text(row.get("WORK_CONTENT"))
+    deadline = row.get("FIRST_RESPONSE_END_DATE" if state == "2" else "OVER_END_TIME")
+    if deadline:
+        content += f"\n{'响应' if state == '2' else '完结'}截止：{deadline}"
+    occurred_at = str(row.get("REGISTER_DATE") or "")
+    if history is None:
+        content += "\n处理记录暂时读取失败，请打开原系统核对最新回复。"
+    else:
+        entries, total = history
+        if entries:
+            content += "\n\n处理记录（原系统未提供未读标识）：\n" + "\n".join(
+                f"{entry['HANDLE_DATE']} {entry.get('HANDLE_STATE', '')}：{plain_text(entry.get('HANDLE_CONTENT'))}"
+                for entry in entries
+            )
+            occurred_at = latest_activity([occurred_at, entries[0]["HANDLE_DATE"]]) or occurred_at
+        if total > len(entries):
+            content += "\n仅展示最新20条处理记录，完整历史请打开原系统。"
+    return {
+        "id": str(row["WORK_ORDER_CODE"]).strip(), "title": str(row.get("WORK_NAME") or title),
+        "content": content or "原系统正文为空", "occurred_at": occurred_at,
+        "status_label": STATE_LABELS[state], "waybill_no": str(row.get("BILL_CODE") or ""),
+        "source_label": f"融辉 · {title}", "open_url": HOME,
+    }
+
+
+def _announcement_item(row: dict[str, Any], title: str) -> dict[str, Any]:
+    identifier = str(row.get("GUID") or "").strip()
+    if not identifier or "CONTENT" not in row:
+        raise RonghuiMonitoringError("融辉消息或工单缺少编号/正文字段，请检查原系统。")
+    content = "\n".join(filter(None, [plain_text(row.get("CONTENT")), plain_text(row.get("CONTENT1")),
+                                      plain_text(row.get("CONTENT2"))]))
+    return {
+        "id": identifier, "title": str(row.get("TITLE") or title), "content": content or "原系统正文为空",
+        "occurred_at": str(row.get("NOTICE_DATETIME") or ""), "status_label": "未读",
+        "waybill_no": str(row.get("BILL_CODE") or ""), "source_label": f"融辉 · {title}", "open_url": HOME,
+    }
+
+
 def collect_items(session, category_id: str, page: int, page_size: int = 20) -> dict[str, Any]:
     if category_id not in SOURCES:
         raise RonghuiMonitoringError("不支持的融辉消息分类。")
@@ -143,74 +263,24 @@ def collect_items(session, category_id: str, page: int, page_size: int = 20) -> 
         raise RonghuiMonitoringError("消息页码或每页数量无效。")
     title, menu, state = SOURCES[category_id]
     context = _context(session, menu)
-    rows, total = _query(session, context, state, page, page_size)
-    if not state:
-        rows = sorted(rows, key=lambda r: str(r.get("NOTICE_DATETIME") or ""), reverse=True)
-        rows = rows[(page - 1) * page_size:page * page_size]
-    items = []
-    seen = set()
-    for row in rows:
-        identifier = str(row.get("WORK_ORDER_CODE" if state else "GUID") or "").strip()
-        content_key = "WORK_CONTENT" if state else "CONTENT"
-        if not identifier or content_key not in row:
-            raise RonghuiMonitoringError("融辉消息或工单缺少编号/正文字段，请检查原系统。")
-        if identifier in seen:
-            raise RonghuiMonitoringError("融辉列表出现重复编号，无法确认分页数量。")
-        seen.add(identifier)
-        if state and row.get("WORK_STATE") != STATE_LABELS[state]:
-            raise RonghuiMonitoringError("融辉返回了非待处理工单，已停止展示该查询结果。")
-        content = plain_text(row.get(content_key))
-        occurred_at = str(row.get("REGISTER_DATE" if state else "NOTICE_DATETIME") or "")
-        if state:
-            deadline = row.get("FIRST_RESPONSE_END_DATE" if state == "2" else "OVER_END_TIME")
-            if deadline:
-                content += f"\n{'响应' if state == '2' else '完结'}截止：{deadline}"
-        else:
-            content = "\n".join(filter(None, [content, plain_text(row.get("CONTENT1")), plain_text(row.get("CONTENT2"))]))
-        items.append({
-            "id": identifier, "title": str(row.get("WORK_NAME" if state else "TITLE") or title),
-            "content": content or "原系统正文为空", "occurred_at": occurred_at,
-            "status_label": STATE_LABELS[state] if state else "未读",
-            "waybill_no": str(row.get("BILL_CODE") or ""),
-            "source_label": f"融辉 · {title}", "open_url": HOME,
-        })
     partial = False
-    if state and items:
-        # Only bounded read requests run concurrently; account/session settings
-        # stay unchanged. Each item can retain its verified body on a failure.
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="ronghui-history") as executor:
-            results = list(executor.map(lambda item: _append_history(session, context, item), items))
-        partial = not all(results)
+    if state:
+        pairs = _recent_work_orders(session, context, state)
+        partial = any(history is None for _, history in pairs)
+        items = [_work_order_item(row, history, state, title) for row, history in pairs]
+    else:
+        items = [_announcement_item(row, title) for row in _recent_announcements(session, context)]
+    ids = [item["id"] for item in items]
+    if len(ids) != len(set(ids)):
+        raise RonghuiMonitoringError("融辉列表出现重复编号，无法确认分页数量。")
     items.sort(key=lambda item: item["occurred_at"], reverse=True)
+    total = len(items)
+    items = items[(page - 1) * page_size:page * page_size]
     return {
         "title": title, "items": items, "total": total, "page": page, "page_size": page_size,
         "has_more": page * page_size < total, "open_url": HOME,
         "status": "partial" if partial else "ok", "status_label": "部分读取失败" if partial else "已同步",
-        "message": "部分处理记录读取失败，请核对原系统。" if partial else (
-            "按接收方查询所有日期的未完结工单；按原系统登记时间分页，页内按最新处理时间排序。原系统未提供回复未读标识。" if state else ""
+        "message": "部分处理记录读取失败，已保留显示，请核对原系统。" if partial else (
+            RECENT_NOTE + (WORK_SCOPE_NOTE + "按最新动态时间排序。原系统未提供回复未读标识。" if state else "")
         ),
     }
-
-
-def _append_history(session, context, item: dict[str, Any]) -> bool:
-    try:
-        history, total = _read(session, context, "FIND_TAB_WORK_ORDER_DETAILS", {
-            "WORK_ORDER_CODE": item["id"], "pageIndex": 0, "pageSize": 20,
-            "sortField": "HANDLE_DATE", "sortOrder": "desc",
-        }, paged=True, timeout=8)
-        if any(str(entry.get("WORK_ORDER_CODE") or "").strip() != item["id"]
-               or "HANDLE_CONTENT" not in entry or not entry.get("HANDLE_DATE") for entry in history):
-            raise RonghuiMonitoringError("工单处理记录字段缺失或所属编号不符。")
-        if history:
-            history.sort(key=lambda entry: str(entry["HANDLE_DATE"]), reverse=True)
-            item["content"] += "\n\n处理记录（原系统未提供未读标识）：\n" + "\n".join(
-                f"{entry['HANDLE_DATE']} {entry.get('HANDLE_STATE', '')}：{plain_text(entry.get('HANDLE_CONTENT'))}"
-                for entry in history
-            )
-            item["occurred_at"] = max(item["occurred_at"], str(history[0]["HANDLE_DATE"]))
-        if total > len(history):
-            item["content"] += "\n仅展示最新20条处理记录，完整历史请打开原系统。"
-        return True
-    except Exception:
-        item["content"] += "\n处理记录暂时读取失败，请打开原系统核对最新回复。"
-        return False
