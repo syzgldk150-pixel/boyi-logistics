@@ -219,6 +219,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 金额在浏览器中只按字符串和整数（万分之一单位）计算，不用浮点数。
   - 旧融辉账户收支工作台已随迁移 067 删除。财务数据源页 `/modules/finance/data-sources` 保留，新连接器在此管理。
   - 后续分期见 `../agent/docs/finance_module.md`。
+  - 侧栏“财务模块”是分组：财务账簿（`/modules/finance`）、融辉对账单、韵达对账单（`/modules/finance/{ronghui,yunda}-bills`，2026-11-18）。对账单页 `templates/finance_platform_bills.html`、`static/finance_platform_bills.js`、`services/finance_platform_bills.py`：点“查询”经 `GET /finance/platform-bills/{platform}` 以真实管理员签名调 Agent 只读 `platform-prepay-bills`，按平台列原样显示、可下钻与导出 CSV，不存库、不显示旧数据，失败显示平台原因。取数账号只在 `../shared/finance/platform_bills.py`，浏览器只能选其中的账号；韵达下钻参数名只接受该文件的已核实字段。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`
@@ -296,8 +297,8 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
 - 物流跟踪扫描轨迹按扫描时间倒序（最新在上，无时间的平台提示行排最后）；“当前状态”为签收时显示绿色。
 - 物流跟踪“运单详情”页签底部的“签收与回单”区块（规格 ⑥a/⑥b）：只在当前状态为签收（不含“未签收”“应签收”）且轨迹中有带时间的签收扫描时显示；韵达“快件最晚应签收时间”提示行不算签收（Agent `_infer_status` 同步排除）；签收时间、签收网点取该签收扫描行，回单编号（融辉 `getBillByCode` 的 `R_BILLCODE`）／回单号（韵达 INMS 的 `ReturnLogisticsId`）由 Agent 放入 `waybill_stub.receipt_number`。签收人尚无已核实的平台字段，暂不显示。缩略图用真实签收／回单照片（复用 `GET /waybills/photos`，最多 3 张），点开 900×660“签收凭证”查看层：签收单／回单页签带张数、翻页、下载原图；大图按查看区等比缩放，不超出弹窗（2026-11-16 修复溢出，寄件查询的签收凭证同样处理）。
 - 切换页签时 `console_ui.js` 的 `activateTab` 关闭被隐藏页签中仍打开的模态 `dialog`，否则整页保持 inert、无法点击（2026-11-12：寄件查询详情里点“轨迹跟踪”后物流跟踪页点不动）。
-- 唯一菜单注册目录：`navigation.py`。16 个固定模块保留在不可变 `CONSOLE_MENU_REGISTRATIONS`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
-- 桌面侧栏分组只由 `navigation.py` 的 `NAVIGATION_GROUPS` 与注册项 `group` 字段决定（当前“运单业务”收纳运单录入、寄件运单查询、物流跟踪、回单管理）；模板按连续同组项渲染可折叠分组，移动底栏和更多面板仍为平铺。侧栏“搜索页面（⌘K）”只在浏览器内过滤已有导航项；收起侧栏与分组展开状态是浏览器本地便利偏好，不进入 `ui_preferences_json`。视觉令牌与组件尺寸以根目录 `DESIGN.md` 为准。
+- 唯一菜单注册目录：`navigation.py`。16 个固定模块（加财务模块的两个对账单子菜单，共 18 个注册项）保留在不可变 `CONSOLE_MENU_REGISTRATIONS`；`CONSOLE_NAVIGATION` 只投影可见模块。“扩展中心”不再注册菜单，插件管理归入自动化；原“系统状态”控制平面菜单已删除，不再追加任何控制平面菜单。`base.html`、移动底栏、更多面板、`AuthServiceMixin` 校验和测试都必须复用这些投影，不得维护模板内副本。菜单注册不承载权限或运行健康状态。
+- 桌面侧栏分组只由 `navigation.py` 的 `NAVIGATION_GROUPS` 与注册项 `group` 字段决定（当前“运单业务”收纳运单录入、寄件运单查询、物流跟踪、回单管理；“财务模块”收纳财务账簿、融辉对账单、韵达对账单，两个对账单子菜单在 `shared/business_modules.py` 归属财务模块）；模板按连续同组项渲染可折叠分组，移动底栏和更多面板仍为平铺。侧栏“搜索页面（⌘K）”只在浏览器内过滤已有导航项；收起侧栏与分组展开状态是浏览器本地便利偏好，不进入 `ui_preferences_json`。视觉令牌与组件尺寸以根目录 `DESIGN.md` 为准。
 - 模块查看权限目录：`permission_registry.py`。每个已注册菜单必须恰有一个 `console.menu.<menu_id>.view` 权限，当前只登记 MySQL 管理员既有 `admin` / `super_admin` 角色事实；未知角色、未知权限、缺失或多余菜单均关闭失败。该注册表不改变路由认证、菜单显示或超级管理员写边界；应急 Basic Auth 没有可签名管理员身份，不进入模块权限注册。
 - 模块代码注册状态目录：`module_status_registry.py`。它按 16 个固定模块顺序登记唯一 `code_registered`；该事实只表示当前源码构建已包含注册，不代表 healthy、ready、生产发布或可切换状态。目录只读且不提供 HTTP/启停接口；`ProjectModule` 的 ready/maintained/in-progress/planned 是独立的文档卡成熟度，禁止混用。
 - 系统区可见固定模块顺序为“智能模型 → 系统管理”，不再追加“系统状态”；插件安装与管理只位于“自动化”，不得恢复“扩展中心”菜单。原事项中心 `/work-items` 已于 2026-11 删除。旧移动偏好中的 `/settings/modules` 必须被修复，不得恢复旧入口。任何模块深链接直接打开或刷新时，顶部必须先建立不可关闭的“概览”固定标签，再激活当前模块；概览首次点击可懒加载，前进/后退或关闭当前模块不能丢失概览。

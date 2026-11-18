@@ -53,11 +53,20 @@ _PERIOD = re.compile(r"/finance/periods/(\d{4}-\d{2})")
 _EXPORT = re.compile(r"/finance/exports/([a-z-]{3,32})\.xlsx")
 _REVIEW_SUGGEST = re.compile(r"/finance/reviews/(\d{1,18})/suggest")
 _PERIOD_ACTION = re.compile(r"/finance/periods/(\d{4}-\d{2})/(close|reopen)")
+_BILL_PAGES = {"/modules/finance/ronghui-bills": "ronghui", "/modules/finance/yunda-bills": "yunda"}
+_BILL_QUERY = re.compile(r"/finance/platform-bills/(ronghui|yunda)")
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path == "/modules/finance":
         app._render_finance(handler, query)
+        return True
+    if path in _BILL_PAGES:
+        app._render_platform_bills(handler, _BILL_PAGES[path])
+        return True
+    match = _BILL_QUERY.fullmatch(path)
+    if match:
+        app._handle_platform_bills(handler, match.group(1), query)
         return True
     action = _GET.get(path)
     if action:

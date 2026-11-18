@@ -4,7 +4,7 @@ type: 模块文档
 tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, 凭证, 科目余额表, 明细账, Decimal, 重建]
 related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md, ../../docs/finance_connector_contract.md]
 status: active
-updated: 2026-11-15
+updated: 2026-11-18
 ---
 
 # 财务模块（复式记账总账）
@@ -21,6 +21,17 @@ updated: 2026-11-15
 
 - `/modules/finance` 的页签依次为：开单确认、凭证、科目余额表、明细账、序时账、往来核销、账龄与对账单、来源与流水、规则与待审、报表、月度封账、科目、设置。旧 `/finance/*` 接口已删除，新的 `/finance/*` 只属于总账。
 - AI 与飞书的财务查询 `query_business_finance` 读取总账，见下文“P5”。旧融辉财务插件实例已由用户卸载。
+
+## 平台预付款对账单（融辉 / 韵达，2026-11-18）
+
+侧栏“财务模块”展开为三个子菜单：财务账簿（`/modules/finance`，上述总账页签）、融辉对账单（`/modules/finance/ronghui-bills`）、韵达对账单（`/modules/finance/yunda-bills`）。两张对账单只做平台账单的原样读取，供对账结账核对，不入库、不记账、不展示旧数据：
+
+- 取数链路：页面“查询” → Console `GET /finance/platform-bills/{ronghui|yunda}`（`console/services/finance_platform_bills.py`，需 `finance:view`）→ Agent 只读业务接口 `platform-prepay-bills`（`agent/agent/tms_runtime/platform_prepay_bills.py`，`business_permission` 为 `finance:view`）→ 用业务账号已保存的登录态直连平台。失败按平台原因显示（未登录、平台拒绝、接口不可达、页面或格式已变化），不回退旧数据。
+- 取数账号与边界只在 `shared/finance/platform_bills.py`：融辉固定三个网点账号（大祥站、大祥S站、自提部），每个账号一份独立账单；韵达用一级网点账号，分部（二级网点）在同一账号下查询。一次最多 31 天，分页 100/200/500。
+- 融辉：预付款管理 → 结算明细查询。统计查询（汇总数据）→ 点结算类型看该类型明细（明细数据）；明细查询（全部流水）；预付款余额。列标题和顺序取自当次打开的原页表格声明；页面结构变化时明确失败。
+- 韵达：快运预付款系统 → 交易明细及汇总查询（交易汇总查询 → 按天 → 交易明细，下钻参数按平台列的跳转定义取自所点行）；分部预付款 → 账户余额(二级网点)，点账号进入该分部的交易汇总，再可下钻。下钻参数名只接受已核实的条件字段，未知参数明确停止。
+- 金额与字段原样返回（小数保留平台原文），平台合计行（融辉 totalInfo、韵达收入/支出/收支差）原样显示；页面可导出当前表格 CSV。对账、结账规则后续再做。
+- 接口核实记录见 `../tms_docs/prepayment_bills_capture.md`；回归见 `../tests/test_platform_prepay_bills.py` 与 `../../console/tests/test_finance_platform_bills.py`。
 
 ## 目标架构
 

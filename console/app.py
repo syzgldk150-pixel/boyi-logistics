@@ -9,6 +9,7 @@ from console.services.identities import IdentitiesServiceMixin
 from console.services.control_plane import ControlPlaneServiceMixin
 from console.services.harness import HarnessServiceMixin
 from console.services.finance_ledger import FinanceLedgerServiceMixin
+from console.services.finance_platform_bills import FinancePlatformBillsServiceMixin
 from console.services.monitoring_finance import MonitoringFinanceServiceMixin
 from console.services.llm_settings import LLMSettingsServiceMixin
 from console.services.handbook import HandbookServiceMixin
@@ -57,6 +58,7 @@ class LocalDocFlowApp(
     ReviewsServiceMixin,
     MonitoringFinanceServiceMixin,
     FinanceLedgerServiceMixin,
+    FinancePlatformBillsServiceMixin,
     CustomerServiceMixin,
     WaybillsReceiptsServiceMixin,
     WaybillPhotosServiceMixin,

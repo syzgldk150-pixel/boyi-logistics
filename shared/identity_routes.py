@@ -105,6 +105,8 @@ def handbook_permission(path: str, read: bool) -> str:
 def business_permission(operation: str) -> str:
     if operation.startswith("customer-service-") or operation == "receipts-audit":
         return "customer_service:view" if operation in _READ_OPERATIONS else "customer_service:operate"
+    if operation == "platform-prepay-bills":  # 财务对账单：平台预付款账单只读
+        return "finance:view"
     if operation == "platform-waybill-print-log":  # 原站打印次数，与寄件运单写入同级
         return "waybill.write:operate"
     if operation in {"receipts-query", "receipt-attachment-image", "waybill-photos", "platform-waybill-print",

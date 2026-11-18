@@ -20,6 +20,7 @@ _MENU_SECTIONS = frozenset({"primary", "system"})
 # Desktop sidebar groups: id -> (label, icon). Members stay in registration order.
 NAVIGATION_GROUPS: dict[str, tuple[str, str]] = {
     "waybill": ("运单业务", "truck"),
+    "finance": ("财务模块", "dollar-sign"),
 }
 
 
@@ -96,7 +97,9 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
         ConsoleMenuRegistration("tracking", "/tracking", "物流跟踪", "跟踪", "search", "primary", group="waybill"),
         ConsoleMenuRegistration("receipts", "/receipts", "回单管理", "回单", "image", "primary", group="waybill"),
         ConsoleMenuRegistration("customer_service", "/modules/customer-service", "客户服务", "客服", "headphones", "primary"),
-        ConsoleMenuRegistration("finance", "/modules/finance", "财务模块", "财务", "dollar-sign", "primary"),
+        ConsoleMenuRegistration("finance", "/modules/finance", "财务账簿", "财务", "dollar-sign", "primary", group="finance"),
+        ConsoleMenuRegistration("finance_ronghui_bills", "/modules/finance/ronghui-bills", "融辉对账单", "融辉账单", "file-text", "primary", group="finance"),
+        ConsoleMenuRegistration("finance_yunda_bills", "/modules/finance/yunda-bills", "韵达对账单", "韵达账单", "file-text", "primary", group="finance"),
         ConsoleMenuRegistration("dispatch", "/dispatch", "货拉拉调度", "调度", "map-pin", "primary"),
         ConsoleMenuRegistration("line_haul", "/line-haul-contacts", "专线分流", "专线", "map", "primary"),
         ConsoleMenuRegistration("automations", "/automations", "自动化", "自动化", "sliders", "primary"),

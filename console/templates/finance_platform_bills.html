@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} | {{ app_title }}{% endblock %}
+{% block body_class %}finance-page{% endblock %}
+{% block breadcrumb %}财务模块 / {{ title }}{% endblock %}
+{% block subtitle %}{% if platform == 'ronghui' %}融辉 预付款管理 · 结算明细查询{% else %}韵达 快运预付款系统 · 交易明细及汇总 · 分部预付款{% endif %}（平台原始数据，点查询实时读取）{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v=20261118-bills">{% endblock %}
+
+{% block content %}
+<section class="finance-ledger platform-bills" data-platform-bills data-platform="{{ platform }}"
+  data-max-span="{{ max_span_days }}" data-default-page-size="{{ default_page_size }}" data-filter-keys="{{ filter_keys_json }}">
+  {% if platform == 'ronghui' %}
+  <div class="finance-tabs" role="tablist" aria-label="融辉账号">
+    {% for account in accounts %}
+    <button type="button" role="tab" class="finance-tab" aria-selected="{{ 'true' if loop.first else 'false' }}" {% if not loop.first %}tabindex="-1"{% endif %} data-bill-account="{{ account.account_id }}">{{ account.label }}</button>
+    {% endfor %}
+  </div>
+  {% else %}
+  {% for account in accounts %}<span hidden data-bill-account="{{ account.account_id }}" aria-selected="true">{{ account.label }}</span>{% endfor %}
+  {% endif %}
+
+  <div class="finance-tabs bill-views" role="tablist" aria-label="账单视图">
+    {% if platform == 'ronghui' %}
+    <button type="button" role="tab" class="finance-tab" aria-selected="true" data-bill-view="summary">统计查询</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" tabindex="-1" data-bill-view="detail">明细查询</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" tabindex="-1" data-bill-view="balance">预付款余额</button>
+    {% else %}
+    <button type="button" role="tab" class="finance-tab" aria-selected="true" data-bill-view="summary">交易汇总查询</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" tabindex="-1" data-bill-view="daily">交易汇总-按天</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" tabindex="-1" data-bill-view="detail">交易明细</button>
+    <button type="button" role="tab" class="finance-tab" aria-selected="false" tabindex="-1" data-bill-view="branches">分部预付款</button>
+    {% endif %}
+  </div>
+
+  <div class="finance-toolbar">
+    {% if platform == 'ronghui' %}
+    <label class="finance-field" data-bill-dates>日期口径
+      <select class="review-input" data-bill-date-type>
+        <option value="BALANCE_DATE">结算日期</option><option value="FINANCE_DATE">账单日期</option>
+      </select>
+    </label>
+    {% endif %}
+    <label class="finance-field" data-bill-dates>开始 <input class="review-input" type="date" data-bill-start></label>
+    <label class="finance-field" data-bill-dates>结束 <input class="review-input" type="date" data-bill-end></label>
+    <label class="finance-field" data-bill-paging>每页
+      <select class="review-input" data-bill-page-size>
+        {% for size in page_sizes %}<option value="{{ size }}" {% if size == default_page_size %}selected{% endif %}>{{ size }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="button" class="primary-btn" data-bill-query>查询</button>
+    <button type="button" class="ghost-btn" data-bill-export disabled>导出 CSV</button>
+  </div>
+  <p class="section-note">每次“查询”都直接读取平台最新数据，不保存、不显示旧数据；平台一次最多查询 {{ max_span_days }} 天。{% if platform == 'ronghui' %}点统计行查看该结算类型的明细。{% else %}点表格里带下划线的“按天汇总 / 交易明细 / 账号”查看下一级。{% endif %}</p>
+
+  <nav class="bill-trail" aria-label="下钻路径" data-bill-trail hidden></nav>
+  <p class="finance-status" role="status" aria-live="polite" data-bill-status></p>
+  <p class="section-note bill-meta" data-bill-meta></p>
+  <p class="bill-footer" data-bill-footer hidden></p>
+  <div class="table-wrap"><table class="finance-table bill-table" data-bill-table>
+    <thead data-bill-head></thead>
+    <tbody data-bill-rows><tr><td class="finance-empty">选择条件后点“查询”。</td></tr></tbody>
+  </table></div>
+  <div class="bill-pager" data-bill-pager hidden>
+    <button type="button" class="ghost-btn" data-bill-prev>上一页</button>
+    <span data-bill-page-info></span>
+    <button type="button" class="ghost-btn" data-bill-next>下一页</button>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}<script src="/static/finance_platform_bills.js?v=20261118-bills"></script>{% endblock %}

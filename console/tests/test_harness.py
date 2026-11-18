@@ -140,7 +140,8 @@ def _message_result() -> dict:
 def test_harness_is_a_fixed_core_module_after_the_warehouse_monitor_entry() -> None:
     menu_ids = tuple(item.menu_id for item in CONSOLE_MENU_REGISTRATIONS)
     assert len(BUSINESS_MODULE_CATALOG) == 16
-    assert len(CONSOLE_MENU_REGISTRATIONS) == 16
+    # 16 个固定模块；财务模块另有“融辉对账单/韵达对账单”两个子菜单。
+    assert len(CONSOLE_MENU_REGISTRATIONS) == 18
     assert menu_ids.index("warehouse_monitor") == menu_ids.index("automations") + 1
     assert menu_ids.index("harness") == menu_ids.index("warehouse_monitor") + 1
     harness_item = next(item for item in CONSOLE_NAVIGATION if item["route"] == "/harness")

@@ -114,3 +114,12 @@
 .finance-lines td { height: 44px; padding: 0 6px; }
 .finance-lines .review-input { height: 30px; min-height: 30px; border-radius: var(--r-control); }
 .finance-panel > .section-note { max-width: none; }
+
+/* 融辉/韵达对账单（平台原样数据） */
+.platform-bills .bill-views { margin-top: 8px; }
+.platform-bills .bill-trail { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+.platform-bills .bill-footer { margin: 6px 0; font-weight: 600; }
+.platform-bills .bill-table td, .platform-bills .bill-table th { white-space: nowrap; }
+.platform-bills .bill-link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+.platform-bills .bill-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.platform-bills .bill-pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; margin-top: 10px; }

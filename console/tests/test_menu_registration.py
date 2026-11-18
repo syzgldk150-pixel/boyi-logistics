@@ -40,6 +40,8 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "receipts",
         "customer_service",
         "finance",
+        "finance_ronghui_bills",
+        "finance_yunda_bills",
         "dispatch",
         "line_haul",
         "automations",
@@ -65,6 +67,11 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "/waybills",
         "/tracking",
         "/receipts",
+    ]
+    assert [item["route"] for item in CONSOLE_NAVIGATION if item["group"] == "finance"] == [
+        "/modules/finance",
+        "/modules/finance/ronghui-bills",
+        "/modules/finance/yunda-bills",
     ]
     assert all(not item["group"] or item["group"] in NAVIGATION_GROUPS for item in CONSOLE_NAVIGATION)
 
