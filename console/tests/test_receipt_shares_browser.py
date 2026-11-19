@@ -79,7 +79,9 @@ def test_list_create_and_disable(app, browser):
         assert cells[3:8] == ["签收图·回单图", "至 2026-12-31", "128 次", "生效中", "11-13 14:02"]
         assert page.locator("[data-share-count]").inner_text() == "共 1 条"
         widths = page.locator(".share-table col").evaluate_all("cols => cols.map(c => parseInt(c.style.width))")
-        assert widths == [168, 168, 156, 152, 104, 64, 76, 92, 82] and sum(widths) == 1062
+        assert widths == [168, 152, 156, 152, 104, 64, 76, 92, 148] and sum(widths) == 1112
+        ops = row.locator(".share-ops")
+        assert ops.evaluate("box => box.scrollWidth <= box.parentElement.clientWidth")
 
         row.get_by_role("button", name="复制").click()
         assert page.evaluate("navigator.clipboard.readText()") == SHARE["url"] + "\n访问码：Ys7#mQ2&kP"
