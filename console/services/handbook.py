@@ -26,11 +26,10 @@ _ACTIONS = frozenset({"save", "compile", "trial", "acknowledge", "submit", "with
 _VERSION_ACTIONS = frozenset({"approve", "submit", "withdraw", "discard"})
 _TIMEOUTS = {"compile": 150, "trial": 330}
 _FEE_ACTIONS = frozenset({"copy", "save", "checks", "trial", "submit", "withdraw", "approve", "retire"})
-_FEE_FIELDS = {"save": ("version_label", "effective_from", "content", "checks", "row_version"),
-               "checks": ("checks", "row_version"),
-               "trial": ("settlement_weight_kg", "elevator", "floor", "goods_type", "piece_counts", "pieces_over_limit",
-                         "total_pieces", "boundary"),
-               "copy": ()}
+_FEE_FIELDS = {"save": ("fee_name", "version_label", "effective_from", "content", "checks", "row_version"),
+               "checks": ("checks", "row_version"), "trial": ("values", "boundary"), "copy": ()}
+_QUOTE_FIELDS = ("billing_date", "fee_kinds", "values", "tracking_number")
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class HandbookServiceMixin:
@@ -136,6 +135,47 @@ class HandbookServiceMixin:
         result = self._agent_request("POST", f"/internal/v1/admin/fee-rules/{quote(rule_id, safe='')}/{action}",
                                      payload=payload, timeout=15, console_principal=context["_console_principal"])
         self._handbook_reply(handler, result, "操作失败，请稍后重试。")
+
+    def _handle_fee_rules_create(self, handler: BaseHTTPRequestHandler) -> None:
+        """A new kind of fee (an empty draft); the Agent checks the name."""
+        context = self._handbook_context(handler, write=True)
+        if context is None:
+            return
+        name = self._parse_json_body(handler).get("fee_name")
+        result = self._agent_request("POST", "/internal/v1/admin/fee-rules", payload={"fee_name": name}, timeout=15,
+                                     console_principal=context["_console_principal"])
+        self._handbook_reply(handler, result, "新建费用失败，请稍后重试。")
+
+    # -- 报价 -----------------------------------------------------------------------------
+
+    def _handle_fee_quote(self, handler: BaseHTTPRequestHandler, action: str, query: dict[str, list[str]] | None = None) -> None:
+        """Catalog, quote, recent quotes or waybill prefill; the Agent picks approved rules and computes."""
+        # POSTs need a real session and the same origin; the 业务手册 module only has to be visible.
+        context = self._handbook_context(handler, write=action in {"quote", "waybill"})
+        if context is None:
+            return
+        principal = context["_console_principal"]
+        if action == "catalog":
+            billing_date = ((query or {}).get("billing_date") or [""])[0]
+            endpoint = "/internal/v1/admin/fee-quotes/catalog"
+            if billing_date:
+                if not _ISO_DATE.fullmatch(billing_date):
+                    self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "开单日期格式无效。"})
+                    return
+                endpoint += f"?billing_date={billing_date}"
+            result = self._agent_request("GET", endpoint, timeout=15, console_principal=principal)
+        elif action == "recent":
+            result = self._agent_request("GET", "/internal/v1/admin/fee-quotes/recent", timeout=15, console_principal=principal)
+        elif action == "waybill":
+            number = self._parse_json_body(handler).get("tracking_number")
+            result = self._agent_request("POST", "/internal/v1/admin/fee-quotes/waybill", payload={"tracking_number": number},
+                                         timeout=75, console_principal=principal)
+        else:
+            body = self._parse_json_body(handler)
+            payload = {key: body[key] for key in _QUOTE_FIELDS if key in body}
+            result = self._agent_request("POST", "/internal/v1/admin/fee-quotes", payload=payload, timeout=20,
+                                         console_principal=principal)
+        self._handbook_reply(handler, result, "报价暂时无法计算。")
 
     # -- 试问 -----------------------------------------------------------------------------
 

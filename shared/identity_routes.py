@@ -25,7 +25,7 @@ _READ_POSTS = frozenset({
     "/receipts/shares/senders", "/receipts/shares/customers",
     "/tracking/query", "/waybills/source-refresh", "/waybills/photos", "/waybills/quote-options",
     "/automations/tasks/output", "/warehouse-monitor/lookup",
-    "/handbook/try",
+    "/handbook/try", "/handbook/quote", "/handbook/quote/waybill",
 })
 # Business operations that only read.
 _READ_OPERATIONS = frozenset({"customer-service-query", "customer-service-detail", "customer-service-fetch-attachment"})
@@ -151,6 +151,8 @@ def agent_permission(method: str, path: str) -> str:
         return _level("finance", read)
     if path == "/internal/v1/admin/handbook-try":
         return "handbook:view"  # 试问 only reads: the same answer the robot would give, nothing sent or written
+    if _under(path, "/internal/v1/admin/fee-quotes"):
+        return "handbook:view"  # 报价 reads approved rules (and one waybill); it only keeps a quote record
     if any(_under(path, prefix) for prefix in ("/internal/v1/admin/handbook", "/internal/v1/admin/fee-rules",
                                               "/internal/v1/admin/knowledge-sources")):
         return handbook_permission(path, read)

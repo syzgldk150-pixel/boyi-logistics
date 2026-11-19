@@ -16,11 +16,11 @@ import pytest
 from agent.agent_actions import fee_actions
 from agent.agent_actions.business_actions import BusinessActions
 from agent.orchestration.models import Actor, ActorType
-from shared.handbook_fee_rules import rule_from_record
-
 ROOT = Path(__file__).resolve().parents[1]
-DRAFT = json.loads((ROOT / "tests" / "fixtures" / "fee_rules" / "upstairs_v61_draft.json").read_text(encoding="utf-8"))
-APPROVED = {**DRAFT, "rule_id": "r1", "status": "APPROVED", "version_label": "V6.1", "effective_from": "2026-10-01"}
+BATCH = json.loads((ROOT / "tests" / "fixtures" / "fee_rules" / "v61_first_batch.json").read_text(encoding="utf-8"))
+APPROVED = {"rule_id": "r1", "fee_kind": "upstairs", "fee_name": "上楼费", "content": BATCH["upstairs"]["content"],
+            "checks": BATCH["upstairs"]["checks"], "status": "APPROVED", "version_label": "V6.1",
+            "effective_from": "2026-10-01"}
 ACTOR = Actor(ActorType.FEISHU_USER, "ou-clerk", ("admin", "super_admin"), authenticated_by="feishu_admin_binding")
 CODE = "R00099990001"
 
@@ -74,7 +74,7 @@ def test_full_question_gives_the_amount_with_its_basis_and_the_remark_reminder()
     assert decision.decision == "EXECUTE" and decision.action_id == "fee.upstairs"
     assert platform.calls == [("query_waybill_detail", {"bill_codes": [CODE], "decrypt_masked": False})]
     # 195 kg, one piece of 195 kg (over the 120 kg limit) -> negotiate, no fixed amount
-    assert "上楼费：需协商" in text and "单件超过 120 公斤" in text
+    assert "上楼费：需协商" in text and "单件实际重量超过 120 公斤" in text
     assert "开单日期 2026-11-12" in text and "结算重量 195 公斤" in text and "件数 1" in text
     assert "规则：V6.1（执行日期 2026-10-01）" in text
     assert "单上没有勾选上楼服务，但备注写了" in text
@@ -105,17 +105,21 @@ def test_no_approved_rule_for_the_billing_date_gives_no_amount():
     assert "不能给出金额" in text  # billing date 2026-11-12 is before that version
 
 
-def test_multi_piece_surcharge_is_only_decided_when_certain():
-    rule = rule_from_record(APPROVED)
+def test_several_pieces_are_taken_at_their_average_weight_and_the_reply_says_so():
     facts = fee_actions.waybill_facts(CODE, {"data": [row(quantity=17, actual_weight=195, settlement_weight=195)]})
-    counts, over, note = fee_actions.piece_counts(rule, facts)
-    assert (counts, over) == ((0, 0), 0) and "平均每件约 11.5 公斤，按没有单件超过 50 公斤计算" in note
-    heavy = fee_actions.waybill_facts(CODE, {"data": [row(quantity=2, actual_weight=150, settlement_weight=150)]})
-    assert "以下金额不含单件加收" in fee_actions.piece_counts(rule, heavy)[2]
-    light = fee_actions.waybill_facts(CODE, {"data": [row(quantity=3, actual_weight=40, settlement_weight=40)]})
-    assert fee_actions.piece_counts(rule, light) == ((0, 0), 0, "")
+    rows, note = fee_actions.piece_rows(facts)
+    assert rows == [{"count": 17, "weight": "11.47"}] and "按平均每件 11.47 公斤计算单件加收" in note
     single = fee_actions.waybill_facts(CODE, {"data": [row(quantity=1, actual_weight=Decimal("100"))]})
-    assert fee_actions.piece_counts(rule, single) == ((1, 0), 0, "")  # 100 kg is in the (50, 100] tier
+    assert fee_actions.piece_rows(single) == ([{"count": 1, "weight": "100"}], "")
+    no_actual = fee_actions.waybill_facts(CODE, {"data": [row(quantity=1, actual_weight=None, settlement_weight=60)]})
+    assert fee_actions.piece_rows(no_actual)[0] == [{"count": 1, "weight": "60"}]
+
+
+def test_average_weight_reaches_the_rule():
+    platform = Platform(rows=[row(quantity=2, actual_weight=160, settlement_weight=160)])
+    text, _ = ask(_turn(platform), f"{CODE} 3楼 无电梯", CODE)
+    # base 10 + 0.12×160 = 29.2, floor 3: 0.05×160 = 8, two pieces of 80 kg: 10×2 → 57.20
+    assert "上楼费：57.20 元" in text and "按平均每件 80.00 公斤" in text
 
 
 def test_ticked_upstairs_service_has_no_remark_reminder():

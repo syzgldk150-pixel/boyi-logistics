@@ -190,15 +190,30 @@ class FeeRulesConsoleTests(_ConsoleCase):
 
     def test_each_action_forwards_only_its_fields(self):
         app, calls = self._app(lambda *a: {"ok": True, "data": {}}, roles=("admin",))
-        body = {"version_label": "V6.1", "effective_from": "2026-10-01", "content": {"base": {}}, "checks": [],
+        body = {"fee_name": "上楼费", "version_label": "V6.1", "effective_from": "2026-10-01", "content": {"schema": 1}, "checks": [],
                 "row_version": 3, "status": "APPROVED", "approved_by": "x"}
         app._handle_fee_rules_post(_handler(body), RULE_ID, "save")
         self.assertEqual(f"/internal/v1/admin/fee-rules/{RULE_ID}/save", calls[0]["endpoint"])
-        self.assertEqual({"version_label", "effective_from", "content", "checks", "row_version"}, set(calls[0]["payload"]))
+        self.assertEqual({"fee_name", "version_label", "effective_from", "content", "checks", "row_version"}, set(calls[0]["payload"]))
         app._handle_fee_rules_post(_handler({"row_version": 4, "status": "APPROVED"}), RULE_ID, "submit")
         self.assertEqual({"row_version": 4}, calls[1]["payload"])
-        app._handle_fee_rules_post(_handler({"settlement_weight_kg": "200", "elevator": True, "floor": 3, "x": 1}), RULE_ID, "trial")
-        self.assertEqual({"settlement_weight_kg": "200", "elevator": True, "floor": 3}, calls[2]["payload"])
+        app._handle_fee_rules_post(_handler({"values": {"floor": 3}, "boundary": True, "x": 1}), RULE_ID, "trial")
+        self.assertEqual({"values": {"floor": 3}, "boundary": True}, calls[2]["payload"])
+
+    def test_new_fee_and_quotes_forward_only_their_fields(self):
+        app, calls = self._app(lambda *a: {"ok": True, "data": {}}, roles=("admin",))
+        app._handle_fee_rules_create(_handler({"fee_name": "进仓服务费", "fee_kind": "x"}))
+        self.assertEqual(("/internal/v1/admin/fee-rules", {"fee_name": "进仓服务费"}), (calls[0]["endpoint"], calls[0]["payload"]))
+        app._handle_fee_quote(_handler({"billing_date": "2026-11-19", "fee_kinds": ["upstairs"], "values": {}, "actor": "x"}), "quote")
+        self.assertEqual("/internal/v1/admin/fee-quotes", calls[1]["endpoint"])
+        self.assertEqual({"billing_date", "fee_kinds", "values"}, set(calls[1]["payload"]))
+        app._handle_fee_quote(_handler({}), "catalog", {"billing_date": ["2026-11-19"]})
+        self.assertEqual("/internal/v1/admin/fee-quotes/catalog?billing_date=2026-11-19", calls[2]["endpoint"])
+        app._handle_fee_quote(_handler({}), "catalog", {"billing_date": ["2026-11-19&x=1"]})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
+        self.assertEqual(3, len(calls))
+        app._handle_fee_quote(_handler({"tracking_number": "R00099990001", "x": 1}), "waybill")
+        self.assertEqual({"tracking_number": "R00099990001"}, calls[3]["payload"])
 
     def test_unknown_action_or_id_is_refused_locally(self):
         app, calls = self._app(lambda *a: self.fail("must not call the Agent"))

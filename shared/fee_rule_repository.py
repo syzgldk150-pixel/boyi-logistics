@@ -1,25 +1,30 @@
-"""Persistence for 业务手册 → 计算规则 (migration 087) over a caller-supplied connection factory.
+"""Persistence for 业务手册 → 计算规则 (migrations 087, 090) over a caller-supplied connection factory.
 
 Never reads the environment or runs DDL. Every change is one short transaction
 that locks the version row first and checks ``row_version``, so two people
 cannot overwrite each other. Approval re-validates the stored content inside the
 locked transaction and refuses a second approved version of the same fee with
-the same effective date. Approved versions are never edited.
+the same effective date. Approved versions are never edited. Quotes made from the
+back office or the robot are kept in ``agent_fee_quotes``.
 """
 from __future__ import annotations
 
 import json
+import secrets
 import uuid
 from contextlib import contextmanager
 from datetime import date
 from typing import Any, Callable, Iterator, Mapping
 
 from shared.admin_display_names import fetch_admin_display_names
-from shared.handbook_fee_rules import FEE_KINDS, FeeRuleError, approval_blockers, parse_content, submit_blockers
+from shared.handbook_fee_rules import FEE_NAME_LIMIT, FeeRuleError, approval_blockers, parse_content, submit_blockers
 
 ConnectionFactory = Callable[[], Any]
 _LABEL_LIMIT = 60
 _CHECK_LIMIT = 30
+# A new fee starts from parameters and a formula people fill in; it computes nothing until edited.
+EMPTY_CONTENT = {"schema": 1, "params": [], "formula": {"type": "none", "outcome": "MANUAL", "reason": "规则还没有填写。"},
+                 "reminders": []}
 
 
 def _dump(value: Any) -> str:
@@ -52,6 +57,12 @@ def normalize_label(label: Any) -> str:
     if not isinstance(label, str) or not label.strip() or len(label.strip()) > _LABEL_LIMIT:
         raise FeeRuleError("FEE_RULE_LABEL_INVALID", f"版本名称必须填写，且不超过 {_LABEL_LIMIT} 字。")
     return label.strip()
+
+
+def normalize_fee_name(name: Any) -> str:
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > FEE_NAME_LIMIT:
+        raise FeeRuleError("FEE_RULE_NAME_INVALID", f"费用名称必须填写，且不超过 {FEE_NAME_LIMIT} 字。")
+    return name.strip()
 
 
 def normalize_date(value: Any) -> date | None:
@@ -98,7 +109,7 @@ class FeeRuleRepository:
 
     @staticmethod
     def _record(row: Mapping[str, Any]) -> dict[str, Any]:
-        return {"rule_id": row["rule_id"], "fee_kind": row["fee_kind"], "fee_name": FEE_KINDS.get(row["fee_kind"], row["fee_kind"]),
+        return {"rule_id": row["rule_id"], "fee_kind": row["fee_kind"], "fee_name": row.get("fee_name") or row["fee_kind"],
                 "version_label": row["version_label"], "status": row["status"],
                 "effective_from": _iso(row["effective_from"]), "content": _load(row["content_json"]),
                 "checks": _load(row["checks_json"]) or [], "based_on": row["based_on"],
@@ -128,7 +139,7 @@ class FeeRuleRepository:
         """Trial runs on this version since its content was last saved (or copied)."""
         cursor.execute("SELECT COUNT(*) AS n FROM agent_fee_rule_events WHERE rule_id=%s AND action='TRIAL' AND event_id >"
                        " COALESCE((SELECT MAX(event_id) FROM agent_fee_rule_events WHERE rule_id=%s"
-                       " AND action IN ('SAVE', 'COPY')), 0)", (rule_id, rule_id))
+                       " AND action IN ('SAVE', 'COPY', 'CREATE')), 0)", (rule_id, rule_id))
         return int(self._rows(cursor)[0]["n"])
 
     def get(self, rule_id: str) -> dict[str, Any]:
@@ -152,12 +163,40 @@ class FeeRuleRepository:
             self._get(cursor, rule_id, lock=False)
             self._event(cursor, rule_id, "TRIAL", actor_id, dict(detail))
 
-    def approved(self, fee_kind: str) -> list[dict[str, Any]]:
-        """Approved versions of one fee, for calculations (choose with select_rule by billing date)."""
+    def approved(self, fee_kind: str | None = None) -> list[dict[str, Any]]:
+        """Approved versions of one fee (or of every fee), for calculations (choose with select_rule by billing date)."""
         with self._cursor() as cursor:
-            cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE fee_kind=%s AND status='APPROVED'"
-                           " ORDER BY effective_from", (fee_kind,))
+            if fee_kind is None:
+                cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE status='APPROVED' ORDER BY fee_kind, effective_from")
+            else:
+                cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE fee_kind=%s AND status='APPROVED'"
+                               " ORDER BY effective_from", (fee_kind,))
             return [self._record(row) for row in self._rows(cursor)]
+
+    def record_quote(self, *, actor_id: str, channel: str, billing_date: date, fee_kinds: list[str],
+                     values: Mapping[str, Any], result: Mapping[str, Any], tracking_number: str | None = None) -> str:
+        """Keep one quote (what was typed, which versions answered, the result) for later checking."""
+        quote_id = str(uuid.uuid4())
+        with self._cursor() as cursor:
+            cursor.execute("INSERT INTO agent_fee_quotes (quote_id, actor_id, channel, billing_date, fee_kinds_json,"
+                           " values_json, result_json, total, complete, tracking_number)"
+                           " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                           (quote_id, actor_id, channel, billing_date, _dump(fee_kinds), _dump(values), _dump(result),
+                            str(result.get("total") or "0"), bool(result.get("complete")), tracking_number))
+        return quote_id
+
+    def recent_quotes(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._cursor() as cursor:
+            cursor.execute("SELECT quote_id, actor_id, channel, billing_date, fee_kinds_json, values_json, result_json,"
+                           " total, complete, tracking_number, created_at FROM agent_fee_quotes"
+                           " ORDER BY created_at DESC LIMIT %s", (max(1, min(int(limit), 100)),))
+            rows = self._rows(cursor)
+            people = fetch_admin_display_names(cursor, {row["actor_id"] for row in rows})
+        return [{"quote_id": row["quote_id"], "actor_id": row["actor_id"], "actor": people.get(str(row["actor_id"]), ""),
+                 "channel": row["channel"], "billing_date": _iso(row["billing_date"]),
+                 "fee_kinds": _load(row["fee_kinds_json"]), "values": _load(row["values_json"]),
+                 "result": _load(row["result_json"]), "total": str(row["total"]), "complete": bool(row["complete"]),
+                 "tracking_number": row["tracking_number"], "created_at": _iso(row["created_at"])} for row in rows]
 
     # -- writes -----------------------------------------------------------------------
 
@@ -176,6 +215,24 @@ class FeeRuleRepository:
             raise FeeRuleError("FEE_RULE_STATE", "当前状态不能进行这个操作，请刷新后再看。")
         return record
 
+    def create_fee(self, *, fee_name: Any, actor_id: str, content: Mapping[str, Any] | None = None,
+                   checks: Any = None) -> str:
+        """A new kind of fee, as an empty draft (or an AI draft's content); it computes nothing until approved."""
+        name = normalize_fee_name(fee_name)
+        checks = normalize_checks(checks if checks is not None else [{"text": "执行日期以总部通知为准，尚未填写。"}])
+        new_id = str(uuid.uuid4())
+        with self._cursor() as cursor:
+            cursor.execute("SELECT 1 FROM agent_fee_rule_versions WHERE fee_name=%s AND status<>'RETIRED' LIMIT 1", (name,))
+            if self._rows(cursor):
+                raise FeeRuleError("FEE_RULE_NAME_TAKEN", f"已经有名为“{name}”的费用，请换个名称或在原费用上复制新版本。")
+            cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, fee_name, version_label, status,"
+                           " effective_from, content_json, checks_json, created_by, updated_by)"
+                           " VALUES (%s, %s, %s, '草稿1', 'DRAFT', NULL, %s, %s, %s, %s)",
+                           (new_id, "fee_" + secrets.token_hex(6), name, _dump(content or EMPTY_CONTENT), _dump(checks),
+                            actor_id, actor_id))
+            self._event(cursor, new_id, "CREATE", actor_id, {"fee_name": name})
+        return new_id
+
     def copy_to_draft(self, rule_id: str, *, actor_id: str) -> str:
         """Start a new draft from any version; approved versions themselves stay unchanged."""
         new_id = str(uuid.uuid4())
@@ -183,26 +240,36 @@ class FeeRuleRepository:
             source = self._get(cursor, rule_id, lock=False)
             label = normalize_label((source["version_label"] + "-修改")[:_LABEL_LIMIT])
             checks = [{"text": item["text"], "done": False} for item in source["checks"]]
-            cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, version_label, status, effective_from,"
-                           " content_json, checks_json, based_on, created_by, updated_by)"
-                           " VALUES (%s, %s, %s, 'DRAFT', NULL, %s, %s, %s, %s, %s)",
-                           (new_id, source["fee_kind"], label, _dump(source["content"]), _dump(checks), rule_id,
-                            actor_id, actor_id))
+            cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, fee_name, version_label, status,"
+                           " effective_from, content_json, checks_json, based_on, created_by, updated_by)"
+                           " VALUES (%s, %s, %s, %s, 'DRAFT', NULL, %s, %s, %s, %s, %s)",
+                           (new_id, source["fee_kind"], source["fee_name"], label, _dump(source["content"]), _dump(checks),
+                            rule_id, actor_id, actor_id))
             self._event(cursor, new_id, "COPY", actor_id, {"from": rule_id})
         return new_id
 
     def save_draft(self, rule_id: str, *, version_label: Any, effective_from: Any, content: Any, checks: Any,
-                   actor_id: str, expected_row_version: int) -> None:
-        """Save a draft as typed. Incomplete content may be saved; submitting re-checks it."""
+                   actor_id: str, expected_row_version: int, fee_name: Any = None) -> None:
+        """Save a draft as typed. Incomplete content may be saved; submitting re-checks it.
+
+        Renaming the fee renames every version of it, so the list keeps one name per fee.
+        """
         label, effective, checks = normalize_label(version_label), normalize_date(effective_from), normalize_checks(checks)
         if not isinstance(content, Mapping):
             raise FeeRuleError("FEE_RULE_CONTENT_INVALID", "规则内容格式无效。")
         with self._cursor() as cursor:
-            self._lock(cursor, rule_id, expected_row_version, ("DRAFT",))
+            record = self._lock(cursor, rule_id, expected_row_version, ("DRAFT",))
+            name = record["fee_name"] if fee_name is None else normalize_fee_name(fee_name)
+            if name != record["fee_name"]:
+                cursor.execute("SELECT 1 FROM agent_fee_rule_versions WHERE fee_name=%s AND fee_kind<>%s"
+                               " AND status<>'RETIRED' LIMIT 1", (name, record["fee_kind"]))
+                if self._rows(cursor):
+                    raise FeeRuleError("FEE_RULE_NAME_TAKEN", f"已经有名为“{name}”的费用，请换个名称。")
+                cursor.execute("UPDATE agent_fee_rule_versions SET fee_name=%s WHERE fee_kind=%s", (name, record["fee_kind"]))
             cursor.execute("UPDATE agent_fee_rule_versions SET version_label=%s, effective_from=%s, content_json=%s,"
                            " checks_json=%s, updated_by=%s, row_version=row_version+1 WHERE rule_id=%s",
                            (label, effective, _dump(content), _dump(checks), actor_id, rule_id))
-            self._event(cursor, rule_id, "SAVE", actor_id)
+            self._event(cursor, rule_id, "SAVE", actor_id, {"fee_name": name} if name != record["fee_name"] else None)
 
     def set_checks(self, rule_id: str, *, checks: Any, actor_id: str, expected_row_version: int) -> None:
         """Tick 待核对事项 on a draft or a submitted version (the reviewer checks them before approval)."""
@@ -218,7 +285,7 @@ class FeeRuleRepository:
     def submit(self, rule_id: str, *, actor_id: str, expected_row_version: int) -> None:
         with self._cursor() as cursor:
             record = self._lock(cursor, rule_id, expected_row_version, ("DRAFT",))
-            parse_content(record["fee_kind"], record["content"])
+            parse_content(record["content"])
             problems = submit_blockers(record, trial_count=self._trial_count(cursor, rule_id))
             if problems:
                 raise FeeRuleError("FEE_RULE_NOT_SUBMITTABLE", "；".join(problems))
@@ -256,4 +323,5 @@ class FeeRuleRepository:
             self._event(cursor, rule_id, "RETIRE", actor_id)
 
 
-__all__ = ["FeeRuleRepository", "normalize_checks", "normalize_date", "normalize_label"]
+__all__ = ["EMPTY_CONTENT", "FeeRuleRepository", "normalize_checks", "normalize_date", "normalize_fee_name",
+           "normalize_label"]

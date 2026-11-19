@@ -3,14 +3,15 @@
 {% block breadcrumb %}业务手册{% endblock %}
 {% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261119-spec52c">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261119-quote1">{% endblock %}
 {% block content %}
-{# frontend-spec 52–58: 四个页签都是工作台；动作按身份隐藏，状态与阻塞项常驻可见。 #}
+{# frontend-spec 52–58: 页签都是工作台（报价 2026-11-19 新增）；动作按身份隐藏，状态与阻塞项常驻可见。 #}
 <section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-label="业务手册">
   <div class="hb-tabbar">
     <nav class="hb-tabs" role="tablist" aria-label="业务手册">
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-entries" aria-selected="true" aria-controls="handbook-panel-entries" data-handbook-tab="entries">说明条目<span class="hb-tab__count" data-tab-count hidden></span></button>
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="false" aria-controls="handbook-panel-fees" data-handbook-tab="fees" tabindex="-1">计算规则<span class="hb-tab__count" data-tab-count hidden></span></button>
+      <button class="hb-tab" type="button" role="tab" id="handbook-tab-quote" aria-selected="false" aria-controls="handbook-panel-quote" data-handbook-tab="quote" tabindex="-1">报价</button>
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-sources" aria-selected="false" aria-controls="handbook-panel-sources" data-handbook-tab="sources" tabindex="-1">知识来源<span class="hb-tab__count" data-tab-count hidden></span></button>
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-try" aria-selected="false" aria-controls="handbook-panel-try" data-handbook-tab="try" tabindex="-1">试问</button>
     </nav>
@@ -45,20 +46,43 @@
     <div class="hb-feedback" data-fee-status role="status" aria-live="polite" hidden></div>
     <div class="hb-work hb-work--fees">
       <aside class="hb-card hb-list" aria-labelledby="fee-list-title">
-        <div class="hb-card__head"><div><h2 id="fee-list-title">计算规则</h2><p class="hb-card__sub" data-fee-summary>正在读取……</p></div></div>
+        <div class="hb-card__head"><div><h2 id="fee-list-title">计算规则</h2><p class="hb-card__sub" data-fee-summary>正在读取……</p></div>
+          {% if can_edit %}<button class="ghost-btn hb-btn-sm" type="button" data-fee-create><i data-feather="plus"></i><span>新建费用</span></button>{% endif %}</div>
         <ul class="hb-rows" data-fee-list></ul>
         <div class="hb-rules-note">
           <h3>规则说明</h3>
           <ul>
-            <li>计算方式由系统固定，这里只填数字与出处</li>
+            <li>每种费用由积木组成：参数、计算结构、数字与出处</li>
             <li>单据按开单日期选用当时生效的版本</li>
-            <li>草稿 / 待审核只可试算，不对外报金额</li>
+            <li>草稿 / 待审核只可试算，不用于报价</li>
             <li>已生效版本不可修改，复制为新草稿</li>
           </ul>
         </div>
       </aside>
       <section class="hb-card hb-fee" aria-labelledby="fee-editor-title" data-fee-editor>
         <div class="hb-empty"><i data-feather="file-text"></i><p>从左侧选择一个规则版本。</p></div>
+      </section>
+    </div>
+  </div>
+
+  <div id="handbook-panel-quote" role="tabpanel" aria-labelledby="handbook-tab-quote" class="hb-panel" data-fee-quote hidden>
+    <div class="hb-feedback" data-quote-status role="status" aria-live="polite" hidden></div>
+    <div class="hb-work hb-work--quote">
+      <section class="hb-card hb-pricing" aria-labelledby="quote-title">
+        <div class="hb-card__head"><div><h2 id="quote-title">报价</h2><p class="hb-card__sub">按已生效的计算规则算价格，只给内部人员看；按开单日期选用当时生效的版本。</p></div></div>
+        <div class="hb-fee__cells">
+          <label class="hb-cell"><span>开单日期</span><input type="date" data-quote-date></label>
+          <label class="hb-cell hb-cell--doc"><span>运单号（选填，融辉单可读取预填）</span><input maxlength="40" data-quote-tracking placeholder="R000XXXXXXXX"></label>
+          <button class="ghost-btn" type="button" data-quote-waybill><i data-feather="download"></i><span>读取运单</span></button>
+        </div>
+        <div class="hb-block"><h3>这趟要收哪些费用</h3><div class="hb-quote__fees" data-quote-fees><p class="hb-meta">正在读取……</p></div></div>
+        <div class="hb-block"><h3>填写参数</h3><div data-quote-form><p class="hb-meta">先勾选费用。</p></div></div>
+        <div class="hb-actions"><button class="primary-btn hb-btn-lg" type="button" data-quote-run><i data-feather="check"></i><span>计算</span></button><span class="hb-meta">↵ 回车即可计算</span></div>
+      </section>
+      <section class="hb-card hb-pricing-result" aria-labelledby="quote-result-title">
+        <div class="hb-card__head"><h2 id="quote-result-title">结果</h2><button class="hb-link" type="button" data-quote-copy hidden><i data-feather="copy"></i>复制报价</button></div>
+        <div data-quote-result><div class="hb-empty"><i data-feather="file-text"></i><p>勾选费用、填写参数后点“计算”。</p></div></div>
+        <div class="hb-block"><h3>最近报价</h3><ul class="hb-events hb-events--compact" data-quote-recent><li class="hb-meta">正在读取……</li></ul></div>
       </section>
     </div>
   </div>
@@ -117,7 +141,7 @@
             <li><i data-feather="edit-3"></i>不写入任何数据</li>
             <li><i data-feather="arrow-right"></i>不发送到飞书、微信</li>
           </ul>
-          <p class="hb-alert" data-tone="warn"><i data-feather="info"></i>报价金额请到飞书或微信里试，试问不返回报价。</p>
+          <p class="hb-alert" data-tone="warn"><i data-feather="info"></i>算价格请用“报价”页签；试问不返回报价金额。</p>
         </div>
         <div class="hb-block" data-try-recent-block hidden><h3>最近试问</h3><ul class="hb-try-recent" data-try-recent></ul></div>
         <p class="hb-alert" data-tone="ok"><i data-feather="check-circle"></i><span><b>按你本人的机器人权限运行</b><br>{{ current_name }}{% if is_super_admin %} · 超级管理员{% elif can_edit %} · 运营编辑{% endif %} · 只读查询；实时查询原平台，结果只在本页显示。</span></p>
@@ -134,7 +158,9 @@
 {% block scripts %}
 <script src="/static/handbook_common.js?v=20261119-spec52c"></script>
 <script src="/static/handbook.js?v=20261119-spec52c"></script>
-<script src="/static/handbook_fee_rules.js?v=20261119-spec52c"></script>
+<script src="/static/handbook_fee_form.js?v=20261119-quote1"></script>
+<script src="/static/handbook_fee_rules.js?v=20261119-quote1"></script>
+<script src="/static/handbook_quote.js?v=20261119-quote1"></script>
 <script src="/static/handbook_try.js?v=20261119-spec52c"></script>
 <script src="/static/handbook_sources.js?v=20261119-spec52c"></script>
 {% endblock %}

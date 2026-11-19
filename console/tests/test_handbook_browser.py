@@ -38,13 +38,22 @@ ENTRY = {
                {"version": 2, "action": "SAVE", "actor_id": "6", "detail": None, "created_at": "2026-11-15T10:02:00+00:00"}],
     "people": {"6": "示例编辑"},
 }
+RULE_CONTENT = {
+    "schema": 1,
+    "params": [{"key": "weight", "label": "结算重量", "type": "number", "unit": "kg", "min": "0.01"},
+               {"key": "floor", "label": "送到几楼", "type": "number", "integer": True, "min": "1"},
+               {"key": "elevator", "label": "有电梯", "type": "bool"}],
+    "formula": {"type": "when", "cases": [{"if": {"left": "elevator", "op": "eq", "value": True}, "then": {
+        "type": "sum", "label": "有电梯", "source": SOURCE, "items": [{"type": "fixed", "amount": "5"}, {"type": "rate", "rate": "0.06", "of": "weight"}]}}],
+        "else": {"type": "tiers", "label": "楼层加收", "by": "floor", "tiers": [
+            {"over": None, "up_to": "2", "then": {"type": "fixed", "amount": "0"}},
+            {"over": "2", "up_to": None, "then": {"type": "rate", "rate": "0.1", "of": "weight", "unit": "元/kg"}}]}},
+    "reminders": ["示例提醒"],
+}
 RULE = {
     "rule_id": RULE_ID, "fee_kind": "upstairs", "fee_name": "上楼费", "version_label": "示例手册 V1 草稿", "status": "DRAFT",
-    "effective_from": None, "row_version": 1, "updated_at": "2026-11-15T10:12:00",
-    "content": {"base": {"fixed": "10", "per_kg": "0.12", "source": SOURCE}, "elevator": {"fixed": "5", "per_kg": "0.06", "source": SOURCE},
-                "floor_tiers": [{"floor_from": 2, "floor_to": 7, "per_kg": "0.1", "source": SOURCE}], "max_floor_without_elevator": 7,
-                "max_floor_source": SOURCE, "first_floor": "MANUAL", "piece_tiers": [{"over_kg": "50", "up_to_kg": "120", "per_piece": "10", "source": {}}],
-                "piece_limit_kg": "120", "piece_limit_source": SOURCE, "reminders": ["示例提醒"]},
+    "effective_from": None, "row_version": 1, "updated_at": "2026-11-15T10:12:00", "content": RULE_CONTENT,
+    "params": RULE_CONTENT["params"], "content_problems": [],
     "checks": [{"text": "逐格核对第 1 页", "done": False}], "events": [{"action": "SAVE", "actor_id": "6", "created_at": "2026-11-15T10:12:00"}],
     "trial_count": 0, "people": {"6": "示例编辑"},
     "submit_blockers": ["还没有填写执行日期（以总部通知为准）。", "保存后还没有试算过，请至少试算一个场景。"],
@@ -55,10 +64,18 @@ SOURCES = {
                   {"node_token": "n2", "title": "示例收费调整通知", "space": "示例空间", "edit_time": "1763170000", "cited_by": []}],
     "reminders": [{"reminder_id": 7, "node_token": "n2", "kind": "NEW", "title": "示例收费调整通知", "detail": "标题像收费通知", "status": "OPEN", "detected_at": "2026-11-15T00:30:00"}],
 }
-TRIAL = {"result": {"outcome": "AMOUNT", "amount": "54.00", "steps": ["基础 10 + 0.12×200 = 34", "楼层加收（5 楼）0.1×200 = 20", "合计 54.00"],
-                    "citations": ["示例物流手册 V1 第一章 第 1 页"], "reminders": ["示例提醒"], "rule_version": "示例手册 V1 草稿", "reportable": False},
-         "boundary": [{"elevator": False, "floor": 5, "piece_counts": [0], "pieces_over_limit": 0, "outcome": "AMOUNT", "amount": "54.00"},
-                      {"elevator": False, "floor": 8, "piece_counts": [0], "pieces_over_limit": 0, "outcome": "NEGOTIATE", "amount": None}]}
+TRIAL = {"result": {"outcome": "AMOUNT", "outcome_text": "金额", "amount": "20.00", "reason": "", "missing": [],
+                    "steps": ["楼层加收：送到几楼 5，落在 > 2 这一档", "0.1 元/kg × 结算重量 200 = 20", "合计 20.00"],
+                    "citations": [], "reminders": ["示例提醒"], "rule_version": "示例手册 V1 草稿", "reportable": False},
+         "boundary": [{"param": "送到几楼", "value": "2", "outcome": "AMOUNT", "amount": "0.00", "note": ""},
+                      {"param": "送到几楼", "value": "3", "outcome": "AMOUNT", "amount": "20.00", "note": ""}]}
+CATALOG = {"billing_date": "2026-11-19", "conflict": "", "params": RULE_CONTENT["params"],
+           "fees": [{"fee_kind": "upstairs", "name": "上楼费", "version": "示例手册 V1（执行日期 2026-10-01）", "group": "示例组",
+                     "params": ["weight", "floor", "elevator"], "reminders": []}],
+           "unavailable": [{"fee_kind": "other", "name": "示例费", "reason": "这个日期没有已审核生效的收费规则，不能给出金额。"}]}
+QUOTE = {"billing_date": "2026-11-19", "total": "20.00", "complete": True, "missing": [], "unavailable": [], "quote_id": "q-1",
+         "items": [{"fee_kind": "upstairs", "name": "上楼费", "version": "示例手册 V1（执行日期 2026-10-01）", "counted": True, "note": "",
+                    **TRIAL["result"]}]}
 TRY = {"reply": "以下是《示例物流手册》第一章的原文……", "quotes": [{"title": "示例物流手册", "location": "第一章", "pages": [1], "url": "https://example.invalid/doc"}],
        "steps": [{"title": "理解问题", "state": "done", "result": "选择了：按手册计算费用"},
                  {"title": "信息检查", "state": "done", "result": "信息足够，未触发反问"},
@@ -117,6 +134,15 @@ def _open(browser, user):
             reply = RULE
         elif path == f"/handbook/fee-rules/{RULE_ID}/trial":
             reply = {**TRIAL, "trial_count": 1}
+        elif path == f"/handbook/fee-rules/{RULE_ID}/save":
+            reply = {"saved": True}
+        elif path == "/handbook/quote/catalog":
+            reply = CATALOG
+        elif path == "/handbook/quote/recent":
+            reply = {"quotes": [{"quote_id": "q-0", "created_at": "2026-11-19T09:00:00", "total": "34.00", "complete": True,
+                                 "actor": "示例编辑", "channel": "console", "tracking_number": None, "result": {"items": [{"name": "上楼费"}]}}]}
+        elif path == "/handbook/quote":
+            reply = QUOTE
         elif path == f"/handbook/entries/{ENTRY_ID}/acknowledge":
             reply = {"acknowledged": [1]}
         elif path == "/handbook/sources":
@@ -162,6 +188,7 @@ def test_editor_sees_workflow_and_no_approval(browser):
         assert "缺出处" in page.inner_text("[data-fee-editor]")
         side = page.inner_text(".hb-side")
         assert "生效检查" in side and "还差 4 项" in side and "0 / 4 项通过" in side and "保存后还没有试算" in side
+        assert "2 / 4 出处完整" in side
         assert page.locator("[data-fee-action='submit']").is_disabled()
         page.fill("[data-meta='version_label']", "示例手册 V1 草稿二")
         assert page.locator("[data-fee-action='submit']").is_disabled()
@@ -169,11 +196,40 @@ def test_editor_sees_workflow_and_no_approval(browser):
         page.click("[data-fee-tab='trial']")
         page.click("[data-fee-trial='boundary']")
         page.wait_for_selector(".hb-trial__amount")
-        assert "未生效 · 只供核对" in page.inner_text("[data-fee-editor]")
+        editor = page.inner_text("[data-fee-editor]")
+        assert "未生效 · 只供核对" in editor and "¥ 20.00" in editor and "其余参数按本次填写" in editor
+        trial = [body for path, body in _posts if path.endswith("/trial")][-1]
+        assert trial == {"values": {}, "boundary": True}
+        page.fill("[data-param='weight']", "200")
+        page.fill("[data-param='floor']", "5")
+        page.select_option("[data-param='elevator']", "false")
+        page.press("[data-param='floor']", "Enter")
+        page.wait_for_function("document.querySelectorAll('[data-fee-trial-result] .hb-trial').length === 1")
+        page.wait_for_timeout(200)
+        trial = [body for path, body in _posts if path.endswith("/trial")][-1]
+        assert trial == {"values": {"weight": "200", "floor": 5, "elevator": False}, "boundary": False}
         _shot(page, "55-trial")
-        page.fill("[data-t='weight']", "0")
-        page.click("[data-fee-trial]")
-        assert "输入不合理" in page.inner_text("[data-fee-status]")
+        page.click("[data-fee-tab='content']")
+        page.click("[data-fold-all]")
+        page.fill("[data-f='formula.else.tiers.1.then.rate']", "0.2")
+        page.click("[data-fee-action='save']")
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已保存')")
+        saved = [body for path, body in _posts if path.endswith("/save")][-1]
+        assert saved["content"]["formula"]["else"]["tiers"][1]["then"]["rate"] == "0.2" and saved["fee_name"] == "上楼费"
+        page.click("[data-handbook-tab='quote']")
+        page.wait_for_selector("[data-quote-fee='upstairs']")
+        assert "1 种费用在这个日期不能报价" in page.inner_text("[data-quote-fees]")
+        page.wait_for_function("document.querySelector('[data-quote-recent]').innerText.includes('示例编辑')")
+        page.check("[data-quote-fee='upstairs']")
+        page.fill("[data-quote-form] [data-param='weight']", "200")
+        page.fill("[data-quote-form] [data-param='floor']", "5")
+        page.select_option("[data-quote-form] [data-param='elevator']", "false")
+        page.click("[data-quote-run]")
+        page.wait_for_selector(".hb-quote__item")
+        assert "¥ 20.00" in page.inner_text("[data-quote-result]")
+        quote = [body for path, body in _posts if path == "/handbook/quote"][-1]
+        assert quote["fee_kinds"] == ["upstairs"] and quote["values"] == {"weight": "200", "floor": 5, "elevator": False}
+        _shot(page, "quote")
         page.click("[data-handbook-tab='sources']")
         page.wait_for_selector(".hb-reminder")
         assert "标记已检查" in page.inner_text("[data-sources-reminders]")

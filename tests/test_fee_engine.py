@@ -3,23 +3,17 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import replace
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from shared.fee_engine import QuoteRule, boundary_rows, calculate, parse_rule, quote, shared_params
-from shared.handbook_fee_rules import (
-    FeeRuleError, FeeRuleSet, UpstairsInputs, calculate_upstairs, parse_upstairs_content,
-)
+from shared.handbook_fee_rules import FeeRuleError
 
 ROOT = Path(__file__).resolve().parents[1]
 BATCH = json.loads((ROOT / "tests" / "fixtures" / "fee_rules" / "v61_first_batch.json").read_text(encoding="utf-8"))
 RULES = {kind: parse_rule(item["content"]) for kind, item in BATCH.items()}
-OLD_DRAFT = json.loads((ROOT / "tests" / "fixtures" / "fee_rules" / "upstairs_v61_draft.json").read_text(encoding="utf-8"))
-OLD = FeeRuleSet("upstairs", "V6.1", "APPROVED", date(2026, 10, 1), parse_upstairs_content(OLD_DRAFT["content"]))
 
 
 def fee(kind: str, **values):
@@ -36,30 +30,27 @@ def test_every_first_batch_fee_is_a_valid_rule():
     shared_params([QuoteRule(kind, item["name"], "V6.1", RULES[kind]) for kind, item in BATCH.items()])
 
 
-# -- upstairs: the block version gives exactly what the hand-written calculator gives ----------------------
+# -- upstairs: the V6.1 table (p.50) as decided with the user on 2026-11-19 ------------------------------
 
-@pytest.mark.parametrize("elevator", [True, False])
-@pytest.mark.parametrize("floor", range(1, 10))
-@pytest.mark.parametrize("counts,over", [((0, 0), 0), ((2, 0), 0), ((0, 1), 0), ((1, 2), 0), ((0, 0), 1), ((1, 0), 2)])
-@pytest.mark.parametrize("weight", ["400", "123.45"])
-def test_upstairs_blocks_match_the_hand_written_calculator(elevator, floor, counts, over, weight):
-    rows = [{"count": n, "weight": w} for n, w in zip(counts + (over,), ("80", "110", "130")) if n]
-    rows.append({"count": 2, "weight": "10"})
-    try:
-        old = calculate_upstairs(OLD, UpstairsInputs(Decimal(weight), elevator, floor, "general", counts, over))
-    except FeeRuleError:
-        return  # the old calculator refuses pieces heavier than the whole waybill; nothing to compare
-    new = upstairs(weight, floor, elevator, "general", rows)
-    if floor == 1 and not elevator and not over:
-        # Decided 2026-11-19: the 1st floor is not upstairs (p.50 definition), so no fee instead of 需人工判断.
-        assert old.outcome == "MANUAL" and new.amount == Decimal("0.00")
-        return
-    if elevator and over:
-        # Intentional difference: the manual (p.52) only lets heavy pieces be refused without an elevator.
-        assert old.outcome == "NEGOTIATE"
-        assert new.amount == (Decimal(5) + Decimal("0.06") * Decimal(weight)).quantize(Decimal("0.01"))
-        return
-    assert (new.outcome, new.amount) == (old.outcome, old.amount)
+@pytest.mark.parametrize("floor,expected", [(1, "0.00"), (2, "34.00"), (3, "44.00"), (4, "44.00"), (5, "54.00"), (6, "54.00"),
+                                            (7, "64.00"), (8, None), (9, None)])
+@pytest.mark.parametrize("pieces,surcharge", [([], "0"), ([{"count": 2, "weight": "80"}], "20"), ([{"count": 1, "weight": "110"}], "30"),
+                                              ([{"count": 1, "weight": "120"}], "30"), ([{"count": 1, "weight": "50"}], "0")])
+def test_upstairs_without_elevator_table(floor, expected, pieces, surcharge):
+    result = upstairs("200", floor, pieces=pieces + [{"count": 2, "weight": "10"}])
+    if expected is None:
+        assert result.outcome == "NEGOTIATE"
+    elif floor == 1:
+        assert result.amount == Decimal("0.00")  # the 1st floor is not upstairs (p.50)
+    else:
+        assert result.amount == Decimal(expected) + Decimal(surcharge)
+
+
+@pytest.mark.parametrize("floor", [1, 5, 9, 30])
+def test_upstairs_with_elevator_ignores_floor_and_heavy_pieces(floor):
+    heavy = [{"count": 1, "weight": "130"}]
+    assert upstairs("400", floor, elevator=True, pieces=heavy).amount == Decimal("29.00")  # 5 + 0.06 × 400
+    assert upstairs("400", 3, pieces=heavy).outcome == "NEGOTIATE"  # without an elevator a 130 kg piece is refused
 
 
 def test_upstairs_steps_and_sources_explain_the_amount():
@@ -306,5 +297,3 @@ def test_boundary_rows_show_each_tier_change():
     assert rows[("单件实际重量", "120.01")]["outcome"] == "NEGOTIATE"
 
 
-def test_old_rule_object_is_untouched():
-    assert replace(OLD, version="x").content is OLD.content

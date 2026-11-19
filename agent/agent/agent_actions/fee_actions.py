@@ -14,8 +14,10 @@ The model only picks the action and copies the waybill number. Code does the res
 * reminds when the upstairs service is not ticked but the remark mentions 上楼.
 
 Single-piece surcharges need each piece's weight, which the waybill does not
-have for multi-piece shipments; code only decides them when they are certain
-and otherwise says so plainly next to the amount.
+have for multi-piece shipments; several pieces are taken at their average weight
+and the reply says so plainly next to the amount. The rule itself is block-built
+(``shared.fee_engine``); the robot fills its upstairs parameters from the waybill
+and the person's words, and points to 业务手册 → 报价 for anything it cannot ask.
 """
 from __future__ import annotations
 
@@ -26,12 +28,10 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 
-from shared.handbook_fee_rules import (
-    FeeRuleError, FeeRuleSet, UpstairsInputs, calculate_upstairs, rule_from_record, select_rule,
-)
+from shared.fee_engine import OUTCOME_TEXT, calculate
+from shared.handbook_fee_rules import FeeRuleError, rule_from_record, select_rule
 
 STATE_TTL_SECONDS = 900
-OUTCOME_TEXT = {"NEGOTIATE": "需协商", "NOT_PROVIDED": "可不提供服务", "MANUAL": "需人工判断"}
 _DIGITS = re.compile(r"(\d{1,3})\s*(?:楼|层|f\b)", re.IGNORECASE)
 _CHINESE = re.compile(r"([一二两三四五六七八九十]{1,3})\s*(?:楼|层)")
 _NO_ELEVATOR = re.compile(r"(?:没有|没|无|不带|不是|未配|未装)\s*(?:电梯|电梯房)|步梯|爬楼梯|楼梯房")
@@ -139,30 +139,19 @@ def waybill_facts(tracking_number: str, payload: Any) -> WaybillFacts:
                         str(row.get("remark") or "").strip())
 
 
-def piece_counts(rule: FeeRuleSet, facts: WaybillFacts) -> tuple[tuple[int, ...], int, str]:
-    """Pieces per 单件加收 tier when the waybill makes them certain; otherwise zeros and a plain note."""
-    tiers = rule.content.piece_tiers
-    zeros = (0,) * len(tiers)
-    if not tiers:
-        return zeros, 0, ""
-    lowest = tiers[0].over_kg
+def piece_rows(facts: WaybillFacts) -> tuple[list[dict[str, Any]], str]:
+    """The waybill's pieces as rule input. The waybill has no weight per piece, so several pieces
+    are taken at their average weight and the reply says so; one piece uses its actual weight."""
     if facts.pieces == 1:
-        weight = facts.actual_weight
-        if weight is None:
-            return zeros, 0, "单上没有实际重量，无法判断单件是否超重；以下金额不含单件加收，请人工核对。"
-        if weight > rule.content.piece_limit_kg:
-            return zeros, 1, ""
-        counts = tuple(int(tier.over_kg < weight <= tier.up_to_kg) for tier in tiers)
-        return counts, 0, ""
+        if facts.actual_weight is not None:
+            return [{"count": 1, "weight": str(facts.actual_weight)}], ""
+        return ([{"count": 1, "weight": str(facts.settlement_weight)}],
+                "单上没有实际重量，单件重量按结算重量计算，请人工核对单件加收。")
     total = facts.actual_weight if facts.actual_weight is not None else facts.settlement_weight
-    if total <= lowest:
-        return zeros, 0, ""  # no piece can be heavier than the whole shipment
-    average = (total / facts.pieces).quantize(Decimal("0.1"))
-    if average > lowest:
-        return zeros, 0, (f"这票 {facts.pieces} 件共 {total} 公斤，平均每件约 {average} 公斤，至少有一件超过 {lowest} 公斤；"
-                          "单上没有每件重量，以下金额不含单件加收，请人工按实际件重补算。")
-    return zeros, 0, (f"这票 {facts.pieces} 件共 {total} 公斤，平均每件约 {average} 公斤，按没有单件超过 {lowest} 公斤计算；"
-                      "如有超重件请人工补算单件加收。")
+    average = (total / facts.pieces).quantize(Decimal("0.01"))
+    return ([{"count": facts.pieces, "weight": str(average)}],
+            f"单上没有每件重量：这票 {facts.pieces} 件共 {total} 公斤，按平均每件 {average} 公斤计算单件加收；"
+            "如有超重件请人工按实际件重补算。")
 
 
 def reminders(facts: WaybillFacts) -> list[str]:
@@ -200,17 +189,19 @@ def render(state: UpstairsState, rules: Callable[[], Sequence[Mapping[str, Any]]
             return (f"{head}\n开单日期 {facts.billing_date.isoformat()} 没有已审核生效的上楼费规则，不能给出金额。"
                     "规则在后台“业务手册 → 计算规则”审核生效后才会使用。")
         return f"{head}\n收费规则有问题，不能给出金额：{exc.message}"
-    counts, over, piece_note = piece_counts(rule, facts)
+    pieces, piece_note = piece_rows(facts)
     try:
-        result = calculate_upstairs(rule, UpstairsInputs(facts.settlement_weight, bool(state.elevator), int(state.floor),
-                                                         "general", counts, over, facts.pieces))
+        result = calculate(rule.content, {"settlement_weight": str(facts.settlement_weight), "floor": int(state.floor),
+                                          "elevator": bool(state.elevator), "goods_type": "general", "pieces": pieces})
     except FeeRuleError as exc:
         return f"{head}\n不能计算：{exc.message}"
+    if result.outcome == "MISSING":
+        return f"{head}\n这版上楼费规则还需要：{'、'.join(result.missing)}，机器人暂时问不到，请在后台“业务手册 → 报价”里计算。"
     lines = [head, f"规则：{rule.version}（执行日期 {rule.effective_from.isoformat()}）"]
     if result.outcome == "AMOUNT":
         lines.append(f"上楼费：{result.amount} 元")
     else:
-        lines.append(f"上楼费：{OUTCOME_TEXT.get(result.outcome, result.outcome)}")
+        lines.append(f"上楼费：{OUTCOME_TEXT.get(result.outcome, result.outcome)}" + (f"（{result.reason}）" if result.reason else ""))
     lines.extend(f"· {step}" for step in result.steps)
     if piece_note:
         lines.append(piece_note)
@@ -221,4 +212,4 @@ def render(state: UpstairsState, rules: Callable[[], Sequence[Mapping[str, Any]]
 
 
 __all__ = ["FeeActionError", "UpstairsState", "WaybillFacts", "missing_question", "parse_elevator", "parse_floor",
-           "piece_counts", "reminders", "render", "waybill_facts"]
+           "piece_rows", "reminders", "render", "waybill_facts"]

@@ -41,6 +41,12 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/handbook/fee-rules":
         app._handle_fee_rules_get(handler, None)
         return True
+    if path == "/handbook/quote/catalog":
+        app._handle_fee_quote(handler, "catalog", query)
+        return True
+    if path == "/handbook/quote/recent":
+        app._handle_fee_quote(handler, "recent")
+        return True
     if path == "/handbook/sources":
         app._handle_knowledge_sources(handler, "view", None)
         return True
@@ -54,6 +60,15 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
 def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
     if path == "/handbook/try":
         app._handle_handbook_try(handler)
+        return True
+    if path == "/handbook/fee-rules":
+        app._handle_fee_rules_create(handler)
+        return True
+    if path == "/handbook/quote":
+        app._handle_fee_quote(handler, "quote")
+        return True
+    if path == "/handbook/quote/waybill":
+        app._handle_fee_quote(handler, "waybill")
         return True
     if path == "/handbook/sources/scan":
         app._handle_knowledge_sources(handler, "scan", None)

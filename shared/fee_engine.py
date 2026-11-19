@@ -571,6 +571,40 @@ def parse_rule(content: Any) -> Rule:
     return Rule(params, content["formula"], dict(definitions), group, reminders)
 
 
+def unsourced_blocks(content: Any) -> list[str]:
+    """Names of blocks that give a result (amount or no amount) without a source on themselves or above.
+
+    Used before a version may take effect: every number must be traceable to the manual.
+    """
+    if not isinstance(content, Mapping):
+        return []
+    missing: list[str] = []
+
+    def walk(node: Any, path: str, covered: bool) -> None:
+        if not isinstance(node, Mapping) or node.get("type") not in NODE_TYPES:
+            return
+        kind = node["type"]
+        here = f"{path} › {_label(node, NODE_TYPES[kind])}" if path else _label(node, NODE_TYPES[kind])
+        covered = covered or isinstance(node.get("source"), Mapping)
+        if kind in {"fixed", "rate", "amount", "none"} and not covered:
+            missing.append(here)
+        for key in ("items",):
+            for item in node.get(key) or []:
+                walk(item, here, covered)
+        for key in ("item", "else"):
+            walk(node.get(key), here, covered)
+        for key in ("tiers", "cases", "rows"):
+            for item in node.get(key) or []:
+                if isinstance(item, Mapping):
+                    walk(item.get("then"), here, covered)
+
+    definitions = content.get("definitions") if isinstance(content.get("definitions"), Mapping) else {}
+    for name, node in definitions.items():
+        walk(node, f"公共部分“{name}”", False)
+    walk(content.get("formula"), "", False)
+    return list(dict.fromkeys(missing))
+
+
 # -- input values -----------------------------------------------------------------------
 
 def _decimal(value: Any) -> Decimal | None:
@@ -1178,5 +1212,5 @@ def _is_integer_ref(rule: Rule, ref: str) -> bool:
 __all__ = [
     "FeeOutcome", "NODE_TYPES", "NO_AMOUNT", "OUTCOME_TEXT", "PARAM_TYPES", "Param", "PieceField", "Quote", "QuoteItem",
     "QuoteRule", "Rule", "SCHEMA_VERSION", "boundary_rows", "calculate", "normalize_values", "parse_rule", "quote",
-    "shared_params",
+    "shared_params", "unsourced_blocks",
 ]

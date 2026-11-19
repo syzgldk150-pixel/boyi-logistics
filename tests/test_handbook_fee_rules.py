@@ -1,142 +1,85 @@
-"""C line: fee rules managed in 业务手册 → 计算规则 (structure in code, numbers stored) and manual chapters (C2)."""
+"""C line: fee rules managed in 业务手册 → 计算规则 (block-built, migrations 087/090) and manual chapters (C2)."""
 import copy
 import json
 import os
 from dataclasses import replace
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from shared.handbook_fee_rules import (
-    FeeRuleError, UpstairsInputs, approval_blockers, boundary_table, calculate_upstairs, parse_upstairs_content,
-    rule_from_record, select_rule,
+    FeeRuleError, approval_blockers, quote_catalog, rule_from_record, select_rule, submit_blockers,
 )
 from tools.feishu_knowledge_pdf import chapter_pages, read_outline
 
 ROOT = Path(__file__).resolve().parents[1]
-DRAFT = json.loads((ROOT / "tests" / "fixtures" / "fee_rules" / "upstairs_v61_draft.json").read_text(encoding="utf-8"))
-RULE = rule_from_record({**DRAFT, "status": "DRAFT", "effective_from": None})
-W = Decimal("200")
-
-
-def inputs(weight=W, elevator=False, floor=3, goods="general", counts=(0, 0), over=0, total=None):
-    return UpstairsInputs(weight, elevator, floor, goods, counts, over, total)
-
-
-def test_plan_example_no_elevator_fifth_floor_two_heavy_pieces():
-    result = calculate_upstairs(RULE, inputs(floor=5, counts=(2, 0), total=2))
-    assert (result.outcome, result.amount) == ("AMOUNT", Decimal("74.00"))
-    assert result.steps == ("基础 10 + 0.12×200 = 34.00", "楼层加收（5 楼）0.10×200 = 20.00",
-                            "单件加收 10×2 = 20", "合计 74.00")
-    assert result.citations == ("融辉物流网络管理手册 V6.1 第五篇第五章 第 50 页",)
-    assert "卸货费" in result.reminders[0]
-    assert not result.reportable  # a draft never gives people an amount
-
-
-@pytest.mark.parametrize("floor,expected", [(2, "34.00"), (3, "44.00"), (4, "44.00"), (6, "54.00"), (7, "64.00")])
-def test_floor_tiers(floor, expected):
-    assert calculate_upstairs(RULE, inputs(floor=floor)).amount == Decimal(expected)
-
-
-def test_elevator_and_situations_without_an_amount():
-    assert calculate_upstairs(RULE, inputs(elevator=True, floor=9)).amount == Decimal("17.00")
-    assert calculate_upstairs(RULE, inputs(floor=8)).outcome == "NEGOTIATE"
-    assert calculate_upstairs(RULE, inputs(over=1)).outcome == "NEGOTIATE"
-    assert calculate_upstairs(RULE, inputs(goods="mattress")).outcome == "MANUAL"
-    assert calculate_upstairs(RULE, inputs(floor=1)).outcome == "MANUAL"
-
-
-def test_first_floor_choice_comes_from_the_stored_rule():
-    for choice, outcome, amount in (("NO_CHARGE", "AMOUNT", Decimal("0.00")), ("BASE", "AMOUNT", Decimal("34.00"))):
-        content = {**DRAFT["content"], "first_floor": choice}
-        rule = replace(RULE, content=parse_upstairs_content(content))
-        result = calculate_upstairs(rule, inputs(floor=1))
-        assert (result.outcome, result.amount) == (outcome, amount)
-
-
-def test_decimal_rounding_half_up():
-    result = calculate_upstairs(RULE, inputs(weight=Decimal("123.45"), elevator=True))
-    assert result.amount == Decimal("12.41")  # 5 + 0.06×123.45 = 12.407
-
-
-@pytest.mark.parametrize("given,message", [
-    (inputs(weight=Decimal("80"), counts=(2, 0)), "超过整票结算重量"),
-    (inputs(counts=(3, 0), total=2), "超过整票件数"),
-    (inputs(weight=Decimal("0")), "必须大于 0"),
-    (inputs(floor=0), "楼层无效"),
-    (inputs(counts=(1,)), "分档件数应有 2 项"),
-])
-def test_unreasonable_inputs_stop_the_calculation(given, message):
-    with pytest.raises(FeeRuleError, match=message):
-        calculate_upstairs(RULE, given)
+BATCH = json.loads((ROOT / "tests" / "fixtures" / "fee_rules" / "v61_first_batch.json").read_text(encoding="utf-8"))
+UPSTAIRS = {"rule_id": "r-up", "fee_kind": "upstairs", "fee_name": "上楼费", "version_label": "V6.1-草稿1", "status": "DRAFT",
+            "effective_from": None, "content": BATCH["upstairs"]["content"], "checks": BATCH["upstairs"]["checks"]}
+RULE = rule_from_record(UPSTAIRS)
 
 
 def test_rule_versions_by_effective_date():
+    assert not RULE.reportable  # a draft never gives people an amount
     with pytest.raises(FeeRuleError, match="没有已审核生效"):
         select_rule([RULE], fee_kind="upstairs", business_date=date(2026, 11, 15))
     old = replace(RULE, version="V6.0", status="APPROVED", effective_from=date(2025, 1, 1))
     new = replace(RULE, version="V6.1", status="APPROVED", effective_from=date(2026, 10, 1))
-    assert select_rule([old, new], fee_kind="upstairs", business_date=date(2026, 9, 30)).version == "V6.0"
     assert select_rule([old, new], fee_kind="upstairs", business_date=date(2026, 10, 1)).version == "V6.1"
+    assert select_rule([old, new], fee_kind="upstairs", business_date=date(2026, 9, 30)).version == "V6.0"
+    with pytest.raises(FeeRuleError, match="多版已生效"):
+        select_rule([new, replace(new, version="dup")], fee_kind="upstairs", business_date=date(2026, 11, 1))
     with pytest.raises(ValueError):
-        replace(RULE, status="APPROVED")  # approval needs the headquarters effective date
+        replace(RULE, status="APPROVED", effective_from=None)
 
 
-def test_boundary_table_covers_every_combination_with_an_outcome():
-    rows = boundary_table(RULE)
-    assert len(rows) == 2 * 8 * 4 and all(row["outcome"] in {"AMOUNT", "NEGOTIATE", "MANUAL"} for row in rows)
-    assert all((row["amount"] is None) == (row["outcome"] != "AMOUNT") for row in rows)
-
-
-def _broken(change):
-    content = copy.deepcopy(DRAFT["content"])
-    change(content)
-    return content
-
-
-@pytest.mark.parametrize("change,message", [
-    (lambda c: c["base"].update(per_kg="abc"), "基础费每公斤单价不是有效数字"),
-    (lambda c: c["base"].update(fixed="-1"), "基础费固定金额必须是 0 到"),
-    (lambda c: c["elevator"]["source"].update(document=""), "有电梯收费的出处文档必须填写"),
-    (lambda c: c["floor_tiers"].pop(1), "第 2 档应从 3 楼开始"),
-    (lambda c: c.update(max_floor_without_elevator=9), "最后一档应到无电梯最高楼层 9 楼"),
-    (lambda c: c["piece_tiers"][1].update(over_kg="90"), "重量区间无效"),
-    (lambda c: c.update(piece_limit_kg="150"), "最后一档应到单件重量上限 150 公斤"),
-    (lambda c: c.update(first_floor="FREE"), "送到 1 楼的处理方式无效"),
-    (lambda c: c["base"]["source"].update(link="http://x"), "必须以 https:// 开头"),
-])
-def test_content_validation_names_each_problem(change, message):
-    with pytest.raises(FeeRuleError, match=message):
-        parse_upstairs_content(_broken(change))
-
-
-def test_validation_lists_all_problems_at_once():
-    def change(content):
-        content["base"]["per_kg"] = ""
-        content["elevator"]["fixed"] = "x"
-    with pytest.raises(FeeRuleError) as caught:
-        parse_upstairs_content(_broken(change))
-    assert "基础费每公斤" in caught.value.message and "有电梯收费固定金额" in caught.value.message
-
-
-def test_approval_needs_valid_content_effective_date_and_every_check_ticked():
-    record = {**DRAFT, "effective_from": None}
-    blockers = approval_blockers(record)
+def test_approval_needs_name_valid_content_sources_date_and_every_check_ticked():
+    blockers = approval_blockers(UPSTAIRS)
     assert any("执行日期" in item for item in blockers) and any("未核对" in item for item in blockers)
-    ready = {**DRAFT, "effective_from": "2026-10-01", "checks": [{**item, "done": True} for item in DRAFT["checks"]]}
+    ready = {**UPSTAIRS, "effective_from": "2026-10-01", "checks": [{**item, "done": True} for item in UPSTAIRS["checks"]]}
     assert approval_blockers(ready) == []
-    assert approval_blockers({**ready, "content": _broken(lambda c: c.pop("base"))})
+    assert submit_blockers(ready, trial_count=0) == ["保存后还没有试算过，请至少试算一个场景。"]
+    assert any("费用名称" in item for item in approval_blockers({**ready, "fee_name": " "}))
+    broken = copy.deepcopy(ready["content"])
+    broken["formula"] = {"type": "magic"}
+    assert any("不是有效的积木" in item for item in approval_blockers({**ready, "content": broken}))
+    unsourced = copy.deepcopy(BATCH["night_delivery"]["content"])
+    unsourced["formula"].pop("source")
+    assert any("没有出处" in item and "夜送费" in item
+               for item in approval_blockers({**ready, "fee_kind": "night_delivery", "content": unsourced}))
 
 
-def test_migration_087_seeds_exactly_the_reviewed_draft():
-    sql = (ROOT / "agent" / "migrations" / "087_agent_fee_rules.sql").read_text(encoding="utf-8")
-    values = sql.split("VALUES", 1)[1]
+def _approved(kind, effective="2026-10-01", **changes):
+    return {"rule_id": f"r-{kind}", "fee_kind": kind, "fee_name": BATCH[kind]["name"], "version_label": "V6.1",
+            "status": "APPROVED", "effective_from": effective, "content": BATCH[kind]["content"], "checks": [], **changes}
+
+
+def test_quote_catalog_offers_one_version_per_fee_and_explains_the_rest():
+    records = [_approved("upstairs"), _approved("unloading"), _approved("night_delivery", effective="2026-12-01")]
+    rules, unavailable = quote_catalog(records, business_date=date(2026, 11, 19))
+    assert [item.name for item in rules] == ["上楼费", "卸货费"]
+    assert rules[0].version == "V6.1（执行日期 2026-10-01）"
+    assert unavailable == [{"fee_kind": "night_delivery", "name": "夜送费", "reason": "这个日期没有已审核生效的收费规则，不能给出金额。"}]
+    bad = _approved("revisit", content={"schema": 1, "params": [], "formula": {"type": "magic"}})
+    _, unavailable = quote_catalog([bad], business_date=date(2026, 11, 19))
+    assert unavailable[0]["fee_kind"] == "revisit" and "不是有效的积木" in unavailable[0]["reason"]
+
+
+def test_migration_090_seeds_exactly_the_first_batch_and_retires_the_old_format():
+    sql = (ROOT / "agent" / "migrations" / "090_agent_fee_rule_blocks.sql").read_text(encoding="utf-8")
+    values = sql.split("VALUES", 1)[1].split("CREATE TABLE", 1)[0]
     literals = values.split("'")[1::2]
-    assert literals[1:4] == ["upstairs", DRAFT["version_label"], "DRAFT"]
-    assert json.loads(literals[4]) == DRAFT["content"] and json.loads(literals[5]) == DRAFT["checks"]
-    parse_upstairs_content(json.loads(literals[4]))
+    rows = [literals[index:index + 9] for index in range(0, len(literals), 9)]
+    assert [row[1] for row in rows] == list(BATCH)
+    for row in rows:
+        kind = row[1]
+        assert row[2] == BATCH[kind]["name"] and row[3:5] == ["V6.1-草稿1", "DRAFT"]
+        assert json.loads(row[5]) == BATCH[kind]["content"] and json.loads(row[6]) == BATCH[kind]["checks"]
+        rule_from_record({"fee_kind": kind, "fee_name": row[2], "version_label": row[3], "status": "DRAFT",
+                          "effective_from": None, "content": json.loads(row[5])})
+    assert "JSON_EXTRACT(content_json, '$.schema') IS NULL" in sql and "status='RETIRED'" in sql
+    assert "CREATE TABLE IF NOT EXISTS agent_fee_quotes" in sql
 
 
 # -- C2: chapters by bookmark --------------------------------------------------------------
@@ -189,15 +132,16 @@ def test_outline_is_read_with_levels(tmp_path):
                                               {"title": "第五章 送货上下楼服务收费标准", "page": 3, "level": 1}]
 
 
-# -- 计算规则 storage (real migration 087) and the Agent API --------------------------------
+# -- 计算规则 storage (real migrations 087/090) and the Agent API ----------------------------
 
 from tests.mysql_migrated_database import database  # noqa: E402,F401
 
-SEED_ID = "0f6a1c2e-5b7d-4e3a-9c41-61f2e8d0a087"
+OLD_SEED_ID = "0f6a1c2e-5b7d-4e3a-9c41-61f2e8d0a087"
+UPSTAIRS_ID = "29e79711-0f15-5421-9cbc-ec74d21d0e3d"
 
 
 @pytest.mark.skipif(os.getenv("RUN_MYSQL_INTEGRATION") != "1", reason="requires isolated MySQL 8")
-def test_migration_087_repository_lifecycle(database):  # noqa: F811
+def test_migrations_087_090_repository_lifecycle(database):  # noqa: F811
     assert os.environ["AGENT_DB_HOST"] == "127.0.0.1"
     import pymysql
 
@@ -208,61 +152,55 @@ def test_migration_087_repository_lifecycle(database):  # noqa: F811
                                database=database.database, charset="utf8mb4", autocommit=False)
 
     repo = FeeRuleRepository(connect)
-    seed = repo.get(SEED_ID)
-    assert (seed["status"], seed["content"], seed["checks"]) == ("DRAFT", DRAFT["content"], DRAFT["checks"])
-    rule_from_record(seed)
+    old = repo.get(OLD_SEED_ID)
+    assert old["status"] == "RETIRED" and old["fee_name"] == "上楼费"  # the old format can no longer be computed
+    seed = repo.get(UPSTAIRS_ID)
+    assert (seed["status"], seed["fee_name"], seed["content"]) == ("DRAFT", "上楼费", BATCH["upstairs"]["content"])
     with pytest.raises(FeeRuleError, match="别人修改"):
-        repo.submit(SEED_ID, actor_id="7", expected_row_version=seed["row_version"] + 1)
+        repo.submit(UPSTAIRS_ID, actor_id="7", expected_row_version=seed["row_version"] + 1)
     ticked = [{**item, "done": True} for item in seed["checks"]]
-    repo.save_draft(SEED_ID, version_label="V6.1", effective_from="2026-10-01", content=seed["content"], checks=ticked,
+    repo.save_draft(UPSTAIRS_ID, version_label="V6.1", effective_from="2026-10-01", content=seed["content"], checks=ticked,
                     actor_id="7", expected_row_version=seed["row_version"])
-    version = repo.get(SEED_ID)["row_version"]
+    version = repo.get(UPSTAIRS_ID)["row_version"]
     with pytest.raises(FeeRuleError, match="试算"):
-        repo.submit(SEED_ID, actor_id="7", expected_row_version=version)  # spec 54: at least one trial since saving
-    repo.record_trial(SEED_ID, actor_id="7", detail={"weight": "200", "floor": 5, "outcome": "AMOUNT"})
-    assert repo.get(SEED_ID)["trial_count"] == 1 and repo.get(SEED_ID)["submit_blockers"] == []
-    repo.submit(SEED_ID, actor_id="7", expected_row_version=version)
-    pending = repo.get(SEED_ID)
-    assert pending["status"] == "PENDING" and pending["submitted_by"] == "7"
-    with pytest.raises(FeeRuleError, match="当前状态不能"):
-        repo.save_draft(SEED_ID, version_label="x", effective_from=None, content=seed["content"], checks=ticked,
-                        actor_id="7", expected_row_version=pending["row_version"])
-    with pytest.raises(FeeRuleError, match="只能勾选已有"):
-        repo.set_checks(SEED_ID, checks=[{"text": "新事项", "done": True}], actor_id="7",
-                        expected_row_version=pending["row_version"])
-    repo.approve(SEED_ID, actor_id="1", expected_row_version=pending["row_version"])
-    approved = repo.approved("upstairs")
-    assert [item["rule_id"] for item in approved] == [SEED_ID] and approved[0]["effective_from"] == "2026-10-01"
-    assert select_rule([rule_from_record(item) for item in approved], fee_kind="upstairs",
-                       business_date=date(2026, 11, 12)).version == "V6.1"
+        repo.submit(UPSTAIRS_ID, actor_id="7", expected_row_version=version)
+    repo.record_trial(UPSTAIRS_ID, actor_id="7", detail={"outcome": "AMOUNT"})
+    repo.submit(UPSTAIRS_ID, actor_id="7", expected_row_version=version)
+    pending = repo.get(UPSTAIRS_ID)
+    repo.approve(UPSTAIRS_ID, actor_id="1", expected_row_version=pending["row_version"])
+    approved = repo.approved()
+    assert [item["rule_id"] for item in approved] == [UPSTAIRS_ID]
+    rules, _ = quote_catalog(approved, business_date=date(2026, 11, 12))
+    assert [item.fee_kind for item in rules] == ["upstairs"]
 
-    copy_id = repo.copy_to_draft(SEED_ID, actor_id="7")
-    copied = repo.get(copy_id)
-    assert copied["status"] == "DRAFT" and copied["based_on"] == SEED_ID
-    assert not any(item["done"] for item in copied["checks"])  # a copy is checked again
-    same_day = [{**item, "done": True} for item in copied["checks"]]
-    repo.save_draft(copy_id, version_label="V6.1-改", effective_from="2026-10-01", content=copied["content"], checks=same_day,
-                    actor_id="7", expected_row_version=copied["row_version"])
-    repo.record_trial(copy_id, actor_id="7", detail={"outcome": "AMOUNT"})
-    repo.submit(copy_id, actor_id="7", expected_row_version=repo.get(copy_id)["row_version"])
-    with pytest.raises(FeeRuleError, match="同一执行日期已有生效版本"):
-        repo.approve(copy_id, actor_id="1", expected_row_version=repo.get(copy_id)["row_version"])
-    repo.retire(SEED_ID, actor_id="1", expected_row_version=repo.get(SEED_ID)["row_version"])
-    repo.approve(copy_id, actor_id="1", expected_row_version=repo.get(copy_id)["row_version"])
-    assert [item["rule_id"] for item in repo.approved("upstairs")] == [copy_id]
-    assert [item["action"] for item in repo.get(copy_id)["events"]] == ["APPROVE", "SUBMIT", "TRIAL", "SAVE", "COPY"]
+    created = repo.create_fee(fee_name="进仓服务费", actor_id="7")
+    fresh = repo.get(created)
+    assert fresh["fee_kind"].startswith("fee_") and fresh["status"] == "DRAFT" and fresh["trial_count"] == 0
+    with pytest.raises(FeeRuleError, match="已经有名为"):
+        repo.create_fee(fee_name="进仓服务费", actor_id="7")
+    repo.save_draft(created, fee_name="进仓费", version_label="草稿1", effective_from=None, content=fresh["content"],
+                    checks=fresh["checks"], actor_id="7", expected_row_version=fresh["row_version"])
+    assert repo.get(created)["fee_name"] == "进仓费"
+    with pytest.raises(FeeRuleError, match="已经有名为"):
+        repo.save_draft(created, fee_name="上楼费", version_label="草稿1", effective_from=None, content=fresh["content"],
+                        checks=fresh["checks"], actor_id="7", expected_row_version=repo.get(created)["row_version"])
+
+    quote_id = repo.record_quote(actor_id="7", channel="console", billing_date=date(2026, 11, 12), fee_kinds=["upstairs"],
+                                 values={"floor": 3}, result={"total": "44.00", "complete": True, "items": []},
+                                 tracking_number="R00099990001")
+    recent = repo.recent_quotes()
+    assert recent[0]["quote_id"] == quote_id and recent[0]["total"] == "44.00" and recent[0]["complete"] is True
 
 
-def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
+def _client(record, super_admin=None, approved=()):
     from types import SimpleNamespace
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from agent.fee_rules_api import create_fee_rules_router
+    from agent.fee_rules_api import create_fee_quotes_router, create_fee_rules_router
 
     calls = []
-    record = {**DRAFT, "rule_id": SEED_ID, "status": "DRAFT", "effective_from": None, "row_version": 1}
 
     class Repository:
         def get(self, rule_id):
@@ -280,25 +218,84 @@ def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
         def retire(self, rule_id, **kwargs):
             calls.append("retire")
 
-    def super_admin(request):
+        def create_fee(self, *, fee_name, actor_id):
+            calls.append(("create", fee_name, actor_id))
+            return "new-id"
+
+        def approved(self, fee_kind=None):
+            return list(approved)
+
+        def record_quote(self, **kwargs):
+            calls.append(("quote", kwargs["channel"], kwargs["fee_kinds"], kwargs["result"]["total"], kwargs["tracking_number"]))
+            return "q-1"
+
+    def deny(request):
         raise PermissionError("super administrator required")
 
+    async def waybill(tracking, actor):
+        return {"tracking_number": tracking, "billing_date": "2026-11-12", "settlement_weight": "200", "pieces": 2,
+                "actual_weight": None}
+
     app = FastAPI()
-    app.include_router(create_fee_rules_router(repository_provider=Repository,
-                                               admin_provider=lambda request: SimpleNamespace(actor_id="7"),
-                                               super_admin_provider=super_admin))
-    client = TestClient(app, raise_server_exceptions=False)
-    base = f"/internal/v1/admin/fee-rules/{SEED_ID}"
+    admin = lambda request: SimpleNamespace(actor_id="7")  # noqa: E731
+    app.include_router(create_fee_rules_router(repository_provider=Repository, admin_provider=admin,
+                                               super_admin_provider=super_admin or deny))
+    app.include_router(create_fee_quotes_router(repository_provider=Repository, admin_provider=admin, waybill_reader=waybill))
+    return TestClient(app, raise_server_exceptions=False), calls
+
+
+def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
+    record = {**UPSTAIRS, "row_version": 1}
+    client, calls = _client(record)
+    base = f"/internal/v1/admin/fee-rules/{UPSTAIRS['rule_id']}"
     assert client.post(f"{base}/submit", json={"row_version": 1}).status_code == 200
     for action in ("approve", "retire"):
         assert client.post(f"{base}/{action}", json={"row_version": 1}).status_code == 500
     assert calls == [("submit", "7", 1)]
-    trial = client.post(f"{base}/trial", json={"settlement_weight_kg": "200", "elevator": False, "floor": 5,
-                                               "piece_counts": [2, 0], "boundary": True})
+    detail = client.get(base).json()["data"]
+    assert [item["key"] for item in detail["params"]] == ["settlement_weight", "floor", "stairs", "elevator", "goods_type", "pieces"]
+    assert detail["content_problems"] == []
+    values = {"settlement_weight": "200", "floor": 5, "elevator": False, "goods_type": "general",
+              "pieces": [{"count": 2, "weight": "80"}]}
+    trial = client.post(f"{base}/trial", json={"values": values, "boundary": True})
     data = trial.json()["data"]
     assert data["result"]["amount"] == "74.00" and data["result"]["reportable"] is False
-    assert len(data["boundary"]) == 64
+    assert any(row["param"] == "送到几楼" and row["value"] == "8" and row["outcome"] == "NEGOTIATE" for row in data["boundary"])
     assert data["trial_count"] == 1 and calls[-1] == ("trial", "7", "AMOUNT")  # trials are logged and counted
-    bad = client.post(f"{base}/trial", json={"settlement_weight_kg": "abc", "elevator": False, "floor": 5,
-                                             "piece_counts": [0, 0]})
+    missing = client.post(f"{base}/trial", json={"values": {"floor": 5}}).json()["data"]["result"]
+    assert missing["outcome"] == "MISSING" and "结算重量" in missing["missing"]
+    bad = client.post(f"{base}/trial", json={"values": {**values, "settlement_weight": "abc"}})
     assert bad.status_code == 422 and "结算重量" in bad.json()["error"]["message"]
+    assert client.post("/internal/v1/admin/fee-rules", json={"fee_name": "进仓服务费"}).json()["data"] == {"rule_id": "new-id"}
+
+
+def test_agent_api_shows_problems_of_a_saved_rule_instead_of_failing():
+    broken = {**UPSTAIRS, "row_version": 1, "content": {"schema": 1, "params": [], "formula": {"type": "magic"}}}
+    client, _ = _client(broken)
+    detail = client.get(f"/internal/v1/admin/fee-rules/{UPSTAIRS['rule_id']}").json()["data"]
+    assert detail["params"] == [] and any("不是有效的积木" in item for item in detail["content_problems"])
+
+
+def test_quote_api_uses_approved_rules_by_billing_date_and_keeps_the_quote():
+    client, calls = _client(UPSTAIRS, approved=[_approved("upstairs"), _approved("unloading"),
+                                                _approved("night_delivery", effective="2026-12-01")])
+    catalog = client.get("/internal/v1/admin/fee-quotes/catalog?billing_date=2026-11-19").json()["data"]
+    assert [fee["fee_kind"] for fee in catalog["fees"]] == ["upstairs", "unloading"]
+    assert catalog["unavailable"][0]["fee_kind"] == "night_delivery" and catalog["conflict"] == ""
+    assert {param["key"] for param in catalog["params"]} >= {"settlement_weight", "pieces", "floor"}
+    values = {"settlement_weight": "1600", "floor": 3, "elevator": True, "goods_type": "general",
+              "pieces": [{"count": 4, "weight": "100"}]}
+    result = client.post("/internal/v1/admin/fee-quotes", json={
+        "billing_date": "2026-11-19", "fee_kinds": ["upstairs", "unloading", "night_delivery"], "values": values,
+        "tracking_number": "R00099990001"}).json()["data"]
+    assert result["total"] == "101.00" and result["quote_id"] == "q-1"
+    assert [item["counted"] for item in result["items"]] == [True, False]
+    assert result["unavailable"][0]["name"] == "夜送费"
+    assert calls[-1] == ("quote", "console", ["upstairs", "unloading"], "101.00", "R00099990001")
+    nothing = client.post("/internal/v1/admin/fee-quotes", json={"billing_date": "2026-11-19", "fee_kinds": ["night_delivery"]})
+    assert nothing.status_code == 422 and "都没有已生效的规则" in nothing.json()["error"]["message"]
+    unknown = client.post("/internal/v1/admin/fee-quotes", json={"billing_date": "2026-11-19", "fee_kinds": ["nope"]})
+    assert unknown.status_code == 422
+    prefill = client.post("/internal/v1/admin/fee-quotes/waybill", json={"tracking_number": "r00099990001"}).json()["data"]
+    assert prefill["tracking_number"] == "R00099990001" and prefill["pieces"] == 2
+    assert client.post("/internal/v1/admin/fee-quotes/waybill", json={"tracking_number": "x"}).status_code == 422

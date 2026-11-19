@@ -25,6 +25,7 @@
 .hb-work--entries { grid-template-columns: minmax(220px, 256fr) minmax(320px, 444fr) minmax(300px, 370fr); min-height: 720px; }
 .hb-work--fees { grid-template-columns: minmax(220px, 256fr) minmax(0, 830fr); min-height: 720px; }
 .hb-work--try { grid-template-columns: minmax(300px, 420fr) minmax(0, 666fr); min-height: 720px; }
+.hb-work--quote { grid-template-columns: minmax(0, 560fr) minmax(0, 526fr); min-height: 720px; }
 
 /* Cards */
 .hb-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 20px; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); }
@@ -313,7 +314,7 @@ button[disabled] { cursor: not-allowed; }
 @media (max-width: 760px) {
   .handbook-page .main-content { --content-x-pad: 16px; }
   .hb-tabs { gap: 18px; overflow-x: auto; }
-  .hb-work--entries, .hb-work--fees, .hb-work--try { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .hb-work--entries, .hb-work--fees, .hb-work--try, .hb-work--quote { grid-template-columns: minmax(0, 1fr); min-height: 0; }
   .hb-reminders { grid-template-columns: minmax(0, 1fr); }
   .hb-metrics { flex-wrap: wrap; }
   .hb-submit { position: static; }
@@ -406,3 +407,34 @@ button[disabled] { cursor: not-allowed; }
 .hb-try-summary span { display: inline-flex; align-items: center; gap: 4px; }
 .hb-try-summary svg { width: 12px; height: 12px; color: var(--status-success); }
 .hb-alert > .hb-chip { flex: none; align-self: center; }
+
+/* 计算规则 · 积木树 (2026-11-19, block-built rules) */
+.hb-fold--node { border-bottom: 0; border-left: 2px solid var(--line-subtle); padding-left: 10px; margin: 4px 0; }
+.hb-fold--node > .hb-fold__head { min-height: 40px; }
+.hb-fold--node > .hb-fold__body { padding: 0 0 10px 12px; }
+.hb-branch { display: grid; gap: 4px; }
+.hb-branch__title { margin: 6px 0 0; font-size: var(--fs-caption); color: var(--text-secondary); }
+.hb-advanced > summary { cursor: pointer; font-weight: 500; }
+.hb-json { width: 100%; font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; padding: 10px; border: 1px solid var(--line-default); border-radius: var(--r-block); background: var(--surface-subtle, #fafbfc); }
+.hb-fee__cells--form { align-items: flex-start; }
+.hb-fee__cells--form .hb-cell { flex: 1 1 160px; }
+.hb-cell--full { flex: 1 1 100%; }
+.hb-cell--xs { flex: 0 1 80px; }
+.hb-cell--sm { flex: 1 1 110px; }
+.hb-pieces { border: 1px dashed var(--line-default); border-radius: var(--r-block); padding: 8px 12px 12px; display: grid; gap: 8px; }
+.hb-pieces legend { font-size: var(--fs-caption); padding: 0 4px; }
+.hb-piece-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+
+/* 报价 */
+.hb-pricing, .hb-pricing-result { display: grid; gap: 14px; align-content: start; }
+.hb-quote__fees { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.hb-quote__fee { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line-subtle); border-radius: var(--r-block); cursor: pointer; }
+.hb-quote__fee input { appearance: auto; margin-top: 3px; }
+.hb-quote__fee span { display: grid; gap: 2px; }
+.hb-quote__unavailable { grid-column: 1 / -1; font-size: var(--fs-caption); color: var(--text-secondary); }
+.hb-quote__items { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.hb-quote__item { padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--r-block); display: grid; gap: 4px; }
+.hb-quote__item[data-counted="false"] { background: var(--surface-subtle, #fafbfc); }
+.hb-quote__line { display: flex; justify-content: space-between; gap: 12px; }
+.hb-quote__line [data-tone="warn"] { color: var(--warning-text, #a15c07); }
+.hb-quote__item summary { cursor: pointer; font-size: var(--fs-caption); color: var(--text-secondary); }
