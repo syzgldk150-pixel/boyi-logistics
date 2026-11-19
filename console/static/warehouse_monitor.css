@@ -176,3 +176,8 @@
 .wm-table th { height: 38px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; border-bottom: 1px solid var(--line-default); }
 .wm-table td { height: 50px; padding: 0 16px; border-bottom: 1px solid var(--line-row); font-size: var(--fs-body); }
 .wm-hint { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line-subtle); color: var(--text-muted); font-size: var(--fs-caption); }
+
+/* 按日期查看全天录像 */
+.wm-day-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.wm-day-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-label); color: var(--text-secondary); }
+.wm-day-field input { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; color: var(--text); background: var(--surface); }

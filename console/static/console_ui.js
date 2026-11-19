@@ -596,17 +596,20 @@
       && ["/automations", "/modules/finance/data-sources", "/modules/customer-service/data-sources"].includes(owner)
       ? owner : pathname || "/";
     const navLinks = Array.from(document.querySelectorAll("[data-nav-list] .nav-link, .mobile-bottom-nav__item[href]"));
-    const hasSpecificNavMatch = navLinks.some((link) => {
+    const matchesPath = (href) => (
+      currentPath.startsWith(href) ||
+      (href === "/ocr" && currentPath.startsWith("/documents")) ||
+      (href === "/dispatch" && currentPath.startsWith("/dispatch"))
+    );
+    // 子菜单路径以父菜单路径开头（如 /modules/finance 与 /modules/finance/ronghui-bills），只高亮匹配最长的一项。
+    const bestHref = navLinks.reduce((best, link) => {
       const href = link.getAttribute("href");
-      if (!href || href === "#" || href === "/") {
-        return false;
+      if (!href || href === "#" || href === "/" || !matchesPath(href)) {
+        return best;
       }
-      return (
-        currentPath.startsWith(href) ||
-        (href === "/ocr" && currentPath.startsWith("/documents")) ||
-        (href === "/dispatch" && currentPath.startsWith("/dispatch"))
-      );
-    });
+      return href.length > best.length ? href : best;
+    }, "");
+    const hasSpecificNavMatch = Boolean(bestHref);
     navLinks.forEach((link) => {
       link.classList.remove("active");
       const href = link.getAttribute("href");
@@ -619,11 +622,7 @@
         }
         return;
       }
-      if (
-        currentPath.startsWith(href) ||
-        (href === "/ocr" && currentPath.startsWith("/documents")) ||
-        (href === "/dispatch" && currentPath.startsWith("/dispatch"))
-      ) {
+      if (href === bestHref) {
         link.classList.add("active");
       }
     });

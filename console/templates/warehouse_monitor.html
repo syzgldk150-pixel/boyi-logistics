@@ -2,9 +2,9 @@
 
 {% block title %}监控查询 | {{ app_title }}{% endblock %}
 {% block breadcrumb %}监控查询{% endblock %}
-{% block subtitle %}按单号定位卸车录像与仓库位置{% endblock %}
+{% block subtitle %}按单号定位卸车录像与仓库位置，或按日期查看全天录像{% endblock %}
 {% block main_class %}warehouse-monitor-main{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/warehouse_monitor.css?v=20261112-type13">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/warehouse_monitor.css?v=20261119-day">{% endblock %}
 
 {% block content %}
 <section class="panel wm-search-panel" aria-label="按单号查询">
@@ -23,6 +23,20 @@
     {% if video_configured %}录像在仓库局域网内播放：请在仓库网络中点击“看录像”。{% else %}服务器未配置仓库录像链接，只能查看扫描时间。{% endif %}
   </p>
 </section>
+
+{% if video_configured %}
+<section class="panel wm-search-panel" aria-label="按日期查看">
+  <form class="wm-day-form" data-wm-day-form novalidate>
+    <label class="wm-day-field">日期 <input type="date" required data-wm-day-date></label>
+    <label class="wm-day-field">从几点开始看（可不填） <input type="time" data-wm-day-time></label>
+    <button class="primary-btn" type="submit" data-wm-day-submit>
+      <i data-feather="video" aria-hidden="true"></i><span>看当天录像</span>
+    </button>
+  </form>
+  <p class="wm-video-note">不用单号，直接看所选日期全天的录像：回放页可切换 7 个摄像头、拖动时间轴、倍速和下载片段。录像机约保存 44 天，需在仓库网络中打开。</p>
+  <p class="wm-feedback" data-wm-day-feedback role="status" aria-live="polite" hidden></p>
+</section>
+{% endif %}
 
 <p class="wm-feedback" data-wm-feedback role="status" aria-live="polite" hidden></p>
 
@@ -47,5 +61,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/warehouse_monitor.js?v=20261020-2"></script>
+<script src="/static/warehouse_monitor.js?v=20261119-day"></script>
 {% endblock %}

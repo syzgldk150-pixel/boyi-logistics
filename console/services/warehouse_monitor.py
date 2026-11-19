@@ -53,6 +53,17 @@ class WarehouseMonitorServiceMixin:
             return None
         return {"_console_principal": principal}
 
+    def _handle_warehouse_monitor_video_link(self, handler: Any) -> None:
+        """按日期查看：只签发入口链接，日期与时间由页面追加，录像服务再校验范围。"""
+        if self._warehouse_monitor_context(handler) is None:
+            return
+        link = self._warehouse_video_link()
+        if not link:
+            self._send_json(handler, HTTPStatus.SERVICE_UNAVAILABLE,
+                            {"ok": False, "message": "服务器未配置仓库录像链接，无法打开录像。"})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, "data": {"video_link": link}})
+
     def _handle_warehouse_monitor_lookup(self, handler: Any, query: dict[str, list[str]]) -> None:
         code = str(query.get("code", [""])[0] or "").strip()
         if not _CODE_RE.fullmatch(code):

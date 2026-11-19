@@ -171,3 +171,29 @@ def test_server_no_longer_routes_any_video_proxy():
         assert routes.handle_get(fake_app, None, path, path, {}) is False
     assert not hasattr(wm.WarehouseMonitorServiceMixin, "_handle_warehouse_monitor_clip")
     assert calls == []
+
+
+def test_day_view_link_is_signed_needs_a_session_and_configuration(monkeypatch):
+    from console.routes import warehouse_monitor as routes
+    from shared.identity_routes import console_permission
+
+    assert console_permission("GET", "/warehouse-monitor/video-link") == "warehouse.monitor:view"
+    calls = []
+    fake_app = SimpleNamespace(_handle_warehouse_monitor_video_link=lambda *_a: calls.append("link"))
+    assert routes.handle_get(fake_app, None, "/warehouse-monitor/video-link", "", {}) is True and calls == ["link"]
+
+    monkeypatch.setattr(wm.time, "time", lambda: 1_800_000_000)
+    app = _App()
+    app._handle_warehouse_monitor_video_link(_Handler())
+    status, payload, _ = app.sent[-1]
+    exp, sig = _query_signature(payload["data"]["video_link"])
+    assert status == HTTPStatus.OK and exp == 1_800_000_000 + 15 * 60
+    assert sig == hmac.new(b"x" * 40, f"open:{exp}".encode(), hashlib.sha256).hexdigest()
+    assert not app.agent_calls
+
+    unconfigured = _App(lan_url="", token="")
+    unconfigured._handle_warehouse_monitor_video_link(_Handler())
+    assert unconfigured.sent[-1][0] == HTTPStatus.SERVICE_UNAVAILABLE
+    anonymous = _App(principal=None)
+    anonymous._handle_warehouse_monitor_video_link(_Handler())
+    assert anonymous.sent[-1][0] == HTTPStatus.FORBIDDEN

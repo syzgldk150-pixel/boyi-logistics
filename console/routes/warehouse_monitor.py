@@ -12,6 +12,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/warehouse-monitor/lookup":
         app._handle_warehouse_monitor_lookup(handler, query)
         return True
+    if path == "/warehouse-monitor/video-link":
+        app._handle_warehouse_monitor_video_link(handler)
+        return True
     return False
 
 

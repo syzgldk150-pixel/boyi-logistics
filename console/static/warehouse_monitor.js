@@ -121,4 +121,50 @@
   });
 
   if (codeInput.value.trim()) form.requestSubmit();
+
+  // 按日期查看：不需要单号，打开所选日期全天的回放页（时间可选，定位到该时刻）。
+  const dayForm = document.querySelector("[data-wm-day-form]");
+  if (dayForm) {
+    const dayDate = dayForm.querySelector("[data-wm-day-date]");
+    const dayTime = dayForm.querySelector("[data-wm-day-time]");
+    const daySubmit = dayForm.querySelector("[data-wm-day-submit]");
+    const dayFeedback = document.querySelector("[data-wm-day-feedback]");
+    const pad = function (n) { return String(n).padStart(2, "0"); };
+    const ymd = function (d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); };
+    const today = new Date();
+    dayDate.max = ymd(today);
+    dayDate.min = ymd(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 44));
+    dayDate.value = ymd(today);
+    const sayDay = function (text, kind) {
+      dayFeedback.textContent = text;
+      dayFeedback.dataset.kind = kind || "info";
+      dayFeedback.hidden = !text;
+    };
+    dayForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      const date = dayDate.value;
+      const time = dayTime.value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > dayDate.max || date < dayDate.min) {
+        sayDay("请选择最近 44 天内的日期。", "error");
+        dayDate.focus();
+        return;
+      }
+      // 先同步打开窗口，避免浏览器拦截异步弹出的新标签页。
+      const win = window.open("", "warehouse-video");
+      daySubmit.disabled = true;
+      sayDay("正在生成录像链接…", "info");
+      requestJson("/warehouse-monitor/video-link").then(function (data) {
+        const params = { date: date };
+        if (/^\d{2}:\d{2}$/.test(time)) params.time = time;
+        const url = data.video_link + "&" + new URLSearchParams(params).toString();
+        if (win) win.location.href = url; else window.open(url, "warehouse-video");
+        sayDay("已在新标签页打开回放页（需在仓库网络中）。", "info");
+      }).catch(function (error) {
+        if (win) win.close();
+        sayDay(error.message, "error");
+      }).finally(function () {
+        daySubmit.disabled = false;
+      });
+    });
+  }
 })();
