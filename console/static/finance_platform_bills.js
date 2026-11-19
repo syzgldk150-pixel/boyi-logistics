@@ -239,10 +239,13 @@
   }
 
   // -- generic platform table (detail, drill-downs, Yunda views) --------------------------------------
+  // Codes and account numbers are digits but not money: no thousands separators, no ".00",
+  // kept as the platform wrote them and aligned like text (2026-11-19: 开户户名编码/账户 were shown as amounts).
+  const IDENTIFIER_TITLE = /编码|编号|代码|账户|账号|卡号|单号|电话|手机|ID$|id$/;
   function columnKinds(columns, rows) {
     return columns.map((column) => {
       const values = rows.map((row) => text(row[column.field]).trim()).filter(Boolean);
-      const numeric = values.length > 0 && values.every(isNumber);
+      const numeric = values.length > 0 && values.every(isNumber) && !IDENTIFIER_TITLE.test(column.title || "");
       const dated = values.length > 0 && values.every((value) => /^\d{4}-\d{2}-\d{2}/.test(value));
       const constant = rows.length > 1 && !numeric && !column.drill && values.length === rows.length && new Set(values).size === 1;
       return { ...column, numeric, dated, constant };
@@ -332,7 +335,7 @@
         const label = text(footer[i]).replace(/[：:]\s*$/, "");
         const value = text(footer[i + 1]);
         const tone = /收入/.test(label) ? "income" : /支出/.test(label) ? "expense" : negative(value) ? "expense" : "";
-        cells.push({ label, value: isNumber(value) ? money(value) : value, tone, note: /收支差/.test(label) ? "收支差 = 收入 − 支出" : "" });
+        cells.push({ label, value: isNumber(value) && !IDENTIFIER_TITLE.test(label) ? money(value) : value, tone, note: /收支差/.test(label) ? "收支差 = 收入 − 支出" : "" });
       }
     } else if (footer && typeof footer === "object" && Object.keys(footer).length) {
       const titles = Object.fromEntries(columns.map((column) => [column.field, column.title]));
@@ -458,11 +461,12 @@
     const kpis = KPIS.map((kpi) => ({ ...kpi, column: columns.find((column) => kpi.match.test(column.title)) })).filter((kpi) => kpi.column);
     els.body.innerHTML = `${kpis.length ? `<div class="pb-kpis">${kpis.map((kpi) => {
       const value = text(row[kpi.column.field]);
-      return `<div class="pb-kpi" data-tone="${kpi.tone || ""}"><span>${escapeHtml(kpi.column.title)}</span><b>${escapeHtml(isNumber(value) ? money(value) : value || "—")}</b>${kpi.note ? `<small>${escapeHtml(kpi.note)}</small>` : ""}</div>`;
+      return `<div class="pb-kpi" data-tone="${kpi.tone || ""}"><span>${escapeHtml(kpi.column.title)}</span><b>${escapeHtml(isNumber(value) && !IDENTIFIER_TITLE.test(kpi.column.title || "") ? money(value) : value || "—")}</b>${kpi.note ? `<small>${escapeHtml(kpi.note)}</small>` : ""}</div>`;
     }).join("")}</div>` : ""}
       <dl class="pb-fields">${columns.map((column) => {
         const value = text(row[column.field]).trim();
-        return `<div><dt>${escapeHtml(column.title)}</dt><dd class="${isNumber(value) ? "num" : ""}">${value ? escapeHtml(isNumber(value) ? money(value) : value) : '<span class="pb-null">—</span>'}</dd></div>`;
+        const amount = isNumber(value) && !IDENTIFIER_TITLE.test(column.title || "");
+        return `<div><dt>${escapeHtml(column.title)}</dt><dd class="${amount ? "num" : ""}">${value ? escapeHtml(amount ? money(value) : value) : '<span class="pb-null">—</span>'}</dd></div>`;
       }).join("")}</dl>`;
     els.pager.hidden = true;
     exportRows = { header: columns.map((column) => column.title), rows: [columns.map((column) => text(row[column.field]))] };

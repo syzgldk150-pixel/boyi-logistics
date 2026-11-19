@@ -41,9 +41,9 @@ YD_DETAIL = {
     "columns": [{"field": "trade_time", "title": "交易时间"}, {"field": "begin", "title": "期初余额"}, {"field": "income", "title": "金额/收入"},
                 {"field": "expense", "title": "金额/支出"}, {"field": "end", "title": "期末余额"}, {"field": "lv1", "title": "一级费用项目"},
                 {"field": "lv2", "title": "二级费用项目"}, {"field": "dept", "title": "收费部门"}, {"field": "bank", "title": "开户行"},
-                {"field": "holder", "title": "开户户名"}],
-    "rows": [{"trade_time": "2026-11-19 11:00:22", "begin": "100", "income": "40", "expense": "", "end": "140", "lv1": "运费", "lv2": "", "dept": "示例部门", "bank": "示例银行", "holder": "示例户名"},
-             {"trade_time": "2026-11-19 11:05:00", "begin": "140", "income": "", "expense": "12.5", "end": "127.5", "lv1": "服务费", "lv2": "派费", "dept": "示例部门二", "bank": "示例银行", "holder": "示例户名"}],
+                {"field": "holder", "title": "开户户名"}, {"field": "account", "title": "账户"}],
+    "rows": [{"trade_time": "2026-11-19 11:00:22", "begin": "100", "income": "40", "expense": "", "end": "140", "lv1": "运费", "lv2": "", "dept": "示例部门", "bank": "示例银行", "holder": "示例户名", "account": "10000001"},
+             {"trade_time": "2026-11-19 11:05:00", "begin": "140", "income": "", "expense": "12.5", "end": "127.5", "lv1": "服务费", "lv2": "派费", "dept": "示例部门二", "bank": "示例银行", "holder": "示例户名", "account": "10000002"}],
     "total": 2891, "page": 1, "page_size": 200, "footer": ["收入：", "34543.30", "支出：", "27505.27", "收支差：", "7038.03"],
 }
 
@@ -151,7 +151,11 @@ def test_yunda_detail_moves_constants_and_pairs_fee_items(browser):
         page.click("[data-bill-view='detail']")
         page.wait_for_selector(".pb-table:not([aria-busy])")
         headers = page.locator(".pb-table thead th").all_inner_texts()
-        assert headers == ["交易时间", "期初余额", "金额/收入", "金额/支出", "期末余额", "费用项目", "收费部门"]
+        assert headers == ["交易时间", "期初余额", "金额/收入", "金额/支出", "期末余额", "费用项目", "收费部门", "账户"]
+        # account numbers are digits but not money: as written, aligned like text
+        account = page.locator(".pb-table tbody tr:first-child td").last
+        assert account.inner_text() == "10000001" and "num" not in (account.get_attribute("class") or "")
+        assert "num" not in (page.locator(".pb-table thead th").last.get_attribute("class") or "")
         assert "示例银行" in page.inner_text("[data-bill-context]") and "示例户名" in page.inner_text("[data-bill-context]")
         assert "服务费\n派费" in page.inner_text(".pb-table tbody tr:nth-child(2)")
         strip = page.inner_text("[data-bill-strip]")
