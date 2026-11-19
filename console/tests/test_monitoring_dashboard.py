@@ -296,7 +296,7 @@ class MonitoringConsoleTests(unittest.TestCase):
         self.assertIn("onPageCleanup", script)
         self.assertIn("source?.close()", script)
         self.assertIn("window.clearInterval(summaryTimer)", script)
-        self.assertIn("item.items_supported && item.count > 0", script)
+        self.assertIn("item.items_supported && item.count !== 0", script)  # merged list skips empty categories
         self.assertIn("itemsRequest?.key === key && !force", script)
         self.assertIn("seq !== itemsRequestSeq", script)
         self.assertIn("params.set('force', '1')", script)

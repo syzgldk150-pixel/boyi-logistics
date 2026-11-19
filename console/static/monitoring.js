@@ -10,7 +10,7 @@
     systems: find('systems'), detailTitle: find('detail-title'), detailSubtitle: find('detail-subtitle'),
     items: find('items'), itemsStatus: find('items-status'), pagination: find('pagination'),
     pageLabel: find('page-label'), prev: find('prev'), next: find('next'), open: find('open'), reload: find('reload'),
-    refresh: document.querySelector('[data-monitoring-refresh]'), agentStatus: find('agent-status'),
+    refresh: document.querySelector('[data-monitoring-refresh]'), agentStatus: find('agent-status'), more: find('more'),
     syncFlags: find('sync-flags'), sourceAlert: find('source-alert'), sourceSwitch: find('source-switch'),
     pendingMore: root.querySelector('[data-overview-pending-more]'),
     pendingMetric: root.querySelector('[data-overview-pending-metric]')
@@ -46,10 +46,15 @@
   let activeSource = 'all';
   let pendingState = { available: false, total: null };
   let pendingActive = false;
-  // “全部” merges the pending problems and every category that has messages; it is the default tab.
+  // There are no category tabs (2026-11-19): the list always merges the pending problems and every
+  // category with messages, narrowed only by the 全部/韵达/融辉 switch. A metric card can still narrow it to
+  // its own categories; a removable chip then shows that filter. “加载更多” reads the next page of every
+  // category that has more.
   let allActive = true;
   let pendingItems = [];
   let latestAllKey = '';
+  let allEntries = [];   // [{item, category}] read so far in the merged list
+  let allPages = new Map(); // categoryKey -> {category, page, hasMore}
 
   function pageHidden() {
     return disposed || document.hidden || Boolean(pageRoot?.hidden);
@@ -157,26 +162,6 @@
     return tag;
   }
 
-  function createCategoryButton(item) {
-    const button = element('button', 'monitor-category');
-    button.type = 'button';
-    button.setAttribute('role', 'tab');
-    button.dataset.monitoringCategory = '';
-    button.dataset.system = item.system;
-    button.dataset.categoryId = item.category_id;
-    button.dataset.tone = item.tone || 'info';
-    button.dataset.count = typeof item.count === 'number' ? String(item.count) : 'unknown';
-    const active = !pendingActive && !allActive && categoryKey(item) === categoryKey(activeCategory);
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-selected', String(active));
-    if (activeSource === 'all') button.append(element('span', 'monitor-category-source', shortSource(item.source_label, item.system)));
-    button.append(element('span', 'monitor-category-title', item.title || '消息分类'));
-    button.append(element('span', 'monitor-category-count', fmt(item.count)));
-    const failed = item.status === 'error' || item.status === 'auth_required';
-    const status = [item.status_label, item.message].filter(Boolean).join(' · ');
-    button.title = (failed ? status : item.status_label) || (item.items_supported ? '查看消息正文' : '暂未提供正文，请打开原系统查看');
-    return button;
-  }
 
   function sourcePendingItems() {
     return pendingItems.filter((item) => activeSource === 'all' || (item.platform === 'yunda' ? 'yunda' : 'ronghui') === activeSource);
@@ -188,33 +173,8 @@
     return counts.every((value) => typeof value === 'number') ? counts.reduce((sum, value) => sum + value, 0) : null;
   }
 
-  function createAllTab(shown) {
-    const button = element('button', 'monitor-category monitor-category--all');
-    button.type = 'button';
-    button.setAttribute('role', 'tab');
-    button.dataset.monitoringAllTab = '';
-    button.classList.toggle('is-active', allActive);
-    button.setAttribute('aria-selected', String(allActive));
-    button.append(element('span', 'monitor-category-title', '全部'), element('span', 'monitor-category-count', fmt(allTabCount(shown))));
-    button.title = '合并显示所有有消息的分类';
-    return button;
-  }
 
-  function pendingVisible() {
-    return pendingState.available && (pendingState.total !== 0 || pendingActive);
-  }
 
-  function createPendingTab() {
-    const button = element('button', 'monitor-category monitor-category--pending');
-    button.type = 'button';
-    button.setAttribute('role', 'tab');
-    button.dataset.monitoringPendingTab = '';
-    button.classList.toggle('is-active', pendingActive);
-    button.setAttribute('aria-selected', String(pendingActive));
-    button.append(element('span', 'monitor-category-title', '待确认'), element('span', 'monitor-category-count', fmt(pendingState.total)));
-    button.title = '客户服务中等待回复的问题件';
-    return button;
-  }
 
   function shortSource(label, system) {
     if (system === 'yunda') return '韵达';
@@ -258,17 +218,10 @@
     if (pendingActive || allActive || categoryKey(item) !== categoryKey(activeCategory)) { clearItems(); currentPage = 1; }
     pendingActive = false;
     allActive = false;
-    const allTab = els.systems.querySelector('[data-monitoring-all-tab]');
-    allTab?.classList.remove('is-active');
-    allTab?.setAttribute('aria-selected', 'false');
     if (els.pendingMore) els.pendingMore.hidden = true;
     activeCategory = item;
-    els.systems.querySelectorAll('[data-monitoring-category]').forEach((node) => {
-      const active = node.dataset.system === item.system && node.dataset.categoryId === item.category_id;
-      node.classList.toggle('is-active', active);
-      node.setAttribute('aria-selected', String(active));
-    });
-    els.systems.querySelector('[data-monitoring-pending-tab]')?.classList.remove('is-active');
+    if (els.more) els.more.hidden = true;
+    renderTabs(latestSnapshot, allCategories(latestSnapshot));
     renderMetrics(allCategories(latestSnapshot));
     fetchItems();
   }
@@ -287,10 +240,8 @@
     const categories = allCategories(snapshot);
     const previousKey = categoryKey(activeCategory);
     const sourceCategories = categories.filter((item) => activeSource === 'all' || item.system === activeSource);
-    activeCategory = pendingActive || allActive ? null : sourceCategories.find((item) => categoryKey(item) === previousKey)
-      || sourceCategories.find((item) => item.items_supported && item.is_exception && item.count > 0)
-      || sourceCategories.find((item) => item.items_supported && item.count > 0)
-      || sourceCategories.find((item) => item.items_supported && item.count !== 0) || null;
+    activeCategory = pendingActive || allActive ? null : sourceCategories.find((item) => categoryKey(item) === previousKey) || null;
+    if (!pendingActive && !allActive && !activeCategory) allActive = true;
     renderTabs(snapshot, categories);
     const alerts = (Array.isArray(snapshot.systems) ? snapshot.systems : [])
       .filter((system) => system.status === 'error' || system.status === 'auth_required' || system.stale || (system.message && system.status !== 'ok'))
@@ -301,15 +252,9 @@
     renderMetrics(categories);
     if (window.feather) window.feather.replace();
     if (pendingActive) return;
-    if (allActive) {
+    if (allActive || !activeCategory) {
       const allKey = JSON.stringify([snapshot.updated_at, activeSource]);
       if (allKey !== latestAllKey) { latestAllKey = allKey; fetchAll(); }
-      return;
-    }
-    if (!activeCategory) {
-      clearItems();
-      setText(els.detailSubtitle, '暂无待处理消息');
-      setItemsStatus('各分类目前都没有待处理消息。');
       return;
     }
     if (categoryKey(activeCategory) !== previousKey) {
@@ -332,18 +277,24 @@
 
   function renderTabs(snapshot, categories) {
     const visible = categories.filter((item) => activeSource === 'all' || item.system === activeSource);
-    // Categories with readable bodies first, exceptions before notices; idle categories collapse into a note.
-    // A category with a known count of 0 has nothing to show and is left out.
-    const content = visible.filter((item) => item.items_supported && item.count !== 0)
-      .sort((a, b) => Number(Boolean(b.is_exception)) - Number(Boolean(a.is_exception)));
-    const other = visible.filter((item) => !item.items_supported && item.count !== 0);
-    const idle = visible.length - content.length - other.length;
-    const tabs = [createAllTab([...content, ...other])];
-    if (pendingVisible()) tabs.push(createPendingTab());
-    tabs.push(...content.map(createCategoryButton), ...other.map(createCategoryButton));
-    if (idle > 0) tabs.push(element('span', 'monitor-other-empty', `其余 ${idle} 类无待办`));
-    if (tabs.length === 1 && !snapshot?.systems?.length) tabs.push(element('p', 'monitor-empty', snapshot?.systems?.length ? '当前来源没有可读取的消息分类。' : '当前没有可读取的消息来源。'));
-    els.systems.replaceChildren(...tabs);
+    const shown = visible.filter((item) => item.count !== 0);
+    const nodes = [];
+    const total = allTabCount(shown);
+    if (allActive) {
+      nodes.push(element('span', 'monitor-total', total === null ? '待办数量待确认' : `共 ${fmt(total)} 条待办`));
+    } else {
+      // A metric card narrowed the list; the chip says to what and clears it.
+      const chip = element('button', 'monitor-filter-chip');
+      chip.type = 'button';
+      chip.dataset.monitoringClearFilter = '';
+      chip.title = '显示全部消息';
+      const label = pendingActive ? '待确认 · 客服问题件'
+        : `${shortSource(activeCategory?.source_label, activeCategory?.system)} · ${activeCategory?.title || '消息分类'}`;
+      chip.append(element('span', '', label), element('span', 'monitor-filter-chip-x', '×'));
+      nodes.push(chip);
+    }
+    if (!snapshot?.systems?.length) nodes.push(element('p', 'monitor-empty', '当前没有可读取的消息来源。'));
+    els.systems.replaceChildren(...nodes);
     els.sourceSwitch?.querySelectorAll('[data-source]').forEach((button) => {
       const active = button.dataset.source === activeSource;
       button.classList.toggle('is-active', active);
@@ -362,6 +313,7 @@
     setText(els.detailSubtitle, '客户服务 · 等待回复的问题件，按等待时间排序');
     setItemsStatus('正在读取待确认问题件…');
     if (els.pendingMore) els.pendingMore.hidden = false;
+    if (els.more) els.more.hidden = true;
     root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: els.items, status: els.itemsStatus } }));
   }
 
@@ -496,38 +448,22 @@
     return Number.isFinite(time) ? time : -Infinity;
   }
 
-  async function fetchAll(force = false) {
-    if (!allActive || pageHidden()) return;
-    itemsRequest?.controller.abort();
-    const seq = ++itemsRequestSeq;
-    const controller = new AbortController();
-    itemsRequest = { key: 'all', controller };
-    const categories = allCategories(latestSnapshot)
-      .filter((item) => (activeSource === 'all' || item.system === activeSource) && item.items_supported && item.count !== 0);
-    setText(els.detailSubtitle, '全部 · 所有有消息的分类，按时间排序');
-    setOpenUrl('');
-    els.pagination.hidden = true;
-    els.next.dataset.hasMore = 'false';
-    setItemsBusy(true);
-    setItemsStatus(els.items.childElementCount ? '正在更新消息…' : '正在读取消息正文…');
-    const results = await Promise.all(categories.map(async (category) => {
-      const params = new URLSearchParams({ system: category.system, category_id: category.category_id, page: '1' });
-      if (force) params.set('force', '1');
-      try {
-        const payload = await fetchMonitoringJson(`/monitoring/items?${params}`, controller, true, monitoringItemsTimeoutMs);
-        if (payload.ok === false) throw new Error(payload.message || '读取失败');
-        if (!Array.isArray(payload.items)) throw new Error('响应不完整');
-        return { category, payload };
-      } catch (error) {
-        return { category, error: error?.name === 'AbortError' ? '读取超时' : (error.message || '读取失败') };
-      }
-    }));
-    if (seq !== itemsRequestSeq || pageHidden()) return;
+  async function readCategoryPage(category, page, controller, force) {
+    const params = new URLSearchParams({ system: category.system, category_id: category.category_id, page: String(page) });
+    if (force) params.set('force', '1');
+    try {
+      const payload = await fetchMonitoringJson(`/monitoring/items?${params}`, controller, true, monitoringItemsTimeoutMs);
+      if (payload.ok === false) throw new Error(payload.message || '读取失败');
+      if (!Array.isArray(payload.items)) throw new Error('响应不完整');
+      return { category, page, payload };
+    } catch (error) {
+      return { category, page, error: error?.name === 'AbortError' ? '读取超时' : (error.message || '读取失败') };
+    }
+  }
+
+  function renderAll(failed) {
     const expanded = new Set(Array.from(els.items.querySelectorAll('details[open]')).map((node) => node.dataset.itemId));
-    const rows = [];
-    results.forEach(({ category, payload }) => {
-      if (payload) payload.items.forEach((item) => rows.push(createMessageItem(item, expanded, category)));
-    });
+    const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category));
     if (pendingState.available) {
       const holder = document.createElement('ul');
       root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: holder, status: null, platform: activeSource } }));
@@ -537,23 +473,82 @@
     els.items.replaceChildren(...rows);
     if (window.feather) window.feather.replace();
     displayedItemsKey = 'all';
-    const failed = results.filter((result) => result.error)
-      .map(({ category, error }) => `${shortSource(category.source_label, category.system)}·${category.title || '消息分类'}${error}`);
-    const truncated = results.some(({ payload }) => payload && payload.has_more === true);
+    const more = [...allPages.values()].some((entry) => entry.hasMore);
+    if (els.more) els.more.hidden = !more;
     const notes = [];
     if (!rows.length && !failed.length) notes.push('目前没有待处理消息。');
-    if (truncated) notes.push('每个分类只显示最新一页，点分类标签查看更多');
-    if (failed.length) notes.push(`以下分类读取失败：${failed.join('；')}`);
-    setItemsStatus(notes.join('；') || '合并显示所有有消息的分类，按时间排序', failed.length ? 'error' : '');
+    if (failed.length) notes.push(`以下来源读取失败：${failed.join('；')}`);
+    setItemsStatus(notes.join('；') || '按时间排序，最新在上', failed.length ? 'error' : '');
+  }
+
+  function failures(results) {
+    return results.filter((result) => result.error)
+      .map(({ category, error }) => `${shortSource(category.source_label, category.system)}·${category.title || '消息分类'}${error}`);
+  }
+
+  async function fetchAll(force = false) {
+    if (!allActive || pageHidden()) return;
+    itemsRequest?.controller.abort();
+    const seq = ++itemsRequestSeq;
+    const controller = new AbortController();
+    itemsRequest = { key: 'all', controller };
+    const categories = allCategories(latestSnapshot)
+      .filter((item) => (activeSource === 'all' || item.system === activeSource) && item.items_supported && item.count !== 0);
+    setText(els.detailSubtitle, activeSource === 'all' ? '韵达 · 融辉 全部待办，按时间排序' : `${shortSource('', activeSource)} 全部待办，按时间排序`);
+    setOpenUrl('');
+    els.pagination.hidden = true;
+    els.next.dataset.hasMore = 'false';
+    setItemsBusy(true);
+    setItemsStatus(els.items.childElementCount ? '正在更新消息…' : '正在读取消息正文…');
+    const results = await Promise.all(categories.map((category) => readCategoryPage(category, 1, controller, force)));
+    if (seq !== itemsRequestSeq || pageHidden()) return;
+    allEntries = [];
+    allPages = new Map();
+    results.forEach(({ category, payload }) => {
+      if (!payload) return;
+      payload.items.forEach((item) => allEntries.push({ item, category }));
+      allPages.set(categoryKey(category), { category, page: 1, hasMore: payload.has_more === true });
+    });
+    renderAll(failures(results));
     if (seq === itemsRequestSeq) {
       itemsRequest = null;
       setItemsBusy(false);
     }
   }
 
+  async function loadMoreAll() {
+    if (!allActive || itemsRequest || pageHidden()) return;
+    const pending = [...allPages.values()].filter((entry) => entry.hasMore);
+    if (!pending.length) return;
+    const seq = ++itemsRequestSeq;
+    const controller = new AbortController();
+    itemsRequest = { key: 'all-more', controller };
+    setItemsBusy(true);
+    if (els.more) els.more.disabled = true;
+    const results = await Promise.all(pending.map((entry) => readCategoryPage(entry.category, entry.page + 1, controller, false)));
+    if (els.more) els.more.disabled = false;
+    if (seq !== itemsRequestSeq || pageHidden()) return;
+    const seen = new Set(allEntries.map(({ item, category }) => `${categoryKey(category)}:${item.id}`));
+    results.forEach(({ category, page, payload }) => {
+      const entry = allPages.get(categoryKey(category));
+      if (!payload) { entry.hasMore = false; return; }
+      payload.items.forEach((item) => {
+        const key = `${categoryKey(category)}:${item.id}`;
+        if (!seen.has(key)) { seen.add(key); allEntries.push({ item, category }); }
+      });
+      entry.page = page;
+      entry.hasMore = payload.has_more === true;
+    });
+    renderAll(failures(results));
+    itemsRequest = null;
+    setItemsBusy(false);
+  }
+
   function selectAll() {
     if (allActive) return;
     clearItems();
+    allEntries = [];
+    allPages = new Map();
     allActive = true;
     pendingActive = false;
     activeCategory = null;
@@ -613,17 +608,14 @@
   els.prev.addEventListener('click', () => { if (currentPage > 1) { currentPage -= 1; fetchItems(); } });
   els.next.addEventListener('click', () => { if (els.next.dataset.hasMore === 'true') { currentPage += 1; fetchItems(); } });
   els.systems.addEventListener('click', (event) => {
-    if (event.target.closest('[data-monitoring-all-tab]')) { selectAll(); return; }
-    if (event.target.closest('[data-monitoring-pending-tab]')) { selectPending(); return; }
-    const button = event.target.closest('[data-monitoring-category]');
-    if (!button || !els.systems.contains(button)) return;
-    selectCategory(allCategories(latestSnapshot).find((candidate) => candidate.system === button.dataset.system && candidate.category_id === button.dataset.categoryId));
+    if (event.target.closest('[data-monitoring-clear-filter]')) selectAll();
   });
+  els.more?.addEventListener('click', loadMoreAll);
   els.sourceSwitch?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-source]');
     if (!button || button.dataset.source === activeSource) return;
     activeSource = button.dataset.source;
-    if (pendingActive) { renderTabs(latestSnapshot, allCategories(latestSnapshot)); return; }
+    if (!allActive) { selectAll(); return; }
     latestSnapshotKey = '';
     if (latestSnapshot) renderSnapshot(latestSnapshot); else renderTabs(null, []);
   });
@@ -636,6 +628,8 @@
       pendingActive = false;
       allActive = true;
       latestAllKey = '';
+      allEntries = [];
+      allPages = new Map();
       if (els.pendingMore) els.pendingMore.hidden = true;
       latestSnapshotKey = '';
       if (latestSnapshot) renderSnapshot(latestSnapshot);
@@ -655,7 +649,7 @@
     if (refreshCooldown) return;
     refreshCooldown = true;
     setRefreshing(true);
-    Promise.allSettled([fetchSummary(true, true), fetchItems(true)]).finally(() => {
+    Promise.allSettled([fetchSummary(true, true), allActive ? fetchAll(true) : fetchItems(true)]).finally(() => {
       if (pageHidden()) return;
       refreshTimer = window.setTimeout(() => {
         fetchSummary(false, false);

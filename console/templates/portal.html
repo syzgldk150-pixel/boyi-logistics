@@ -54,6 +54,11 @@
   .monitor-icon-btn .feather { width: 14px; height: 14px; }
   .monitor-tabs-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 20px 10px; }
   .monitor-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .monitor-total { color: var(--text-secondary); font-size: var(--fs-label); }
+  .monitor-filter-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: var(--text-primary); color: var(--text-on-dark); font-size: var(--fs-label); cursor: pointer; }
+  .monitor-filter-chip-x { opacity: .75; }
+  .monitor-filter-chip:focus-visible, .monitor-load-more:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
+  .monitor-load-more { display: block; margin: 12px auto; }
   .monitor-category { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: var(--bg-subtle); color: var(--text-secondary); font-size: var(--fs-label); white-space: nowrap; cursor: pointer; }
   .monitor-category:hover { background: var(--fill-muted); color: var(--text-primary); }
   .monitor-dashboard .monitor-category.is-active,
@@ -187,7 +192,7 @@
     <header class="monitor-center-head">
       <div>
         <h2 id="monitor-items-title" data-monitoring-detail-title>消息中心</h2>
-        <p class="monitor-center-sub" data-monitoring-detail-subtitle>韵达 · 融辉 分类展示，正在读取消息分类</p>
+        <p class="monitor-center-sub" data-monitoring-detail-subtitle>韵达 · 融辉 全部待办，按时间排序</p>
       </div>
       <div class="monitor-detail-actions">
         <button class="monitor-action-btn" type="button" data-monitoring-open disabled>打开原系统</button>
@@ -195,7 +200,7 @@
       </div>
     </header>
     <div class="monitor-tabs-row">
-      <div class="monitor-grid" role="tablist" aria-label="消息分类" data-monitoring-systems></div>
+      <div class="monitor-grid" aria-live="polite" data-monitoring-systems></div>
       <div class="monitor-source-switch" role="group" aria-label="消息来源" data-monitoring-source-switch>
         <button type="button" class="is-active" data-source="all" aria-pressed="true">全部</button>
         <button type="button" data-source="yunda" aria-pressed="false">韵达</button>
@@ -210,12 +215,13 @@
       <span data-monitoring-page-label></span>
       <button class="monitor-action-btn" type="button" data-monitoring-next disabled>下一页</button>
     </nav>
+    <button class="monitor-action-btn monitor-load-more" type="button" data-monitoring-more hidden>加载更多</button>
     <a class="monitor-center-more" href="/modules/customer-service" data-console-navigate data-overview-pending-more hidden>在客户服务中查看全部待确认 →</a>
   </section>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/monitoring.js?v=20261118-hide-zero"></script>
+<script src="/static/monitoring.js?v=20261119-no-category-tabs"></script>
 <script src="/static/overview_pending.js?v=20261118-all-tab"></script>
 {% endblock %}

@@ -1,4 +1,6 @@
-"""Message center: “全部” is the first tab and merges every category with messages; zero-count tabs are hidden."""
+"""Message center (2026-11-19): no category tabs. The list merges every category with messages, newest
+first, narrowed only by the 全部/韵达/融辉 switch; “加载更多” reads the next page of each category that has
+more; a metric card can still narrow the list and shows a removable chip."""
 
 import json
 from urllib.parse import parse_qs, urlparse
@@ -19,6 +21,7 @@ SNAPSHOT = {
         ]},
     ],
 }
+PAGE_2 = [{"id": "y3", "title": "合成问题丁", "occurred_at": "2026-01-01 08:00:00", "content": "合成问题丁"}]
 ITEMS = {
     "yunda:problems": [
         {"id": "y1", "title": "合成问题甲", "occurred_at": "2026-01-02 08:00:00", "content": "合成问题甲"},
@@ -30,7 +33,7 @@ ITEMS = {
 }
 
 
-def test_all_tab_merges_categories_and_hides_zero_tabs(app, browser):
+def test_message_center_merges_everything_without_category_tabs(app, browser):
     item_requests, errors = [], []
     body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
                                                                 message_kind="info", settings=app.settings)
@@ -48,10 +51,13 @@ def test_all_tab_merges_categories_and_hides_zero_tabs(app, browser):
             elif parsed.path == "/monitoring/summary":
                 route.fulfill(content_type="application/json", body=json.dumps(SNAPSHOT))
             elif parsed.path == "/monitoring/items":
-                category = parse_qs(parsed.query)["category_id"][0]
-                item_requests.append(category)
+                query = parse_qs(parsed.query)
+                category, page_no = query["category_id"][0], query["page"][0]
+                item_requests.append((category, page_no))
+                items = PAGE_2 if page_no == "2" else ITEMS[category]
+                more = category == "yunda:problems" and page_no == "1"
                 route.fulfill(content_type="application/json", body=json.dumps({
-                    "ok": True, "items": ITEMS[category], "total": len(ITEMS[category]), "has_more": False,
+                    "ok": True, "items": items, "total": 3 if category == "yunda:problems" else 1, "has_more": more,
                     "updated_at": "2026-01-02 10:00:00"}))
             elif parsed.path == "/customer-service/pending-summary":
                 route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
@@ -61,28 +67,35 @@ def test_all_tab_merges_categories_and_hides_zero_tabs(app, browser):
         context.route("**/*", serve)
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
-        tabs = page.locator("[data-monitoring-systems] .monitor-category")
         page.locator("[data-monitoring-items] li").nth(2).wait_for()
 
-        # 全部 first and selected; zero-count categories and the empty 待确认 are not shown.
-        titles = tabs.locator(".monitor-category-title").all_inner_texts()
-        assert titles == ["全部", "问题件 · 未完结", "收到工单 · 待响应"]
-        assert tabs.first.get_attribute("aria-selected") == "true"
-        assert tabs.first.locator(".monitor-category-count").inner_text() == "3"
+        # No category tabs, no “其余 N 类” note: just the total and the platform switch.
+        assert page.locator("[data-monitoring-systems] .monitor-category").count() == 0
+        assert page.inner_text("[data-monitoring-systems]") == "共 3 条待办"
 
         # Rows from both categories, newest first; zero-count categories are never read.
         rows = page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts()
         assert rows == ["合成问题乙", "合成工单丙", "合成问题甲"]
-        assert set(item_requests) == {"ronghui:work_response", "yunda:problems"}
+        assert {category for category, _ in item_requests} == {"ronghui:work_response", "yunda:problems"}
 
-        # A category still opens on its own, and 全部 comes back.
-        tabs.nth(2).click()
+        import os
+        if os.environ.get("MONITOR_SHOT"):
+            page.screenshot(path=os.environ["MONITOR_SHOT"], full_page=True)
+
+        # 加载更多 reads page 2 only of the category that has more.
+        page.click("[data-monitoring-more]")
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 4")
+        assert ("yunda:problems", "2") in item_requests and ("ronghui:work_response", "2") not in item_requests
+        assert page.locator("[data-monitoring-more]").is_hidden()
+
+        # A metric card narrows the list; the chip brings everything back.
+        page.click('[data-monitoring-metric="ronghui-work"]')
         page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 1")
-        assert tabs.first.get_attribute("aria-selected") == "false"
-        tabs.first.click()
+        assert "收到工单 · 待响应" in page.inner_text("[data-monitoring-clear-filter]")
+        page.click("[data-monitoring-clear-filter]")
         page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 3")
 
-        # The source switch narrows 全部 to that platform.
+        # The source switch narrows the merged list to that platform.
         page.locator('[data-monitoring-source-switch] [data-source="ronghui"]').click()
         page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 1")
         assert page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts() == ["合成工单丙"]
