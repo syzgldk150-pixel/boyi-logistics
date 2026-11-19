@@ -1,0 +1,1265 @@
+{
+ "upstairs": {
+  "name": "上楼费",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "settlement_weight",
+     "label": "结算重量",
+     "type": "number",
+     "integer": false,
+     "unit": "kg",
+     "min": "0.01",
+     "max": "100000",
+     "prefill": "settlement_weight",
+     "decimals": 2
+    },
+    {
+     "key": "floor",
+     "label": "送到几楼",
+     "type": "number",
+     "integer": true,
+     "unit": "楼",
+     "min": "1",
+     "max": "200"
+    },
+    {
+     "key": "elevator",
+     "label": "有电梯",
+     "type": "bool"
+    },
+    {
+     "key": "goods_type",
+     "label": "货物类型",
+     "type": "choice",
+     "options": [
+      {
+       "value": "general",
+       "label": "普货"
+      },
+      {
+       "value": "mattress",
+       "label": "床垫"
+      },
+      {
+       "value": "pallet",
+       "label": "只有托/木箱包装（不拆）"
+      },
+      {
+       "value": "mixed_pallet",
+       "label": "托/木箱与其他包装混合"
+      }
+     ]
+    },
+    {
+     "key": "pieces",
+     "label": "货物明细",
+     "type": "pieces",
+     "prefill": "pieces",
+     "fields": [
+      {
+       "key": "weight",
+       "label": "单件实际重量",
+       "unit": "kg",
+       "min": "0"
+      },
+      {
+       "key": "length",
+       "label": "单边最长",
+       "unit": "m",
+       "min": "0"
+      },
+      {
+       "key": "width",
+       "label": "宽度",
+       "unit": "m",
+       "min": "0"
+      }
+     ],
+     "hint": "按“件数 × 每件重量”填写；床垫类还要填长度和宽度"
+    }
+   ],
+   "definitions": {
+    "普货": {
+     "type": "when",
+     "cases": [
+      {
+       "if": {
+        "all": [
+         {
+          "left": "elevator",
+          "op": "eq",
+          "value": false
+         },
+         {
+          "left": {
+           "count": "pieces",
+           "where": {
+            "left": "piece.weight",
+            "op": "gt",
+            "value": "120"
+           }
+          },
+          "op": "ge",
+          "value": "1"
+         }
+        ]
+       },
+       "then": {
+        "type": "none",
+        "outcome": "NEGOTIATE",
+        "reason": "无电梯上楼，单件实际重量超过 120 公斤且不能拆托的，可不提供上楼服务，如需上楼寄派双方自行协商；可拆托的按拆托后计算，另收拆托费。",
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 52 页",
+         "quote": "单票货物中单件实际重量≥120公斤且不能拆托的，可不提供上楼服务"
+        }
+       }
+      },
+      {
+       "if": {
+        "all": [
+         {
+          "left": "elevator",
+          "op": "eq",
+          "value": true
+         },
+         {
+          "left": "goods_type",
+          "op": "eq",
+          "value": "pallet"
+         }
+        ]
+       },
+       "then": {
+        "type": "when",
+        "cases": [
+         {
+          "if": {
+           "left": {
+            "count": "pieces",
+            "where": {
+             "left": "piece.weight",
+             "op": "le",
+             "value": "150"
+            }
+           },
+           "op": "eq",
+           "value": "0"
+          },
+          "then": {
+           "type": "rate",
+           "rate": "15",
+           "of": {
+            "count": "pieces"
+           },
+           "label": "托/木箱有电梯（单件 >150kg）",
+           "unit": "元/件",
+           "source": {
+            "document": "融辉物流网络管理手册 V6.1",
+            "location": "第五篇第五章 第 51 页"
+           }
+          }
+         },
+         {
+          "if": {
+           "left": {
+            "count": "pieces",
+            "where": {
+             "left": "piece.weight",
+             "op": "gt",
+             "value": "150"
+            }
+           },
+           "op": "eq",
+           "value": "0"
+          },
+          "then": {
+           "type": "sum",
+           "items": [
+            {
+             "type": "fixed",
+             "amount": "5"
+            },
+            {
+             "type": "rate",
+             "rate": "0.06",
+             "of": "settlement_weight"
+            }
+           ],
+           "label": "有电梯"
+          }
+         }
+        ],
+        "else": {
+         "type": "none",
+         "outcome": "MANUAL",
+         "reason": "托/木箱货物有电梯上楼，部分单件超过 150 公斤、部分不超过，手册未写明混合时怎么收。",
+         "source": {
+          "document": "融辉物流网络管理手册 V6.1",
+          "location": "第五篇第五章 第 51 页"
+         }
+        }
+       }
+      },
+      {
+       "if": {
+        "left": "elevator",
+        "op": "eq",
+        "value": true
+       },
+       "then": {
+        "type": "sum",
+        "label": "有电梯",
+        "items": [
+         {
+          "type": "fixed",
+          "amount": "5"
+         },
+         {
+          "type": "rate",
+          "rate": "0.06",
+          "of": "settlement_weight",
+          "unit": "元/kg"
+         }
+        ],
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 50 页"
+        }
+       }
+      },
+      {
+       "if": {
+        "left": "floor",
+        "op": "gt",
+        "value": "7"
+       },
+       "then": {
+        "type": "none",
+        "outcome": "NEGOTIATE",
+        "reason": "无电梯送 7 楼以上：可不提供送货上楼服务，需向客户说明并联系寄件协商上楼费用。",
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 52 页"
+        }
+       }
+      },
+      {
+       "if": {
+        "left": "floor",
+        "op": "eq",
+        "value": "1"
+       },
+       "then": {
+        "type": "none",
+        "outcome": "MANUAL",
+        "reason": "送到 1 楼：规则未写明是否收取上楼费，需人工判断。"
+       }
+      }
+     ],
+     "else": {
+      "type": "sum",
+      "items": [
+       {
+        "type": "sum",
+        "label": "基础费用",
+        "items": [
+         {
+          "type": "fixed",
+          "amount": "10"
+         },
+         {
+          "type": "rate",
+          "rate": "0.12",
+          "of": "settlement_weight",
+          "unit": "元/kg"
+         }
+        ],
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 50 页"
+        }
+       },
+       {
+        "type": "tiers",
+        "by": "floor",
+        "tiers": [
+         {
+          "over": null,
+          "up_to": "2",
+          "then": {
+           "type": "fixed",
+           "amount": "0"
+          }
+         },
+         {
+          "over": "2",
+          "up_to": "4",
+          "then": {
+           "type": "rate",
+           "rate": "0.05",
+           "of": "settlement_weight",
+           "unit": "元/kg"
+          }
+         },
+         {
+          "over": "4",
+          "up_to": "6",
+          "then": {
+           "type": "rate",
+           "rate": "0.1",
+           "of": "settlement_weight",
+           "unit": "元/kg"
+          }
+         },
+         {
+          "over": "6",
+          "up_to": "7",
+          "then": {
+           "type": "rate",
+           "rate": "0.15",
+           "of": "settlement_weight",
+           "unit": "元/kg"
+          }
+         }
+        ],
+        "label": "楼层加收",
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 50 页"
+        }
+       },
+       {
+        "type": "each_piece",
+        "pieces": "pieces",
+        "label": "单件加收",
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 50 页"
+        },
+        "item": {
+         "type": "tiers",
+         "by": "piece.weight",
+         "tiers": [
+          {
+           "over": null,
+           "up_to": "50",
+           "then": {
+            "type": "fixed",
+            "amount": "0"
+           }
+          },
+          {
+           "over": "50",
+           "up_to": "100",
+           "then": {
+            "type": "fixed",
+            "amount": "10"
+           }
+          },
+          {
+           "over": "100",
+           "up_to": "120",
+           "then": {
+            "type": "fixed",
+            "amount": "30"
+           }
+          }
+         ]
+        }
+       }
+      ],
+      "label": "无电梯上楼"
+     }
+    }
+   },
+   "formula": {
+    "type": "lookup",
+    "by": "goods_type",
+    "rows": [
+     {
+      "value": "mattress",
+      "then": {
+       "type": "when",
+       "cases": [
+        {
+         "if": {
+          "left": {
+           "count": "pieces",
+           "where": {
+            "left": "piece.length",
+            "op": "ge",
+            "value": "2.4"
+           }
+          },
+          "op": "ge",
+          "value": "1"
+         },
+         "then": {
+          "type": "none",
+          "outcome": "MANUAL",
+          "reason": "有床垫单边最长 ≥2.4 米，手册收费表只写到 2.4 米以内，需人工判断。",
+          "source": {
+           "document": "融辉物流网络管理手册 V6.1",
+           "location": "第五篇第五章 第 51–52 页"
+          }
+         }
+        },
+        {
+         "if": {
+          "left": {
+           "count": "pieces",
+           "where": {
+            "any": [
+             {
+              "left": "piece.length",
+              "op": "gt",
+              "value": "1.8"
+             },
+             {
+              "left": "piece.width",
+              "op": "ge",
+              "value": "1.5"
+             },
+             {
+              "left": "piece.weight",
+              "op": "gt",
+              "value": "20"
+             }
+            ]
+           }
+          },
+          "op": "eq",
+          "value": "0"
+         },
+         "then": {
+          "type": "use",
+          "name": "普货"
+         }
+        },
+        {
+         "if": {
+          "left": {
+           "count": "pieces",
+           "where": {
+            "not": {
+             "any": [
+              {
+               "left": "piece.length",
+               "op": "gt",
+               "value": "1.8"
+              },
+              {
+               "left": "piece.width",
+               "op": "ge",
+               "value": "1.5"
+              },
+              {
+               "left": "piece.weight",
+               "op": "gt",
+               "value": "20"
+              }
+             ]
+            }
+           }
+          },
+          "op": "ge",
+          "value": "1"
+         },
+         "then": {
+          "type": "none",
+          "outcome": "MANUAL",
+          "reason": "一票里既有床垫又有非床垫：需分开计算取大，非床垫部分的结算重量要人工拆分。",
+          "source": {
+           "document": "融辉物流网络管理手册 V6.1",
+           "location": "第五篇第五章 第 52 页"
+          }
+         }
+        },
+        {
+         "if": {
+          "left": "elevator",
+          "op": "eq",
+          "value": true
+         },
+         "then": {
+          "type": "clamp",
+          "item": {
+           "type": "sum",
+           "items": [
+            {
+             "type": "fixed",
+             "amount": "30"
+            },
+            {
+             "type": "rate",
+             "rate": "10",
+             "of": {
+              "excess": {
+               "count": "pieces"
+              },
+              "over": "1"
+             },
+             "unit": "元/件"
+            }
+           ],
+           "label": "床垫有电梯"
+          },
+          "max": "400",
+          "source": {
+           "document": "融辉物流网络管理手册 V6.1",
+           "location": "第五篇第五章 第 51–52 页"
+          }
+         }
+        }
+       ],
+       "else": {
+        "type": "clamp",
+        "item": {
+         "type": "sum",
+         "items": [
+          {
+           "type": "fixed",
+           "amount": "60"
+          },
+          {
+           "type": "rate",
+           "rate": "20",
+           "of": {
+            "excess": {
+             "count": "pieces"
+            },
+            "over": "1"
+           },
+           "unit": "元/件"
+          }
+         ],
+         "label": "床垫无电梯"
+        },
+        "max": "400",
+        "source": {
+         "document": "融辉物流网络管理手册 V6.1",
+         "location": "第五篇第五章 第 51–52 页"
+        }
+       }
+      }
+     }
+    ],
+    "else": {
+     "type": "use",
+     "name": "普货"
+    }
+   },
+   "group": "上楼卸货",
+   "reminders": [
+    "上楼费和卸货费不可同时收取，同时产生时取大值。",
+    "一票多件送到不同楼层的，按整票送至最高楼层计算。"
+   ]
+  }
+ },
+ "unloading": {
+  "name": "卸货费",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "settlement_weight",
+     "label": "结算重量",
+     "type": "number",
+     "integer": false,
+     "unit": "kg",
+     "min": "0.01",
+     "max": "100000",
+     "prefill": "settlement_weight",
+     "decimals": 2
+    },
+    {
+     "key": "pieces",
+     "label": "货物明细",
+     "type": "pieces",
+     "prefill": "pieces",
+     "fields": [
+      {
+       "key": "weight",
+       "label": "单件实际重量",
+       "unit": "kg",
+       "min": "0"
+      },
+      {
+       "key": "length",
+       "label": "单边最长",
+       "unit": "m",
+       "min": "0"
+      },
+      {
+       "key": "width",
+       "label": "宽度",
+       "unit": "m",
+       "min": "0"
+      }
+     ],
+     "hint": "按“件数 × 每件重量”填写；床垫类还要填长度和宽度"
+    }
+   ],
+   "formula": {
+    "type": "max",
+    "items": [
+     {
+      "type": "tiers",
+      "by": "settlement_weight",
+      "tiers": [
+       {
+        "over": null,
+        "up_to": "1500",
+        "then": {
+         "type": "fixed",
+         "amount": "0"
+        }
+       },
+       {
+        "over": "1500",
+        "up_to": null,
+        "then": {
+         "type": "clamp",
+         "item": {
+          "type": "rate",
+          "rate": "0.015",
+          "of": "settlement_weight",
+          "unit": "元/kg"
+         },
+         "min": "25",
+         "max": "300"
+        }
+       }
+      ],
+      "label": "单票超重超大",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第三章 第 46–47 页"
+      }
+     },
+     {
+      "type": "each_piece",
+      "pieces": "pieces",
+      "label": "单件超重超大",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第三章 第 47 页"
+      },
+      "item": {
+       "type": "tiers",
+       "by": "piece.weight",
+       "tiers": [
+        {
+         "over": null,
+         "up_to": "1500",
+         "then": {
+          "type": "fixed",
+          "amount": "0"
+         }
+        },
+        {
+         "over": "1500",
+         "up_to": null,
+         "then": {
+          "type": "fixed",
+          "amount": "50"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "label": "单票与单件分别计算取大"
+   },
+   "group": "上楼卸货",
+   "reminders": [
+    "需开单备注并登记问题件通知派送网点（两者都要），否则默认末端无需卸货。",
+    "派件司机不参与卸货、全程由收件客户自行卸货的不收卸货费。",
+    "上楼费和卸货费不可同时收取，同时产生时取大值。"
+   ]
+  }
+ },
+ "unpacking": {
+  "name": "拆托/拆木架木箱",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "pallet_count",
+     "label": "拆托个数",
+     "type": "number",
+     "integer": true,
+     "unit": "个",
+     "min": "0",
+     "max": "10000",
+     "default": "0"
+    },
+    {
+     "key": "crate_count",
+     "label": "拆木架/木箱件数",
+     "type": "number",
+     "integer": true,
+     "unit": "件",
+     "min": "0",
+     "max": "10000",
+     "default": "0"
+    }
+   ],
+   "formula": {
+    "type": "sum",
+    "items": [
+     {
+      "type": "tiers",
+      "by": "pallet_count",
+      "tiers": [
+       {
+        "over": null,
+        "up_to": "2",
+        "then": {
+         "type": "fixed",
+         "amount": "0"
+        }
+       },
+       {
+        "over": "2",
+        "up_to": null,
+        "then": {
+         "type": "sum",
+         "items": [
+          {
+           "type": "fixed",
+           "amount": "10"
+          },
+          {
+           "type": "rate",
+           "rate": "5",
+           "of": {
+            "excess": "pallet_count",
+            "over": "3"
+           },
+           "unit": "元/个"
+          }
+         ]
+        }
+       }
+      ],
+      "label": "拆托",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第九章 第 59 页",
+       "quote": "单票3件以上（含3件），起收费10元，每多一件加5元"
+      }
+     },
+     {
+      "type": "rate",
+      "rate": "10",
+      "of": "crate_count",
+      "label": "拆木架、拆木箱",
+      "unit": "元/件",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第九章 第 59 页"
+      }
+     }
+    ],
+    "label": "拆托/木架/木箱"
+   },
+   "reminders": [
+    "件数按系统开单件数（托盘/木架/木箱的个数），不是拆后的物品件数。"
+   ]
+  }
+ },
+ "count_check": {
+  "name": "开箱清点",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "check_count",
+     "label": "开箱清点件数",
+     "type": "number",
+     "integer": true,
+     "unit": "件",
+     "min": "0",
+     "max": "100000"
+    }
+   ],
+   "formula": {
+    "type": "tiers",
+    "by": "check_count",
+    "tiers": [
+     {
+      "over": null,
+      "up_to": "20",
+      "then": {
+       "type": "fixed",
+       "amount": "0"
+      }
+     },
+     {
+      "over": "20",
+      "up_to": null,
+      "then": {
+       "type": "clamp",
+       "item": {
+        "type": "rate",
+        "rate": "0.1",
+        "of": "check_count",
+        "unit": "元/件"
+       },
+       "min": "5",
+       "max": "100"
+      }
+     }
+    ],
+    "label": "开箱清点",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第十章 第 60 页"
+    }
+   },
+   "group": "清点码放",
+   "reminders": [
+    "件数为开箱或拆托后的内物件数，以签收底单客户签字件数为准。"
+   ]
+  }
+ },
+ "stacking": {
+  "name": "码放",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "sort_count",
+     "label": "分类码放件数",
+     "type": "number",
+     "integer": true,
+     "unit": "件",
+     "min": "0",
+     "max": "100000",
+     "default": "0"
+    },
+    {
+     "key": "shelf_count",
+     "label": "码放上架件数",
+     "type": "number",
+     "integer": true,
+     "unit": "件",
+     "min": "0",
+     "max": "100000",
+     "default": "0"
+    },
+    {
+     "key": "shelf_high",
+     "label": "货架高于 1.7 米",
+     "type": "bool",
+     "default": false
+    },
+    {
+     "key": "room_count",
+     "label": "分房号码放的房间/仓库数",
+     "type": "number",
+     "integer": true,
+     "unit": "个",
+     "min": "0",
+     "max": "1000",
+     "default": "0"
+    },
+    {
+     "key": "room_piece_count",
+     "label": "分房号码放件数",
+     "type": "number",
+     "integer": true,
+     "unit": "件",
+     "min": "0",
+     "max": "100000",
+     "default": "0"
+    }
+   ],
+   "formula": {
+    "type": "max",
+    "items": [
+     {
+      "type": "tiers",
+      "by": "sort_count",
+      "tiers": [
+       {
+        "over": null,
+        "up_to": "30",
+        "then": {
+         "type": "fixed",
+         "amount": "0"
+        }
+       },
+       {
+        "over": "30",
+        "up_to": null,
+        "then": {
+         "type": "clamp",
+         "item": {
+          "type": "rate",
+          "rate": "0.2",
+          "of": "sort_count",
+          "unit": "元/件"
+         },
+         "min": "10",
+         "max": "300"
+        }
+       }
+      ],
+      "label": "分类码放",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第十一章 第 61 页"
+      }
+     },
+     {
+      "type": "when",
+      "cases": [
+       {
+        "if": {
+         "left": "shelf_count",
+         "op": "eq",
+         "value": "0"
+        },
+        "then": {
+         "type": "fixed",
+         "amount": "0"
+        }
+       },
+       {
+        "if": {
+         "left": "shelf_high",
+         "op": "eq",
+         "value": true
+        },
+        "then": {
+         "type": "clamp",
+         "item": {
+          "type": "rate",
+          "rate": "0.5",
+          "of": "shelf_count",
+          "unit": "元/件"
+         },
+         "max": "500"
+        }
+       }
+      ],
+      "else": {
+       "type": "tiers",
+       "by": "shelf_count",
+       "tiers": [
+        {
+         "over": null,
+         "up_to": "30",
+         "then": {
+          "type": "fixed",
+          "amount": "0"
+         }
+        },
+        {
+         "over": "30",
+         "up_to": null,
+         "then": {
+          "type": "clamp",
+          "item": {
+           "type": "rate",
+           "rate": "0.2",
+           "of": "shelf_count",
+           "unit": "元/件"
+          },
+          "min": "10",
+          "max": "300"
+         }
+        }
+       ]
+      },
+      "label": "码放上架",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第十一章 第 61 页"
+      }
+     },
+     {
+      "type": "tiers",
+      "by": "room_count",
+      "tiers": [
+       {
+        "over": null,
+        "up_to": "3",
+        "then": {
+         "type": "fixed",
+         "amount": "0"
+        }
+       },
+       {
+        "over": "3",
+        "up_to": null,
+        "then": {
+         "type": "clamp",
+         "item": {
+          "type": "rate",
+          "rate": "2",
+          "of": "room_piece_count",
+          "unit": "元/件"
+         },
+         "max": "100"
+        }
+       }
+      ],
+      "label": "分房号码放",
+      "source": {
+       "document": "融辉物流网络管理手册 V6.1",
+       "location": "第五篇第十一章 第 61 页"
+      }
+     }
+    ],
+    "label": "三种码放取最高"
+   },
+   "group": "清点码放",
+   "reminders": [
+    "单件平均结算重量超过 30 公斤且不提供上架工具的，可不提供码放上架服务。",
+    "客户只要求卸到指定地点并码放整齐的，不算码放服务。"
+   ]
+  }
+ },
+ "night_delivery": {
+  "name": "夜送费",
+  "content": {
+   "schema": 1,
+   "params": [],
+   "formula": {
+    "type": "fixed",
+    "amount": "50",
+    "label": "夜送费",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第十二章 第 62 页"
+    }
+   },
+   "reminders": [
+    "派件网点自身原因（爆仓、运力不足等）导致的夜送不得收费。"
+   ]
+  }
+ },
+ "disinfect": {
+  "name": "多地址消毒",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "address_count",
+     "label": "需去的地址个数（含收货地址）",
+     "type": "number",
+     "integer": true,
+     "unit": "个",
+     "min": "2",
+     "max": "100"
+    }
+   ],
+   "formula": {
+    "type": "clamp",
+    "item": {
+     "type": "rate",
+     "rate": "10",
+     "of": {
+      "excess": "address_count",
+      "over": "1"
+     },
+     "unit": "元/个"
+    },
+    "min": "10",
+    "label": "多地址消毒",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第十三章 第 63 页",
+     "quote": "派件网点可申请最低10元/票的费用，如存在多个地址可按（N-1）*10元进行收取"
+    }
+   },
+   "reminders": []
+  }
+ },
+ "revisit": {
+  "name": "二次上门签收/取回单",
+  "content": {
+   "schema": 1,
+   "params": [],
+   "formula": {
+    "type": "fixed",
+    "amount": "10",
+    "label": "二次上门签收/取回单",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第十三章 第 63 页"
+    }
+   },
+   "reminders": []
+  }
+ },
+ "strip_packaging": {
+  "name": "逐件拆除防护物料",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "is_pallet",
+     "label": "货物是托盘包装",
+     "type": "bool"
+    },
+    {
+     "key": "strip_count",
+     "label": "件数",
+     "type": "number",
+     "integer": true,
+     "unit": "件",
+     "min": "1",
+     "max": "100000"
+    }
+   ],
+   "formula": {
+    "type": "when",
+    "cases": [
+     {
+      "if": {
+       "left": "is_pallet",
+       "op": "eq",
+       "value": true
+      },
+      "then": {
+       "type": "tiers",
+       "by": "strip_count",
+       "tiers": [
+        {
+         "over": null,
+         "up_to": "2",
+         "then": {
+          "type": "fixed",
+          "amount": "0"
+         }
+        },
+        {
+         "over": "2",
+         "up_to": null,
+         "then": {
+          "type": "sum",
+          "items": [
+           {
+            "type": "fixed",
+            "amount": "10"
+           },
+           {
+            "type": "rate",
+            "rate": "5",
+            "of": {
+             "excess": "strip_count",
+             "over": "3"
+            }
+           }
+          ]
+         }
+        }
+       ],
+       "label": "按拆托标准",
+       "source": {
+        "document": "融辉物流网络管理手册 V6.1",
+        "location": "第五篇第九章 第 59 页"
+       }
+      }
+     }
+    ],
+    "else": {
+     "type": "clamp",
+     "item": {
+      "type": "rate",
+      "rate": "0.5",
+      "of": "strip_count",
+      "unit": "元/件"
+     },
+     "min": "10",
+     "max": "100",
+     "label": "逐件拆防护",
+     "source": {
+      "document": "融辉物流网络管理手册 V6.1",
+      "location": "第五篇第十三章 第 63 页"
+     }
+    }
+   },
+   "reminders": []
+  }
+ },
+ "redelivery": {
+  "name": "多次派送",
+  "content": {
+   "schema": 1,
+   "params": [
+    {
+     "key": "delivery_times",
+     "label": "派送次数（含本次）",
+     "type": "number",
+     "integer": true,
+     "unit": "次",
+     "min": "1",
+     "max": "20"
+    },
+    {
+     "key": "base_delivery_fee",
+     "label": "基础派费",
+     "type": "number",
+     "integer": false,
+     "unit": "元",
+     "min": "0",
+     "max": "10000",
+     "decimals": 2
+    }
+   ],
+   "formula": {
+    "type": "amount",
+    "label": "多次派送费",
+    "of": {
+     "mul": [
+      {
+       "add": [
+        "base_delivery_fee",
+        {
+         "const": "10"
+        }
+       ]
+      },
+      {
+       "excess": "delivery_times",
+       "over": "2"
+      }
+     ]
+    },
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第十三章 第 63 页",
+     "quote": "第3次开始，每多派送一次，加收（基础派费+10元）/票"
+    }
+   },
+   "reminders": [
+    "2 次（含）以下派送免费。"
+   ]
+  }
+ },
+ "highway_toll": {
+  "name": "高速服务区过路费",
+  "content": {
+   "schema": 1,
+   "params": [],
+   "formula": {
+    "type": "none",
+    "outcome": "ACTUAL",
+    "reason": "高速服务区内派送产生的过路费凭发票实报实销，由始发承担。",
+    "source": {
+     "document": "融辉物流网络管理手册 V6.1",
+     "location": "第五篇第十三章 第 63 页"
+    }
+   },
+   "reminders": []
+  }
+ }
+}
