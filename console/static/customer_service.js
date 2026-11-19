@@ -394,8 +394,19 @@
       return /(未回复|未处理|待处理|待回复|需回复|需要回复|未查看)/.test(statusText);
     }
 
+    function problemUpdatedTime(row) {
+      const text = String(row?.updated_at || row?.created_at || "").trim();
+      if (!text) return 0;
+      const time = Date.parse(text.replace(/\//g, "-").replace(" ", "T"));
+      return Number.isNaN(time) ? 0 : time;
+    }
+
     function renderRows(rows) {
-      state.rows = rows || [];
+      // Newest update first; rows without a parsable time sink to the bottom.
+      state.rows = (rows || [])
+        .map((row, order) => ({ row, order, time: problemUpdatedTime(row) }))
+        .sort((a, b) => b.time - a.time || a.order - b.order)
+        .map((entry) => entry.row);
       if (!tableBody) return;
       if (!state.rows.length) {
         tableBody.innerHTML = '<tr><td colspan="9" class="customer-service-empty">无数据</td></tr>';
@@ -1267,6 +1278,9 @@
       const replyStatusNode = $("[data-cs-reply-status]");
       if (replyTextNode) replyTextNode.value = "";
       if (replyStatusNode) replyStatusNode.value = DEFAULT_REPLY_STATUS;
+      // Ronghui problems have no processing status on the source site; only Yunda asks for one.
+      const replyStatusField = replyStatusNode?.closest(".customer-service-field--status");
+      if (replyStatusField) replyStatusField.hidden = row.platform !== "yunda";
       state.replying = false;
       setReplySubmitting(false);
       resetAi();
@@ -1311,7 +1325,8 @@
       const row = state.selected;
       if (!row) return;
       const replyText = $("[data-cs-reply-text]")?.value.trim() || "";
-      const status = $("[data-cs-reply-status]")?.value || DEFAULT_REPLY_STATUS;
+      const isYunda = row.platform === "yunda";
+      const status = isYunda ? $("[data-cs-reply-status]")?.value || DEFAULT_REPLY_STATUS : "";
       if (!replyText) {
         setStatus("回复内容不能为空", "warning");
         return;
@@ -1327,17 +1342,14 @@
             account_id: row.account_id,
             item: row,
             ai_suggestion_id: state.ai.suggestionId,
-            payload: {
-              reply_text: replyText,
-              prob_status: status,
-              old_prob_status: row.status || "",
-              REVERSION: replyText,
-            },
+            payload: isYunda
+              ? { reply_text: replyText, prob_status: status, old_prob_status: row.status || "" }
+              : { reply_text: replyText, REVERSION: replyText },
           },
           { command: true },
         );
         assertActionSucceeded(data, "回复失败");
-        row.status = status;
+        row.status = isYunda ? status : "已回复";
         row.reply_text = replyText;
         row.reply_content = replyText;
         row.REVERSION = replyText;

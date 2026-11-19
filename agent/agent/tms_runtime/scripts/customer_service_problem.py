@@ -800,7 +800,8 @@ def _ronghui_reply(session: Any, params: dict[str, Any]) -> dict[str, Any]:
     transfer_code = _clean_text(payload.get("transfer_code") or item.get("TRANSFER_CODE") or raw_item.get("TRANSFER_CODE"))
     if transfer_code:
         row["TRANSFER_CODE"] = transfer_code
-    status_text = _clean_text(payload.get("prob_status") or payload.get("REVERSION_STATUS"))
+    # Ronghui has no processing status; prob_status (Yunda-only) must not leak into REVERSION_STATUS.
+    status_text = _clean_text(payload.get("REVERSION_STATUS"))
     if status_text:
         row["REVERSION_STATUS"] = status_text
     bl_checkok = _clean_text(payload.get("bl_checkok") or payload.get("BL_CHECKOK"))

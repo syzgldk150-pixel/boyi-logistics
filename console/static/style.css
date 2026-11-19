@@ -2540,6 +2540,8 @@ body.dispatch-page .notice { display: none; }
   gap: 12px;
   min-width: 0;
 }
+.customer-service-problem-reply-fields .customer-service-field[hidden] { display: none; }
+.customer-service-problem-reply-fields:has(> .customer-service-field--status[hidden]) { grid-template-columns: minmax(0, 1fr); }
 .customer-service-problem-reply textarea {
   min-height: 72px;
 }

@@ -570,7 +570,7 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
         self.assertEqual("登记网点", row["REGISTER_SITE"])
         self.assertEqual("被通知网点", row["SEND_SITE"])
         self.assertEqual("已联系处理", row["REVERSION"])
-        self.assertEqual("已处理", row["REVERSION_STATUS"])
+        self.assertNotIn("REVERSION_STATUS", row)
 
     def test_ronghui_reply_surfaces_source_failure(self):
         with patch.object(
