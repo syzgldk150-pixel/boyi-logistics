@@ -15,7 +15,10 @@
   最长 31 天）；“分部预付款 / 账户余额(二级网点)”走 ``selectFiledsData``（下拉条件空值为一个空格）。
   下钻由列的 ``skipData`` 定义，取值来自所点行，与平台页面一致。
 
-金额与其它字段原样返回（JSON 小数保留原文字符串），不换算、不汇总。
+金额与其它字段原样返回（JSON 小数保留原文字符串），不换算、不汇总。统计查询另附 ``groups``：
+每个统计行（中心、网点、结算类型）按平台“双击统计行”的明细接口读出的笔数（明细 ``total``）与
+最近结算日（明细行里与日期口径同名字段的最大日期；明细超过可读范围或没有该字段时为空并注明），
+供页面显示“笔数 / 最近结算日”，金额仍以统计行原值为准。
 """
 
 from __future__ import annotations
@@ -49,6 +52,8 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 CODE_PATTERN = re.compile(r"[0-9A-Za-z_-]{1,30}")
 MAX_PAGES = 20
+# 统计查询每个结算类型最多读这么多页明细（每页 500 行）来求最近结算日；笔数始终取平台 total。
+GROUP_DETAIL_PAGES = 6
 
 RONGHUI_MENU = ("预付款管理", "结算明细查询")
 RONGHUI_QUERY_URL = f"{RONGHUI_ORIGIN}/dataQuery/findPageByCallId"
@@ -243,6 +248,42 @@ def _ronghui_rows(session: Any, page: dict[str, str], call_id: str, form: dict[s
     return {"rows": rows, "total": total, "footer": {key: value for key, value in info.items() if key != "COUNT"}}
 
 
+def _latest_date(rows: list[Any], field: str) -> str | None:
+    dates = [str(row.get(field) or "")[:10] for row in rows if isinstance(row, dict)]
+    dates = [item for item in dates if DATE_PATTERN.fullmatch(item)]
+    return max(dates) if dates else None
+
+
+def ronghui_groups(session: Any, page: dict[str, str], rows: list[Any], form: dict[str, Any], date_type: str,
+                   timeout_sec: int) -> list[dict[str, Any]]:
+    """笔数与最近结算日 for each statistics row, read the way the page drills into it (one call per row)."""
+    _grid, call_id = RONGHUI_GRIDS["summary_detail"]
+    groups, seen = [], set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("CENTER_NAME_CODE") or ""), str(row.get("SITE_NAME_CODE") or ""), str(row.get("BALANCE_TYPE") or ""))
+        if key in seen or not key[2]:
+            continue
+        seen.add(key)
+        detail_form = {**form, "CENTER_NAME_CODE": key[0], "SITE_NAME_CODE": key[1], "TURN_NAME_CODE": "", "BALANCE_TYPE": key[2]}
+        read: list[Any] = []
+        total = 0
+        for index in range(GROUP_DETAIL_PAGES):
+            part = _ronghui_rows(session, page, call_id, {**detail_form, "pageIndex": index, "pageSize": 500}, timeout_sec)
+            read.extend(part["rows"])
+            total = part["total"]
+            if len(read) >= total or not part["rows"]:
+                break
+        complete = len(read) >= total
+        has_field = any(isinstance(item, dict) and date_type in item for item in read)
+        groups.append({"center_code": key[0], "site_code": key[1], "balance_type": key[2], "count": total,
+                       "latest_date": _latest_date(read, date_type) if complete else None,
+                       "latest_note": "" if complete and (has_field or not read) else
+                       ("明细超过可读范围" if not complete else "平台明细没有该日期字段")})
+    return groups
+
+
 def ronghui_bills(session_profile: str, query: dict[str, Any], *, timeout_sec: int) -> dict[str, Any]:
     session = get_session_broker(session_profile).open_capability_session("ronghui_home", validate=False)
     page = _ronghui_page(session, timeout_sec)
@@ -281,12 +322,17 @@ def ronghui_bills(session_profile: str, query: dict[str, Any], *, timeout_sec: i
         if len(rows) < total:
             raise PlatformBillError("PLATFORM_DATA_TOO_LARGE", "融辉统计行数超出可读取范围，请缩短日期范围。")
         page_no, size = 1, max(len(rows), 1)
+        if action == "summary":
+            groups = ronghui_groups(session, page, rows, form, query["date_type"], timeout_sec)
     else:
         page_no, size = query["page"], query["page_size"]
         part = _ronghui_rows(session, page, call_id, {**form, "pageIndex": page_no - 1, "pageSize": size}, timeout_sec)
         rows, total, footer = part["rows"], part["total"], part["footer"]
-    return {"site_code": site_code, "site_name": site_name, "columns": columns, "rows": rows,
-            "total": total, "page": page_no, "page_size": size, "footer": footer}
+    result = {"site_code": site_code, "site_name": site_name, "columns": columns, "rows": rows,
+              "total": total, "page": page_no, "page_size": size, "footer": footer}
+    if action == "summary":
+        result["groups"] = groups
+    return result
 
 
 # --------------------------------------------------------------------------- Yunda

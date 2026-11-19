@@ -2,8 +2,9 @@
 
 The request middleware already checked the live identity against
 ``shared.identity_routes.agent_permission``: the 业务手册 module grants reading
-and editing; taking effect (approve, resume) and retiring need a super
-administrator. Each route here still requires a live Console administrator and
+and editing (save, compile, trial, answer ambiguities, submit, withdraw,
+pause); taking effect (approve, resume), sending back, discarding a version
+and retiring need a super administrator. Each route here still requires a live Console administrator and
 re-checks the super-administrator actions itself.
 """
 from __future__ import annotations
@@ -23,7 +24,7 @@ from shared.redaction import redact_text
 
 _STATUS = {"HANDBOOK_ENTRY_NOT_FOUND": 404, "HANDBOOK_VERSION_NOT_FOUND": 404, "HANDBOOK_CONFLICT": 409,
            "HANDBOOK_ENTRY_RETIRED": 409, "HANDBOOK_ALREADY_ACTIVE": 409, "HANDBOOK_NOT_RESUMABLE": 409,
-           "HANDBOOK_NOT_APPROVABLE": 409, "HANDBOOK_TRIAL_UNAVAILABLE": 503, "AI_UNAVAILABLE": 503,
+           "HANDBOOK_NOT_APPROVABLE": 409, "HANDBOOK_NOT_SUBMITTABLE": 409, "HANDBOOK_TRIAL_UNAVAILABLE": 503, "AI_UNAVAILABLE": 503,
            "AI_FAILED": 503, "AI_AUDIT_FAILED": 503}
 
 
@@ -43,7 +44,12 @@ class VersionRequest(BaseModel):
 
 
 class AcknowledgeRequest(VersionRequest):
-    indices: list[int]
+    indices: list[int] | None = None
+    answers: list[dict[str, Any]] | None = None
+
+
+class RejectRequest(VersionRequest):
+    reason: str = ""
 
 
 class StatusRequest(BaseModel):
@@ -67,10 +73,10 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
         return provided
 
     @router.get("")
-    async def list_entries(request: Request):
+    async def list_entries(request: Request, include_retired: bool = False):
         admin_provider(request)
         try:
-            return api_success({"entries": await run_in_threadpool(service().list_entries)})
+            return api_success(await run_in_threadpool(lambda: service().list_entries(include_retired=include_retired)))
         except HandbookError as exc:
             return _failure(exc)
 
@@ -120,10 +126,50 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
 
     @router.post("/{entry_id}/acknowledge")
     async def acknowledge(entry_id: str, req: AcknowledgeRequest, request: Request):
-        admin_provider(request)
+        actor = admin_provider(request)
+        if (req.answers is None) == (req.indices is None):
+            return JSONResponse(status_code=422, content=api_failure("HANDBOOK_ACK_INVALID", "请提交歧义答案"))
         try:
-            await run_in_threadpool(lambda: service().acknowledge(entry_id, req.version, req.indices))
-            return api_success({"acknowledged": sorted(set(req.indices))})
+            done = await run_in_threadpool(lambda: service().acknowledge(
+                entry_id, req.version, answers=req.answers, indices=req.indices, actor_id=actor.actor_id))
+            return api_success({"acknowledged": done})
+        except HandbookError as exc:
+            return _failure(exc)
+
+    @router.post("/{entry_id}/submit")
+    async def submit(entry_id: str, req: VersionRequest, request: Request):
+        actor = admin_provider(request)
+        try:
+            await run_in_threadpool(lambda: service().submit(entry_id, req.version, actor_id=actor.actor_id))
+            return api_success({"status": "PENDING", "version": req.version})
+        except HandbookError as exc:
+            return _failure(exc)
+
+    @router.post("/{entry_id}/withdraw")
+    async def withdraw(entry_id: str, req: VersionRequest, request: Request):
+        actor = admin_provider(request)
+        try:
+            await run_in_threadpool(lambda: service().withdraw(entry_id, req.version, actor_id=actor.actor_id))
+            return api_success({"status": "COMPILED", "version": req.version})
+        except HandbookError as exc:
+            return _failure(exc)
+
+    @router.post("/{entry_id}/reject")
+    async def reject(entry_id: str, req: RejectRequest, request: Request):
+        actor = super_admin_provider(request)
+        try:
+            await run_in_threadpool(lambda: service().reject(entry_id, req.version, actor_id=actor.actor_id,
+                                                             reason=req.reason))
+            return api_success({"status": "COMPILED", "version": req.version})
+        except HandbookError as exc:
+            return _failure(exc)
+
+    @router.post("/{entry_id}/discard")
+    async def discard(entry_id: str, req: VersionRequest, request: Request):
+        actor = super_admin_provider(request)
+        try:
+            status = await run_in_threadpool(lambda: service().discard(entry_id, req.version, actor_id=actor.actor_id))
+            return api_success({"version_status": "VOID", "entry_status": status})
         except HandbookError as exc:
             return _failure(exc)
 
@@ -141,9 +187,10 @@ def create_handbook_router(*, service_provider: Callable[[], Any],
         handlers = {"pause": "pause", "retire": "retire", "resume": "resume"}
         if action not in handlers:
             return JSONResponse(status_code=404, content=api_failure("NOT_FOUND", "不支持的操作"))
-        (admin_provider if action == "pause" else super_admin_provider)(request)
+        actor = (admin_provider if action == "pause" else super_admin_provider)(request)
         try:
-            await run_in_threadpool(lambda: getattr(service(), handlers[action])(entry_id, row_version=req.row_version))
+            await run_in_threadpool(lambda: getattr(service(), handlers[action])(
+                entry_id, row_version=req.row_version, actor_id=actor.actor_id))
             return api_success({"action": action})
         except HandbookError as exc:
             return _failure(exc)

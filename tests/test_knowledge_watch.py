@@ -69,6 +69,10 @@ class Repository:
         self.checked.add(reminder_id)
         return True
 
+    def mark_all_checked(self, *, actor_id):
+        self.all_checked_by = actor_id
+        return 2
+
 
 def _service(listing, notify=None):
     from agent.knowledge_watch import KnowledgeWatchService
@@ -139,6 +143,8 @@ def test_api_and_permissions():
     assert client.get("/internal/v1/admin/knowledge-sources").json()["data"]["documents"][0]["title"].startswith("融辉")
     assert client.post("/internal/v1/admin/knowledge-sources/reminders/3/check").json()["data"] == {"checked": True}
     assert client.post("/internal/v1/admin/knowledge-sources/reminders/3/check").status_code == 409
+    assert client.post("/internal/v1/admin/knowledge-sources/reminders/check-all").json()["data"] == {"checked": 2}
+    assert console_permission("POST", "/handbook/sources/reminders/check-all") == "handbook:operate"
     assert agent_permission("GET", "/internal/v1/admin/knowledge-sources") == "handbook:view"
     assert agent_permission("POST", "/internal/v1/admin/knowledge-sources/scan") == "handbook:operate"
     assert console_permission("GET", "/handbook/sources") == "handbook:view"

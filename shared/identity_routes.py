@@ -92,8 +92,9 @@ def console_permission(method: str, path: str) -> str:
     return SUPER_ADMIN
 
 
-# Taking effect (approve, resume) and permanent removal stay with super administrators.
-_HANDBOOK_SUPER_ADMIN_ACTIONS = ("/approve", "/resume", "/retire")
+# Taking effect (approve, resume), sending a submitted note back, discarding a version and
+# permanent removal stay with super administrators.
+_HANDBOOK_SUPER_ADMIN_ACTIONS = ("/approve", "/resume", "/retire", "/reject", "/discard")
 
 
 def handbook_permission(path: str, read: bool) -> str:

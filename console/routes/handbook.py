@@ -18,7 +18,7 @@ _SOURCE_CHECK = re.compile(r"/handbook/sources/reminders/(\d{1,18})/check")
 _REVIEW = re.compile(r"/settings/llm/reviews/([^/]+)/(approve|reject)")
 
 
-def handle_get(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[str, list[str]]) -> bool:
+def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
     if path == "/handbook":
         app._render_handbook(handler)
         return True
@@ -32,7 +32,7 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[s
         app._handle_reviews_list(handler)
         return True
     if path == "/handbook/entries":
-        app._handle_handbook_get(handler, None)
+        app._handle_handbook_get(handler, None, query)
         return True
     match = _ENTRY.fullmatch(path)
     if match:
@@ -57,6 +57,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if path == "/handbook/sources/scan":
         app._handle_knowledge_sources(handler, "scan", None)
+        return True
+    if path == "/handbook/sources/reminders/check-all":
+        app._handle_knowledge_sources(handler, "check_all", None)
         return True
     match = _SOURCE_CHECK.fullmatch(path)
     if match:

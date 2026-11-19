@@ -25,6 +25,7 @@ from shared.handbook_fee_rules import (
 from shared.redaction import redact_text
 
 _STATUS = {"FEE_RULE_NOT_FOUND": 404, "FEE_RULE_CONFLICT": 409, "FEE_RULE_STATE": 409, "FEE_RULE_NOT_APPROVABLE": 409,
+           "FEE_RULE_NOT_SUBMITTABLE": 409,
            "FEE_RULE_DATE_TAKEN": 409, "FEE_RULES_UNAVAILABLE": 503}
 
 
@@ -79,7 +80,7 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
     @router.get("")
     async def list_versions(request: Request):
         admin_provider(request)
-        return await run(lambda: {"versions": repository().list_versions()})
+        return await run(lambda: {"versions": repository().list_versions(include_retired=True)})
 
     @router.get("/{rule_id}")
     async def get_version(rule_id: str, request: Request):
@@ -106,7 +107,7 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
 
     @router.post("/{rule_id}/trial")
     async def trial(rule_id: str, req: TrialRequest, request: Request):
-        admin_provider(request)
+        actor = admin_provider(request)
 
         def calculate():
             rule = rule_from_record(repository().get(rule_id))
@@ -120,6 +121,10 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
             data = {"result": result_dict(result)}
             if req.boundary:
                 data["boundary"] = boundary_table(rule, weight=weight)
+            repository().record_trial(rule_id, actor_id=actor.actor_id, detail={
+                "weight": str(weight), "floor": req.floor, "elevator": req.elevator, "outcome": result.outcome,
+                "amount": None if result.amount is None else str(result.amount), "boundary": req.boundary})
+            data["trial_count"] = repository().get(rule_id)["trial_count"]
             return data
 
         return await run(calculate)

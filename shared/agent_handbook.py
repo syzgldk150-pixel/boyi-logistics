@@ -13,8 +13,11 @@ content may take effect:
   given to the model as instructions and labelled as such.
 
 Anything the note asks for that no existing action can do is listed under
-``unsupported`` and becomes a development requirement; such a version cannot
-be activated. Pure functions only: no environment, database or network.
+``unsupported`` and becomes a development requirement: it never takes effect
+and does not block review (frontend-spec 52). A compiled version is submitted
+for review (``PENDING``) once its ambiguities are answered and its examples
+were trial-run; a super administrator then approves it, sends it back or
+discards it (``VOID``). Pure functions only: no environment, database or network.
 """
 from __future__ import annotations
 
@@ -22,13 +25,15 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 ENTRY_STATUSES = ("DRAFT", "ACTIVE", "PAUSED", "RETIRED")
-VERSION_STATUSES = ("DRAFT", "COMPILED", "ACTIVE", "SUPERSEDED")
+VERSION_STATUSES = ("DRAFT", "COMPILED", "PENDING", "ACTIVE", "SUPERSEDED", "VOID")
 ALIAS_KINDS = ("plugin", "text")
 RULE_TYPES = ("ask_first", "forbid")
 ANY_ACTION = "*"
 LIMITS = {"aliases": 30, "examples": 20, "rules": 20, "ambiguities": 10, "unsupported": 10}
 MAX_BODY_CHARS = 4000
 MAX_TITLE_CHARS = 100
+MAX_ANSWER_CHARS = 100
+MAX_OPTIONS = 4
 
 
 class HandbookError(ValueError):
@@ -113,13 +118,53 @@ def validate_compiled(raw: Any, catalog: HandbookCatalog) -> dict[str, Any]:
             raise ValueError("针对全部动作的规则必须写明条件")
         rules.append({"type": item["type"], "action": action, "condition": condition,
                       "message": _text(item["message"], label="规则提示", maximum=100)})
-    ambiguities = [_text(item, label="歧义", maximum=150) for item in _items(raw, "ambiguities")]
+    ambiguities = [_ambiguity(item) for item in _items(raw, "ambiguities")]
     unsupported = [_text(item, label="开发需求", maximum=150) for item in _items(raw, "unsupported")]
     if not (aliases or examples or rules or unsupported):
         raise ValueError("说明里没有可编译的术语、说法或规则")
     return {"restatement": _text(raw.get("restatement"), label="中文复述", maximum=600),
             "aliases": aliases, "examples": examples, "rules": rules,
             "ambiguities": ambiguities, "unsupported": unsupported}
+
+
+def _ambiguity(item: Any) -> dict[str, Any]:
+    """One ambiguity: a question plus up to four candidate answers (a bare string has none)."""
+    if isinstance(item, str):
+        return {"question": _text(item, label="歧义", maximum=150), "options": []}
+    if not isinstance(item, Mapping) or not set(item) <= {"question", "options"} or "question" not in item:
+        raise ValueError("每条歧义须为 {question, options}")
+    options = item.get("options") or []
+    if not isinstance(options, list) or len(options) > MAX_OPTIONS:
+        raise ValueError(f"歧义的候选答案最多 {MAX_OPTIONS} 个")
+    clean = []
+    for option in options:
+        text = _text(option, label="候选答案", maximum=60)
+        if text not in clean:
+            clean.append(text)
+    return {"question": _text(item["question"], label="歧义", maximum=150), "options": clean}
+
+
+def ambiguity_items(compiled: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Ambiguities of stored content; versions compiled before options existed hold bare strings."""
+    items = []
+    for item in (compiled or {}).get("ambiguities") or ():
+        if isinstance(item, str):
+            items.append({"question": item, "options": []})
+        elif isinstance(item, Mapping):
+            items.append({"question": str(item.get("question") or ""), "options": list(item.get("options") or [])})
+    return items
+
+
+def acknowledged_answers(value: Any) -> dict[int, dict[str, Any]]:
+    """Stored acknowledgements by ambiguity index; older rows hold bare indices without an answer."""
+    answers: dict[int, dict[str, Any]] = {}
+    for item in value or ():
+        if type(item) is int:
+            answers[item] = {"index": item, "answer": "", "by": "", "at": ""}
+        elif isinstance(item, Mapping) and type(item.get("index")) is int:
+            answers[item["index"]] = {"index": item["index"], "answer": str(item.get("answer") or ""),
+                                      "by": str(item.get("by") or ""), "at": str(item.get("at") or "")}
+    return answers
 
 
 def describe_compiled(compiled: Mapping[str, Any], catalog: HandbookCatalog) -> list[str]:
@@ -139,23 +184,41 @@ def describe_compiled(compiled: Mapping[str, Any], catalog: HandbookCatalog) -> 
     return lines
 
 
-def approval_blockers(version: Mapping[str, Any], *, latest_version: int) -> list[str]:
-    """Why a version may not be activated now; empty means it may."""
+def _content_blockers(version: Mapping[str, Any]) -> list[str]:
     blockers = []
-    if version.get("version") != latest_version:
-        blockers.append("只能审核最新版本")
-    if version.get("status") != "COMPILED":
-        blockers.append("请先编译并通过校验")
     compiled = version.get("compiled") or {}
     if (version.get("validation") or {}).get("ok") is not True:
         blockers.append("校验未通过")
-    ambiguities = compiled.get("ambiguities") or []
-    acknowledged = set(version.get("acknowledged") or [])
-    if any(index not in acknowledged for index in range(len(ambiguities))):
-        blockers.append("还有未处理的歧义")
-    if compiled.get("unsupported"):
-        blockers.append("含超出现有能力的要求（开发需求），请先删去这部分说明")
+    answered = acknowledged_answers(version.get("acknowledged"))
+    missing = [index for index in range(len(ambiguity_items(compiled))) if index not in answered]
+    if missing:
+        blockers.append(f"还差 {len(missing)} 项歧义确认")
+    if compiled.get("examples") and not (version.get("trial") or {}).get("rows"):
+        blockers.append("请先试跑说法样例")
     return blockers
+
+
+def submit_blockers(version: Mapping[str, Any], *, latest_version: int) -> list[str]:
+    """Why a version may not be submitted for review now; empty means it may.
+
+    Development requirements (``unsupported``) never take effect and do not block.
+    """
+    blockers = []
+    if version.get("version") != latest_version:
+        blockers.append("只能提交最新版本")
+    if version.get("status") != "COMPILED":
+        blockers.append("请先编译并通过校验")
+    return blockers + _content_blockers(version)
+
+
+def approval_blockers(version: Mapping[str, Any], *, latest_version: int) -> list[str]:
+    """Why a submitted version may not be activated now; empty means it may."""
+    blockers = []
+    if version.get("version") != latest_version:
+        blockers.append("只能审核最新版本")
+    if version.get("status") != "PENDING":
+        blockers.append("这个版本还没有提交审核")
+    return blockers + _content_blockers(version)
 
 
 @dataclass(frozen=True)
@@ -239,8 +302,28 @@ def acknowledged_indices(values: Any, ambiguities: Sequence[Any]) -> list[int]:
     return sorted(set(values))
 
 
+def normalize_answers(answers: Any, ambiguities: Sequence[Mapping[str, Any]]) -> list[tuple[int, str]]:
+    """``[{index, answer}]`` from the page: one of the candidate answers, or the person's own words."""
+    if not isinstance(answers, list) or not answers or len(answers) > len(ambiguities):
+        raise HandbookError("HANDBOOK_ACK_INVALID", "要确认的歧义无效")
+    clean: dict[int, str] = {}
+    for item in answers:
+        index = item.get("index") if isinstance(item, Mapping) else None
+        if type(index) is not int or not 0 <= index < len(ambiguities):
+            raise HandbookError("HANDBOOK_ACK_INVALID", "要确认的歧义编号无效")
+        answer = item.get("answer", "")
+        if not isinstance(answer, str) or len(answer.strip()) > MAX_ANSWER_CHARS:
+            raise HandbookError("HANDBOOK_ACK_INVALID", f"歧义答案须为不超过 {MAX_ANSWER_CHARS} 字的文字")
+        answer = answer.strip()
+        if ambiguities[index].get("options") and not answer:
+            raise HandbookError("HANDBOOK_ACK_INVALID", "请为这项歧义选择或填写答案")
+        clean[index] = answer
+    return sorted(clean.items())
+
+
 __all__ = [
     "ALIAS_KINDS", "ANY_ACTION", "ENTRY_STATUSES", "LIMITS", "RULE_TYPES", "VERSION_STATUSES",
-    "HandbookCatalog", "HandbookError", "HandbookSnapshot", "acknowledged_indices", "approval_blockers",
-    "build_snapshot", "describe_compiled", "validate_compiled", "validate_note",
+    "HandbookCatalog", "HandbookError", "HandbookSnapshot", "acknowledged_answers", "acknowledged_indices",
+    "ambiguity_items", "approval_blockers", "build_snapshot", "describe_compiled", "normalize_answers",
+    "submit_blockers", "validate_compiled", "validate_note",
 ]

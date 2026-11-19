@@ -159,7 +159,8 @@ def test_try_api_returns_the_reply_quotes_and_steps():
     data = TestClient(app).post("/internal/v1/admin/handbook-try", json={"question": "回单多久寄回"}).json()["data"]
     assert data["reply"].startswith("以下是《回单规定》“回单寄回”部分的原文：")
     assert data["quotes"] == [{"title": "回单规定", "location": "“回单寄回”部分", "pages": [], "url": DOC["url"]}]
-    assert {"action": "knowledge.quote", "decision": "执行"} in data["steps"] and seen == [ACTOR]
+    assert {"action": "引用原文", "decision": "执行"} in data["decisions"] and seen == [ACTOR]
+    assert data["steps"][2] == {"title": "检索知识库", "state": "done", "result": "检索知识库并引用原文 1 段"}
 
 
 def test_try_needs_only_viewing_the_handbook():

@@ -40,6 +40,8 @@
 
       const count = $("[data-reminder-count]");
       count.hidden = !open.length;
+      const checkAll = $("[data-sources-check-all]");
+      if (checkAll) checkAll.hidden = !open.length;
       count.textContent = `• ${open.length}`;
       const list = $("[data-sources-reminders]");
       list.innerHTML = reminders.length ? reminders.map((item) => {
@@ -99,6 +101,8 @@
       if (!target || target.disabled) return;
       if (target.hasAttribute("data-sources-scan")) {
         run("正在检查知识库，可能需要十几秒……", async () => { await request("/handbook/sources/scan", {}); await reload(); }, "检查完成");
+      } else if (target.hasAttribute("data-sources-check-all")) {
+        run("正在保存……", async () => { await request("/handbook/sources/reminders/check-all", {}); await reload(); }, "已全部标记已检查");
       } else if (target.dataset.check) {
         run("正在保存……", async () => { await request(`/handbook/sources/reminders/${encodeURIComponent(target.dataset.check)}/check`, {}); await reload(); }, "已标记已检查");
       }

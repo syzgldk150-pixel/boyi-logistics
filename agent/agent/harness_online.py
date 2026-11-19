@@ -285,6 +285,7 @@ class OnlineHarnessSidecar:
         self._decisions: list[ActionDecision] = []
         self._plugin_requests: tuple[ConversationPluginRequest, ...] = ()
         self._handbook = handbook if handbook is not None and not handbook.empty else None
+        self.handbook_versions = tuple(handbook.versions) if handbook is not None else ()
         self._business = business_turn
         self._reviews = reviews
         self._titles: dict[str, str] = {}

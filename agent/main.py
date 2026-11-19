@@ -899,10 +899,16 @@ async def lifespan(app: FastAPI):
                                         if not key.startswith("plugin:") and key != "ask_user"},
                                plugins={key: value for key, value in titles.items() if key.startswith("plugin:")})
 
+    def notify_handbook_maintainers(open_ids, text):
+        from feishu.notify import send_text_sync
+        for open_id in open_ids:
+            send_text_sync(open_id, text, receive_id_type="open_id")
+
     agent_handbook_service = HandbookService(
         AgentHandbookRepository(runtime.memory.connection_factory), ai_task_gateway, catalog_provider=handbook_catalog,
         trial_runner=HandbookTrial(runtime.llm, lambda actor: process_service_v2_runtime.selection_tools(actor),
-                                   active=lambda: agent_handbook_service.snapshot()))
+                                   active=lambda: agent_handbook_service.snapshot()),
+        notify_maintainers=notify_handbook_maintainers)
     from shared.fee_rule_repository import FeeRuleRepository
     fee_rule_repository = FeeRuleRepository(runtime.memory.connection_factory)
     agent_review_service = _agent_review_service(runtime, project_policy_service, business_service)

@@ -7,7 +7,7 @@
   const STATUS = { DRAFT: "DRAFT", PENDING: "PENDING", APPROVED: "ACTIVE", RETIRED: "RETIRED" };
   const OUTCOME_TEXT = { AMOUNT: "按档计费", NEGOTIATE: "需协商", NOT_PROVIDED: "可不提供服务", MANUAL: "需人工判断", INVALID: "输入不合理" };
   const FIRST_FLOOR = { MANUAL: "需人工判断", NO_CHARGE: "不收上楼费", BASE: "只收基础费" };
-  const ACTION_TEXT = { COPY: "复制为草稿", SAVE: "保存草稿", CHECK: "勾选核对", SUBMIT: "提交审核", WITHDRAW: "退回草稿", APPROVE: "审核生效", RETIRE: "作废" };
+  const ACTION_TEXT = { COPY: "复制为草稿", SAVE: "保存草稿", CHECK: "勾选核对", SUBMIT: "提交审核", WITHDRAW: "退回草稿", APPROVE: "审核生效", RETIRE: "作废", TRIAL: "试算" };
   // Fixed block order (spec 54); the source path is where each block keeps its 出处.
   const BLOCKS = [
     { key: "base", title: "基础费（无电梯）", source: ["base", "source"] },
@@ -79,18 +79,23 @@
       }
     }
 
-    // The Agent's approval conditions (shared/handbook_fee_rules.approval_blockers):
-    // valid content (every block needs its 出处), an effective date, every check ticked.
+    // 生效检查 (spec 54): basic info, content and sources, 待核对, trial since the last save. The
+    // Agent decides with the same four (shared/handbook_fee_rules.submit_blockers); this only shows them.
     function checks(record) {
       const sources = sourceList(record.content || {});
       const okSources = sources.filter((item) => item.ok).length;
       const open = (record.checks || []).filter((item) => !item.done).length;
+      const trials = Number(record.trial_count || 0);
+      const basic = Boolean(String(record.version_label || "").trim()) && Boolean(record.effective_from);
       return [
-        { label: "规则内容", ok: okSources === sources.length, detail: okSources === sources.length ? "出处齐全；其余格式由系统在提交时校验" : `${sources.length - okSources} 处缺出处`, tab: "content" },
-        { label: "执行日期", ok: Boolean(record.effective_from), detail: record.effective_from || "未填写" },
+        { label: "基本信息", ok: basic, detail: basic ? `执行日期 ${record.effective_from}` : record.effective_from ? "缺版本名称" : "未填执行日期" },
+        { label: "规则内容", ok: okSources === sources.length, detail: `${okSources} / ${sources.length} 出处完整`, tab: "content" },
         { label: "待核对", ok: open === 0, detail: open ? `${open} 项未勾选` : "全部已勾选", tab: "checks" },
+        { label: "试算", ok: trials > 0, detail: trials ? `保存后已试算 ${trials} 个场景` : "保存后还没有试算", tab: "trial" },
       ];
     }
+
+    const person = (record, id) => (record?.people || {})[String(id || "")] || (id && /^\d+$/.test(String(id)) ? `账号 ${id}` : id || "系统");
 
     // -- list --------------------------------------------------------------------------
 
@@ -98,8 +103,9 @@
       const list = $("[data-fee-list]");
       const drafts = state.versions.filter((item) => item.status === "DRAFT").length;
       const pending = state.versions.filter((item) => item.status === "PENDING").length;
-      $("[data-fee-summary]").textContent = `${state.versions.length} 个版本${drafts ? ` · ${drafts} 个草稿` : ""}${pending ? ` · ${pending} 个待审核` : ""}`;
-      UI.setTabCount("fees", state.versions.length);
+      const live = state.versions.filter((item) => item.status !== "RETIRED").length;
+      $("[data-fee-summary]").textContent = `${live} 个版本${drafts ? ` · ${drafts} 个草稿` : ""}${pending ? ` · ${pending} 个待审核` : ""}`;
+      UI.setTabCount("fees", live);
       if (!state.versions.length) {
         list.innerHTML = '<li class="hb-empty hb-empty--row"><i data-feather="file-text"></i><p>还没有规则版本。</p></li>';
         if (window.feather) window.feather.replace();
@@ -109,7 +115,8 @@
       let group = "";
       state.versions.forEach((item) => {
         if (item.fee_name !== group) { group = item.fee_name; html += `<li class="hb-rows__group"><b>${escapeHtml(group)}</b></li>`; }
-        const when = item.status === "APPROVED" ? `生效于 ${formatTime(item.approved_at)}` : item.status === "PENDING" ? `提交于 ${formatTime(item.submitted_at)}` : `保存于 ${formatTime(item.updated_at)}`;
+        const when = item.status === "APPROVED" ? `生效于 ${formatTime(item.approved_at)}` : item.status === "PENDING" ? `提交于 ${formatTime(item.submitted_at)}`
+          : item.status === "RETIRED" ? `作废于 ${formatTime(item.retired_at)}` : `保存于 ${formatTime(item.updated_at)}`;
         html += `<li><button class="hb-row" type="button" data-fee-open="${escapeHtml(item.rule_id)}" aria-current="${state.current?.rule_id === item.rule_id}">
           <span class="hb-row__top"><span class="hb-row__title">${escapeHtml(item.version_label)}</span>${badge(STATUS[item.status])}</span>
           <span class="hb-row__meta"${item.effective_from ? "" : ' data-tone="warn"'}>执行日期 ${item.effective_from ? escapeHtml(item.effective_from) : "未填"}</span>
@@ -233,28 +240,53 @@
 
     function renderEventsTab(record) {
       const events = record.events || [];
-      return events.length ? `<ul class="hb-events">${events.map((item) => `<li><span class="hb-meta">${escapeHtml(formatTime(item.created_at))}</span><b>${escapeHtml(ACTION_TEXT[item.action] || item.action)}</b></li>`).join("")}</ul>`
+      return events.length ? `<ul class="hb-events">${events.map((item) => `<li><span class="hb-meta">${escapeHtml(formatTime(item.created_at))}</span><b>${escapeHtml(eventText(item))}</b><span class="hb-meta">${escapeHtml(person(record, item.actor_id))}</span></li>`).join("")}</ul>`
         : '<p class="hb-meta">还没有操作记录。</p>';
+    }
+
+    function eventText(item) {
+      const detail = item.detail || {};
+      if (item.action === "TRIAL") {
+        const what = detail.boundary ? "分界试算表" : "试算";
+        return `${what} ${detail.weight ? `${detail.weight}kg` : ""}${detail.floor ? ` · ${detail.floor} 楼` : ""}${detail.elevator === true ? " · 有电梯" : detail.elevator === false ? " · 无电梯" : ""}${detail.amount ? ` → ¥ ${detail.amount}` : detail.outcome ? ` → ${OUTCOME_TEXT[detail.outcome] || detail.outcome}` : ""}`;
+      }
+      if (item.action === "CHECK") return `勾选核对（已核对 ${detail.done ?? 0} 项）`;
+      return ACTION_TEXT[item.action] || item.action;
     }
 
     function renderSide(record) {
       const list = checks(record);
       const missing = list.filter((item) => !item.ok);
+      const passed = list.length - missing.length;
       const items = list.map((item) => `<li data-tone="${item.ok ? "ok" : "warn"}">${item.tab ? `<button class="hb-link" type="button" data-fee-tab="${item.tab}">${item.label}</button>` : `<b>${item.label}</b>`}<span>${escapeHtml(item.detail)}</span></li>`).join("");
+      const progress = `<div class="hb-progress"><span class="hb-meta">${passed} / ${list.length} 项通过</span><span class="hb-progress__bar"><span style="width:${Math.round((passed / list.length) * 100)}%"></span></span></div>`;
+      const recent = (record.events || []).slice(0, 3).map((item) => `<li><span class="hb-meta">${escapeHtml(formatTime(item.created_at))}</span><span>${escapeHtml(eventText(item))}</span><span class="hb-meta">${escapeHtml(person(record, item.actor_id))}</span></li>`).join("");
       if (record.status === "DRAFT") {
-        return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>生效条件</h3><span class="hb-meta" data-tone="${missing.length ? "warn" : "ok"}">${missing.length ? `还差 ${missing.length} 项` : "已满足"}</span></div>
+        const need = record.submit_blockers || [];
+        return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>生效检查</h3><span class="hb-meta" data-tone="${missing.length ? "warn" : "ok"}">${missing.length ? `还差 ${missing.length} 项` : "已满足"}</span></div>
+          ${progress}
           <ul class="hb-checklist hb-checklist--stack">${items}</ul>
-          <p class="hb-meta">提交审核后，三项都满足，超级管理员才能生效。待核对也可以在审核中继续勾选。</p>
-          <p class="hb-alert" data-tone="info"><i data-feather="lock"></i><span>草稿只能试算，机器人不会按它报金额。</span></p></section>`;
+          ${need.length ? `<div class="hb-block"><h3>提交前还需</h3><ul class="hb-need">${need.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
+          <p class="hb-alert" data-tone="info"><i data-feather="lock"></i><span>草稿状态仅限内部核对 · 不会对外报价，也不影响线上单据。</span></p></section>`;
       }
       if (record.status === "PENDING") {
         const date = record.effective_from || "（未填执行日期）";
+        const blockers = record.blockers || [];
         return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>审核</h3>${badge("PENDING")}</div>
+          <p class="hb-meta" data-tone="${blockers.length ? "warn" : "ok"}">${blockers.length ? escapeHtml(blockers.join("；")) : "已满足生效条件"}</p>
+          ${progress}
           <ul class="hb-checklist hb-checklist--stack">${items}</ul>
-          <div class="hb-impact"><b>通过并生效后</b><span>开单日期在 ${escapeHtml(date)}（含）之后的单据按这版规则计算；之前的单据不受影响。</span></div>
+          <div class="hb-impact"><b>通过并生效后</b><span>开单日期在 ${escapeHtml(date)}（含）之后的单据按这版规则计算；之前的单据不受影响。</span>
+            <span>生效时点：${escapeHtml(record.effective_from ? `${record.effective_from} 00:00` : "未填")}，以总部通知为准。</span></div>
+          ${recent ? `<div class="hb-block"><h3>操作记录</h3><ul class="hb-events hb-events--compact">${recent}</ul></div>` : ""}
           ${canEdit ? `<div class="hb-actions hb-actions--split"><button class="ghost-btn" type="button" data-fee-action="withdraw">退回草稿</button>
-            ${superAdmin ? `<button class="primary-btn" type="button" data-fee-action="approve" ${missing.length ? "disabled" : ""}><i data-feather="check"></i><span>通过并生效</span></button>` : ""}</div>` : ""}
-          ${superAdmin ? '<div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-fee-action="retire"><i data-feather="trash-2"></i>作废此版本</button><span class="hb-meta">不可恢复</span></div>' : '<p class="hb-meta">等待超级管理员审核。</p>'}</section>`;
+            ${superAdmin ? `<button class="primary-btn" type="button" data-fee-action="approve" ${blockers.length ? "disabled" : ""}><i data-feather="check"></i><span>通过并生效</span></button>` : ""}</div>` : ""}
+          ${superAdmin ? '<div class="hb-danger-row"><button class="hb-btn-danger-text" type="button" data-fee-action="retire"><i data-feather="trash-2"></i>作废此版本</button><span class="hb-meta">不可恢复，需二次确认</span></div>' : '<p class="hb-meta">等待超级管理员审核。</p>'}</section>`;
+      }
+      if (record.status === "RETIRED") {
+        return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>已作废</h3>${badge("RETIRED")}</div>
+          <p class="hb-meta">作废于 ${escapeHtml(formatTime(record.retired_at))}${record.retired_by ? ` · ${escapeHtml(person(record, record.retired_by))}` : ""}；机器人不再使用这个版本。</p>
+          ${canEdit ? '<button class="ghost-btn" type="button" data-fee-action="copy"><i data-feather="copy"></i><span>复制为新草稿</span></button>' : ""}</section>`;
       }
       return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>已生效</h3>${badge("ACTIVE")}</div>
         <div class="hb-impact"><b>适用范围</b><span>开单日期在 ${escapeHtml(record.effective_from || "")}（含）之后、下一版执行日期之前的单据按这版计算。</span></div>
@@ -265,14 +297,18 @@
 
     function renderBar(record) {
       if (record.status === "DRAFT") {
-        const saved = state.dirty ? '<i class="hb-dot" data-tone="warn"></i>有未保存的修改' : `<i class="hb-dot" data-tone="ok"></i>已保存 ${escapeHtml(formatTime(record.updated_at))}`;
+        const saved = state.dirty ? '<i class="hb-dot" data-tone="warn"></i>有未保存的修改'
+          : `<i class="hb-dot" data-tone="ok"></i>已保存 ${escapeHtml(formatTime(record.updated_at))}${record.updated_by ? ` · ${escapeHtml(person(record, record.updated_by))}` : ""}`;
         if (!canEdit) return `<div class="hb-card__bar"><span class="hb-meta">${saved}</span></div>`;
+        const need = record.submit_blockers || [];
+        const reason = state.dirty ? "请先保存草稿" : need.length ? `还差 ${need.length} 项，补齐后可提交` : "";
         return `<div class="hb-card__bar"><span class="hb-meta" data-fee-saved>${saved}</span><div class="hb-actions">
           ${superAdmin ? '<button class="hb-btn-danger-text" type="button" data-fee-action="retire">作废</button>' : ""}
           <button class="ghost-btn" type="button" data-fee-action="save">保存草稿</button>
-          <span class="hb-submit-wrap"><button class="primary-btn" type="button" data-fee-action="submit" ${state.dirty ? "disabled" : ""}>提交审核</button>${state.dirty ? '<span class="hb-meta" data-tone="warn">请先保存草稿</span>' : ""}</span></div></div>`;
+          <span class="hb-submit-wrap"><button class="primary-btn" type="button" data-fee-action="submit" ${reason ? "disabled" : ""}>提交审核</button>${reason ? `<span class="hb-meta" data-tone="warn" data-fee-submit-reason>${escapeHtml(reason)}</span>` : ""}</span></div></div>`;
       }
-      if (record.status === "PENDING") return `<div class="hb-card__bar"><span class="hb-meta">已提交 ${escapeHtml(formatTime(record.submitted_at))}<br><i data-feather="lock"></i>审核中，规则内容不可修改；退回草稿后可继续编辑</span></div>`;
+      if (record.status === "RETIRED") return `<div class="hb-card__bar"><span class="hb-meta"><i data-feather="lock"></i>已作废版本只读</span></div>`;
+      if (record.status === "PENDING") return `<div class="hb-card__bar"><span class="hb-meta">已提交 ${escapeHtml(formatTime(record.submitted_at))}${record.submitted_by ? ` · ${escapeHtml(person(record, record.submitted_by))}` : ""}<br><i data-feather="lock"></i>审核中，规则内容不可修改；退回草稿后可继续编辑</span></div>`;
       return `<div class="hb-card__bar"><span class="hb-meta">生效于 ${escapeHtml(formatTime(record.approved_at))}<br><i data-feather="lock"></i>已生效版本只读；要修改请复制为新草稿</span></div>`;
     }
 
@@ -287,7 +323,8 @@
       const editable = record.status === "DRAFT" && canEdit;
       const openChecks = (record.checks || []).filter((item) => !item.done).length;
       const sub = record.status === "PENDING" ? `执行日期 ${record.effective_from || "未填"} · 提交于 ${formatTime(record.submitted_at)}`
-        : record.status === "APPROVED" ? `执行日期 ${record.effective_from} · 生效于 ${formatTime(record.approved_at)}` : "计算方式由系统固定，只填数字与出处";
+        : record.status === "APPROVED" ? `执行日期 ${record.effective_from} · 生效于 ${formatTime(record.approved_at)}`
+        : record.status === "RETIRED" ? `已作废 · ${formatTime(record.retired_at)}` : "计算方式由系统固定，只填数字与出处";
       const tabs = [["content", "规则内容"], ["checks", `待核对${openChecks ? ` <span class="hb-tab__count" data-tone="warn">${openChecks}</span>` : ""}`], ["trial", "试算"], ["events", "操作记录"]];
       const bodies = { content: () => renderContentTab(record, editable), checks: () => renderChecksTab(record), trial: () => renderTrialTab(record), events: () => renderEventsTab(record) };
       node.innerHTML = `
@@ -297,7 +334,7 @@
           <label class="hb-cell hb-cell--doc"><span>版本名称</span><input ${editable ? "" : "disabled"} maxlength="60" data-meta="version_label" value="${escapeHtml(record.version_label)}"></label>
           <label class="hb-cell"><span>执行日期（以总部通知为准）</span><input ${editable ? "" : "disabled"} type="date" data-meta="effective_from" value="${escapeHtml(record.effective_from || "")}"></label>
           ${editable ? (record.effective_from ? "" : '<span class="hb-meta" data-tone="warn"><i data-feather="alert-triangle"></i>未填执行日期，暂不能生效</span>')
-            : `<span class="hb-meta"><i data-feather="lock"></i>${record.status === "PENDING" ? "审核中，字段锁定" : "已生效，只读"}</span>`}
+            : `<span class="hb-meta"><i data-feather="lock"></i>${record.status === "PENDING" ? "审核中，字段锁定" : record.status === "RETIRED" ? "已作废，只读" : "已生效，只读"}</span>`}
         </div>
         <div class="hb-subtabs" role="tablist" aria-label="规则详情">
           ${tabs.map(([key, label]) => `<button type="button" role="tab" aria-selected="${state.tab === key}" data-fee-tab="${key}">${label}</button>`).join("")}
@@ -370,7 +407,8 @@
           settlement_weight_kg: weight, elevator: values.elevator === "true", floor, piece_counts: counts, pieces_over_limit: over, boundary,
         });
         state.trial = { ...data, inputs: { weight, floor, elevator: values.elevator === "true" } };
-        renderEditor();
+        // The Agent logged this trial; reload so 生效检查 and 操作记录 show it (unsaved edits are not trialled).
+        if (!state.dirty) await openVersion(record.rule_id); else renderEditor();
       });
     }
 
@@ -387,6 +425,8 @@
       if (saved) saved.innerHTML = '<i class="hb-dot" data-tone="warn"></i>有未保存的修改';
       const submit = $('[data-fee-action="submit"]');
       if (submit) submit.disabled = true;
+      const reason = $("[data-fee-submit-reason]");
+      if (reason) reason.textContent = "请先保存草稿";
     }
 
     root.addEventListener("input", (event) => {

@@ -89,22 +89,30 @@
   }
 
   // One shared confirmation dialog. Buttons say what happens; never a bare “确定”.
+  // With ``input`` it also asks for a short text and resolves to that text (or false when cancelled).
   let dialog = null;
-  function confirmAction({ title, body, confirm, danger = false, cancel = "取消" }) {
+  function confirmAction({ title, body, confirm, danger = false, cancel = "取消", input = null }) {
     if (!dialog) {
       dialog = document.createElement("dialog");
       dialog.className = "hb-dialog";
       dialog.setAttribute("aria-labelledby", "hb-dialog-title");
       document.body.append(dialog);
     }
+    const field = input ? `<label class="hb-dialog__field"><span>${escapeHtml(input.label || "")}</span>
+        <textarea rows="3" maxlength="${Number(input.maxLength) || 200}" data-dialog-input></textarea></label>` : "";
     dialog.innerHTML = `<form method="dialog">
-      <div class="hb-dialog__body"><h2 id="hb-dialog-title">${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p></div>
+      <div class="hb-dialog__body"><h2 id="hb-dialog-title">${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p>${field}</div>
       <div class="hb-dialog__foot"><button class="ghost-btn" value="cancel">${escapeHtml(cancel)}</button>
         <button class="${danger ? "hb-btn-danger" : "primary-btn"}" value="ok">${escapeHtml(confirm)}</button></div></form>`;
     return new Promise((resolve) => {
-      dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
+      dialog.addEventListener("close", () => {
+        const ok = dialog.returnValue === "ok";
+        if (!input) { resolve(ok); return; }
+        resolve(ok ? String(dialog.querySelector("[data-dialog-input]")?.value || "").trim() : false);
+      }, { once: true });
       dialog.returnValue = "";
       if (typeof dialog.showModal === "function") dialog.showModal();
+      else if (input) { const value = window.prompt(`${title}\n${body}`, ""); resolve(value === null ? false : value.trim()); }
       else resolve(window.confirm(`${title}\n${body}`));
     });
   }

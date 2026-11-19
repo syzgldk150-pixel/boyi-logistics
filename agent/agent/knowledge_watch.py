@@ -69,6 +69,9 @@ class KnowledgeWatchService:
         if not self._repository.mark_checked(reminder_id, actor_id=actor_id):
             raise KnowledgeWatchError("KNOWLEDGE_REMINDER_NOT_OPEN", "这条提醒不存在或已经标记过。")
 
+    def mark_all_checked(self, *, actor_id: str) -> int:
+        return self._repository.mark_all_checked(actor_id=actor_id)
+
 
 def seconds_until_next(now: datetime, at: tuple[int, int] = DAILY_AT) -> float:
     local = now.astimezone(CHINA)

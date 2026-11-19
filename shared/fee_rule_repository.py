@@ -14,7 +14,8 @@ from contextlib import contextmanager
 from datetime import date
 from typing import Any, Callable, Iterator, Mapping
 
-from shared.handbook_fee_rules import FEE_KINDS, FeeRuleError, approval_blockers, parse_content
+from shared.admin_display_names import fetch_admin_display_names
+from shared.handbook_fee_rules import FEE_KINDS, FeeRuleError, approval_blockers, parse_content, submit_blockers
 
 ConnectionFactory = Callable[[], Any]
 _LABEL_LIMIT = 60
@@ -115,11 +116,20 @@ class FeeRuleRepository:
 
     # -- reads ------------------------------------------------------------------------
 
-    def list_versions(self) -> list[dict[str, Any]]:
+    def list_versions(self, *, include_retired: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_retired else " WHERE status <> 'RETIRED'"
         with self._cursor() as cursor:
-            cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE status <> 'RETIRED'"
-                           " ORDER BY fee_kind, (status='APPROVED') DESC, effective_from DESC, updated_at DESC LIMIT 200")
+            cursor.execute("SELECT * FROM agent_fee_rule_versions" + where +
+                           " ORDER BY fee_kind, (status='RETIRED'), (status='APPROVED') DESC, effective_from DESC,"
+                           " updated_at DESC LIMIT 200")
             return [self._record(row) for row in self._rows(cursor)]
+
+    def _trial_count(self, cursor: Any, rule_id: str) -> int:
+        """Trial runs on this version since its content was last saved (or copied)."""
+        cursor.execute("SELECT COUNT(*) AS n FROM agent_fee_rule_events WHERE rule_id=%s AND action='TRIAL' AND event_id >"
+                       " COALESCE((SELECT MAX(event_id) FROM agent_fee_rule_events WHERE rule_id=%s"
+                       " AND action IN ('SAVE', 'COPY')), 0)", (rule_id, rule_id))
+        return int(self._rows(cursor)[0]["n"])
 
     def get(self, rule_id: str) -> dict[str, Any]:
         with self._cursor() as cursor:
@@ -128,7 +138,19 @@ class FeeRuleRepository:
                            " WHERE rule_id=%s ORDER BY event_id DESC LIMIT 50", (rule_id,))
             record["events"] = [{"action": row["action"], "actor_id": row["actor_id"], "detail": _load(row["detail_json"]),
                                  "created_at": _iso(row["created_at"])} for row in self._rows(cursor)]
+            record["trial_count"] = self._trial_count(cursor, rule_id)
+            record["people"] = fetch_admin_display_names(cursor, {
+                record["created_by"], record["updated_by"], record["submitted_by"], record["approved_by"],
+                *(item["actor_id"] for item in record["events"])})
+        record["submit_blockers"] = submit_blockers(record, trial_count=record["trial_count"])
+        record["blockers"] = approval_blockers(record)
         return record
+
+    def record_trial(self, rule_id: str, *, actor_id: str, detail: Mapping[str, Any]) -> None:
+        """Note one trial calculation in the operation log; trials count towards submission."""
+        with self._cursor() as cursor:
+            self._get(cursor, rule_id, lock=False)
+            self._event(cursor, rule_id, "TRIAL", actor_id, dict(detail))
 
     def approved(self, fee_kind: str) -> list[dict[str, Any]]:
         """Approved versions of one fee, for calculations (choose with select_rule by billing date)."""
@@ -197,6 +219,9 @@ class FeeRuleRepository:
         with self._cursor() as cursor:
             record = self._lock(cursor, rule_id, expected_row_version, ("DRAFT",))
             parse_content(record["fee_kind"], record["content"])
+            problems = submit_blockers(record, trial_count=self._trial_count(cursor, rule_id))
+            if problems:
+                raise FeeRuleError("FEE_RULE_NOT_SUBMITTABLE", "；".join(problems))
             cursor.execute("UPDATE agent_fee_rule_versions SET status='PENDING', submitted_by=%s, submitted_at=UTC_TIMESTAMP(6),"
                            " updated_by=%s, row_version=row_version+1 WHERE rule_id=%s", (actor_id, actor_id, rule_id))
             self._event(cursor, rule_id, "SUBMIT", actor_id)

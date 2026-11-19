@@ -66,6 +66,24 @@ class HandbookConsoleTests(_ConsoleCase):
         self.assertEqual({}, calls[2]["payload"])
         self.assertGreaterEqual(calls[2]["timeout"], 120)
 
+    def test_review_flow_actions_forward_only_their_fields(self):
+        from shared.identity_routes import agent_permission, console_permission
+        app, calls = self._app(lambda *a: {"ok": True, "data": {}})
+        app._handle_handbook_post(_handler({"version": 2, "answers": [{"index": 0, "answer": "是"}], "x": 1}), ENTRY_ID, "acknowledge")
+        self.assertEqual({"version": 2, "answers": [{"index": 0, "answer": "是"}]}, calls[0]["payload"])
+        app._handle_handbook_post(_handler({"version": 2, "reason": "r" * 300}), ENTRY_ID, "reject")
+        self.assertEqual({"version": 2, "reason": "r" * 200}, calls[1]["payload"])
+        for action in ("submit", "withdraw", "discard"):
+            app._handle_handbook_post(_handler({"version": 3, "row_version": 9}), ENTRY_ID, action)
+            self.assertEqual({"version": 3}, calls[-1]["payload"])
+        app._handle_handbook_get(_handler({}), None, {"include_retired": ["1"]})
+        self.assertEqual("/internal/v1/admin/handbook?include_retired=true", calls[-1]["endpoint"])
+        for action in ("submit", "withdraw"):
+            self.assertEqual("handbook:operate", console_permission("POST", f"/handbook/entries/{ENTRY_ID}/{action}"))
+        for action in ("reject", "discard"):
+            self.assertEqual("super_admin", console_permission("POST", f"/handbook/entries/{ENTRY_ID}/{action}"))
+            self.assertEqual("super_admin", agent_permission("POST", f"/internal/v1/admin/handbook/{ENTRY_ID}/{action}"))
+
     def test_unknown_action_or_entry_is_refused_locally(self):
         app, calls = self._app(lambda *a: self.fail("must not call the Agent"))
         app._handle_handbook_post(_handler({}), ENTRY_ID, "delete")

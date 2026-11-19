@@ -217,6 +217,10 @@ def test_migration_087_repository_lifecycle(database):  # noqa: F811
     repo.save_draft(SEED_ID, version_label="V6.1", effective_from="2026-10-01", content=seed["content"], checks=ticked,
                     actor_id="7", expected_row_version=seed["row_version"])
     version = repo.get(SEED_ID)["row_version"]
+    with pytest.raises(FeeRuleError, match="试算"):
+        repo.submit(SEED_ID, actor_id="7", expected_row_version=version)  # spec 54: at least one trial since saving
+    repo.record_trial(SEED_ID, actor_id="7", detail={"weight": "200", "floor": 5, "outcome": "AMOUNT"})
+    assert repo.get(SEED_ID)["trial_count"] == 1 and repo.get(SEED_ID)["submit_blockers"] == []
     repo.submit(SEED_ID, actor_id="7", expected_row_version=version)
     pending = repo.get(SEED_ID)
     assert pending["status"] == "PENDING" and pending["submitted_by"] == "7"
@@ -239,13 +243,14 @@ def test_migration_087_repository_lifecycle(database):  # noqa: F811
     same_day = [{**item, "done": True} for item in copied["checks"]]
     repo.save_draft(copy_id, version_label="V6.1-改", effective_from="2026-10-01", content=copied["content"], checks=same_day,
                     actor_id="7", expected_row_version=copied["row_version"])
+    repo.record_trial(copy_id, actor_id="7", detail={"outcome": "AMOUNT"})
     repo.submit(copy_id, actor_id="7", expected_row_version=repo.get(copy_id)["row_version"])
     with pytest.raises(FeeRuleError, match="同一执行日期已有生效版本"):
         repo.approve(copy_id, actor_id="1", expected_row_version=repo.get(copy_id)["row_version"])
     repo.retire(SEED_ID, actor_id="1", expected_row_version=repo.get(SEED_ID)["row_version"])
     repo.approve(copy_id, actor_id="1", expected_row_version=repo.get(copy_id)["row_version"])
     assert [item["rule_id"] for item in repo.approved("upstairs")] == [copy_id]
-    assert [item["action"] for item in repo.get(copy_id)["events"]] == ["APPROVE", "SUBMIT", "SAVE", "COPY"]
+    assert [item["action"] for item in repo.get(copy_id)["events"]] == ["APPROVE", "SUBMIT", "TRIAL", "SAVE", "COPY"]
 
 
 def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
@@ -261,7 +266,10 @@ def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
 
     class Repository:
         def get(self, rule_id):
-            return record
+            return {**record, "trial_count": sum(1 for item in calls if item[0] == "trial")}
+
+        def record_trial(self, rule_id, *, actor_id, detail):
+            calls.append(("trial", actor_id, detail["outcome"]))
 
         def submit(self, rule_id, *, actor_id, expected_row_version):
             calls.append(("submit", actor_id, expected_row_version))
@@ -290,6 +298,7 @@ def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
     data = trial.json()["data"]
     assert data["result"]["amount"] == "74.00" and data["result"]["reportable"] is False
     assert len(data["boundary"]) == 64
+    assert data["trial_count"] == 1 and calls[-1] == ("trial", "7", "AMOUNT")  # trials are logged and counted
     bad = client.post(f"{base}/trial", json={"settlement_weight_kg": "abc", "elevator": False, "floor": 5,
                                              "piece_counts": [0, 0]})
     assert bad.status_code == 422 and "结算重量" in bad.json()["error"]["message"]

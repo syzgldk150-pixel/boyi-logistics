@@ -256,6 +256,17 @@ def approval_blockers(record: Mapping[str, Any]) -> list[str]:
     return problems
 
 
+def submit_blockers(record: Mapping[str, Any], *, trial_count: int) -> list[str]:
+    """Why a draft may not be submitted yet (frontend-spec 54: basic info, content and sources,
+    待核对 all ticked, at least one trial since the last save); empty means it may."""
+    problems = approval_blockers(record)
+    if not str(record.get("version_label") or "").strip():
+        problems.insert(0, "还没有填写版本名称。")
+    if trial_count < 1:
+        problems.append("保存后还没有试算过，请至少试算一个场景。")
+    return problems
+
+
 # -- calculation -----------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -421,6 +432,7 @@ def result_dict(result: FeeResult) -> dict[str, Any]:
 __all__ = [
     "FEE_KINDS", "FIRST_FLOOR_RULES", "FeeResult", "FeeRuleError", "FeeRuleSet", "GOODS_TYPES", "OUTCOMES",
     "RULE_STATUSES", "Source", "UpstairsContent", "UpstairsInputs", "VERSION_DATE_BASIS", "approval_blockers",
+    "submit_blockers",
     "boundary_table", "calculate_upstairs", "check_inputs", "parse_content", "parse_upstairs_content", "result_dict",
     "rule_from_record", "select_rule",
 ]

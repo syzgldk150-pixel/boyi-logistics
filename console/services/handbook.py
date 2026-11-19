@@ -2,8 +2,9 @@
 
 Who may open, edit or approve is decided once in ``shared.identity_routes``
 (checked by ``_ensure_authorized`` before this mixin runs, and again by the
-Agent): the module grants viewing and editing, while approve, resume and retire
-need a super administrator. The Console never decides whether compiled content
+Agent): the module grants viewing and editing (including submitting for review),
+while approve, resume, retire, sending back and discarding a version need a
+super administrator. The Console never decides whether compiled content
 is valid or may take effect: the Agent validates every compile, trial and
 approval. This page only shows the note, the Chinese restatement, the checks and
 the trial, and forwards actions.
@@ -20,7 +21,9 @@ from urllib.parse import quote
 from console.app_support import current_admin_user
 
 _ENTRY_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_ACTIONS = frozenset({"save", "compile", "trial", "acknowledge", "approve", "pause", "retire", "resume"})
+_ACTIONS = frozenset({"save", "compile", "trial", "acknowledge", "submit", "withdraw", "reject", "discard",
+                      "approve", "pause", "retire", "resume"})
+_VERSION_ACTIONS = frozenset({"approve", "submit", "withdraw", "discard"})
 _TIMEOUTS = {"compile": 150, "trial": 330}
 _FEE_ACTIONS = frozenset({"copy", "save", "checks", "trial", "submit", "withdraw", "approve", "retire"})
 _FEE_FIELDS = {"save": ("version_label", "effective_from", "content", "checks", "row_version"),
@@ -52,9 +55,11 @@ class HandbookServiceMixin:
         can_edit = is_super_admin or "handbook:operate" in (user.get("access_permissions") or ())
         template = self.template_env.get_template("handbook.html")
         self._send_html(handler, template.render(app_title=self.settings.app_title, can_edit=can_edit,
-                                                 is_super_admin=is_super_admin))
+                                                 is_super_admin=is_super_admin,
+                                                 current_name=str(user.get("display_name") or user.get("username") or "")))
 
-    def _handle_handbook_get(self, handler: BaseHTTPRequestHandler, entry_id: str | None) -> None:
+    def _handle_handbook_get(self, handler: BaseHTTPRequestHandler, entry_id: str | None,
+                             query: dict[str, list[str]] | None = None) -> None:
         context = self._handbook_context(handler, write=False)
         if context is None:
             return
@@ -62,6 +67,8 @@ class HandbookServiceMixin:
             self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "没有找到这条业务说明。"})
             return
         endpoint = "/internal/v1/admin/handbook" + (f"/{quote(entry_id, safe='')}" if entry_id else "")
+        if entry_id is None and (query or {}).get("include_retired", [""])[0] in {"1", "true"}:
+            endpoint += "?include_retired=true"
         result = self._agent_request("GET", endpoint, timeout=15, console_principal=context["_console_principal"])
         self._handbook_reply(handler, result, "业务手册暂时无法读取。")
 
@@ -85,9 +92,15 @@ class HandbookServiceMixin:
             return
         if action == "save":
             payload = {"title": body.get("title"), "body": body.get("body"), "row_version": body.get("row_version")}
-        elif action in {"approve", "acknowledge"}:
+        elif action in _VERSION_ACTIONS:
             payload = {"version": body.get("version")}
-            if action == "acknowledge":
+        elif action == "reject":
+            payload = {"version": body.get("version"), "reason": str(body.get("reason") or "")[:200]}
+        elif action == "acknowledge":
+            payload = {"version": body.get("version")}
+            if "answers" in body:
+                payload["answers"] = body.get("answers")
+            else:
                 payload["indices"] = body.get("indices")
         elif action in {"pause", "retire", "resume"}:
             payload = {"row_version": body.get("row_version")}
@@ -152,6 +165,9 @@ class HandbookServiceMixin:
         elif action == "scan":
             result = self._agent_request("POST", "/internal/v1/admin/knowledge-sources/scan", payload={}, timeout=60,
                                          console_principal=principal)
+        elif action == "check_all":
+            result = self._agent_request("POST", "/internal/v1/admin/knowledge-sources/reminders/check-all", payload={},
+                                         timeout=15, console_principal=principal)
         else:
             result = self._agent_request("POST", f"/internal/v1/admin/knowledge-sources/reminders/{int(reminder_id)}/check",
                                          payload={}, timeout=15, console_principal=principal)

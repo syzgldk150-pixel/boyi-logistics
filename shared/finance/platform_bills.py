@@ -18,7 +18,7 @@ PLATFORM_BILL_ACCOUNTS: dict[str, tuple[tuple[str, str], ...]] = {
 
 # 平台自身限制：融辉统计查询最长 32 天，韵达最长 31 天；统一按 31 天（含首尾）。
 MAX_SPAN_DAYS = 31
-PAGE_SIZES = (100, 200, 500)
+PAGE_SIZES = (20, 50, 100, 200)
 DEFAULT_PAGE_SIZE = 200
 
 RONGHUI_ACTIONS = ("balance", "summary", "summary_detail", "detail")

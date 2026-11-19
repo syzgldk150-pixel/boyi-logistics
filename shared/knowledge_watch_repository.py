@@ -96,5 +96,12 @@ class KnowledgeWatchRepository:
                            " WHERE reminder_id=%s AND status='OPEN'", (actor_id, int(reminder_id)))
             return cursor.rowcount == 1
 
+    def mark_all_checked(self, *, actor_id: str) -> int:
+        """Mark every open reminder checked at once; returns how many were open."""
+        with self._cursor() as cursor:
+            cursor.execute("UPDATE agent_knowledge_reminders SET status='CHECKED', checked_by=%s, checked_at=UTC_TIMESTAMP(6)"
+                           " WHERE status='OPEN'", (actor_id,))
+            return int(cursor.rowcount or 0)
+
 
 __all__ = ["KnowledgeWatchRepository"]

@@ -1,7 +1,7 @@
 """Signed Console API for 业务手册 → 知识来源.
 
 The request middleware already checked the 业务手册 module: viewing lists the
-documents and reminders; operating runs a scan or marks a reminder checked.
+documents and reminders; operating runs a scan or marks one or all reminders checked.
 """
 from __future__ import annotations
 
@@ -43,6 +43,11 @@ def create_knowledge_watch_router(*, service_provider: Callable[[], Any],
     async def scan(request: Request):
         admin_provider(request)
         return await run(lambda service: service.scan(source="manual"))
+
+    @router.post("/reminders/check-all")
+    async def check_all(request: Request):
+        actor = admin_provider(request)
+        return await run(lambda service: {"checked": service.mark_all_checked(actor_id=actor.actor_id)})
 
     @router.post("/reminders/{reminder_id}/check")
     async def check(reminder_id: int, request: Request):

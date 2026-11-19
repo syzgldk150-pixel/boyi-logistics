@@ -45,8 +45,8 @@ def test_validation_limits_accounts_span_and_keys():
         with pytest.raises(DirectBusinessError):
             bills.validate_query(bad)
     detail = bills.validate_query(_query(action="summary_detail", center_code="66666", site_code="10001",
-                                         balance_type="收某费", page="2", page_size="500"))
-    assert (detail["page"], detail["page_size"], detail["balance_type"]) == (2, 500, "收某费")
+                                         balance_type="收某费", page="2", page_size="200"))
+    assert (detail["page"], detail["page_size"], detail["balance_type"]) == (2, 200, "收某费")
     balance = bills.validate_query({"platform": "ronghui", "account_id": "ronghui_daxiang_s", "action": "balance"})
     assert "start" not in balance
     yunda = bills.validate_query({"platform": "yunda", "account_id": "yunda_default", "action": "detail",
@@ -108,16 +108,24 @@ def _ronghui(monkeypatch, pages):
 def test_ronghui_summary_reads_all_pages_and_keeps_decimals_as_text(monkeypatch):
     session = _ronghui(monkeypatch, [
         '{"total": 2, "data": [{"BALANCE_TYPE": "收甲费", "BALANCE_CUR_MONEY": -1100.80}], "totalInfo": {"COUNT": 2}}',
-        '{"total": 2, "data": [{"BALANCE_TYPE": "收乙费", "BALANCE_CUR_MONEY": 12}]}'])
+        '{"total": 2, "data": [{"BALANCE_TYPE": "收乙费", "BALANCE_CUR_MONEY": 12}]}',
+        # 笔数 / 最近结算日: one drill-down read per statistics row, as the page's double-click does
+        '{"total": 2, "data": [{"FINANCE_DATE": "2026-01-03 10:00:00"}, {"FINANCE_DATE": "2026-01-09 08:00:00"}]}',
+        '{"total": 1, "data": [{"BILL_CODE": "R1"}]}'])
     monkeypatch.setattr(bills, "MAX_PAGES", 5)
     query = bills.validate_query(_query(date_type="FINANCE_DATE"))
     result = bills.ronghui_bills("p", query, timeout_sec=5)
+    assert result["groups"] == [
+        {"center_code": "", "site_code": "", "balance_type": "收甲费", "count": 2, "latest_date": "2026-01-09", "latest_note": ""},
+        {"center_code": "", "site_code": "", "balance_type": "收乙费", "count": 1, "latest_date": None,
+         "latest_note": "平台明细没有该日期字段"}]
+    assert session.posts[2][0].endswith("?id=FIND_BALANCE_QRY_TJ_DETAIL") and session.posts[2][2]["BALANCE_TYPE"] == "收甲费"
     assert [row["BALANCE_CUR_MONEY"] for row in result["rows"]] == ["-1100.80", 12]
     assert (result["total"], result["site_name"], result["footer"]) == (2, "示例网点", {})
     url, headers, form = session.posts[0]
     assert url.endswith("?id=FIND_BALANCE_QRY_TJ_WST") and headers["pageId"] == "P1"
     assert form["DATE_TYPE"] == "FINANCE_DATE" and json.loads(form["FINANCE_DATE"])["end"] == "2026-01-31 23:59:59"
-    assert [post[2]["pageIndex"] for post in session.posts] == [0, 1]
+    assert [post[2]["pageIndex"] for post in session.posts] == [0, 1, 0, 0]
 
 
 def test_ronghui_detail_is_paged_and_platform_rejection_is_reported(monkeypatch):
