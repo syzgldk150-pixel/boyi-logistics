@@ -219,7 +219,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 金额在浏览器中只按字符串和整数（万分之一单位）计算，不用浮点数。
   - 旧融辉账户收支工作台已随迁移 067 删除。财务数据源页 `/modules/finance/data-sources` 保留，新连接器在此管理。
   - 后续分期见 `../agent/docs/finance_module.md`。
-  - 侧栏“财务模块”是分组：财务账簿（`/modules/finance`）、融辉对账单、韵达对账单（`/modules/finance/{ronghui,yunda}-bills`，2026-11-18）。对账单页 `templates/finance_platform_bills.html`、`static/finance_platform_bills.js`、`services/finance_platform_bills.py`：点“查询”经 `GET /finance/platform-bills/{platform}` 以真实管理员签名调 Agent 只读 `platform-prepay-bills`，按规格 ㉓a/㉓b/㉓c 与 rules 16 整理显示（值不改）：每行都相同的列提到账户栏，一级/二级合成双行单元格，金额右对齐统一千分位与两位小数，负数为扣减；融辉统计按结算类型显示笔数、金额合计、占比、最近结算日（Agent 按平台下钻明细读出）与合计行，预付款余额一条记录用 KPI＋字段网格；摘要条取平台合计或本次行求和，明细不做合计行；日期区间控件直接限制 31 天并提供近 7 天/近 31 天/本月；每页 20/50/100/200 加页码；加载骨架、空、失败重试与无权限各有状态；可下钻与导出 CSV，不存库、不显示旧数据，失败显示平台原因。浏览器回归见 `tests/test_finance_platform_bills_browser.py`。取数账号只在 `../shared/finance/platform_bills.py`，浏览器只能选其中的账号；韵达下钻参数名只接受该文件的已核实字段。
+  - 侧栏“财务模块”是分组：财务账簿（`/modules/finance`）、融辉对账单、韵达对账单（`/modules/finance/{ronghui,yunda}-bills`，2026-11-18）。对账单页 `templates/finance_platform_bills.html`、`static/finance_platform_bills.js`、`services/finance_platform_bills.py`：点“查询”经 `GET /finance/platform-bills/{platform}` 以真实管理员签名调 Agent 只读 `platform-prepay-bills`，按规格 ㉓a/㉓b/㉓c 与 rules 16 整理显示（值不改）：每行都相同的列提到账户栏，一级/二级合成双行单元格，金额右对齐统一千分位与两位小数，负数为扣减；融辉统计按结算类型显示笔数（下钻明细总条数）、结算金额、占比、最近结算日期（下钻明细“结算日期”列最大值，与所选日期口径无关）与合计行，列名取平台原字段，预付款余额一条记录用 KPI＋字段网格；摘要条取平台合计或本次行求和，明细不做合计行；日期区间控件直接限制 31 天并提供近 7 天/近 31 天/本月；每页 20/50/100/200 加页码；加载骨架、空、失败重试与无权限各有状态；可下钻与导出 CSV，不存库、不显示旧数据，失败显示平台原因。浏览器回归见 `tests/test_finance_platform_bills_browser.py`。取数账号只在 `../shared/finance/platform_bills.py`，浏览器只能选其中的账号；韵达下钻参数名只接受该文件的已核实字段。
 - 改客服系统问题件工作台：
   - `templates/base.html`
   - `static/console_ui.js`

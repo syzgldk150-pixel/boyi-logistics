@@ -384,6 +384,10 @@
     const absTotal = groups.reduce((total, group) => total + (toUnits(group.amount, scale) < 0n ? -toUnits(group.amount, scale) : toUnits(group.amount, scale)), 0n);
     const counts = groups.every((group) => group.count !== null) ? groups.reduce((total, group) => total + group.count, 0) : null;
     const constants = columnKinds(result.columns || [], result.rows || []).filter((column) => column.constant && !["BALANCE_TYPE"].includes(column.field));
+    // Column titles come from the platform page; 笔数 and 最近结算日期 are the drill-down's total and its 结算日期.
+    const titleOf = (pattern, fallback) => (result.columns || []).find((column) => pattern.test(column.title))?.title || fallback;
+    const typeTitle = titleOf(/结算类型/, "结算类型");
+    const amountTitle = titleOf(/金额/, "结算金额");
     renderContext([...sourceContext(), ...constants.map((column) => [column.title, text(result.rows[0][column.field])])]);
     renderStrip([
       { label: "结算净额", value: money(net), tone: negative(net) ? "expense" : "" },
@@ -391,7 +395,7 @@
       { label: "扣减类", value: money(deduction), tone: "expense" },
       { label: "结算笔数", value: counts === null ? "—" : `${counts.toLocaleString("zh-CN")} 笔` },
     ]);
-    lastColumns = ["结算类型", "笔数", "金额合计", "占比", "最近结算日", "明细"];
+    lastColumns = [typeTitle, "笔数", amountTitle, "占比", "最近结算日期", "明细"];
     if (!groups.length) {
       els.body.innerHTML = `<div class="pb-empty"><b>该区间没有结算记录</b><span>可以放宽日期区间（最多 ${maxSpan} 天）或换一个日期口径后再查。</span></div>`;
       els.pager.hidden = true;
@@ -408,7 +412,7 @@
     };
     els.body.innerHTML = `<div class="pb-table-wrap"><table class="pb-table pb-table--summary">
       <colgroup><col style="width:300px"><col style="width:96px"><col style="width:180px"><col style="width:214px"><col style="width:150px"><col style="width:122px"></colgroup>
-      <thead><tr><th scope="col">结算类型</th><th scope="col" class="num">笔数</th><th scope="col" class="num">金额合计</th><th scope="col">占比</th><th scope="col">最近结算日</th><th scope="col" class="num">明细</th></tr></thead>
+      <thead><tr><th scope="col">${escapeHtml(typeTitle)}</th><th scope="col" class="num">笔数</th><th scope="col" class="num">${escapeHtml(amountTitle)}</th><th scope="col">占比</th><th scope="col">最近结算日期</th><th scope="col" class="num">明细</th></tr></thead>
       <tbody>${visible.map((group, index) => {
         const share = ratio(group);
         return `<tr class="pb-row--link" data-group="${(groupPage - 1) * size + index}">
@@ -427,7 +431,7 @@
     };
     renderPager(groups.length, groupPage, size, (page) => { groupPage = page; renderRonghuiSummary(); });
     els.total.textContent = `共 ${groups.length} 个结算类型 · 平台统计 ${Number(result.total || 0)} 行`;
-    exportRows = { header: ["结算类型", "笔数", "金额合计", "占比", "最近结算日"],
+    exportRows = { header: [typeTitle, "笔数", amountTitle, "占比", "最近结算日期"],
       rows: groups.map((group) => [group.type, group.count ?? "", group.amount, `${ratio(group).toFixed(1)}%`, group.latest || ""]) };
     els.exportBtn.disabled = false;
   }
@@ -436,7 +440,7 @@
   const KPIS = [
     { match: /目前结算余额|当前结算余额/, label: "当前结算余额" },
     { match: /真实结算余额/, label: "真实结算余额" },
-    { match: /警戒结算金额/, label: "警戒结算金额", tone: "warn", note: "平台设置的警戒线" },
+    { match: /警戒结算金额/, label: "警戒结算金额", tone: "warn" },
     { match: /保证金|押金/, label: "保证金 / 押金" },
   ];
   function renderBalance() {

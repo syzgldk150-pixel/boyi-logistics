@@ -16,9 +16,9 @@
   下钻由列的 ``skipData`` 定义，取值来自所点行，与平台页面一致。
 
 金额与其它字段原样返回（JSON 小数保留原文字符串），不换算、不汇总。统计查询另附 ``groups``：
-每个统计行（中心、网点、结算类型）按平台“双击统计行”的明细接口读出的笔数（明细 ``total``）与
-最近结算日（明细行里与日期口径同名字段的最大日期；明细超过可读范围或没有该字段时为空并注明），
-供页面显示“笔数 / 最近结算日”，金额仍以统计行原值为准。
+每个统计行（中心、网点、结算类型）按平台“双击统计行”的明细接口读出的笔数（明细总条数 ``total``）与
+最近结算日期（明细“结算日期”列的最大值，列取自当次页面“明细数据”表格的定义，与所选日期口径无关；
+明细超过可读范围时为空并注明），金额仍以统计行原值为准。
 """
 
 from __future__ import annotations
@@ -254,10 +254,17 @@ def _latest_date(rows: list[Any], field: str) -> str | None:
     return max(dates) if dates else None
 
 
-def ronghui_groups(session: Any, page: dict[str, str], rows: list[Any], form: dict[str, Any], date_type: str,
+SETTLEMENT_DATE_TITLE = "结算日期"
+
+
+def ronghui_groups(session: Any, page: dict[str, str], rows: list[Any], form: dict[str, Any],
                    timeout_sec: int) -> list[dict[str, Any]]:
-    """笔数与最近结算日 for each statistics row, read the way the page drills into it (one call per row)."""
-    _grid, call_id = RONGHUI_GRIDS["summary_detail"]
+    """笔数（明细总条数）与最近结算日期 for each statistics row, read the way the page drills into it."""
+    grid, call_id = RONGHUI_GRIDS["summary_detail"]
+    fields = [column["field"] for column in ronghui_columns(page["html"], grid) if column["title"] == SETTLEMENT_DATE_TITLE]
+    if len(fields) != 1:
+        raise PlatformBillError("PLATFORM_PAGE_CHANGED", "融辉“明细数据”表格没有唯一的“结算日期”列，页面已变化，需重新核对。")
+    date_field = fields[0]
     groups, seen = [], set()
     for row in rows:
         if not isinstance(row, dict):
@@ -276,11 +283,9 @@ def ronghui_groups(session: Any, page: dict[str, str], rows: list[Any], form: di
             if len(read) >= total or not part["rows"]:
                 break
         complete = len(read) >= total
-        has_field = any(isinstance(item, dict) and date_type in item for item in read)
         groups.append({"center_code": key[0], "site_code": key[1], "balance_type": key[2], "count": total,
-                       "latest_date": _latest_date(read, date_type) if complete else None,
-                       "latest_note": "" if complete and (has_field or not read) else
-                       ("明细超过可读范围" if not complete else "平台明细没有该日期字段")})
+                       "latest_date": _latest_date(read, date_field) if complete else None,
+                       "latest_note": "" if complete else "明细超过可读范围，未求最近结算日期"})
     return groups
 
 
@@ -323,7 +328,7 @@ def ronghui_bills(session_profile: str, query: dict[str, Any], *, timeout_sec: i
             raise PlatformBillError("PLATFORM_DATA_TOO_LARGE", "融辉统计行数超出可读取范围，请缩短日期范围。")
         page_no, size = 1, max(len(rows), 1)
         if action == "summary":
-            groups = ronghui_groups(session, page, rows, form, query["date_type"], timeout_sec)
+            groups = ronghui_groups(session, page, rows, form, timeout_sec)
     else:
         page_no, size = query["page"], query["page_size"]
         part = _ronghui_rows(session, page, call_id, {**form, "pageIndex": page_no - 1, "pageSize": size}, timeout_sec)

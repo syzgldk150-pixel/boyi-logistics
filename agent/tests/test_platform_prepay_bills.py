@@ -19,7 +19,7 @@ PAGE = """
  </div>
 </div>
 <div viewtype="miniDatagrid" id="datagridTJDetails" url="/dataQuery/findPageByCallId?id=FIND_BALANCE_QRY_TJ_DETAIL">
- <div header="运单编号" field="BILL_CODE"></div><div header="前余额 &amp; 后" field="BALANCE_PRE_CONFIRM_MONEY"></div>
+ <div header="运单编号" field="BILL_CODE"></div><div header="结算日期" field="BALANCE_DATE"></div><div header="账单日期" field="FINANCE_DATE"></div><div header="前余额 &amp; 后" field="BALANCE_PRE_CONFIRM_MONEY"></div>
 </div>
 <div viewtype="miniCombobox" id="other"><div header="网点编号" field="SITE_CODE"></div></div>
 <div viewtype="miniDatagrid" id="accountDatagrid" url="/dataQuery/findPageByCallId?id=FIND_BALANCE_ACCOUNT_INFO">
@@ -63,7 +63,7 @@ def test_ronghui_columns_follow_the_page_grid_only():
     assert bills.ronghui_columns(PAGE, "datagridTJ") == [
         {"field": "CENTER_NAME", "title": "财务中心"}, {"field": "BALANCE_TYPE", "title": "结算类型"},
         {"field": "BALANCE_CUR_MONEY", "title": "结算金额"}]
-    assert bills.ronghui_columns(PAGE, "datagridTJDetails")[1]["title"] == "前余额 & 后"
+    assert bills.ronghui_columns(PAGE, "datagridTJDetails")[3]["title"] == "前余额 & 后"
     with pytest.raises(DirectBusinessError, match="页面已变化"):
         bills.ronghui_columns(PAGE, "missingGrid")
 
@@ -110,15 +110,16 @@ def test_ronghui_summary_reads_all_pages_and_keeps_decimals_as_text(monkeypatch)
         '{"total": 2, "data": [{"BALANCE_TYPE": "收甲费", "BALANCE_CUR_MONEY": -1100.80}], "totalInfo": {"COUNT": 2}}',
         '{"total": 2, "data": [{"BALANCE_TYPE": "收乙费", "BALANCE_CUR_MONEY": 12}]}',
         # 笔数 / 最近结算日: one drill-down read per statistics row, as the page's double-click does
-        '{"total": 2, "data": [{"FINANCE_DATE": "2026-01-03 10:00:00"}, {"FINANCE_DATE": "2026-01-09 08:00:00"}]}',
-        '{"total": 1, "data": [{"BILL_CODE": "R1"}]}'])
+        '{"total": 2, "data": [{"BALANCE_DATE": "2026-01-03 10:00:00", "FINANCE_DATE": "2026-01-20 10:00:00"},'
+        ' {"BALANCE_DATE": "2026-01-09 08:00:00", "FINANCE_DATE": "2026-01-02 08:00:00"}]}',
+        '{"total": 1, "data": [{"BILL_CODE": "R1", "BALANCE_DATE": "2026-01-05 09:00:00"}]}'])
     monkeypatch.setattr(bills, "MAX_PAGES", 5)
     query = bills.validate_query(_query(date_type="FINANCE_DATE"))
     result = bills.ronghui_bills("p", query, timeout_sec=5)
     assert result["groups"] == [
         {"center_code": "", "site_code": "", "balance_type": "收甲费", "count": 2, "latest_date": "2026-01-09", "latest_note": ""},
-        {"center_code": "", "site_code": "", "balance_type": "收乙费", "count": 1, "latest_date": None,
-         "latest_note": "平台明细没有该日期字段"}]
+        {"center_code": "", "site_code": "", "balance_type": "收乙费", "count": 1, "latest_date": "2026-01-05",
+         "latest_note": ""}]  # 最近结算日期 is always the 结算日期 column, even when querying by 账单日期
     assert session.posts[2][0].endswith("?id=FIND_BALANCE_QRY_TJ_DETAIL") and session.posts[2][2]["BALANCE_TYPE"] == "收甲费"
     assert [row["BALANCE_CUR_MONEY"] for row in result["rows"]] == ["-1100.80", 12]
     assert (result["total"], result["site_name"], result["footer"]) == (2, "示例网点", {})
