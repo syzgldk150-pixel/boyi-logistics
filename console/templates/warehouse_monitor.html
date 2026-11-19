@@ -2,12 +2,13 @@
 
 {% block title %}监控查询 | {{ app_title }}{% endblock %}
 {% block breadcrumb %}监控查询{% endblock %}
-{% block subtitle %}按单号定位卸车录像与仓库位置，或按日期查看全天录像{% endblock %}
+{% block subtitle %}按单号或日期查看录像，仅在仓库局域网内播放{% endblock %}
 {% block main_class %}warehouse-monitor-main{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/warehouse_monitor.css?v=20261119-day">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/warehouse_monitor.css?v=20261119-spec38a">{% endblock %}
 
 {% block content %}
-<section class="panel wm-search-panel" aria-label="按单号查询">
+{# frontend-spec ㊳a：按单号查与按日期看并成一张查询卡，用“或”分隔；回放器在仓库笔记本的回放页（新标签页打开，局域网内播放）。 #}
+<section class="panel wm-query" aria-label="查询录像">
   <form class="wm-search-form" data-wm-form novalidate>
     <div class="wm-search-field">
       <i data-feather="search" aria-hidden="true"></i>
@@ -15,30 +16,32 @@
       <input id="wm-code" name="code" type="search" inputmode="text" autocomplete="off" maxlength="32"
              placeholder="输入主单号或子单号" value="{{ initial_code }}" data-wm-code>
     </div>
-    <button class="primary-btn" type="submit" data-wm-submit>
-      <i data-feather="search" aria-hidden="true"></i><span>查询</span>
-    </button>
+    <button class="primary-btn" type="submit" data-wm-submit><span>查询</span></button>
   </form>
-  <p class="wm-video-note" data-wm-video-note data-configured="{{ 'true' if video_configured else 'false' }}">
-    {% if video_configured %}录像在仓库局域网内播放：请在仓库网络中点击“看录像”。{% else %}服务器未配置仓库录像链接，只能查看扫描时间。{% endif %}
+  {% if video_configured %}
+  <span class="wm-or" aria-hidden="true">或</span>
+  <form class="wm-day-form" data-wm-day-form novalidate aria-label="按日期看录像">
+    <label class="sr-only" for="wm-day-date">日期</label>
+    <input id="wm-day-date" class="wm-day-input" type="date" required data-wm-day-date>
+    <label class="sr-only" for="wm-day-time">从几点开始看（可不填）</label>
+    <input id="wm-day-time" class="wm-day-input wm-day-input--time" type="time" data-wm-day-time title="从几点开始看，可不填">
+    <button class="primary-btn" type="submit" data-wm-day-submit><span>看当天录像</span></button>
+  </form>
+  {% endif %}
+  <p class="wm-video-note" data-wm-video-note data-configured="{{ 'true' if video_configured else 'false' }}"
+     title="录像机约保存 44 天；回放页在新标签页打开，由仓库笔记本在局域网内直接读录像机，录像不经过服务器。">
+    {% if video_configured %}局域网播放{% else %}服务器未配置仓库录像链接，只能查看扫描时间。{% endif %}
   </p>
 </section>
-
-{% if video_configured %}
-<section class="panel wm-search-panel" aria-label="按日期查看">
-  <form class="wm-day-form" data-wm-day-form novalidate>
-    <label class="wm-day-field">日期 <input type="date" required data-wm-day-date></label>
-    <label class="wm-day-field">从几点开始看（可不填） <input type="time" data-wm-day-time></label>
-    <button class="primary-btn" type="submit" data-wm-day-submit>
-      <i data-feather="video" aria-hidden="true"></i><span>看当天录像</span>
-    </button>
-  </form>
-  <p class="wm-video-note">不用单号，直接看所选日期全天的录像：回放页可切换 7 个摄像头、拖动时间轴、倍速和下载片段。录像机约保存 44 天，需在仓库网络中打开。</p>
-  <p class="wm-feedback" data-wm-day-feedback role="status" aria-live="polite" hidden></p>
-</section>
-{% endif %}
+{% if video_configured %}<p class="wm-feedback" data-wm-day-feedback role="status" aria-live="polite" hidden></p>{% endif %}
 
 <p class="wm-feedback" data-wm-feedback role="status" aria-live="polite" hidden></p>
+
+<section class="panel wm-empty" data-wm-empty aria-label="录像回放">
+  <i data-feather="video" aria-hidden="true"></i>
+  <div><b>录像回放</b>
+    <p>按单号查询后，这里列出每件货的扫描时间，点“看录像”定位到扫描时刻；按日期点“看当天录像”看全天。回放器在新标签页打开：可切换 7 路摄像头、拖动时间轴、倍速和下载片段，由仓库笔记本在局域网内直接读录像机，录像不经过服务器，需在仓库网络中使用。</p></div>
+</section>
 
 <section class="panel wm-result" data-wm-result hidden aria-label="查询结果">
   <div data-wm-summary></div>
@@ -61,5 +64,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/warehouse_monitor.js?v=20261119-day"></script>
+<script src="/static/warehouse_monitor.js?v=20261119-spec38a"></script>
 {% endblock %}

@@ -82,6 +82,8 @@
       rowsBody.append(tr);
     });
     result.hidden = false;
+    const empty = document.querySelector("[data-wm-empty]");
+    if (empty) empty.hidden = true;
     if (!rows.length) {
       showFeedback("最近 " + (data.lookback_days || 60) + " 天没有找到这个单号的扫描记录。", "info");
     } else if (!timed.length) {
