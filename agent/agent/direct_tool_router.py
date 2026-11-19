@@ -549,7 +549,8 @@ def parse_volume_expression_token(raw_value: str) -> float | None:
     except (InvalidOperation, ValueError):
         return None
 
-    volume = (total / Decimal("1000000")).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    # 不在这里取整：报价插件统一按两位小数取数，提前按三位取整会造成二次舍入（2026-11-19）。
+    volume = (total / Decimal("1000000")).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
     return float(volume) if volume > 0 else None
 
 
@@ -1779,6 +1780,8 @@ def format_quote_plugin_messages(result: dict[str, Any]) -> list[str]:
         request = data.get("request")
         if key == "ronghui" and isinstance(request, dict) and request.get("volume_defaulted") is True:
             lines.append(f"体积未填写，本次按{request['volume']}立方米计算。")
+        elif key == "ronghui" and isinstance(request, dict) and request.get("volume_entered"):
+            lines.append(f"体积{request['volume_entered']}立方米按两位小数取{request['volume']}立方米计算。")
         if not isinstance(provider, dict):
             lines.append("无数据：本次查询未返回该平台的有效结果，请在后台查看执行结果。")
         elif provider.get("status") != "success":

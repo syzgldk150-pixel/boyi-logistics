@@ -943,6 +943,10 @@ def build_manual_quote_options(
         volume = _clean_quote_text(request.get("volume"))
         if volume:
             message = f"体积未填写，本次按 {volume} m³ 计算。{message}"
+    elif isinstance(request, dict) and request.get("volume_entered"):
+        entered, volume = _clean_quote_text(request.get("volume_entered")), _clean_quote_text(request.get("volume"))
+        if entered and volume:
+            message = f"体积 {entered} m³ 按两位小数取 {volume} m³ 计算。{message}"
     return {
         "ok": bool(available),
         "quotes": public_quotes,

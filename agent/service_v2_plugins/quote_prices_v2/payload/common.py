@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
 DEFAULT_VOLUME = "0.1"
+# 2026-11-19 用户决定：三个平台的体积一律取小数点后两位（四舍五入），与融辉原页“计算体积”
+# toFixed(2) 一致；不足 0.005 立方米时按最小 0.01 计算，与截图报价的最小体积一致。
+VOLUME_STEP = Decimal("0.01")
 
 
 class QuoteError(ValueError):
@@ -36,13 +39,17 @@ def quote_inputs(arguments):
     if not isinstance(address, str) or not address.strip() or len(address) > 500:
         raise QuoteError("请提供有效的完整收货地址")
     volume_defaulted = "volume" not in arguments
+    entered = positive_number(DEFAULT_VOLUME if volume_defaulted else arguments["volume"], "体积")
+    volume = max(entered.quantize(VOLUME_STEP, rounding=ROUND_HALF_UP), VOLUME_STEP)
     request = {
         "address": address.strip(),
         "weight": format(positive_number(arguments["weight"], "重量"), "f"),
-        "volume": format(positive_number(DEFAULT_VOLUME if volume_defaulted else arguments["volume"], "体积"), "f"),
+        "volume": format(volume.normalize(), "f"),
     }
     if volume_defaulted:
         request["volume_defaulted"] = True
+    elif volume != entered:
+        request["volume_entered"] = format(entered.normalize(), "f")
     return request
 
 

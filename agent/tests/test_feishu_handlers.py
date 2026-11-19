@@ -99,7 +99,7 @@ class FeishuMessageHandlerTests(unittest.TestCase):
             },
         )
 
-    def test_price_request_with_volume_expression_keeps_three_decimals(self):
+    def test_price_request_with_volume_expression_keeps_exact_cubic_meters(self):
         request = parse_price_request(
             "贵州省贵阳市白云区蓬家寨街道杨柳街柳雅居小区兔喜快递超市，217，125*112*82*1"
         )
@@ -121,7 +121,7 @@ class FeishuMessageHandlerTests(unittest.TestCase):
             {
                 "address": "四川省绵阳市涪城区石塘镇瓦店村七组东岳汽修厂内金源冷挤压有限公司",
                 "weight": 1000.0,
-                "volume": 0.348,
+                "volume": 0.347714,
             },
         )
 

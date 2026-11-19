@@ -46,9 +46,25 @@ def test_weight_and_volume_are_positive_finite_numbers(field, value):
         quote_inputs({**INPUT, field: value})
 
 
-def test_input_preserves_small_volume_without_money_rounding():
-    assert quote_inputs(INPUT)["volume"] == "0.001"
-    assert "volume_defaulted" not in quote_inputs(INPUT)
+def test_volume_below_minimum_is_quoted_as_one_hundredth():
+    request = quote_inputs(INPUT)
+    assert request["volume"] == "0.01"
+    assert request["volume_entered"] == "0.001"
+    assert "volume_defaulted" not in request
+
+
+@pytest.mark.parametrize("entered,quoted", [
+    (0.485112, "0.49"), (0.4851, "0.49"), (0.485, "0.49"), (0.484999, "0.48"),
+    (0.004, "0.01"), (0.005, "0.01"), (1.148, "1.15"), (2.5, "2.5"), (10, "10"),
+])
+def test_volume_is_rounded_half_up_to_two_decimals_for_all_platforms(entered, quoted):
+    assert quote_inputs({**INPUT, "volume": entered})["volume"] == quoted
+
+
+def test_two_decimal_volume_is_unchanged_and_not_marked():
+    request = quote_inputs({**INPUT, "volume": 0.49})
+    assert request["volume"] == "0.49"
+    assert "volume_entered" not in request
     with pytest.raises(QuoteError):
         quote_inputs({**INPUT, "account_id": "synthetic-override"})
 
