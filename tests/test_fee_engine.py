@@ -50,6 +50,10 @@ def test_upstairs_blocks_match_the_hand_written_calculator(elevator, floor, coun
     except FeeRuleError:
         return  # the old calculator refuses pieces heavier than the whole waybill; nothing to compare
     new = upstairs(weight, floor, elevator, "general", rows)
+    if floor == 1 and not elevator and not over:
+        # Decided 2026-11-19: the 1st floor is not upstairs (p.50 definition), so no fee instead of 需人工判断.
+        assert old.outcome == "MANUAL" and new.amount == Decimal("0.00")
+        return
     if elevator and over:
         # Intentional difference: the manual (p.52) only lets heavy pieces be refused without an elevator.
         assert old.outcome == "NEGOTIATE"
@@ -66,6 +70,13 @@ def test_upstairs_steps_and_sources_explain_the_amount():
     assert result.steps[-1] == "合计 74.00"
     assert result.citations == ("融辉物流网络管理手册 V6.1 第五篇第五章 第 50 页",)
     assert "上楼费和卸货费不可同时收取，同时产生时取大值。" in result.reminders
+
+
+def test_upstairs_first_floor_and_exactly_120_kg():
+    assert upstairs("200", 1).amount == Decimal("0.00")
+    assert upstairs("200", 3, pieces=[{"count": 1, "weight": "120"}]).amount == Decimal("74.00")  # 30 元/件 surcharge
+    assert upstairs("200", 3, pieces=[{"count": 1, "weight": "120.01"}]).outcome == "NEGOTIATE"
+    assert upstairs("200", 3, elevator=True, pieces=[{"count": 1, "weight": "130"}]).amount == Decimal("17.00")
 
 
 def test_upstairs_rounds_half_up_at_the_end():
@@ -273,6 +284,7 @@ def test_boundary_rows_show_each_tier_change():
     base = {"settlement_weight": "200", "floor": 3, "elevator": False, "goods_type": "general",
             "pieces": [{"count": 1, "weight": "30"}]}
     rows = {(row["param"], row["value"]): row for row in boundary_rows(RULES["upstairs"], base)}
+    assert rows[("送到几楼", "1")]["amount"] == "0.00"
     assert rows[("送到几楼", "7")]["amount"] == "64.00" and rows[("送到几楼", "8")]["outcome"] == "NEGOTIATE"
     assert rows[("单件实际重量", "100")]["amount"] == "54.00" and rows[("单件实际重量", "100.01")]["amount"] == "74.00"
     assert rows[("单件实际重量", "120.01")]["outcome"] == "NEGOTIATE"
