@@ -79,6 +79,22 @@ def test_upstairs_first_floor_and_exactly_120_kg():
     assert upstairs("200", 3, elevator=True, pieces=[{"count": 1, "weight": "130"}]).amount == Decimal("17.00")
 
 
+@pytest.mark.parametrize("stairs,floor", [(0, 1), (16, 1), (17, 2), (25, 2), (32, 2), (33, 3), (112, 7), (113, 8)])
+def test_upstairs_stairs_count_as_floors_page_50(stairs, floor):
+    by_stairs = fee("upstairs", settlement_weight="200", stairs=stairs, elevator=False, goods_type="general",
+                    pieces=[{"count": 1, "weight": "30"}])
+    assert (by_stairs.outcome, by_stairs.amount) == (upstairs("200", floor).outcome, upstairs("200", floor).amount)
+
+
+def test_upstairs_floor_wins_over_stairs_and_one_of_them_is_needed():
+    both = fee("upstairs", settlement_weight="200", floor=5, stairs=20, elevator=False, goods_type="general",
+               pieces=[{"count": 1, "weight": "30"}])
+    assert both.amount == upstairs("200", 5).amount
+    neither = fee("upstairs", settlement_weight="200", elevator=False, goods_type="general",
+                  pieces=[{"count": 1, "weight": "30"}])
+    assert neither.outcome == "MISSING" and neither.missing == ("送到几楼或步梯台阶数",)
+
+
 def test_upstairs_rounds_half_up_at_the_end():
     assert upstairs("123.45", 3, elevator=True).amount == Decimal("12.41")  # 5 + 0.06 × 123.45 = 12.407
 
@@ -167,7 +183,7 @@ def test_other_value_added_services_page_63():
 
 def test_missing_values_are_all_listed():
     result = calculate(RULES["upstairs"], {"floor": 3})
-    assert result.outcome == "MISSING"
+    assert result.outcome == "MISSING"  # floor and stairs are either-or, so neither is listed here
     assert result.missing == ("结算重量", "有电梯", "货物类型", "货物明细")
 
 

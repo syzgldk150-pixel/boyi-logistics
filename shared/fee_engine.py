@@ -14,6 +14,11 @@ Content shape (schema 1)::
      "group": "上楼卸货",                     # optional: fees in one group are not charged together, the larger counts
      "reminders": ["..."]}
 
+Value references: a parameter key, ``piece.<field>`` inside a per-piece block, ``const``,
+``count`` / ``sum`` / ``max`` over pieces (optionally ``where``), ``excess`` (the part above a
+number), ``ceil`` (how many units of ``per``, a part counts as one), ``first`` (the first
+value given, e.g. floor or stairs) and ``add`` / ``mul``.
+
 Parameter types: ``number`` (unit, min, max, integer, decimals, default), ``choice``
 (options), ``bool`` and ``pieces`` (rows of ``count`` plus declared fields such as each
 piece's weight). Blocks: ``fixed``, ``rate`` (rate × value), ``amount`` (a value as
@@ -32,7 +37,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping, Sequence
 
 from shared.handbook_fee_rules import FeeRuleError
@@ -331,6 +336,22 @@ def _ref_kind(ref: Any, scope: _Scope, check: _Check, where: str) -> str:
     if "excess" in ref:
         _number_ref(ref["excess"], scope, check, where)
         check.number(ref.get("over"), f"{where}的起算值", allow_negative=True)
+        return "number"
+    if "ceil" in ref:
+        _number_ref(ref["ceil"], scope, check, where)
+        per = check.number(ref.get("per"), f"{where}的每份数量")
+        if per is not None and per <= 0:
+            check.add(f"{where}的每份数量必须大于 0。")
+        if "min" in ref:
+            check.number(ref["min"], f"{where}的最小结果", allow_negative=True)
+        return "number"
+    if "first" in ref:
+        items = ref["first"]
+        if not isinstance(items, list) or not 2 <= len(items) <= 4:
+            check.add(f"{where}的“二选一”要有 2 到 4 项。")
+            return ""
+        for item in items:
+            _number_ref(item, scope, check, where)
         return "number"
     for op in ("add", "mul"):
         if op in ref:
@@ -727,6 +748,21 @@ class _Evaluator:
             number, text = self.value(ref["excess"])
             over = Decimal(str(ref["over"]))
             return max(number - over, Decimal("0")), f"（{text} {_fmt(number)} 超出 {_fmt(over)} 的部分）"
+        if "ceil" in ref:
+            number, text = self.value(ref["ceil"])
+            per = Decimal(str(ref["per"]))
+            result = (number / per).to_integral_value(rounding=ROUND_CEILING)
+            if "min" in ref:
+                result = max(result, Decimal(str(ref["min"])))
+            return result, f"（{text} {_fmt(number)} 按每 {_fmt(per)} 计 1，不足 {_fmt(per)} 按 1 计）"
+        if "first" in ref:
+            labels = []
+            for item in ref["first"]:
+                try:
+                    return self.value(item)
+                except _Missing as exc:
+                    labels.append(exc.label)
+            raise _Missing("或".join(labels))
         for op, sign in (("add", " + "), ("mul", " × ")):
             if op in ref:
                 parts = [self.value(item) for item in ref[op]]
@@ -1060,18 +1096,27 @@ def quote(rules: Sequence[QuoteRule], values: Mapping[str, Any]) -> Quote:
 
 # -- review aids ------------------------------------------------------------------------
 
+def _primary(ref: Any) -> str | None:
+    """The parameter a reference mostly stands for: itself, or the first choice of ``first``."""
+    if isinstance(ref, str):
+        return ref
+    if isinstance(ref, Mapping) and isinstance(ref.get("first"), list) and ref["first"]:
+        return _primary(ref["first"][0])
+    return None
+
+
 def _boundaries(node: Any, out: list[tuple[str, Decimal]], rule: Rule) -> None:
     """(reference, number) pairs where a tier or a numeric condition changes."""
     if isinstance(node, Mapping):
-        if node.get("type") == "tiers" and isinstance(node.get("by"), str):
+        if node.get("type") == "tiers" and _primary(node.get("by")):
             for tier in node.get("tiers", []):
                 for key in ("over", "up_to"):
                     if tier.get(key) is not None:
-                        out.append((node["by"], Decimal(str(tier[key]))))
-        if "op" in node and isinstance(node.get("left"), str) and node["op"] not in {"in"}:
-            if not isinstance(node.get("value"), (bool, str)) or _decimal(node.get("value")) is not None:
-                if not isinstance(node.get("value"), bool):
-                    out.append((node["left"], Decimal(str(node["value"]))))
+                        out.append((_primary(node["by"]), Decimal(str(tier[key]))))
+        value = node.get("value")
+        if ("op" in node and _primary(node.get("left")) and node["op"] != "in" and not isinstance(value, bool)
+                and _decimal(value) is not None):
+            out.append((_primary(node["left"]), Decimal(str(value))))
         if node.get("type") == "use":
             _boundaries(rule.definitions.get(node.get("name")), out, rule)
         for value in node.values():

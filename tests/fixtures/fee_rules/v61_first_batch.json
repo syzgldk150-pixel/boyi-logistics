@@ -22,7 +22,20 @@
      "integer": true,
      "unit": "楼",
      "min": "1",
-     "max": "200"
+     "max": "200",
+     "required": false,
+     "hint": "知道楼层填楼层；步梯没有明确楼层时改填台阶数"
+    },
+    {
+     "key": "stairs",
+     "label": "步梯台阶数",
+     "type": "number",
+     "integer": true,
+     "unit": "级",
+     "min": "0",
+     "max": "3200",
+     "required": false,
+     "hint": "从高于地面的第一级台阶算起，每 16 级算一层，不足 16 级按一层"
     },
     {
      "key": "elevator",
@@ -232,7 +245,16 @@
       },
       {
        "if": {
-        "left": "floor",
+        "left": {
+         "first": [
+          "floor",
+          {
+           "ceil": "stairs",
+           "per": "16",
+           "min": "1"
+          }
+         ]
+        },
         "op": "gt",
         "value": "7"
        },
@@ -248,7 +270,16 @@
       },
       {
        "if": {
-        "left": "floor",
+        "left": {
+         "first": [
+          "floor",
+          {
+           "ceil": "stairs",
+           "per": "16",
+           "min": "1"
+          }
+         ]
+        },
         "op": "eq",
         "value": "1"
        },
@@ -289,7 +320,16 @@
        },
        {
         "type": "tiers",
-        "by": "floor",
+        "by": {
+         "first": [
+          "floor",
+          {
+           "ceil": "stairs",
+           "per": "16",
+           "min": "1"
+          }
+         ]
+        },
         "tiers": [
          {
           "over": null,
