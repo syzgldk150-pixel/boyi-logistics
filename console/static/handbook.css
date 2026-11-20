@@ -438,3 +438,32 @@ button[disabled] { cursor: not-allowed; }
 .hb-quote__line { display: flex; justify-content: space-between; gap: 12px; }
 .hb-quote__line [data-tone="warn"] { color: var(--warning-text, #a15c07); }
 .hb-quote__item summary { cursor: pointer; font-size: var(--fs-caption); color: var(--text-secondary); }
+
+/* 计算规则 → 核对 (2026-11-20, 方案 A): 收费表 lines ticked against the manual page, questions to decide. */
+.hb-linegroup { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line-subtle); }
+.hb-linegroup:first-of-type { border-top: 0; }
+.hb-linegroup__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-caption); color: var(--text-secondary); }
+.hb-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.hb-lines li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 6px 8px; border-radius: var(--r-control); }
+.hb-lines li:hover { background: var(--bg-subtle); }
+.hb-lines li[data-done="true"] span { color: var(--text-secondary); }
+.hb-lines label { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-body); line-height: 1.6; cursor: pointer; }
+.hb-lines input[type="checkbox"], .hb-question input[type="checkbox"], .hb-question input[type="radio"], .hb-batch input[type="checkbox"] { appearance: auto !important; width: 14px; height: 14px; flex: none; margin-top: 4px; }
+.hb-questions { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.hb-question { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-default); border-radius: var(--r-block); }
+.hb-question[data-answered="false"] { border-color: #efdcb7; background: var(--status-warn-surface); }
+.hb-question__text, .hb-question__item { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-body); line-height: 1.6; }
+.hb-question__options { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: var(--fs-body); }
+.hb-question__options label { display: flex; align-items: flex-start; gap: 6px; cursor: pointer; }
+.hb-batch { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.hb-batch label { display: flex; align-items: flex-start; gap: 8px; color: var(--text-primary); font-size: var(--fs-body); }
+.hb-dialog__field input[type="date"] { box-sizing: border-box; min-height: 34px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-control); font: inherit; }
+.hb-dialog--page { width: min(960px, calc(100vw - 32px)); }
+.hb-dialog__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line-subtle); }
+.hb-dialog__head h2 { margin: 0; font-size: var(--fs-modal-title); font-weight: 500; }
+.hb-page { max-height: calc(100vh - 140px); overflow: auto; padding: 12px 16px; background: var(--bg-subtle); }
+.hb-page img { display: block; width: 100%; height: auto; background: #fff; }
+.hb-page p { margin: 24px 0; text-align: center; }
+.hb-list__tools { display: flex; justify-content: flex-end; margin-top: -4px; }
+.hb-list__tools .hb-link { display: inline-flex; align-items: center; gap: 4px; }
+.hb-list__tools svg { width: 14px; height: 14px; }

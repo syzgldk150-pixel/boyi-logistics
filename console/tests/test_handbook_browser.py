@@ -54,10 +54,20 @@ RULE = {
     "rule_id": RULE_ID, "fee_kind": "upstairs", "fee_name": "上楼费", "version_label": "示例手册 V1 草稿", "status": "DRAFT",
     "effective_from": None, "row_version": 1, "updated_at": "2026-11-15T10:12:00", "content": RULE_CONTENT,
     "params": RULE_CONTENT["params"], "content_problems": [],
-    "checks": [{"text": "逐格核对第 1 页", "done": False}], "events": [{"action": "SAVE", "actor_id": "6", "created_at": "2026-11-15T10:12:00"}],
+    "checks": [{"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""}],
+    "lines": [
+        {"sig": "38914bb1e4808a64", "text": "有电梯 = 是 › 有电梯：5 元 + 0.06 × 结算重量", "path": "formula.cases.0.then", "kind": "sum",
+         "document": "示例物流手册 V1", "location": "第一章 第 1 页", "pages": [1], "done": False},
+        {"sig": "42ef3975026d82f5", "text": "其他情况 › 楼层加收 › 送到几楼 ≤ 2：0 元", "path": "formula.else.tiers.0.then", "kind": "fixed",
+         "document": "", "location": "", "pages": [], "done": False},
+        {"sig": "a6b3908a945bcfac", "text": "其他情况 › 楼层加收 › 送到几楼 > 2：0.1 元/kg × 结算重量", "path": "formula.else.tiers.1.then",
+         "kind": "rate", "document": "", "location": "", "pages": [], "done": False}],
+    "events": [{"action": "SAVE", "actor_id": "6", "created_at": "2026-11-15T10:12:00"}],
     "trial_count": 0, "people": {"6": "示例编辑"},
     "submit_blockers": ["还没有填写执行日期（以总部通知为准）。", "保存后还没有试算过，请至少试算一个场景。"],
 }
+# A 1×1 PNG standing in for a manual page picture.
+PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABc3UBGAAAAABJRU5ErkJggg=="
 SOURCES = {
     "last_scan": {"at": "2026-11-15T08:30:00+08:00", "documents": 2, "reminders": 1, "baseline": False},
     "documents": [{"node_token": "n1", "title": "示例物流手册", "space": "示例空间", "edit_time": "1763170000", "cited_by": ["上楼费 示例手册 V1"]},
@@ -129,7 +139,13 @@ def _open(browser, user):
         elif path == f"/handbook/entries/{ENTRY_ID}":
             reply = ENTRY
         elif path == "/handbook/fee-rules":
-            reply = {"versions": [{k: v for k, v in RULE.items() if k not in {"content", "checks", "events"}}]}
+            reply = {"versions": [{k: v for k, v in RULE.items() if k not in {"content", "checks", "events", "lines"}}]}
+        elif path == "/handbook/fee-rules/source-page":
+            reply = {"document": "示例物流手册 V1", "page": 1, "png_base64": PIXEL}
+        elif path == "/handbook/fee-rules/effective-dates":
+            reply = {"updated": 1}
+        elif path == f"/handbook/fee-rules/{RULE_ID}/checks":
+            reply = {"saved": True, "row_version": 2}
         elif path == f"/handbook/fee-rules/{RULE_ID}":
             reply = RULE
         elif path == f"/handbook/fee-rules/{RULE_ID}/trial":
@@ -184,13 +200,43 @@ def test_editor_sees_workflow_and_no_approval(browser):
         page.wait_for_function("document.querySelector('[data-handbook-status]').innerText.includes('已保存确认')")
         page.click("[data-handbook-tab='fees']")
         page.click(f"[data-fee-open='{RULE_ID}']")
-        page.wait_for_selector(".hb-fold")
-        assert "缺出处" in page.inner_text("[data-fee-editor]")
+        # 核对 is the first view: the saved rule as 收费表 lines, ticked against the manual page.
+        page.wait_for_selector("[data-line]")
+        review = page.inner_text("[data-fee-editor]")
+        assert "已核对 0 / 3 行" in review and "有电梯 = 是 › 有电梯：5 元 + 0.06 × 结算重量" in review and "缺出处" in review
+        assert "混装时怎么收？" in review and page.locator("[data-question-text]").count() == 0
+        page.click("[data-edit-questions]")  # editors may reword a draft's question
+        assert page.locator("[data-question-text='0']").input_value() == "混装时怎么收？"
+        page.click("[data-edit-questions]")
+        assert page.locator("[data-meta='version_label']").count() == 0
         side = page.inner_text(".hb-side")
         assert "生效检查" in side and "还差 4 项" in side and "0 / 4 项通过" in side and "保存后还没有试算" in side
-        assert "2 / 4 出处完整" in side
-        assert page.locator("[data-fee-action='submit']").is_disabled()
-        page.fill("[data-meta='version_label']", "示例手册 V1 草稿二")
+        assert "2 处缺出处" in side and "1 项未回答" in side
+        page.check("[data-line='38914bb1e4808a64']")
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('核对已保存')")
+        ticked = [body for path, body in _posts if path.endswith("/checks")][-1]
+        assert ticked == {"row_version": 1, "checks": [
+            {"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""},
+            {"kind": "line", "sig": "38914bb1e4808a64", "done": True}]}
+        page.check("input[data-answer='0'][value='需人工判断（现在的做法）']")
+        page.wait_for_timeout(800)
+        answered = [body for path, body in _posts if path.endswith("/checks")][-1]
+        assert answered["checks"][0]["answer"] == "需人工判断（现在的做法）"
+        page.click("[data-source-page='1']")
+        page.wait_for_selector(".hb-page img")
+        assert "示例物流手册 V1 · 第 1 页" in page.inner_text(".hb-dialog--page")
+        page.click("[data-page-close]")
+        _shot(page, "54-review")
+        page.click("[data-fee-batch-dates]")
+        page.fill("[data-batch-date]", "2026-12-01")
+        page.click(".hb-dialog .primary-btn")
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('设执行日期')")
+        dates = [body for path, body in _posts if path.endswith("/effective-dates")][-1]
+        assert dates == {"effective_from": "2026-12-01", "versions": [{"rule_id": RULE_ID, "row_version": 1}]}
+        page.click("[data-fee-tab='content']")
+        page.wait_for_selector(".hb-fold")
+        assert "缺出处" in page.inner_text("[data-fee-editor]") and "标识" not in page.inner_text("[data-fee-editor]")
+        page.fill("[data-meta='fee_name']", "上楼费")
         assert page.locator("[data-fee-action='submit']").is_disabled()
         _shot(page, "54-fees")
         page.click("[data-fee-tab='trial']")

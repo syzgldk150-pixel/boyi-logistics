@@ -10,6 +10,7 @@ Blocks and calculation live in ``shared.fee_engine``, versions and approval in
 """
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Awaitable, Callable
 from datetime import date
@@ -27,7 +28,8 @@ from shared.handbook_fee_rules import FeeRuleError, quote_catalog, rule_from_rec
 from shared.redaction import redact_text
 
 _STATUS = {"FEE_RULE_NOT_FOUND": 404, "FEE_RULE_CONFLICT": 409, "FEE_RULE_STATE": 409, "FEE_RULE_NOT_APPROVABLE": 409,
-           "FEE_RULE_NOT_SUBMITTABLE": 409, "FEE_RULE_NAME_TAKEN": 409,
+           "FEE_RULE_NOT_SUBMITTABLE": 409, "FEE_RULE_NAME_TAKEN": 409, "FEE_RULE_CHECKS_STALE": 409,
+           "FEE_RULE_SOURCE_PAGE_UNAVAILABLE": 503,
            "FEE_RULE_DATE_TAKEN": 409, "FEE_RULES_UNAVAILABLE": 503, "WAYBILL_LOOKUP_UNAVAILABLE": 503}
 _TRACKING = re.compile(r"^[A-Za-z0-9-]{6,40}$")
 
@@ -52,6 +54,12 @@ class SaveRequest(RowVersion):
 
 class ChecksRequest(RowVersion):
     checks: list[dict[str, Any]]
+
+
+class EffectiveDatesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    effective_from: str
+    versions: list[dict[str, Any]] = Field(min_length=1, max_length=50)
 
 
 class TrialRequest(BaseModel):
@@ -93,7 +101,9 @@ def _trial_detail(values: dict[str, Any], result: dict[str, Any], boundary: bool
 
 
 def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_provider: Callable[[Request], Any],
-                            super_admin_provider: Callable[[Request], Any]) -> APIRouter:
+                            super_admin_provider: Callable[[Request], Any],
+                            source_page_provider: Callable[[str, int], bytes] | None = None) -> APIRouter:
+    """``source_page_provider(document title, page)`` gives a manual page as PNG for 核对 (composed in main)."""
     router = APIRouter(prefix="/internal/v1/admin/fee-rules", route_class=EnvelopedRoute)
 
     def repository():
@@ -117,6 +127,33 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
     async def create_fee(req: CreateRequest, request: Request):
         actor = admin_provider(request)
         return await run(lambda: {"rule_id": repository().create_fee(fee_name=req.fee_name, actor_id=actor.actor_id)})
+
+    @router.get("/source-page")
+    async def source_page(request: Request, document: str = "", page: int = 0):
+        """One manual page as a picture, next to the 收费表 lines that cite it."""
+        admin_provider(request)
+
+        def render():
+            title = document.strip()
+            if not title or len(title) > 200 or not 1 <= page <= 2000:
+                raise FeeRuleError("FEE_RULE_SOURCE_PAGE_INVALID", "出处缺少文档名称或页码。")
+            if source_page_provider is None:
+                raise FeeRuleError("FEE_RULE_SOURCE_PAGE_UNAVAILABLE", "手册原页图片当前不可用。")
+            try:
+                image = source_page_provider(title, page)
+            except FeeRuleError:
+                raise
+            except Exception as exc:  # the provider's own Chinese reason, redacted below
+                raise FeeRuleError("FEE_RULE_SOURCE_PAGE_UNAVAILABLE", f"手册原页图片没有取到：{exc}") from exc
+            return {"document": title, "page": page, "png_base64": base64.b64encode(image).decode("ascii")}
+
+        return await run(render)
+
+    @router.post("/effective-dates")
+    async def effective_dates(req: EffectiveDatesRequest, request: Request):
+        actor = admin_provider(request)
+        return await run(lambda: {"updated": repository().set_effective_dates(
+            req.versions, effective_from=req.effective_from, actor_id=actor.actor_id)})
 
     @router.get("/{rule_id}")
     async def get_version(rule_id: str, request: Request):
@@ -151,8 +188,8 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
     @router.post("/{rule_id}/checks")
     async def checks(rule_id: str, req: ChecksRequest, request: Request):
         actor = admin_provider(request)
-        return await run(lambda: repository().set_checks(
-            rule_id, checks=req.checks, actor_id=actor.actor_id, expected_row_version=req.row_version) or {"saved": True})
+        return await run(lambda: {"saved": True, "row_version": repository().set_checks(
+            rule_id, checks=req.checks, actor_id=actor.actor_id, expected_row_version=req.row_version)})
 
     @router.post("/{rule_id}/trial")
     async def trial(rule_id: str, req: TrialRequest, request: Request):

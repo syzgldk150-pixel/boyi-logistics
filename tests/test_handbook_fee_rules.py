@@ -8,8 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from shared.fee_rule_lines import fee_lines, pages_of
+from shared.fee_rule_repository import normalize_checks
 from shared.handbook_fee_rules import (
-    FeeRuleError, approval_blockers, quote_catalog, rule_from_record, select_rule, submit_blockers,
+    FeeRuleError, approval_blockers, quote_catalog, review_lines, rule_from_record, select_rule, submit_blockers,
 )
 from tools.feishu_knowledge_pdf import chapter_pages, read_outline
 
@@ -37,8 +39,10 @@ def test_rule_versions_by_effective_date():
 def test_approval_needs_name_valid_content_sources_date_and_every_check_ticked():
     blockers = approval_blockers(UPSTAIRS)
     assert any("执行日期" in item for item in blockers) and any("未核对" in item for item in blockers)
-    ready = {**UPSTAIRS, "effective_from": "2026-10-01", "checks": [{**item, "done": True} for item in UPSTAIRS["checks"]]}
+    ticks = [{"kind": "line", "sig": line["sig"], "done": True} for line in fee_lines(UPSTAIRS["content"])]
+    ready = {**UPSTAIRS, "effective_from": "2026-10-01", "checks": [{**item, "done": True} for item in UPSTAIRS["checks"]] + ticks}
     assert approval_blockers(ready) == []
+    assert approval_blockers({**ready, "checks": ready["checks"][:-1]}) == ["收费表还有 1 行没有对照手册打勾。"]
     assert submit_blockers(ready, trial_count=0) == ["保存后还没有试算过，请至少试算一个场景。"]
     assert any("费用名称" in item for item in approval_blockers({**ready, "fee_name": " "}))
     broken = copy.deepcopy(ready["content"])
@@ -80,6 +84,64 @@ def test_migration_090_seeds_exactly_the_first_batch_and_retires_the_old_format(
                           "effective_from": None, "content": json.loads(row[5])})
     assert "JSON_EXTRACT(content_json, '$.schema') IS NULL" in sql and "status='RETIRED'" in sql
     assert "CREATE TABLE IF NOT EXISTS agent_fee_quotes" in sql
+
+
+# -- 核对 (2026-11-20, 方案 A): 收费表 lines, questions, migration 091 -----------------------------
+
+def test_fee_lines_read_the_rule_out_with_pages_and_clamps():
+    lines = fee_lines(BATCH["count_check"]["content"])
+    assert [line["text"] for line in lines] == [
+        "开箱清点 › 开箱清点件数 ≤ 20：0 元",
+        "开箱清点 › 开箱清点件数 > 20：0.1 元/件 × 开箱清点件数（最低 5 元，最高 100 元）"]
+    assert {line["pages"][0] for line in lines} == {60} and lines[0]["document"].startswith("融辉物流网络管理手册")
+    upstairs = [line["text"] for line in fee_lines(BATCH["upstairs"]["content"])]
+    assert "公共部分“普货” › 有电梯 = 是 › 有电梯：5 元 + 0.06 元/kg × 结算重量" in upstairs  # leaves of a sum read as one line
+    assert any("没有一件单件实际重量 > 150" in text for text in upstairs)
+    assert pages_of("第五篇第五章 第 51–52 页") == [51, 52] and pages_of("第 63 页") == [63] and pages_of("附表") == []
+    assert len({line["sig"] for line in lines}) == len(lines)
+
+
+def test_changing_a_number_clears_only_that_lines_tick():
+    content = copy.deepcopy(BATCH["count_check"]["content"])
+    before = fee_lines(content)
+    record = {**UPSTAIRS, "content": content, "checks": [{"kind": "line", "sig": line["sig"], "done": True} for line in before]}
+    assert all(line["done"] for line in review_lines(record))
+    content = copy.deepcopy(content)
+    content["formula"]["tiers"][1]["then"]["max"] = "120"
+    after = review_lines({**record, "content": content})
+    assert [line["done"] for line in after] == [True, False] and "最高 120 元" in after[1]["text"]
+
+
+def test_questions_must_be_answered_from_their_options():
+    question = {"kind": "question", "text": "按哪个重量算？", "options": ["结算重量", "其他（写明做法）"], "answer": None}
+    record = {**UPSTAIRS, "content": BATCH["night_delivery"]["content"], "effective_from": "2026-10-01",
+              "checks": [question] + [{"kind": "line", "sig": line["sig"], "done": True} for line in fee_lines(BATCH["night_delivery"]["content"])]}
+    assert approval_blockers(record) == ["还有需要拍板的问题没有回答：按哪个重量算？"]
+    assert approval_blockers({**record, "checks": [{**question, "answer": "结算重量"}, *record["checks"][1:]]}) == []
+    assert normalize_checks([{**question, "answer": "结算重量", "note": " "}])[0] == {**question, "answer": "结算重量", "note": ""}
+    for bad, message in (({**question, "answer": "实际重量"}, "不在选项"), ({**question, "answer": "其他（写明做法）"}, "写明"),
+                         ({**question, "options": ["只有一个"]}, "2 到 6 个"), ({"kind": "line", "sig": "x"}, "无效")):
+        with pytest.raises(FeeRuleError, match=message):
+            normalize_checks([bad])
+    ticked = normalize_checks([{"kind": "line", "sig": "0123456789abcdef", "done": True}, {"kind": "line", "sig": "0123456789abcdef", "done": True},
+                               {"kind": "line", "sig": "fedcba9876543210", "done": False}])
+    assert ticked == [{"kind": "line", "sig": "0123456789abcdef", "done": True}]  # only ticked lines are kept, once
+
+
+def test_migration_091_turns_untouched_seed_items_into_questions():
+    sql = (ROOT / "agent" / "migrations" / "091_agent_fee_rule_review_lines.sql").read_text(encoding="utf-8")
+    updates = sql.split("UPDATE agent_fee_rule_versions")[1:]
+    seeded = [item["checks"] for item in BATCH.values()]
+    assert len(updates) == len(BATCH)
+    questions = 0
+    for update in updates:
+        literals = update.split("'")[1::2]
+        new_checks, rule_id, old_checks = json.loads(literals[0]), literals[2], json.loads(literals[4])
+        assert "status='DRAFT'" in update and literals[1] == "migration:091" and old_checks in seeded
+        assert normalize_checks(new_checks) == new_checks
+        questions += len(new_checks)
+        assert rule_id and all(item["kind"] == "question" and item["answer"] is None for item in new_checks)
+    assert questions == 3
 
 
 # -- C2: chapters by bookmark --------------------------------------------------------------
@@ -158,9 +220,23 @@ def test_migrations_087_090_repository_lifecycle(database):  # noqa: F811
     assert (seed["status"], seed["fee_name"], seed["content"]) == ("DRAFT", "上楼费", BATCH["upstairs"]["content"])
     with pytest.raises(FeeRuleError, match="别人修改"):
         repo.submit(UPSTAIRS_ID, actor_id="7", expected_row_version=seed["row_version"] + 1)
-    ticked = [{**item, "done": True} for item in seed["checks"]]
-    repo.save_draft(UPSTAIRS_ID, version_label="V6.1", effective_from="2026-10-01", content=seed["content"], checks=ticked,
+    assert [item["kind"] for item in seed["checks"]] == ["question", "question"]  # migration 091
+    answered = [{**item, "answer": item["options"][0]} for item in seed["checks"]]
+    repo.save_draft(UPSTAIRS_ID, version_label="V6.1", effective_from="2026-10-01", content=seed["content"], checks=answered,
                     actor_id="7", expected_row_version=seed["row_version"])
+    saved = repo.get(UPSTAIRS_ID)
+    assert any("收费表还有" in item for item in saved["submit_blockers"])
+    with pytest.raises(FeeRuleError, match="已经变了"):
+        repo.set_checks(UPSTAIRS_ID, checks=[*answered, {"kind": "line", "sig": "0" * 16, "done": True}], actor_id="7",
+                        expected_row_version=saved["row_version"])
+    with pytest.raises(FeeRuleError, match="只能勾选或回答"):
+        repo.set_checks(UPSTAIRS_ID, checks=answered[:1], actor_id="7", expected_row_version=saved["row_version"])
+    ticks = [{"kind": "line", "sig": line["sig"], "done": True} for line in saved["lines"]]
+    version = repo.set_checks(UPSTAIRS_ID, checks=[*answered, *ticks], actor_id="7", expected_row_version=saved["row_version"])
+    assert all(line["done"] for line in repo.get(UPSTAIRS_ID)["lines"])
+    with pytest.raises(FeeRuleError, match="别人修改"):
+        repo.set_effective_dates([{"rule_id": UPSTAIRS_ID, "row_version": version - 1}], effective_from="2026-10-01", actor_id="7")
+    assert repo.set_effective_dates([{"rule_id": UPSTAIRS_ID, "row_version": version}], effective_from="2026-10-01", actor_id="7") == 1
     version = repo.get(UPSTAIRS_ID)["row_version"]
     with pytest.raises(FeeRuleError, match="试算"):
         repo.submit(UPSTAIRS_ID, actor_id="7", expected_row_version=version)
@@ -218,6 +294,14 @@ def _client(record, super_admin=None, approved=()):
         def retire(self, rule_id, **kwargs):
             calls.append("retire")
 
+        def set_checks(self, rule_id, *, checks, actor_id, expected_row_version):
+            calls.append(("checks", len(checks), expected_row_version))
+            return expected_row_version + 1
+
+        def set_effective_dates(self, versions, *, effective_from, actor_id):
+            calls.append(("dates", effective_from, [item["rule_id"] for item in versions]))
+            return len(versions)
+
         def create_fee(self, *, fee_name, actor_id):
             calls.append(("create", fee_name, actor_id))
             return "new-id"
@@ -238,8 +322,13 @@ def _client(record, super_admin=None, approved=()):
 
     app = FastAPI()
     admin = lambda request: SimpleNamespace(actor_id="7")  # noqa: E731
+    def page(title, number):
+        if title != "融辉物流网络管理手册 V6.1":
+            raise RuntimeError("没有这个文档")
+        return b"\x89PNG\r\n\x1a\n" + bytes([number])
+
     app.include_router(create_fee_rules_router(repository_provider=Repository, admin_provider=admin,
-                                               super_admin_provider=super_admin or deny))
+                                               super_admin_provider=super_admin or deny, source_page_provider=page))
     app.include_router(create_fee_quotes_router(repository_provider=Repository, admin_provider=admin, waybill_reader=waybill))
     return TestClient(app, raise_server_exceptions=False), calls
 
@@ -267,6 +356,15 @@ def test_agent_api_lets_editors_work_but_only_super_admins_approve_or_retire():
     bad = client.post(f"{base}/trial", json={"values": {**values, "settlement_weight": "abc"}})
     assert bad.status_code == 422 and "结算重量" in bad.json()["error"]["message"]
     assert client.post("/internal/v1/admin/fee-rules", json={"fee_name": "进仓服务费"}).json()["data"] == {"rule_id": "new-id"}
+    assert client.post(f"{base}/checks", json={"checks": [], "row_version": 4}).json()["data"] == {"saved": True, "row_version": 5}
+    dates = client.post("/internal/v1/admin/fee-rules/effective-dates",
+                        json={"effective_from": "2026-12-01", "versions": [{"rule_id": "a", "row_version": 1}]})
+    assert dates.json()["data"] == {"updated": 1} and calls[-1] == ("dates", "2026-12-01", ["a"])
+    page = client.get("/internal/v1/admin/fee-rules/source-page", params={"document": "融辉物流网络管理手册 V6.1", "page": 50})
+    assert page.json()["data"]["page"] == 50 and page.json()["data"]["png_base64"].startswith("iVBORw0KGgo")
+    missing = client.get("/internal/v1/admin/fee-rules/source-page", params={"document": "别的手册", "page": 50})
+    assert missing.status_code == 503 and "没有这个文档" in missing.json()["error"]["message"]
+    assert client.get("/internal/v1/admin/fee-rules/source-page", params={"document": "", "page": 1}).status_code == 422
 
 
 def test_agent_api_shows_problems_of_a_saved_rule_instead_of_failing():

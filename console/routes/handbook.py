@@ -41,6 +41,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
     if path == "/handbook/fee-rules":
         app._handle_fee_rules_get(handler, None)
         return True
+    if path == "/handbook/fee-rules/source-page":
+        app._handle_fee_rules_source_page(handler, query)
+        return True
     if path == "/handbook/quote/catalog":
         app._handle_fee_quote(handler, "catalog", query)
         return True
@@ -63,6 +66,9 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
         return True
     if path == "/handbook/fee-rules":
         app._handle_fee_rules_create(handler)
+        return True
+    if path == "/handbook/fee-rules/effective-dates":
+        app._handle_fee_rules_effective_dates(handler)
         return True
     if path == "/handbook/quote":
         app._handle_fee_quote(handler, "quote")

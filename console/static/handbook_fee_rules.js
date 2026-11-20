@@ -4,10 +4,13 @@
   // 业务手册 → 计算规则 (frontend-spec 54 规则编辑, 55 试算与审核). A rule is block-built
   // (shared/fee_engine): parameters people type plus a formula from a fixed set of blocks.
   // Here numbers, sources, names and reminders are edited in place; the structure itself is
-  // edited as JSON under “高级”. The Agent validates every save, submission, approval and
-  // trial; this page only edits the form, shows results and forwards actions.
+  // edited as JSON under “高级”. 核对 (2026-11-20, 方案 A) is the default view: the Agent reads
+  // the saved rule out as 收费表 lines (shared/fee_rule_lines.py), people tick each line against
+  // the manual page shown beside it and answer the questions the manual leaves open. The Agent
+  // validates every save, tick, submission, approval and trial; this page only edits the form,
+  // shows results and forwards actions.
   const STATUS = { DRAFT: "DRAFT", PENDING: "PENDING", APPROVED: "ACTIVE", RETIRED: "RETIRED" };
-  const ACTION_TEXT = { CREATE: "新建费用", COPY: "复制为草稿", SAVE: "保存草稿", CHECK: "勾选核对", SUBMIT: "提交审核", WITHDRAW: "退回草稿", APPROVE: "审核生效", RETIRE: "作废", TRIAL: "试算" };
+  const ACTION_TEXT = { CREATE: "新建费用", COPY: "复制为草稿", SAVE: "保存草稿", CHECK: "核对", DATE: "设执行日期", SUBMIT: "提交审核", WITHDRAW: "退回草稿", APPROVE: "审核生效", RETIRE: "作废", TRIAL: "试算" };
   const TYPE = { fixed: "固定金额", rate: "单价×数值", amount: "按数值计金额", sum: "相加", max: "取大", tiers: "分档", when: "按条件",
     lookup: "按选项", clamp: "最低/最高", each_piece: "逐件计费", use: "引用公共部分", none: "无金额" };
   const NO_AMOUNT = { NEGOTIATE: "需协商", NOT_PROVIDED: "可不提供服务", MANUAL: "需人工判断", ACTUAL: "实报实销" };
@@ -27,8 +30,8 @@
     const base = "/handbook/fee-rules";
     const $ = (selector) => root.querySelector(selector);
     const feedback = UI.feedback($("[data-fee-status]"));
-    const state = { versions: [], current: null, busy: false, dirty: false, tab: "content", expanded: new Set(), trial: null,
-      trialValues: {}, json: null, jsonError: "" };
+    const state = { versions: [], current: null, busy: false, dirty: false, tab: "review", expanded: new Set(), trial: null,
+      trialValues: {}, json: null, jsonError: "", pages: new Map(), persist: null, persistTimer: 0, editQuestions: false };
 
     // -- helpers -----------------------------------------------------------------------
 
@@ -158,19 +161,28 @@
 
     // -- detail ------------------------------------------------------------------------
 
-    // 生效检查 (spec 54): basic info, content and sources, 待核对, trial since the last save. The
-    // Agent decides with the same four (shared/handbook_fee_rules.submit_blockers); this only shows them.
+    // 生效检查 (spec 54): basic info, 收费表 (content, sources and every line ticked), 需要拍板
+    // (questions answered, items ticked), trial since the last save. The Agent decides with the
+    // same rules (shared/handbook_fee_rules.submit_blockers); this only shows them.
+    const questions = (record) => (record.checks || []).filter((item) => item.kind === "question");
+    const items = (record) => (record.checks || []).filter((item) => !item.kind);
+    const openDecisions = (record) => questions(record).filter((item) => item.answer == null).length + items(record).filter((item) => !item.done).length;
+
     function checks(record) {
       const stats = sourceStats();
       const problems = record.content_problems || [];
-      const open = (record.checks || []).filter((item) => !item.done).length;
+      const lines = record.lines || [];
+      const ticked = lines.filter((line) => line.done).length;
+      const open = openDecisions(record);
       const trials = Number(record.trial_count || 0);
       const basic = Boolean(String(record.fee_name || "").trim() && String(record.version_label || "").trim() && record.effective_from);
-      const contentOk = !problems.length && stats.total > 0 && stats.ok === stats.total;
+      const sourcesOk = stats.total > 0 && stats.ok === stats.total;
+      const contentOk = !problems.length && sourcesOk && lines.length > 0 && ticked === lines.length;
       return [
-        { label: "基本信息", ok: basic, detail: basic ? `执行日期 ${record.effective_from}` : record.effective_from ? "缺费用或版本名称" : "未填执行日期" },
-        { label: "规则内容", ok: contentOk, detail: problems.length ? `${problems.length} 个问题` : `${stats.ok} / ${stats.total} 出处完整`, tab: "content" },
-        { label: "待核对", ok: open === 0, detail: open ? `${open} 项未勾选` : "全部已勾选", tab: "checks" },
+        { label: "基本信息", ok: basic, detail: basic ? `执行日期 ${record.effective_from}` : record.effective_from ? "缺费用名称" : "未填执行日期" },
+        { label: "收费表", ok: contentOk, tab: problems.length || !sourcesOk ? "content" : "review",
+          detail: problems.length ? `规则有 ${problems.length} 个问题` : !sourcesOk ? `${stats.total - stats.ok} 处缺出处` : `${ticked} / ${lines.length} 行已对照原页打勾` },
+        { label: "需要拍板", ok: open === 0, detail: open ? `${open} 项未回答` : "已全部回答", tab: "review" },
         { label: "试算", ok: trials > 0, detail: trials ? `保存后已试算 ${trials} 个场景` : "保存后还没有试算", tab: "trial" },
       ];
     }
@@ -254,11 +266,11 @@
 
     function renderParams(editable) {
       const list = params();
-      const rows = list.map((param) => `<tr><td>${escapeHtml(param.label || param.key)}</td><td class="hb-meta">${escapeHtml(param.key)}</td><td>${PARAM_TYPE[param.type] || escapeHtml(param.type)}</td>
+      const rows = list.map((param) => `<tr><td title="${escapeHtml(param.key)}">${escapeHtml(param.label || param.key)}</td><td>${PARAM_TYPE[param.type] || escapeHtml(param.type)}</td>
         <td>${escapeHtml(param.unit || "")}</td><td>${param.type === "choice" ? escapeHtml((param.options || []).map((item) => item.label).join(" / ")) : param.type === "pieces" ? escapeHtml((param.fields || []).map((item) => item.label).join("、")) : escapeHtml([param.min != null ? `≥${param.min}` : "", param.max != null ? `≤${param.max}` : ""].filter(Boolean).join(" "))}</td>
         <td>${param.required === false ? "选填" : param.default != null ? `默认 ${escapeHtml(String(param.default))}` : "必填"}</td></tr>`).join("");
       return `<section class="hb-card hb-card--inset"><div class="hb-card__head"><h3>要填的参数</h3><span class="hb-meta">${list.length} 个</span></div>
-        ${list.length ? `<div class="hb-table-wrap"><table class="hb-table"><thead><tr><th>名称</th><th>标识</th><th>类型</th><th>单位</th><th>范围 / 选项</th><th>必填</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="hb-meta">还没有参数。</p>'}
+        ${list.length ? `<div class="hb-table-wrap"><table class="hb-table"><thead><tr><th>名称</th><th>类型</th><th>单位</th><th>范围 / 选项</th><th>必填</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="hb-meta">还没有参数。</p>'}
         <p class="hb-meta">${editable ? "参数的增删改在下方“高级：结构 JSON”中进行。" : ""}</p></section>`;
     }
 
@@ -282,16 +294,69 @@
           ${editable ? '<div class="hb-actions"><button class="ghost-btn hb-btn-sm" type="button" data-json-apply>应用到草稿</button><button class="hb-link" type="button" data-json-reset>恢复为当前内容</button></div>' : ""}</details>`;
     }
 
-    function renderChecksTab(record) {
-      const editable = canEdit && (record.status === "DRAFT" || record.status === "PENDING");
-      const textEditable = canEdit && record.status === "DRAFT";
+    // -- 核对 ----------------------------------------------------------------------------
+
+    const reviewable = (record) => canEdit && (record.status === "DRAFT" || record.status === "PENDING");
+
+    function pageButtons(document, pages) {
+      if (!document) return "";
+      return pages.map((page) => `<button class="ghost-btn hb-btn-sm" type="button" data-source-page="${page}" data-source-doc="${escapeHtml(document)}"><i data-feather="image"></i><span>看第 ${page} 页</span></button>`).join("");
+    }
+
+    function renderLines(record) {
+      const lines = record.lines || [];
+      const canTick = reviewable(record) && !state.dirty;
+      const ticked = lines.filter((line) => line.done).length;
+      if (!lines.length) return '<div class="hb-card__head"><h3>收费表</h3></div><p class="hb-meta">规则里还没有金额，先在“规则内容”里填写并保存。</p>';
+      const groups = [];
+      lines.forEach((line) => {
+        const key = `${line.document}|${line.location}`;
+        if (!groups.length || groups[groups.length - 1].key !== key) groups.push({ key, document: line.document, location: line.location, pages: line.pages || [], lines: [] });
+        groups[groups.length - 1].lines.push(line);
+      });
+      return `<div class="hb-card__head"><h3>收费表</h3><span class="hb-meta" data-tone="${ticked === lines.length ? "ok" : "warn"}">已核对 ${ticked} / ${lines.length} 行</span></div>
+        <p class="hb-meta">逐行对照手册原页：金额、档位和条件都对就打勾。不对请点“改”到规则内容里修改，保存后改动的那一行要重新核对。</p>
+        ${groups.map((group) => `<div class="hb-linegroup">
+          <div class="hb-linegroup__head"><span>${group.document ? `${escapeHtml(group.document)} · ${escapeHtml(group.location || "未写页码")}` : '<span class="hb-meta" data-tone="warn">缺出处</span>'}</span>
+            <span class="hb-actions">${pageButtons(group.document, group.pages)}</span></div>
+          <ul class="hb-lines">${group.lines.map((line) => `<li data-done="${line.done}">
+            <label><input type="checkbox" data-line="${escapeHtml(line.sig)}" ${line.done ? "checked" : ""} ${canTick ? "" : "disabled"}>
+              <span>${escapeHtml(line.text)}</span></label>
+            ${canEdit && record.status === "DRAFT" ? `<button class="hb-link" type="button" data-line-edit="${escapeHtml(line.path)}">改</button>` : ""}</li>`).join("")}</ul></div>`).join("")}`;
+    }
+
+    function renderQuestions(record) {
+      const answerable = reviewable(record);
+      const textEditable = canEdit && record.status === "DRAFT" && state.editQuestions;
       const list = record.checks || [];
-      return `<p class="hb-meta">逐项对照手册原文核对，全部勾选后才能生效。${record.status === "PENDING" ? "审核中仍可勾选，记得点“保存勾选”。" : ""}</p>
-        <ul class="hb-checkitems">${list.map((item, index) => `<li><input type="checkbox" data-check="${index}" ${item.done ? "checked" : ""} ${editable ? "" : "disabled"} aria-label="事项 ${index + 1} 已核对">
-          <input class="hb-checkitems__text" ${textEditable ? "" : "disabled"} data-check-text="${index}" value="${escapeHtml(item.text)}" aria-label="事项 ${index + 1}">
-          ${textEditable ? `<button class="hb-link" type="button" data-fee-remove-check="${index}" aria-label="删除事项 ${index + 1}">×</button>` : ""}</li>`).join("") || '<li class="hb-meta">没有待核对事项。</li>'}</ul>
-        <div class="hb-actions">${textEditable ? '<button class="ghost-btn hb-btn-sm" type="button" data-fee-add-check><i data-feather="plus"></i><span>添加事项</span></button>' : ""}
-          ${record.status === "PENDING" && canEdit ? '<button class="primary-btn hb-btn-sm" type="button" data-fee-action="checks">保存勾选</button>' : ""}</div>`;
+      const rows = list.map((item, index) => {
+        if (item.kind === "line") return "";
+        if (!item.kind) {
+          return `<li class="hb-question"><div class="hb-question__item"><input type="checkbox" data-check="${index}" ${item.done ? "checked" : ""} ${answerable ? "" : "disabled"} aria-label="事项 ${index + 1} 已核对">
+            ${textEditable ? `<input class="hb-checkitems__text" data-check-text="${index}" value="${escapeHtml(item.text)}" aria-label="事项 ${index + 1}">` : `<span>${escapeHtml(item.text)}</span>`}
+            ${textEditable ? `<button class="hb-link" type="button" data-fee-remove-check="${index}" aria-label="删除事项 ${index + 1}">×</button>` : ""}</div></li>`;
+        }
+        const other = String(item.answer || "").startsWith("其他");
+        return `<li class="hb-question" data-answered="${item.answer != null}">
+          <div class="hb-question__text">${textEditable ? `<input class="hb-checkitems__text" data-question-text="${index}" value="${escapeHtml(item.text)}" aria-label="问题 ${index + 1}">
+            <button class="hb-link" type="button" data-fee-remove-check="${index}" aria-label="删除问题 ${index + 1}">×</button>` : `<b>${escapeHtml(item.text)}</b>`}</div>
+          ${textEditable ? `<label class="hb-cell hb-cell--full"><span>答案选项（用 / 分隔，2–6 个；以“其他”开头的选项要写明做法）</span><input data-question-options="${index}" value="${escapeHtml((item.options || []).join(" / "))}"></label>` : ""}
+          <div class="hb-question__options" role="radiogroup" aria-label="${escapeHtml(item.text)}">${(item.options || []).map((option) => `<label><input type="radio" name="fee-q-${index}" data-answer="${index}" value="${escapeHtml(option)}" ${item.answer === option ? "checked" : ""} ${answerable ? "" : "disabled"}><span>${escapeHtml(option)}</span></label>`).join("")}</div>
+          ${other || item.note ? `<label class="hb-cell hb-cell--full"><span>${other ? "写明怎么做（改了做法，记得到规则内容里修改）" : "说明"}</span><input data-answer-note="${index}" maxlength="200" value="${escapeHtml(item.note || "")}" ${answerable ? "" : "disabled"}></label>` : ""}</li>`;
+      }).join("");
+      const count = questions(record).length + items(record).length;
+      const toggle = canEdit && record.status === "DRAFT" ? `<button class="hb-link" type="button" data-edit-questions>${state.editQuestions ? "完成编辑" : "编辑问题"}</button>` : "";
+      return `<div class="hb-card__head"><h3>需要拍板</h3><span class="hb-actions"><span class="hb-meta" data-tone="${openDecisions(record) ? "warn" : "ok"}">${count ? `${openDecisions(record)} 项未回答` : ""}</span>${toggle}</span></div>
+        <p class="hb-meta">手册没写清、需要人来定的地方。选好答案立即保存；审核时超级管理员能看到每个回答。</p>
+        <ul class="hb-questions">${rows || '<li class="hb-meta">没有需要拍板的问题。</li>'}</ul>
+        ${canEdit && record.status === "DRAFT" ? '<div class="hb-actions"><button class="ghost-btn hb-btn-sm" type="button" data-fee-add-question><i data-feather="plus"></i><span>添加问题</span></button></div>' : ""}`;
+    }
+
+    function renderReviewTab(record) {
+      const notice = state.dirty ? '<div class="hb-alert" data-tone="warn"><i data-feather="alert-triangle"></i><span>有未保存的修改：收费表按已保存的内容显示，保存草稿后再打勾。</span></div>'
+        : (record.content_problems || []).length ? `<div class="hb-alert" data-tone="warn"><i data-feather="alert-triangle"></i><span>规则有 ${record.content_problems.length} 个问题，请先到“规则内容”里修正：<br>${record.content_problems.map(escapeHtml).join("<br>")}</span></div>` : "";
+      return `${notice}<section class="hb-card hb-card--inset">${renderLines(record)}</section>
+        <section class="hb-card hb-card--inset">${renderQuestions(record)}</section>`;
     }
 
     function renderTrialTab(record) {
@@ -333,24 +398,30 @@
         const shown = Object.entries(detail.values || {}).slice(0, 4).map(([key, value]) => `${paramLabel(key)} ${value === true ? "是" : value === false ? "否" : value}`).join(" · ");
         return `${what}${shown ? ` ${shown}` : ""}${detail.amount ? ` → ¥ ${detail.amount}` : detail.outcome ? ` → ${Form.OUTCOME[detail.outcome] || detail.outcome}` : ""}`;
       }
-      if (item.action === "CHECK") return `勾选核对（已核对 ${detail.done ?? 0} 项）`;
+      if (item.action === "CHECK") return `核对（收费表已勾 ${detail.lines ?? 0} 行 · 已回答 ${detail.answered ?? 0} 个问题${detail.done ? ` · 已勾 ${detail.done} 项` : ""}）`;
+      if (item.action === "DATE") return `设执行日期 ${detail.effective_from || ""}`;
       if (item.action === "SAVE" && detail.fee_name) return `保存草稿（费用改名为“${detail.fee_name}”）`;
       if (item.action === "RETIRE" && detail.reason) return `作废（${detail.reason}）`;
       return ACTION_TEXT[item.action] || item.action;
+    }
+
+    function answers(record) {
+      const list = questions(record).filter((item) => item.answer != null);
+      return list.length ? `<div class="hb-block"><h3>拍板结果</h3><ul class="hb-need">${list.map((item) => `<li>${escapeHtml(item.text)}<br><b>${escapeHtml(item.answer)}</b>${item.note ? `：${escapeHtml(item.note)}` : ""}</li>`).join("")}</ul></div>` : "";
     }
 
     function renderSide(record) {
       const list = checks(record);
       const missing = list.filter((item) => !item.ok);
       const passed = list.length - missing.length;
-      const items = list.map((item) => `<li data-tone="${item.ok ? "ok" : "warn"}">${item.tab ? `<button class="hb-link" type="button" data-fee-tab="${item.tab}">${item.label}</button>` : `<b>${item.label}</b>`}<span>${escapeHtml(item.detail)}</span></li>`).join("");
+      const rows = list.map((item) => `<li data-tone="${item.ok ? "ok" : "warn"}">${item.tab ? `<button class="hb-link" type="button" data-fee-tab="${item.tab}">${item.label}</button>` : `<b>${item.label}</b>`}<span>${escapeHtml(item.detail)}</span></li>`).join("");
       const progress = `<div class="hb-progress"><span class="hb-meta">${passed} / ${list.length} 项通过</span><span class="hb-progress__bar"><span style="width:${Math.round((passed / list.length) * 100)}%"></span></span></div>`;
       const recent = (record.events || []).slice(0, 3).map((item) => `<li><span class="hb-meta">${escapeHtml(formatTime(item.created_at))}</span><span>${escapeHtml(eventText(item))}</span><span class="hb-meta">${escapeHtml(person(record, item.actor_id))}</span></li>`).join("");
       if (record.status === "DRAFT") {
         const need = record.submit_blockers || [];
         return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>生效检查</h3><span class="hb-meta" data-tone="${missing.length ? "warn" : "ok"}">${missing.length ? `还差 ${missing.length} 项` : "已满足"}</span></div>
           ${progress}
-          <ul class="hb-checklist hb-checklist--stack">${items}</ul>
+          <ul class="hb-checklist hb-checklist--stack">${rows}</ul>
           ${need.length ? `<div class="hb-block"><h3>提交前还需</h3><ul class="hb-need">${need.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
           <p class="hb-alert" data-tone="info"><i data-feather="lock"></i><span>草稿状态仅限内部核对 · 不会用于报价，也不影响线上单据。</span></p></section>`;
       }
@@ -360,7 +431,8 @@
         return `<section class="hb-card hb-side"><div class="hb-card__head"><h3>审核</h3>${badge("PENDING")}</div>
           <p class="hb-meta" data-tone="${blockers.length ? "warn" : "ok"}">${blockers.length ? escapeHtml(blockers.join("；")) : "已满足生效条件"}</p>
           ${progress}
-          <ul class="hb-checklist hb-checklist--stack">${items}</ul>
+          <ul class="hb-checklist hb-checklist--stack">${rows}</ul>
+          ${answers(record)}
           <div class="hb-impact"><b>通过并生效后</b><span>开单日期在 ${escapeHtml(date)}（含）之后的单据按这版规则计算；之前的单据不受影响。</span>
             <span>生效时点：${escapeHtml(record.effective_from ? `${record.effective_from} 00:00` : "未填")}，以总部通知为准。</span></div>
           ${recent ? `<div class="hb-block"><h3>操作记录</h3><ul class="hb-events hb-events--compact">${recent}</ul></div>` : ""}
@@ -406,18 +478,17 @@
         return;
       }
       const editable = record.status === "DRAFT" && canEdit;
-      const openChecks = (record.checks || []).filter((item) => !item.done).length;
+      const openReview = (record.lines || []).filter((line) => !line.done).length + openDecisions(record);
       const sub = record.status === "PENDING" ? `执行日期 ${record.effective_from || "未填"} · 提交于 ${formatTime(record.submitted_at)}`
         : record.status === "APPROVED" ? `执行日期 ${record.effective_from} · 生效于 ${formatTime(record.approved_at)}`
-        : record.status === "RETIRED" ? `已作废 · ${formatTime(record.retired_at)}` : "计算方式由积木组成：数字、出处可直接改，结构在“高级”中调整";
-      const tabs = [["content", "规则内容"], ["checks", `待核对${openChecks ? ` <span class="hb-tab__count" data-tone="warn">${openChecks}</span>` : ""}`], ["trial", "试算"], ["events", "操作记录"]];
-      const bodies = { content: () => renderContentTab(record, editable), checks: () => renderChecksTab(record), trial: () => renderTrialTab(record), events: () => renderEventsTab(record) };
+        : record.status === "RETIRED" ? `已作废 · ${formatTime(record.retired_at)}` : "先在“核对”里对照手册原页逐行打勾、回答需要拍板的问题，再试算并提交";
+      const tabs = [["review", `核对${openReview ? ` <span class="hb-tab__count" data-tone="warn">${openReview}</span>` : ""}`], ["content", "规则内容"], ["trial", "试算"], ["events", "操作记录"]];
+      const bodies = { review: () => renderReviewTab(record), content: () => renderContentTab(record, editable), trial: () => renderTrialTab(record), events: () => renderEventsTab(record) };
       node.innerHTML = `
         <div class="hb-card__head"><div><h2 id="fee-editor-title">${escapeHtml(record.fee_name)} <span class="hb-chip hb-chip--sm">${escapeHtml(record.version_label)}</span> ${badge(STATUS[record.status])}</h2>
           <p class="hb-card__sub">${escapeHtml(sub)}</p></div></div>
         <div class="hb-fee__basic">
           <label class="hb-cell"><span>费用名称</span><input ${editable ? "" : "disabled"} maxlength="40" data-meta="fee_name" value="${escapeHtml(record.fee_name)}"></label>
-          <label class="hb-cell"><span>版本名称</span><input ${editable ? "" : "disabled"} maxlength="60" data-meta="version_label" value="${escapeHtml(record.version_label)}"></label>
           <label class="hb-cell"><span>执行日期（以总部通知为准）</span><input ${editable ? "" : "disabled"} type="date" data-meta="effective_from" value="${escapeHtml(record.effective_from || "")}"></label>
           ${editable ? (record.effective_from ? "" : '<span class="hb-meta" data-tone="warn"><i data-feather="alert-triangle"></i>未填执行日期，暂不能生效</span>')
             : `<span class="hb-meta"><i data-feather="lock"></i>${record.status === "PENDING" ? "审核中，字段锁定" : record.status === "RETIRED" ? "已作废，只读" : "已生效，只读"}</span>`}
@@ -440,7 +511,7 @@
 
     async function openVersion(ruleId) {
       const record = await request(`${base}/${encodeURIComponent(ruleId)}`);
-      if (state.current?.rule_id !== ruleId) { state.trial = null; state.tab = record.status === "PENDING" ? "trial" : "content"; state.expanded = new Set(["formula"]); state.json = null; state.jsonError = ""; state.trialValues = {}; }
+      if (state.current?.rule_id !== ruleId) { state.trial = null; state.tab = "review"; state.editQuestions = false; state.expanded = new Set(["formula"]); state.json = null; state.jsonError = ""; state.trialValues = {}; }
       state.current = record;
       state.dirty = false;
       renderList();
@@ -467,7 +538,119 @@
       const record = state.current;
       return { fee_name: String(record.fee_name || "").trim(), version_label: String(record.version_label || "").trim(),
         effective_from: record.effective_from || null, content: record.content,
-        checks: (record.checks || []).map((item) => ({ text: String(item.text || "").trim(), done: Boolean(item.done) })) };
+        checks: checksPayload(record) };
+    }
+
+    function checksPayload(record) {
+      return (record.checks || []).map((item) => {
+        if (item.kind === "line") return { kind: "line", sig: item.sig, done: true };
+        if (item.kind === "question") {
+          return { kind: "question", text: String(item.text || "").trim(), options: (item.options || []).map((option) => String(option).trim()).filter(Boolean),
+            answer: item.answer ?? null, note: String(item.note || "").trim() };
+        }
+        return { text: String(item.text || "").trim(), done: Boolean(item.done) };
+      });
+    }
+
+    // Ticks and answers are saved at once (debounced, one request at a time); the Agent checks that
+    // only ticks and answers changed and that every ticked line is still in the saved rule. With
+    // unsaved edits in a draft they are kept locally and go with “保存草稿”.
+    function persistChecks() {
+      const record = state.current;
+      if (!record || !reviewable(record)) return;
+      if (state.dirty) { markDirty(); return; }
+      window.clearTimeout(state.persistTimer);
+      const ruleId = record.rule_id;
+      state.persistTimer = window.setTimeout(() => {
+        state.persist = (state.persist || Promise.resolve()).then(async () => {
+          if (state.current?.rule_id !== ruleId || state.dirty) return;
+          feedback.progress("正在保存核对……");
+          const data = await request(`${base}/${encodeURIComponent(ruleId)}/checks`, { checks: checksPayload(state.current), row_version: state.current.row_version });
+          state.current.row_version = data.row_version;
+          await openVersion(ruleId);
+          await loadList();
+          feedback.success("核对已保存");
+        }).catch(async (error) => {
+          feedback.error("核对没有保存", error.message || "保存失败");
+          await openVersion(ruleId).catch(() => {});
+        });
+      }, 350);
+    }
+
+    function setLine(record, sig, done) {
+      const line = (record.lines || []).find((item) => item.sig === sig);
+      if (!line) return;
+      line.done = done;
+      record.checks = (record.checks || []).filter((item) => !(item.kind === "line" && item.sig === sig));
+      if (done) record.checks.push({ kind: "line", sig, done: true });
+    }
+
+    // 看原页: the cited manual page as a picture, fetched once per page.
+    let pageDialog = null;
+    async function showPage(document, page) {
+      if (!pageDialog) {
+        pageDialog = window.document.createElement("dialog");
+        pageDialog.className = "hb-dialog hb-dialog--page";
+        pageDialog.setAttribute("aria-labelledby", "fee-page-title");
+        window.document.body.append(pageDialog);
+        pageDialog.addEventListener("click", (event) => {
+          const target = event.target.closest("button");
+          if (event.target === pageDialog || target?.hasAttribute("data-page-close")) pageDialog.close();
+          else if (target?.dataset.pageGo) showPage(pageDialog.dataset.document, Number(target.dataset.pageGo));
+        });
+      }
+      pageDialog.dataset.document = document;
+      const head = `<div class="hb-dialog__head"><h2 id="fee-page-title">${escapeHtml(document)} · 第 ${page} 页</h2>
+        <span class="hb-actions">${page > 1 ? `<button class="ghost-btn hb-btn-sm" type="button" data-page-go="${page - 1}">上一页</button>` : ""}
+        <button class="ghost-btn hb-btn-sm" type="button" data-page-go="${page + 1}">下一页</button>
+        <button class="ghost-btn hb-btn-sm" type="button" data-page-close>关闭</button></span></div>`;
+      const key = `${document}|${page}`;
+      if (!state.pages.has(key)) {
+        pageDialog.innerHTML = `${head}<div class="hb-page"><p class="hb-meta">正在读取手册原页……（第一次打开需要几秒）</p></div>`;
+        if (!pageDialog.open) pageDialog.showModal();
+        try {
+          const data = await request(`${base}/source-page?document=${encodeURIComponent(document)}&page=${page}`);
+          state.pages.set(key, data.png_base64);
+        } catch (error) {
+          if (pageDialog.dataset.document === document) pageDialog.innerHTML = `${head}<div class="hb-page"><p class="hb-meta" data-tone="danger">${escapeHtml(error.message || "原页没有取到")}</p></div>`;
+          return;
+        }
+      }
+      pageDialog.innerHTML = `${head}<div class="hb-page"><img alt="${escapeHtml(document)} 第 ${page} 页" src="data:image/png;base64,${state.pages.get(key)}"></div>`;
+      if (!pageDialog.open) pageDialog.showModal();
+    }
+
+    // 批量设执行日期: one headquarters date for several drafts at once.
+    async function batchDates() {
+      const drafts = state.versions.filter((item) => item.status === "DRAFT");
+      if (!drafts.length) { feedback.error("没有草稿", "只有草稿可以设执行日期。"); return; }
+      const dialog = window.document.createElement("dialog");
+      dialog.className = "hb-dialog";
+      dialog.setAttribute("aria-labelledby", "fee-dates-title");
+      dialog.innerHTML = `<form method="dialog"><div class="hb-dialog__body"><h2 id="fee-dates-title">批量设执行日期</h2>
+        <p>以总部通知为准。只改执行日期，不影响已做的核对和试算。</p>
+        <label class="hb-dialog__field"><span>执行日期</span><input type="date" required data-batch-date></label>
+        <div class="hb-dialog__field"><span>应用到这些草稿</span><ul class="hb-batch">${drafts.map((item) => `<li><label><input type="checkbox" data-batch-rule="${escapeHtml(item.rule_id)}" ${item.effective_from ? "" : "checked"}>
+          <span>${escapeHtml(item.fee_name)} <span class="hb-meta">${escapeHtml(item.version_label)} · ${item.effective_from ? `现为 ${escapeHtml(item.effective_from)}` : "未填"}</span></span></label></li>`).join("")}</ul></div></div>
+        <div class="hb-dialog__foot"><button class="ghost-btn" value="cancel">取消</button><button class="primary-btn" value="ok">保存执行日期</button></div></form>`;
+      window.document.body.append(dialog);
+      const result = await new Promise((resolve) => {
+        dialog.addEventListener("close", () => {
+          const date = dialog.querySelector("[data-batch-date]").value;
+          const chosen = [...dialog.querySelectorAll("[data-batch-rule]:checked")].map((box) => box.dataset.batchRule);
+          resolve(dialog.returnValue === "ok" ? { date, chosen } : null);
+          dialog.remove();
+        }, { once: true });
+        dialog.showModal();
+      });
+      if (!result) return;
+      if (!result.date || !result.chosen.length) { feedback.error("没有保存", "请选择执行日期和至少一个草稿。"); return; }
+      const versions = drafts.filter((item) => result.chosen.includes(item.rule_id)).map((item) => ({ rule_id: item.rule_id, row_version: item.row_version }));
+      run("正在保存执行日期……", async () => {
+        await request(`${base}/effective-dates`, { effective_from: result.date, versions });
+        await loadList();
+        if (state.current && result.chosen.includes(state.current.rule_id)) await openVersion(state.current.rule_id);
+      }, `已为 ${versions.length} 个草稿设执行日期 ${result.date}`);
     }
 
     function rememberTrialValues() {
@@ -539,18 +722,44 @@
         record.content.reminders = target.value.split("\n").map((line) => line.trim()).filter(Boolean);
       } else if (target.dataset.checkText !== undefined) {
         record.checks[Number(target.dataset.checkText)].text = target.value;
-      } else if (target.dataset.check !== undefined) {
-        record.checks[Number(target.dataset.check)].done = target.checked;
-        if (record.status !== "DRAFT") return;
+      } else if (target.dataset.questionText !== undefined) {
+        record.checks[Number(target.dataset.questionText)].text = target.value;
+      } else if (target.dataset.questionOptions !== undefined) {
+        const item = record.checks[Number(target.dataset.questionOptions)];
+        item.options = target.value.split(/[/／]/).map((option) => option.trim()).filter(Boolean);
+        if (!item.options.includes(item.answer)) item.answer = null;
+      } else if (target.dataset.answerNote !== undefined) {
+        record.checks[Number(target.dataset.answerNote)].note = target.value;
+        persistChecks();
+        return;
       } else return;
       state.json = null;
       markDirty();
     });
 
     root.addEventListener("change", (event) => {
-      // Selects and date inputs also refresh summaries and checks on change.
-      if (event.target.matches("select[data-f], [data-meta='effective_from'], [data-check]") && state.current) {
-        if (event.target.matches("[data-check]") && state.current.status !== "DRAFT") return;
+      const target = event.target;
+      const record = state.current;
+      if (!record) return;
+      if (target.dataset.line !== undefined) {
+        setLine(record, target.dataset.line, target.checked);
+        renderEditor();
+        persistChecks();
+      } else if (target.dataset.check !== undefined) {
+        record.checks[Number(target.dataset.check)].done = target.checked;
+        renderEditor();
+        persistChecks();
+      } else if (target.dataset.answer !== undefined) {
+        const item = record.checks[Number(target.dataset.answer)];
+        item.answer = target.value;
+        renderEditor();
+        // “其他” needs a note first; it is saved once the note is typed.
+        if (!String(item.answer).startsWith("其他") || String(item.note || "").trim()) persistChecks();
+        else root.querySelector(`[data-answer-note="${target.dataset.answer}"]`)?.focus();
+      } else if (target.matches("[data-question-options]")) {
+        renderEditor();
+      } else if (target.matches("select[data-f], [data-meta='effective_from']")) {
+        // Selects and date inputs also refresh summaries and checks on change.
         renderEditor();
       }
     });
@@ -568,6 +777,25 @@
       if (target.hasAttribute("data-fee-create")) {
         if (!(await leaveOk())) return;
         createFee();
+      } else if (target.hasAttribute("data-fee-batch-dates")) {
+        if (!(await leaveOk())) return;
+        batchDates();
+      } else if (target.dataset.sourcePage) {
+        showPage(target.dataset.sourceDoc, Number(target.dataset.sourcePage));
+      } else if (target.dataset.lineEdit && record) {
+        // Open the block behind this line in 规则内容, with every block above it unfolded.
+        const parts = target.dataset.lineEdit.split(".");
+        for (let end = 1; end <= parts.length; end += 1) state.expanded.add(parts.slice(0, end).join("."));
+        state.tab = "content";
+        renderEditor();
+        root.querySelector(`[data-fold="${CSS.escape(target.dataset.lineEdit)}"]`)?.scrollIntoView({ block: "center" });
+      } else if (target.hasAttribute("data-edit-questions") && record) {
+        state.editQuestions = !state.editQuestions; renderEditor();
+      } else if (target.hasAttribute("data-fee-add-question") && record) {
+        state.editQuestions = true;
+        record.checks = [...(record.checks || []), { kind: "question", text: "", options: ["按现在的规则", "其他（写明做法）"], answer: null, note: "" }];
+        markDirty(); renderEditor();
+        root.querySelector(`[data-question-text="${record.checks.length - 1}"]`)?.focus();
       } else if (target.dataset.feeOpen) {
         if (target.dataset.feeOpen === record?.rule_id || !(await leaveOk())) return;
         run("正在读取……", () => openVersion(target.dataset.feeOpen));
@@ -615,7 +843,7 @@
         root.querySelector(`[data-check-text="${record.checks.length - 1}"]`)?.focus();
       } else if (target.dataset.feeRemoveCheck !== undefined && record) {
         record.checks.splice(Number(target.dataset.feeRemoveCheck), 1);
-        state.dirty = true; renderEditor();
+        markDirty(); renderEditor();
       } else if (target.hasAttribute("data-fee-trial") && record) {
         runTrial(target.dataset.feeTrial === "boundary");
       } else if (target.dataset.feeAction && record) {

@@ -64,8 +64,20 @@ def rule_from_record(record: Mapping[str, Any]) -> FeeRuleSet:
                       record["status"], effective, parse_content(record["content"]))
 
 
+def review_lines(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The 收费表 of a version (``shared.fee_rule_lines``) with each line's tick from its checks."""
+    from shared.fee_rule_lines import fee_lines
+
+    ticked = {item.get("sig") for item in record.get("checks") or [] if item.get("kind") == "line"}
+    return [{**line, "done": line["sig"] in ticked} for line in fee_lines(record.get("content"))]
+
+
 def approval_blockers(record: Mapping[str, Any]) -> list[str]:
-    """Why a submitted version may not take effect yet; empty means it may."""
+    """Why a submitted version may not take effect yet; empty means it may.
+
+    核对 (2026-11-20): every 收费表 line ticked against the manual, every question answered
+    and every remaining item ticked.
+    """
     from shared.fee_engine import unsourced_blocks
 
     problems = []
@@ -81,7 +93,14 @@ def approval_blockers(record: Mapping[str, Any]) -> list[str]:
             problems.append("这些积木还没有出处：" + "、".join(missing[:8]) + (" 等" if len(missing) > 8 else "") + "。")
     if not record.get("effective_from"):
         problems.append("还没有填写执行日期（以总部通知为准）。")
-    pending = [item["text"] for item in record.get("checks") or [] if not item.get("done")]
+    open_lines = sum(not line["done"] for line in review_lines(record))
+    if open_lines:
+        problems.append(f"收费表还有 {open_lines} 行没有对照手册打勾。")
+    checks = record.get("checks") or []
+    questions = [item["text"] for item in checks if item.get("kind") == "question" and item.get("answer") is None]
+    if questions:
+        problems.append("还有需要拍板的问题没有回答：" + "；".join(questions))
+    pending = [item["text"] for item in checks if item.get("kind") is None and not item.get("done")]
     if pending:
         problems.append("还有未核对的事项：" + "；".join(pending))
     return problems
@@ -89,7 +108,7 @@ def approval_blockers(record: Mapping[str, Any]) -> list[str]:
 
 def submit_blockers(record: Mapping[str, Any], *, trial_count: int) -> list[str]:
     """Why a draft may not be submitted yet (frontend-spec 54: basic info, content and sources,
-    待核对 all ticked, at least one trial since the last save); empty means it may."""
+    核对 complete, at least one trial since the last save); empty means it may."""
     problems = approval_blockers(record)
     if not str(record.get("version_label") or "").strip():
         problems.insert(0, "还没有填写版本名称。")
@@ -141,5 +160,5 @@ def quote_catalog(records: Iterable[Mapping[str, Any]], *, business_date: date) 
 
 __all__ = [
     "FEE_NAME_LIMIT", "FeeRuleError", "FeeRuleSet", "RULE_STATUSES", "VERSION_DATE_BASIS", "approval_blockers",
-    "parse_content", "quote_catalog", "rule_from_record", "select_rule", "submit_blockers",
+    "parse_content", "quote_catalog", "review_lines", "rule_from_record", "select_rule", "submit_blockers",
 ]

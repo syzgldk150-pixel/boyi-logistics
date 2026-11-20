@@ -1102,6 +1102,7 @@ app.include_router(
         repository_provider=lambda: fee_rule_repository,
         admin_provider=lambda request: _require_console_admin_request(request),
         super_admin_provider=lambda request: _require_console_super_admin_request(request),
+        source_page_provider=lambda title, page: _fee_source_pages().page(title, page),
     )
 )
 app.include_router(
@@ -1836,6 +1837,21 @@ def _knowledge_watch_service(runtime, fee_rules):
     return KnowledgeWatchService(repository=KnowledgeWatchRepository(runtime.memory.connection_factory),
                                  list_documents=FeishuKnowledgeSource().list_documents,
                                  rule_versions=fee_rules.list_versions, notify=notify)
+
+
+_FEE_SOURCE_PAGES = None
+
+
+def _fee_source_pages():
+    """业务手册 → 计算规则 → 核对: manual pages cited by 收费表 lines, as pictures."""
+    global _FEE_SOURCE_PAGES
+    if _FEE_SOURCE_PAGES is None:
+        from agent.fee_source_pages import FeeSourcePages
+        from tools.feishu_knowledge import FeishuKnowledgeSource
+
+        knowledge = FeishuKnowledgeSource()
+        _FEE_SOURCE_PAGES = FeeSourcePages(list_documents=knowledge.list_documents, render_page=knowledge.page_image)
+    return _FEE_SOURCE_PAGES
 
 
 def _knowledge_page_image(document_id: str, page: int) -> bytes:

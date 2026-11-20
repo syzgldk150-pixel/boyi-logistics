@@ -146,6 +146,37 @@ class HandbookServiceMixin:
                                      console_principal=context["_console_principal"])
         self._handbook_reply(handler, result, "新建费用失败，请稍后重试。")
 
+    def _handle_fee_rules_effective_dates(self, handler: BaseHTTPRequestHandler) -> None:
+        """批量设执行日期 on drafts; the Agent locks each version and saves all or none."""
+        context = self._handbook_context(handler, write=True)
+        if context is None:
+            return
+        body = self._parse_json_body(handler)
+        versions = body.get("versions")
+        if not isinstance(versions, list) or not isinstance(body.get("effective_from"), str):
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请选择执行日期和草稿。"})
+            return
+        payload = {"effective_from": body["effective_from"],
+                   "versions": [{"rule_id": item.get("rule_id"), "row_version": item.get("row_version")}
+                                for item in versions if isinstance(item, dict)]}
+        result = self._agent_request("POST", "/internal/v1/admin/fee-rules/effective-dates", payload=payload, timeout=15,
+                                     console_principal=context["_console_principal"])
+        self._handbook_reply(handler, result, "执行日期没有保存，请稍后重试。")
+
+    def _handle_fee_rules_source_page(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
+        """A manual page cited by a 收费表 line, as a picture (the Agent finds and renders it)."""
+        context = self._handbook_context(handler, write=False)
+        if context is None:
+            return
+        document = str((query.get("document") or [""])[0]).strip()
+        page = str((query.get("page") or [""])[0]).strip()
+        if not document or len(document) > 200 or not page.isdigit() or not 1 <= int(page) <= 2000:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "出处缺少文档名称或页码。"})
+            return
+        endpoint = f"/internal/v1/admin/fee-rules/source-page?document={quote(document, safe='')}&page={int(page)}"
+        result = self._agent_request("GET", endpoint, timeout=40, console_principal=context["_console_principal"])
+        self._handbook_reply(handler, result, "手册原页图片暂时无法读取。")
+
     # -- 报价 -----------------------------------------------------------------------------
 
     def _handle_fee_quote(self, handler: BaseHTTPRequestHandler, action: str, query: dict[str, list[str]] | None = None) -> None:

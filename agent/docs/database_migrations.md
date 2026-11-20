@@ -4,12 +4,14 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-19
+updated: 2026-11-20
 ---
 
 # 数据库迁移
 
 `090_agent_fee_rule_blocks.sql`（内部报价 P1）给 `agent_fee_rule_versions` 加 `fee_name`（每个版本带费用名称，新建费用不再登记在代码里），规则内容改为积木格式（`shared/fee_engine.py`）：把从未生效的旧格式（上楼费专用结构）草稿/待审版本作废并各写一条 RETIRE 记录，以固定编号写入 V6.1 第一批 11 种费用的积木草稿（`INSERT IGNORE`，内容与 `tests/fixtures/fee_rules/v61_first_batch.json` 一致，待核对后由超级管理员带执行日期生效）；新建 `agent_fee_quotes`（每次报价的人、入口、开单日期、费用、参数、结果、合计）。读写只在 `shared/fee_rule_repository.py`。若生产已有生效的旧格式版本，迁移不改它，但它不再能计算，需按新格式重建。
+
+`091_agent_fee_rule_review_lines.sql`（计算规则核对，2026-11-20 方案 A）只改数据：核对改为逐行勾“收费表”（`shared/fee_rule_lines.py`，勾存为 `checks_json` 里的 `{"kind":"line","sig":…}`）和回答“需要拍板”的问题（`{"kind":"question",…}`）后，把迁移 090 的 11 个 V6.1 草稿里仍与种子完全相同（未勾、未改）的待核对事项换掉：“对照第 N 页核对”由收费表代替、“执行日期尚未填写”由基本信息检查代替，上楼费两处和卸货费一处没写清的地方改为问题；已被人动过的草稿不改。
 
 `089_agent_handbook_review.sql` 新建运行库 `agent_handbook_events`（业务手册说明条目的操作记录：新建、保存、编译（含用时）、试跑、确认歧义、提交审核、撤回、退回修改、审核生效、暂停、恢复、作废说明、作废版本；操作人与时间）；说明版本状态增加 PENDING（待审核）与 VOID（已作废的版本），沿用原 VARCHAR(16) 列，不改列；歧义确认改存 `{index, answer, by, at}`，旧的纯编号照常读取。读写只在 `shared/agent_handbook_repository.py`，提交/生效条件在 `shared/agent_handbook.py`。
 

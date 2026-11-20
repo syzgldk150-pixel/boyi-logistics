@@ -10,6 +10,7 @@ back office or the robot are kept in ``agent_fee_quotes``.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import uuid
 from contextlib import contextmanager
@@ -17,11 +18,16 @@ from datetime import date
 from typing import Any, Callable, Iterator, Mapping
 
 from shared.admin_display_names import fetch_admin_display_names
-from shared.handbook_fee_rules import FEE_NAME_LIMIT, FeeRuleError, approval_blockers, parse_content, submit_blockers
+from shared.fee_rule_lines import fee_lines
+from shared.handbook_fee_rules import (FEE_NAME_LIMIT, FeeRuleError, approval_blockers, parse_content, review_lines,
+                                       submit_blockers)
 
 ConnectionFactory = Callable[[], Any]
 _LABEL_LIMIT = 60
 _CHECK_LIMIT = 30
+_LINE_LIMIT = 600
+_SIG = re.compile(r"^[0-9a-f]{16}$")
+_BATCH_LIMIT = 50
 # A new fee starts from parameters and a formula people fill in; it computes nothing until edited.
 EMPTY_CONTENT = {"schema": 1, "params": [], "formula": {"type": "none", "outcome": "MANUAL", "reason": "规则还没有填写。"},
                  "reminders": []}
@@ -42,15 +48,61 @@ def _iso(value: Any) -> str | None:
 
 
 def normalize_checks(checks: Any) -> list[dict[str, Any]]:
-    if not isinstance(checks, list) or len(checks) > _CHECK_LIMIT:
-        raise FeeRuleError("FEE_RULE_CHECKS_INVALID", f"待核对事项最多 {_CHECK_LIMIT} 条。")
-    result = []
+    """The 核对 list of a version (see ``shared.handbook_fee_rules``): items to tick, questions to
+    answer, and the 收费表 lines ticked so far (only ticked lines are kept)."""
+    if not isinstance(checks, list):
+        raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "核对内容格式无效。")
+    result, sigs, others = [], set(), 0
     for item in checks:
-        text = item.get("text") if isinstance(item, Mapping) else None
+        if not isinstance(item, Mapping):
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "核对内容格式无效。")
+        kind = item.get("kind") or "item"
+        if kind == "line":
+            sig = item.get("sig")
+            if not isinstance(sig, str) or not _SIG.fullmatch(sig):
+                raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "收费表的核对记录无效，请刷新后再试。")
+            if item.get("done") is True and sig not in sigs:
+                sigs.add(sig)
+                result.append({"kind": "line", "sig": sig, "done": True})
+            continue
+        others += 1
+        text = item.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > 300:
-            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "每条待核对事项要填写内容，且不超过 300 字。")
-        result.append({"text": text.strip(), "done": item.get("done") is True})
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "每条核对事项或问题都要填写内容，且不超过 300 字。")
+        if kind == "item":
+            result.append({"text": text.strip(), "done": item.get("done") is True})
+            continue
+        if kind != "question":
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "核对内容格式无效。")
+        options = item.get("options")
+        if not isinstance(options, list) or not 2 <= len(options) <= 6 or any(
+                not isinstance(option, str) or not option.strip() or len(option.strip()) > 60 for option in options):
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", f"问题“{text.strip()[:20]}”要有 2 到 6 个答案选项，每个不超过 60 字。")
+        options = [option.strip() for option in options]
+        if len(set(options)) != len(options):
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", f"问题“{text.strip()[:20]}”的答案选项有重复。")
+        answer, note = item.get("answer"), item.get("note") or ""
+        if answer is not None and answer not in options:
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", f"问题“{text.strip()[:20]}”的回答不在选项里。")
+        if not isinstance(note, str) or len(note) > 200:
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "回答的说明不超过 200 字。")
+        if isinstance(answer, str) and answer.startswith("其他") and not note.strip():
+            raise FeeRuleError("FEE_RULE_CHECKS_INVALID", f"问题“{text.strip()[:20]}”选了“其他”，请写明怎么做。")
+        result.append({"kind": "question", "text": text.strip(), "options": options, "answer": answer, "note": note.strip()})
+    if others > _CHECK_LIMIT or len(sigs) > _LINE_LIMIT:
+        raise FeeRuleError("FEE_RULE_CHECKS_INVALID", f"核对事项和问题最多 {_CHECK_LIMIT} 条。")
     return result
+
+
+def _fixed_part(checks: list[dict[str, Any]]) -> list[tuple]:
+    """What ticking or answering may not change: each item's text, each question and its options."""
+    return [(item["text"], tuple(item.get("options") or ())) for item in checks if item.get("kind") != "line"]
+
+
+def _keep_current_lines(checks: list[dict[str, Any]], content: Any) -> list[dict[str, Any]]:
+    """Drop ticks of 收费表 lines that changed (a number, tier, condition or source was edited)."""
+    current = {line["sig"] for line in fee_lines(content)}
+    return [item for item in checks if item.get("kind") != "line" or item["sig"] in current]
 
 
 def normalize_label(label: Any) -> str:
@@ -153,6 +205,7 @@ class FeeRuleRepository:
             record["people"] = fetch_admin_display_names(cursor, {
                 record["created_by"], record["updated_by"], record["submitted_by"], record["approved_by"],
                 *(item["actor_id"] for item in record["events"])})
+        record["lines"] = review_lines(record)
         record["submit_blockers"] = submit_blockers(record, trial_count=record["trial_count"])
         record["blockers"] = approval_blockers(record)
         return record
@@ -239,7 +292,8 @@ class FeeRuleRepository:
         with self._cursor() as cursor:
             source = self._get(cursor, rule_id, lock=False)
             label = normalize_label((source["version_label"] + "-修改")[:_LABEL_LIMIT])
-            checks = [{"text": item["text"], "done": False} for item in source["checks"]]
+            checks = [{**item, "answer": None, "note": ""} if item.get("kind") == "question" else {"text": item["text"], "done": False}
+                      for item in source["checks"] if item.get("kind") != "line"]
             cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, fee_name, version_label, status,"
                            " effective_from, content_json, checks_json, based_on, created_by, updated_by)"
                            " VALUES (%s, %s, %s, %s, 'DRAFT', NULL, %s, %s, %s, %s, %s)",
@@ -259,6 +313,7 @@ class FeeRuleRepository:
             raise FeeRuleError("FEE_RULE_CONTENT_INVALID", "规则内容格式无效。")
         with self._cursor() as cursor:
             record = self._lock(cursor, rule_id, expected_row_version, ("DRAFT",))
+            checks = _keep_current_lines(checks, content)
             name = record["fee_name"] if fee_name is None else normalize_fee_name(fee_name)
             if name != record["fee_name"]:
                 cursor.execute("SELECT 1 FROM agent_fee_rule_versions WHERE fee_name=%s AND fee_kind<>%s"
@@ -271,16 +326,43 @@ class FeeRuleRepository:
                            (label, effective, _dump(content), _dump(checks), actor_id, rule_id))
             self._event(cursor, rule_id, "SAVE", actor_id, {"fee_name": name} if name != record["fee_name"] else None)
 
-    def set_checks(self, rule_id: str, *, checks: Any, actor_id: str, expected_row_version: int) -> None:
-        """Tick 待核对事项 on a draft or a submitted version (the reviewer checks them before approval)."""
+    def set_checks(self, rule_id: str, *, checks: Any, actor_id: str, expected_row_version: int) -> int:
+        """Tick items and 收费表 lines, answer questions, on a draft or a submitted version (the
+        reviewer may check them before approval). Returns the new ``row_version``."""
         checks = normalize_checks(checks)
         with self._cursor() as cursor:
             record = self._lock(cursor, rule_id, expected_row_version, ("DRAFT", "PENDING"))
-            if [item["text"] for item in record["checks"]] != [item["text"] for item in checks]:
-                raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "只能勾选已有的待核对事项；修改内容请先退回草稿。")
+            if _fixed_part(record["checks"]) != _fixed_part(checks):
+                raise FeeRuleError("FEE_RULE_CHECKS_INVALID", "只能勾选或回答已有的核对事项；修改内容请先保存草稿（审核中请先退回草稿）。")
+            current = {line["sig"] for line in fee_lines(record["content"])}
+            if any(item.get("kind") == "line" and item["sig"] not in current for item in checks):
+                raise FeeRuleError("FEE_RULE_CHECKS_STALE", "收费表已经变了，请刷新后再核对。")
             cursor.execute("UPDATE agent_fee_rule_versions SET checks_json=%s, updated_by=%s, row_version=row_version+1"
                            " WHERE rule_id=%s", (_dump(checks), actor_id, rule_id))
-            self._event(cursor, rule_id, "CHECK", actor_id, {"done": sum(item["done"] for item in checks)})
+            self._event(cursor, rule_id, "CHECK", actor_id, {
+                "done": sum(item.get("done") is True for item in checks if item.get("kind") is None),
+                "lines": sum(item.get("kind") == "line" for item in checks),
+                "answered": sum(item.get("kind") == "question" and item["answer"] is not None for item in checks)})
+            return record["row_version"] + 1
+
+    def set_effective_dates(self, versions: Any, *, effective_from: Any, actor_id: str) -> int:
+        """Give several drafts the headquarters effective date at once; all or none."""
+        effective = normalize_date(effective_from)
+        if effective is None:
+            raise FeeRuleError("FEE_RULE_DATE_INVALID", "请选择执行日期。")
+        if not isinstance(versions, list) or not 1 <= len(versions) <= _BATCH_LIMIT or any(
+                not isinstance(item, Mapping) or not isinstance(item.get("rule_id"), str)
+                or type(item.get("row_version")) is not int for item in versions):
+            raise FeeRuleError("FEE_RULE_BATCH_INVALID", f"请选择 1 到 {_BATCH_LIMIT} 个草稿。")
+        if len({item["rule_id"] for item in versions}) != len(versions):
+            raise FeeRuleError("FEE_RULE_BATCH_INVALID", "选择的草稿有重复。")
+        with self._cursor() as cursor:
+            for item in sorted(versions, key=lambda value: value["rule_id"]):
+                self._lock(cursor, item["rule_id"], item["row_version"], ("DRAFT",))
+                cursor.execute("UPDATE agent_fee_rule_versions SET effective_from=%s, updated_by=%s,"
+                               " row_version=row_version+1 WHERE rule_id=%s", (effective, actor_id, item["rule_id"]))
+                self._event(cursor, item["rule_id"], "DATE", actor_id, {"effective_from": effective.isoformat()})
+        return len(versions)
 
     def submit(self, rule_id: str, *, actor_id: str, expected_row_version: int) -> None:
         with self._cursor() as cursor:
