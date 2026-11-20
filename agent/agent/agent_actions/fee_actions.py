@@ -1,23 +1,21 @@
-"""Upstairs fee for one waybill in conversation (C line, step C3).
+"""Fees in conversation by the rules approved in 业务手册 → 计算规则 (报价 P3, 2026-11-20).
 
-The model only picks the action and copies the waybill number. Code does the rest:
+Replaces the upstairs-only action (C3). The model only picks the action and copies the
+waybill number. Code does the rest:
 
-* reads the Ronghui waybill live (``query_waybill_detail``): billing date
-  (``REGISTER_DATE``, picks the rule version), settlement weight
-  (``SETTLEMENT_WEIGHT``, confirmed by the user), piece count (``PIECE_NUMBER``,
-  the waybill's own count, confirmed by the user), actual weight, the upstairs
-  service flag and the remark;
-* reads the floor and the elevator only from the person's own words (digits or
-  Chinese numerals before 楼/层; 有/无电梯). The waybill has no floor or elevator
-  fact, so a missing one is asked, never guessed;
-* uses only rule versions approved in 业务手册 → 计算规则, chosen by billing date;
-* reminds when the upstairs service is not ticked but the remark mentions 上楼.
+* reads the Ronghui waybill live (``query_waybill_detail``): billing date (``REGISTER_DATE``,
+  picks the rule versions), settlement weight, piece count, actual weight, the upstairs flag
+  and the remark; a delivery without a waybill uses today's rules;
+* picks the fees by their names in the person's words (“上楼费和卸货费”, “全部”), and lists
+  the approved ones when none is named;
+* fills each rule parameter from the waybill (``prefill``) or from the person's words by the
+  parameter's own label, unit and options (``parse_values``: floor and elevator keep their
+  dedicated readers); what is still needed is asked in one list, never guessed;
+* computes with ``shared.fee_engine.quote`` (fees in one group: the larger counts) and keeps
+  the quote in ``agent_fee_quotes`` like the back office.
 
-Single-piece surcharges need each piece's weight, which the waybill does not
-have for multi-piece shipments; several pieces are taken at their average weight
-and the reply says so plainly next to the amount. The rule itself is block-built
-(``shared.fee_engine``); the robot fills its upstairs parameters from the waybill
-and the person's words, and points to 业务手册 → 报价 for anything it cannot ask.
+The waybill has no weight per piece, so several pieces are taken at their average weight and
+the reply says so plainly next to the amount.
 """
 from __future__ import annotations
 
@@ -26,10 +24,9 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
-from shared.fee_engine import OUTCOME_TEXT, calculate
-from shared.handbook_fee_rules import FeeRuleError, rule_from_record, select_rule
+from shared.fee_engine import OUTCOME_TEXT
 
 STATE_TTL_SECONDS = 900
 _DIGITS = re.compile(r"(\d{1,3})\s*(?:楼|层|f\b)", re.IGNORECASE)
@@ -158,58 +155,248 @@ def reminders(facts: WaybillFacts) -> list[str]:
     notes = []
     if not facts.upstairs_ticked and _UPSTAIRS_WORDS.search(facts.remark):
         notes.append(f"单上没有勾选上楼服务，但备注写了：“{facts.remark[:80]}”，请核对是否应收上楼费。")
-    notes.append("按普通货物计算；床垫类、整托或木箱需人工判断。")
     return notes
 
 
+# -- fee quote (报价 P3, 2026-11-20) -----------------------------------------------------
+#
+# Any fees approved in 业务手册 → 计算规则, for one waybill or one delivery the person
+# describes. Which fees, and every parameter, come from code: fee names matched in the
+# person's words; the waybill's billing date, settlement weight, pieces and actual weight;
+# the rest read from the person's words by the parameter's own label, unit and options
+# (``parse_values``). Whatever is still needed is asked in one list, never guessed.
+
+_NUMBER_TEXT = r"(\d+(?:\.\d+)?)"
+_UNIT_WORDS = {"kg": "kg|公斤|千克", "公斤": "kg|公斤|千克", "千克": "kg|公斤|千克", "件": "件", "个": "个", "楼": "楼|层",
+               "层": "楼|层", "级": "级|个台阶|台阶", "米": "米|m", "m": "米|m", "次": "次", "票": "票", "托": "托"}
+_ALL = re.compile(r"全部|所有|都算|每一项")
+_ADD = re.compile(r"再加|加上|还有|另外|再算")
+_NEGATION = re.compile(r"(?:没有|没|无|不|非|否)\s*$")
+
+
 @dataclass
-class UpstairsState:
-    tracking_number: str
-    facts: WaybillFacts
-    floor: int | None = None
-    elevator: bool | None = None
+class QuoteState:
+    tracking_number: str | None
+    facts: WaybillFacts | None
+    fee_kinds: list[str] = field(default_factory=list)
+    values: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    piece_note: str = ""
+    asked: list[str] = field(default_factory=list)
+
+    @property
+    def billing_date(self) -> date | None:
+        return self.facts.billing_date if self.facts else None
 
 
-def missing_question(state: UpstairsState) -> str:
-    wanted = [text for text, missing in (("送到几楼", state.floor is None), ("有没有电梯", state.elevator is None)) if missing]
-    return (f"运单 {state.tracking_number}：{state.facts.describe()}。\n单上没有楼层和电梯信息，请告诉我{'、'.join(wanted)}"
-            "（例如“5楼 无电梯”）。")
+def _core(name: str) -> str:
+    return re.sub(r"（.*?）|\(.*?\)", "", name).strip()
 
 
-def render(state: UpstairsState, rules: Callable[[], Sequence[Mapping[str, Any]]]) -> str:
-    facts = state.facts
-    head = (f"运单 {facts.tracking_number} 上楼费\n{facts.describe()} · 送 {state.floor} 楼 · "
-            f"{'有电梯' if state.elevator else '无电梯'}")
-    try:
-        rule = select_rule([rule_from_record(record) for record in rules()], fee_kind="upstairs",
-                           business_date=facts.billing_date)
-    except FeeRuleError as exc:
-        if exc.code == "FEE_RULE_NOT_IN_FORCE":
-            return (f"{head}\n开单日期 {facts.billing_date.isoformat()} 没有已审核生效的上楼费规则，不能给出金额。"
-                    "规则在后台“业务手册 → 计算规则”审核生效后才会使用。")
-        return f"{head}\n收费规则有问题，不能给出金额：{exc.message}"
-    pieces, piece_note = piece_rows(facts)
-    try:
-        result = calculate(rule.content, {"settlement_weight": str(facts.settlement_weight), "floor": int(state.floor),
-                                          "elevator": bool(state.elevator), "goods_type": "general", "pieces": pieces})
-    except FeeRuleError as exc:
-        return f"{head}\n不能计算：{exc.message}"
-    if result.outcome == "MISSING":
-        return f"{head}\n这版上楼费规则还需要：{'、'.join(result.missing)}，机器人暂时问不到，请在后台“业务手册 → 报价”里计算。"
-    lines = [head, f"规则：{rule.version}（执行日期 {rule.effective_from.isoformat()}）"]
-    if result.outcome == "AMOUNT":
-        lines.append(f"上楼费：{result.amount} 元")
+def fee_aliases(name: str) -> list[str]:
+    """Words that name a fee: 上楼费 → 上楼费、上楼；拆托/拆木架木箱 → 拆托、拆木架木箱 ..."""
+    words = {name, _core(name)}
+    for part in re.split(r"[/／、]", _core(name)):
+        part = part.strip()
+        if part:
+            words |= {part, part.removesuffix("费")}
+    return sorted((word for word in words if len(word) >= 2), key=len, reverse=True)
+
+
+def match_fees(message: str, rules: Sequence[Any]) -> list[str]:
+    text = unicodedata.normalize("NFKC", message or "")
+    if _ALL.search(text):
+        return [rule.fee_kind for rule in rules]
+    return [rule.fee_kind for rule in rules if any(alias in text for alias in fee_aliases(rule.name))]
+
+
+def _unit_pattern(unit: str) -> str | None:
+    unit = (unit or "").strip()
+    if not unit:
+        return None
+    return _UNIT_WORDS.get(unit, re.escape(unit))
+
+
+def _label_core(label: str) -> str:
+    return re.sub(r"^(?:是否|有无|需要|要)", "", _core(label)).strip()
+
+
+def parse_values(params: Sequence[Any], message: str, *, asked: Sequence[str] = ()) -> dict[str, Any]:
+    """Values for rule parameters said in one message, read by each parameter's label, unit and
+    options. A value that two parameters could claim is left out (asked instead)."""
+    text = unicodedata.normalize("NFKC", message or "")
+    found: dict[str, Any] = {}
+    numbers = [param for param in params if param.type == "number"]
+    for param in params:
+        if param.key == "floor":
+            floor = parse_floor(text)
+            if floor is not None:
+                found["floor"] = floor
+            continue
+        if param.key == "elevator" and param.type == "bool":
+            elevator = parse_elevator(text)
+            if elevator is not None:
+                found["elevator"] = elevator
+            continue
+        core = _label_core(param.label)
+        if param.type == "number":
+            by_label = re.findall(re.escape(core) + r"\s*(?:是|为|有|共|:|：)?\s*" + _NUMBER_TEXT, text) if core else []
+            if len(set(by_label)) == 1:
+                found[param.key] = by_label[0]
+                continue
+            unit = _unit_pattern(param.unit)
+            sharing = [other for other in numbers if _unit_pattern(other.unit) == unit and other.key not in found]
+            if unit and len(sharing) == 1:
+                by_unit = re.findall(_NUMBER_TEXT + r"\s*(?:" + unit + ")", text)
+                if len(set(by_unit)) == 1:
+                    found[param.key] = by_unit[0]
+        elif param.type == "bool":
+            if core and core in text:
+                before = text[:text.index(core)]
+                found[param.key] = not bool(_NEGATION.search(before[-4:]))
+        elif param.type == "choice":
+            hits = {value for value, label in param.options
+                    if (_core(label) and _core(label) in text) or re.search(rf"(?<![a-z]){re.escape(value)}(?![a-z])", text)}
+            if len(hits) == 1:
+                found[param.key] = hits.pop()
+        elif param.type == "pieces":
+            count = re.findall(r"(\d+)\s*件", text)
+            weight = re.findall(r"每件\s*" + _NUMBER_TEXT + r"\s*(?:kg|公斤|千克)", text)
+            if len(count) == 1 and len(weight) == 1:
+                found[param.key] = [{"count": int(count[0]), "weight": weight[0]}]
+    # A bare answer to the one thing asked: "5" after "送到几楼？"; "有"/"无" after one yes/no question.
+    pending = [param for param in params if param.key in asked and param.key not in found]
+    if len(pending) == 1:
+        param = pending[0]
+        bare = text.strip().rstrip("。.!！")
+        if param.type == "number" and re.fullmatch(_NUMBER_TEXT, bare):
+            found[param.key] = int(bare) if param.key == "floor" else bare
+        elif param.type == "bool" and bare in {"有", "是", "要", "需要", "对"}:
+            found[param.key] = True
+        elif param.type == "bool" and bare in {"无", "没有", "没", "否", "不", "不要", "不用"}:
+            found[param.key] = False
+    return found
+
+
+def prefill(params: Sequence[Any], facts: WaybillFacts | None) -> tuple[dict[str, Any], str]:
+    """Parameters the waybill itself answers (its settlement weight, pieces, actual weight)."""
+    if facts is None:
+        return {}, ""
+    values, note = {}, ""
+    for param in params:
+        if param.prefill == "settlement_weight":
+            values[param.key] = str(facts.settlement_weight)
+        elif param.prefill == "actual_weight" and facts.actual_weight is not None:
+            values[param.key] = str(facts.actual_weight)
+        elif param.prefill == "pieces":
+            if param.type == "pieces":
+                values[param.key], note = piece_rows(facts)
+            else:
+                values[param.key] = facts.pieces
+    return values, note
+
+
+def ask_text(param: Any) -> str:
+    if param.type == "bool":
+        return f"{param.label}（有/无）"
+    if param.type == "choice":
+        return f"{param.label}（{' / '.join(label for _, label in param.options)}）"
+    if param.type == "pieces":
+        return f"{param.label}（例如“2件 每件80公斤”）"
+    if param.key == "floor":
+        return "送到几楼（例如“5楼”；步梯没有楼层时说台阶数，例如“48级”）"
+    return f"{param.label}（数字{('，单位 ' + param.unit) if param.unit else ''}）"
+
+
+def _ref_key(ref: Any) -> str | None:
+    """The parameter a value reference reads: itself, or inside ``ceil`` / ``excess``."""
+    if isinstance(ref, str):
+        return None if ref.startswith("piece.") else ref
+    if isinstance(ref, Mapping):
+        for key in ("ceil", "excess"):
+            if key in ref:
+                return _ref_key(ref[key])
+    return None
+
+
+def first_groups(rules: Sequence[Any]) -> list[tuple[str, ...]]:
+    """Parameters a rule takes “the first one given” of (送到几楼 或 步梯台阶数): each is optional
+    alone, but one of them is needed."""
+    groups: list[tuple[str, ...]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            first = value.get("first")
+            if isinstance(first, list):
+                keys = tuple(key for key in (_ref_key(item) for item in first) if key)
+                if len(keys) == len(first):
+                    groups.append(keys)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    for rule in rules:
+        walk(rule.rule.formula)
+        walk(dict(rule.rule.definitions))
+    return list(dict.fromkeys(groups))
+
+
+def needed(params: Sequence[Any], values: Mapping[str, Any], groups: Sequence[tuple[str, ...]] = ()) -> list[Any]:
+    """Required parameters not given yet, plus the first of each “one of these” group with none given."""
+    by_key = {param.key: param for param in params}
+    wanted = [param for param in params if param.required and param.default is None and param.key not in values]
+    for group in groups:
+        if not any(key in values for key in group) and group[0] in by_key and by_key[group[0]] not in wanted:
+            wanted.insert(0, by_key[group[0]])
+    return wanted
+
+
+def _value_text(param: Any, value: Any) -> str:
+    if param.type == "bool":
+        return "是" if value else "否"
+    if param.type == "choice":
+        return next((label for key, label in param.options if key == value), str(value))
+    if param.type == "pieces":
+        return "；".join(f"{row.get('count')} 件" + (f" 每件 {row['weight']} 公斤" if row.get("weight") else "") for row in value)
+    return f"{value}{(' ' + param.unit) if param.unit else ''}"
+
+
+def render_quote(state: QuoteState, rules: Sequence[Any], unavailable: Sequence[Mapping[str, Any]], result: Any,
+                 params: Sequence[Any], when: date) -> str:
+    head = f"运单 {state.tracking_number} 费用" if state.tracking_number else "费用估算"
+    lines = [head]
+    if state.facts:
+        lines.append(state.facts.describe())
     else:
-        lines.append(f"上楼费：{OUTCOME_TEXT.get(result.outcome, result.outcome)}" + (f"（{result.reason}）" if result.reason else ""))
-    lines.extend(f"· {step}" for step in result.steps)
-    if piece_note:
-        lines.append(piece_note)
-    if result.citations:
-        lines.append("出处：" + "；".join(result.citations))
-    lines.extend(f"提醒：{item}" for item in (*result.reminders, *state.notes))
+        lines.append(f"没有运单，按今天（{when.isoformat()}）生效的规则计算。")
+    shown = [f"{param.label} {_value_text(param, state.values[param.key])}" for param in params if param.key in state.values]
+    if shown:
+        lines.append("按：" + " · ".join(shown))
+    for item in result.items:
+        outcome = item.result
+        if outcome.outcome == "AMOUNT":
+            amount = f"{outcome.amount} 元"
+        else:
+            amount = OUTCOME_TEXT.get(outcome.outcome, outcome.outcome) + (f"（{outcome.reason}）" if outcome.reason else "")
+        lines.append(f"· {item.name}：{amount}{'' if item.counted else '（不计入合计）'}  规则 {item.version}")
+        lines.extend(f"    {step}" for step in outcome.steps)
+        if item.note:
+            lines.append(f"    {item.note}")
+    lines.append(f"合计：{result.total} 元" + ("" if result.complete else "（有费用需人工判断，合计不完整）"))
+    for item in unavailable:
+        lines.append(f"未计算：{item['name']}——{item['reason']}")
+    if state.piece_note:
+        lines.append(state.piece_note)
+    citations = list(dict.fromkeys(cite for item in result.items for cite in item.result.citations))
+    if citations:
+        lines.append("出处：" + "；".join(citations))
+    reminders_ = list(dict.fromkeys([*(text for item in result.items for text in item.result.reminders), *state.notes]))
+    lines.extend(f"提醒：{text}" for text in reminders_)
     return "\n".join(lines)
 
 
-__all__ = ["FeeActionError", "UpstairsState", "WaybillFacts", "missing_question", "parse_elevator", "parse_floor",
-           "piece_rows", "reminders", "render", "waybill_facts"]
+__all__ = ["FeeActionError", "QuoteState", "WaybillFacts", "ask_text", "fee_aliases", "first_groups", "match_fees", "needed",
+           "parse_elevator", "parse_floor", "parse_values", "piece_rows", "prefill", "reminders", "render_quote",
+           "waybill_facts"]

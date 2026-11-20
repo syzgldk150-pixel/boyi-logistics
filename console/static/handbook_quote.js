@@ -95,7 +95,7 @@
         list.innerHTML = quotes.length ? quotes.map((item) => {
           const names = (item.result?.items || []).map((fee) => fee.name).join("、");
           return `<li><span class="hb-meta">${escapeHtml(formatTime(item.created_at))}</span><span>${escapeHtml(names || "—")} · ¥ ${escapeHtml(item.total)}${item.complete ? "" : "（不完整）"}${item.tracking_number ? ` · ${escapeHtml(item.tracking_number)}` : ""}</span>
-            <span class="hb-meta">${escapeHtml(item.actor || "")}${item.channel === "console" ? "" : ` · ${escapeHtml(item.channel)}`}</span></li>`;
+            <span class="hb-meta">${escapeHtml(item.actor || "")}${item.channel === "console" ? "" : ` · ${escapeHtml(({ feishu: "飞书机器人", wechat: "微信机器人", ai_assistant: "AI 助手" })[item.channel] || item.channel)}`}</span></li>`;
         }).join("") : '<li class="hb-meta">还没有报价记录。</li>';
       } catch (error) {
         list.innerHTML = `<li class="hb-meta" data-tone="danger">最近报价读取失败：${escapeHtml(error.message)}</li>`;

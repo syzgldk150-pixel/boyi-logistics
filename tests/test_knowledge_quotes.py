@@ -134,7 +134,7 @@ def test_trial_turn_offers_only_read_actions_and_keeps_its_own_state():
     actions = BusinessActions(invoke=lambda *a: {"ok": False}, cs_accounts=lambda: [])
     real, trial = actions.turn(ACTOR), actions.turn(ACTOR, trial=True)
     names = {tool["function"]["name"] for tool in trial.model_tools()}
-    assert "biz_reply_problem" not in names and {"biz_query_problems", "biz_upstairs_fee"} <= names
+    assert "biz_reply_problem" not in names and {"biz_query_problems", "biz_fee_quote"} <= names
     assert not trial.handles("biz_reply_problem") and real.handles("biz_reply_problem")
     assert trial._key != real._key
 

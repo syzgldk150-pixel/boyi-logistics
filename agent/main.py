@@ -1799,7 +1799,7 @@ def _agent_business_actions(business_service, runtime, loop, identity_access):
     from shared.fee_rule_repository import FeeRuleRepository
     fee_rules = FeeRuleRepository(runtime.memory.connection_factory)
     return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access,
-                           fee_rules=fee_rules.approved)
+                           fee_rules=fee_rules.approved, fee_quote_recorder=fee_rules.record_quote)
 
 
 def _fee_quote_waybill_reader(business_service):
