@@ -115,6 +115,13 @@ def test_ronghui_summary_groups_types_and_drills_down(browser):
         assert "-1,080.50" in body and "3,909.22" in body and "2,828.72" in body  # per-type sums and net
         assert "20 笔" in page.inner_text("[data-bill-strip]") and "+3,909.22" in page.inner_text("[data-bill-strip]")
         assert "2026-11-19" in body and "查看明细 ›" in body and "100.0%" in body
+        footer = page.inner_text("[data-bill-pager]")
+        assert "个结算类型" in footer and "已全部显示" in footer  # few types: no paging (㉓a)
+        # 栅格（rules 7.1.1/7.1.2）：整表左对齐，列边界 1px 竖线，末列不画
+        amount = page.locator(".pb-table--summary tbody tr:first-child td.num").first
+        assert amount.evaluate("el => getComputedStyle(el).textAlign") in ("left", "start")
+        assert amount.evaluate("el => getComputedStyle(el).borderRightWidth") == "1px"
+        assert page.locator(".pb-table--summary tbody tr:first-child td").last.evaluate("el => getComputedStyle(el).borderRightWidth") == "0px"
         _shot(page, "23a-ronghui-summary")
         page.click(".pb-table--summary tbody tr:first-child")
         page.wait_for_selector(".pb-trail:not([hidden])")
@@ -161,9 +168,13 @@ def test_yunda_detail_moves_constants_and_pairs_fee_items(browser):
         strip = page.inner_text("[data-bill-strip]")
         assert "34,543.30" in strip and "收支差 = 收入 − 支出" in strip and "2,891 条" in strip
         assert page.locator(".pb-table tfoot").count() == 0  # balance snapshots are not summed
-        assert "共 2,891 条" in page.inner_text("[data-bill-pager]")
+        footer = page.inner_text("[data-bill-pager]")
+        assert "已加载 2 / 共 2,891 条" in footer and "向下滚动加载更多" in footer  # rules 7.7: no page numbers
+        assert page.locator("[data-bill-page]").count() == 0
         _shot(page, "23c-yunda-detail")
-        page.click("[data-bill-page='2']")
-        page.wait_for_function("document.querySelector('[data-bill-pager]') && !document.querySelector('.pb-table[aria-busy]')")
-        assert queries[-1]["page"] == "2"
+        # scrolling to the bottom appends the next batch instead of replacing the rows
+        page.locator(".pb-table-wrap").dispatch_event("scroll")
+        page.wait_for_function("document.querySelectorAll('.pb-table tbody tr').length === 4")
+        assert queries[-1]["page"] == "2" and queries[-1]["page_size"] == "200"
+        assert "已加载 4 / 共 2,891 条" in page.inner_text("[data-bill-pager]")
         assert errors == []

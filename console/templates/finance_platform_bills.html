@@ -59,11 +59,11 @@
     <div class="pb-context" data-bill-context hidden></div>
     <div class="pb-strip" data-bill-strip hidden></div>
     <div data-bill-body></div>
+    {# rules 7.7：长列表卡内滚动 + 滚动到底自动续接，不用页码；每批取平台允许的最大条数。 #}
     <div class="pb-pager" data-bill-pager hidden>
-      <label class="pb-pager__size">每页
-        <select data-bill-page-size>{% for size in page_sizes %}<option value="{{ size }}" {% if size == default_page_size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select>
-        条 · <span data-bill-total></span></label>
-      <span class="pb-pager__pages" data-bill-pages></span>
+      <input type="hidden" data-bill-page-size value="{{ page_sizes | max }}">
+      <span data-bill-total></span>
+      <span class="pb-pager__hint" data-bill-pages></span>
     </div>
     <p class="pb-note" data-bill-note>
       {% if platform == 'ronghui' %}平台实时数据，不保存历史快照；平台一次最多查询 {{ max_span_days }} 天；负数为从网点账户扣减的金额，点「查看明细」按该结算类型下钻。

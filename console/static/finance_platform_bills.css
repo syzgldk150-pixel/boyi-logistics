@@ -42,12 +42,14 @@
 .pb-strip__cell b[data-tone="income"] { color: var(--status-success); }
 .pb-strip__cell b[data-tone="expense"] { color: var(--status-danger); }
 
-/* Table: header 38 #fafbfc, rows 50, no vertical lines, numbers right-aligned in Inter */
+/* Table: header 38 #fafbfc, rows 50. 栅格（rules 7.1.1/7.1.2）：列距 32（文字距线 16），每个列边界 1px 竖线，整表左对齐，空值「—」 */
 .pb-table-wrap { overflow-x: auto; }
 .pb-table { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
 .main-content .pb-table thead th { height: 38px; padding: 0 16px; background: #fafbfc; border-bottom: 1px solid var(--line-default); text-align: left; font-size: var(--fs-body); font-weight: 500; color: var(--text-secondary); white-space: nowrap; }
 .main-content .pb-table tbody td { height: 50px; padding: 0 16px; border-bottom: 1px solid var(--line-row); color: var(--text-primary); vertical-align: middle; }
-.main-content .pb-table .num { text-align: right; font-family: var(--font-num); white-space: nowrap; }
+.main-content .pb-table .num { text-align: left; font-family: var(--font-num); white-space: nowrap; }
+.main-content .pb-table :is(thead th, tbody td, tfoot th, tfoot td) { border-right: 1px solid var(--line-default); }
+.main-content .pb-table :is(thead th, tbody td, tfoot th, tfoot td):last-child { border-right: 0; }
 .main-content .pb-table td[data-tone="income"] { color: var(--status-success); }
 .main-content .pb-table td[data-tone="expense"] { color: var(--status-danger); }
 .main-content .pb-table td[data-tone="muted"] { color: var(--text-secondary); }
@@ -61,10 +63,10 @@
 .pb-link:hover { text-decoration: underline; }
 .pb-link:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
 .main-content .pb-table tfoot th, .main-content .pb-table tfoot td { height: 50px; padding: 0 16px; border-top: 1.5px solid var(--line-total); background: var(--bg-surface); text-align: left; font-weight: 500; color: var(--text-primary); }
-.main-content .pb-table tfoot .num { text-align: right; }
+.main-content .pb-table tfoot .num { text-align: left; }
 .main-content .pb-table tfoot td[data-tone="expense"] { color: var(--status-danger); }
 .pb-share { display: inline-flex; align-items: center; gap: 10px; }
-.pb-share__track { display: inline-block; width: 120px; height: 6px; border-radius: 3px; background: var(--line-subtle); overflow: hidden; }
+.pb-share__track { display: inline-block; width: 140px; height: 6px; border-radius: 3px; background: var(--line-subtle); overflow: hidden; }
 .pb-share__track span { display: block; height: 100%; background: var(--text-primary); }
 .pb-share small { font-size: 11.5px; color: var(--text-muted); font-family: var(--font-num); }
 
@@ -91,7 +93,17 @@
 .pb-fields dd { margin: 0; font-size: 15px; font-weight: 500; color: var(--text-primary); word-break: break-all; }
 .pb-fields dd.num { font-family: var(--font-num); }
 
-/* Pager 46 and note bar 50 */
+/* 长列表（rules 7.7）：卡内滚动，表头固定，4px 细滚动条；底部续接行 24 高骨架 */
+.pb-table-wrap--scroll { max-height: min(560px, calc(100vh - 280px)); overflow: auto; scrollbar-width: thin; scrollbar-color: #cfd5dd #f0f1f4; }
+.pb-table-wrap--scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+.pb-table-wrap--scroll::-webkit-scrollbar-track { background: #f0f1f4; border-radius: 2px; }
+.pb-table-wrap--scroll::-webkit-scrollbar-thumb { background: #cfd5dd; border-radius: 2px; }
+.main-content .pb-table-wrap--scroll .pb-table thead th { position: sticky; top: 0; z-index: 1; }
+.main-content .pb-table tbody tr.pb-more td { height: 24px; padding: 6px 16px; color: var(--text-muted); font-size: var(--fs-caption); }
+.pb-more td { display: table-cell; }
+.pb-more .pb-skel { display: inline-block; width: 120px; margin-right: 10px; vertical-align: middle; }
+.pb-pager__hint { font-size: 11.5px; color: var(--text-muted); }
+/* Footer 46 and note bar 50 */
 .pb-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 0 16px; border-top: 1px solid var(--line-subtle); font-size: var(--fs-caption); color: var(--text-secondary); }
 .pb-pager__size { display: inline-flex; align-items: center; gap: 6px; }
 .pb-pager__size select { height: 28px; padding: 0 8px; border: 1px solid var(--line-default); border-radius: var(--r-small-button); font: inherit; font-family: var(--font-num); }

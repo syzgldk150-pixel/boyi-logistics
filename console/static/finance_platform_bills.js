@@ -78,7 +78,6 @@
   let current = null; // {action, params, page, label}
   let trail = [];
   let result = null;
-  let groupPage = 1;
   let busy = false;
   let lastColumns = [];
   let exportRows = null; // {header: [...], rows: [[...]]}
@@ -143,14 +142,20 @@
   }
 
   // -- query -----------------------------------------------------------------------------------------
-  async function run(state) {
+  // append=true 是滚动到底的续接：保留已加载的行，只在表底显示「正在加载下一批…」，不整页 loading（rules 7.7）。
+  async function run(state, { append = false } = {}) {
     if (busy) return;
     busy = true;
+    const previous = append ? result : null;
     current = state;
-    renderTrail();
-    syncDates();
-    say(`正在从${NAME}读取最新数据`);
-    skeleton();
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      renderTrail();
+      syncDates();
+      say(`正在从${NAME}读取最新数据`);
+      skeleton();
+    }
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(state.params)) {
       if (key === "filters") query.set("filters", JSON.stringify(value));
@@ -161,15 +166,30 @@
       const response = await fetch(`/finance/platform-bills/${platform}?${query}`, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
       const payload = await response.json().catch(() => ({}));
       if (response.status === 403) {
+        if (append) setLoadingMore(false);
         stateBlock("denied", "没有查看对账单的权限", "需要身份“后台页面”中的“财务”为可见；请联系超级管理员。");
         return;
       }
       if (!response.ok || !payload.ok) throw new Error(payload.message || "读取失败，请稍后重试。");
       result = payload.data;
-      groupPage = 1;
+      if (previous) result = { ...result, rows: [...(previous.rows || []), ...(result.rows || [])] };
+      const scroller = append ? els.body.querySelector(".pb-table-wrap") : null;
+      const keep = scroller ? scroller.scrollTop : 0;
       render();
-      say(`已读取${VIEW_TITLES[state.action] || ""}`);
+      if (scroller) {
+        const next = els.body.querySelector(".pb-table-wrap");
+        if (next) next.scrollTop = keep;
+      }
+      say(append ? `已加载 ${(result.rows || []).length} 条` : `已读取${VIEW_TITLES[state.action] || ""}`);
     } catch (error) {
+      if (append) {
+        // 续接失败不丢已加载的行：恢复上一批结果，在页脚写明原因，可再次滚动重试。
+        current = { ...state, page: Math.max(1, (state.page || 2) - 1) };
+        result = previous;
+        setLoadingMore(false, error.message || "读取失败");
+        say(error.message || "读取失败");
+        return;
+      }
       result = null;
       stateBlock("error", `没有读到${NAME}的数据`, escapeHtml(error.message || "读取失败，请稍后重试。"), '<button type="button" class="ghost-btn" data-bill-retry>重试</button>');
       say(error.message || "读取失败");
@@ -213,23 +233,30 @@
       <b data-tone="${tone}">${escapeHtml(value)}</b>${note ? `<small>${escapeHtml(note)}</small>` : ""}</div>`).join("");
   }
 
-  function renderPager(total, page, size, onPage) {
-    const pages = Math.max(1, Math.ceil(total / Math.max(size, 1)));
+  // 页脚（rules 7.7）：左「已加载 N / 共 M 条」，右滚动提示；一次取完的表只写「共 N 条」+「已全部显示」。
+  function renderFooter(loaded, total) {
     els.pager.hidden = false;
-    els.total.textContent = `共 ${total.toLocaleString("zh-CN")} 条`;
-    if (pages <= 1) { els.pages.innerHTML = ""; return; }
-    const numbers = new Set([1, pages, page - 1, page, page + 1].filter((item) => item >= 1 && item <= pages));
-    const ordered = [...numbers].sort((a, b) => a - b);
-    let html = `<button type="button" data-bill-page="${page - 1}" ${page <= 1 ? "disabled" : ""} aria-label="上一页">‹</button>`;
-    ordered.forEach((item, index) => {
-      if (index && item - ordered[index - 1] > 1) html += '<span class="pb-pager__gap">…</span>';
-      html += `<button type="button" data-bill-page="${item}" ${item === page ? 'aria-current="page"' : ""}>${item}</button>`;
-    });
-    html += `<button type="button" data-bill-page="${page + 1}" ${page >= pages ? "disabled" : ""} aria-label="下一页">›</button>`;
-    els.pages.innerHTML = html;
-    els.pages.onclick = (event) => {
-      const button = event.target.closest("[data-bill-page]");
-      if (button && !button.disabled && !button.hasAttribute("aria-current")) onPage(Number(button.dataset.billPage));
+    const more = loaded < total;
+    els.total.textContent = more ? `已加载 ${loaded.toLocaleString("zh-CN")} / 共 ${total.toLocaleString("zh-CN")} 条` : `共 ${total.toLocaleString("zh-CN")} 条`;
+    els.pages.textContent = more ? "向下滚动加载更多 · 滚动到底自动续接" : "已全部显示";
+  }
+  function setLoadingMore(on, problem = "") {
+    const body = els.body.querySelector(".pb-table tbody");
+    els.body.querySelector("[data-bill-more]")?.remove();
+    if (on && body) {
+      const cols = body.rows[0]?.cells.length || 1;
+      body.insertAdjacentHTML("beforeend", `<tr data-bill-more class="pb-more"><td colspan="${cols}"><span class="pb-skel"></span><span>正在加载下一批…</span></td></tr>`);
+    }
+    if (problem) els.pages.textContent = `下一批读取失败：${problem}（再次滚动到底重试）`;
+  }
+  function watchScroll(loaded, total) {
+    const wrap = els.body.querySelector(".pb-table-wrap");
+    if (!wrap || loaded >= total) return;
+    wrap.classList.add("pb-table-wrap--scroll");
+    const nearBottom = () => wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 48;
+    wrap.onscroll = () => {
+      if (busy || !nearBottom()) return;
+      run({ ...current, page: Number(result.page || 1) + 1 }, { append: true });
     };
   }
 
@@ -320,9 +347,9 @@
         if (platform === "yunda") yundaDrill(row, column.drill, text(row[column.field]));
       };
     }
-    const total = Number(result.total || 0);
-    if (PAGED.has(current.action)) renderPager(total, Number(result.page || 1), Number(result.page_size || els.pageSize.value), (page) => run({ ...current, page }));
-    else { els.pager.hidden = false; els.total.textContent = `共 ${total} 条`; els.pages.innerHTML = ""; }
+    const total = Math.max(Number(result.total || 0), rows.length);
+    renderFooter(rows.length, total);
+    if (PAGED.has(current.action)) watchScroll(rows.length, total);
     exportRows = { header: columns.map((column) => column.title), rows: rows.map((row) => columns.map((column) => text(row[column.field]))) };
     els.exportBtn.disabled = !rows.length;
   }
@@ -404,21 +431,19 @@
       els.pager.hidden = true;
       return;
     }
-    const size = Number(els.pageSize.value) || 20;
-    const pages = Math.max(1, Math.ceil(groups.length / size));
-    groupPage = Math.min(groupPage, pages);
-    const visible = groups.slice((groupPage - 1) * size, groupPage * size);
+    // 结算类型只有几行，一屏放得下：不分页，页脚写「共 N 条 · X 个结算类型 / 已全部显示」（㉓a）。
+    const visible = groups;
     const ratio = (group) => {
       if (!absTotal) return 0;
       const units = toUnits(group.amount, scale);
       return Number(((units < 0n ? -units : units) * 10000n) / absTotal) / 100;
     };
     els.body.innerHTML = `<div class="pb-table-wrap"><table class="pb-table pb-table--summary">
-      <colgroup><col style="width:300px"><col style="width:96px"><col style="width:180px"><col style="width:214px"><col style="width:150px"><col style="width:122px"></colgroup>
+      <colgroup><col style="width:19.96%"><col style="width:9.60%"><col style="width:17.14%"><col style="width:23.73%"><col style="width:15.25%"><col style="width:14.32%"></colgroup>
       <thead><tr><th scope="col">${escapeHtml(typeTitle)}</th><th scope="col" class="num">笔数</th><th scope="col" class="num">${escapeHtml(amountTitle)}</th><th scope="col">占比</th><th scope="col">最近结算日期</th><th scope="col" class="num">明细</th></tr></thead>
       <tbody>${visible.map((group, index) => {
         const share = ratio(group);
-        return `<tr class="pb-row--link" data-group="${(groupPage - 1) * size + index}">
+        return `<tr class="pb-row--link" data-group="${index}">
           <td>${escapeHtml(group.type)}</td><td class="num">${group.count === null ? '<span class="pb-null">—</span>' : group.count.toLocaleString("zh-CN")}</td>
           <td class="num" data-tone="${negative(group.amount) ? "expense" : ""}">${escapeHtml(money(group.amount))}</td>
           <td><span class="pb-share"><span class="pb-share__track"><span style="width:${Math.min(100, share)}%"></span></span><small>${share.toFixed(1)}%</small></span></td>
@@ -432,8 +457,8 @@
       const tr = event.target.closest("tr[data-group]");
       if (tr) ronghuiDrill(groups[Number(tr.dataset.group)]);
     };
-    renderPager(groups.length, groupPage, size, (page) => { groupPage = page; renderRonghuiSummary(); });
-    els.total.textContent = `共 ${groups.length} 个结算类型 · 平台统计 ${Number(result.total || 0)} 行`;
+    renderFooter(0, 0);
+    els.total.textContent = `${counts === null ? "" : `共 ${counts.toLocaleString("zh-CN")} 条 · `}${groups.length} 个结算类型`;
     exportRows = { header: [typeTitle, "笔数", amountTitle, "占比", "最近结算日期"],
       rows: groups.map((group) => [group.type, group.count ?? "", group.amount, `${ratio(group).toFixed(1)}%`, group.latest || ""]) };
     els.exportBtn.disabled = false;
@@ -565,11 +590,6 @@
     els.end.value = ymd(today);
     syncDates();
   }));
-  els.pageSize.addEventListener("change", () => {
-    if (!current) return;
-    if (platform === "ronghui" && current.action === "summary") { groupPage = 1; renderRonghuiSummary(); return; }
-    run({ ...current, page: 1, params: { ...current.params, page_size: els.pageSize.value } });
-  });
   // 已下钻时“查询”按新日期重查当前这一级，保留下钻条件；否则从当前页签重新开始。
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();

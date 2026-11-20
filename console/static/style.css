@@ -3871,21 +3871,21 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
 .customer-service-table td.customer-service-empty { height: 160px; color: var(--text-muted); font-size: var(--fs-label); font-weight: 400 !important; text-align: center; }
 /* Tables keep spec proportions (shares of 1062) so the 1280 layout never hides the 操作 column. */
 .customer-service-table, .line-haul-table, .automation-account-table, .account-admin-panel .account-table { min-width: 860px; }
-.customer-service-table th:nth-child(1) { width: 5.5%; }
-.customer-service-table th:nth-child(2) { width: 11.1%; }
-.customer-service-table th:nth-child(3) { width: 12.4%; }
-.customer-service-table th:nth-child(4) { width: 10.4%; }
-.customer-service-table th:nth-child(5) { width: 6.6%; }
-.customer-service-table th:nth-child(6) { width: 6.4%; }
-.customer-service-table th:nth-child(7) { width: 31.2%; }
-.customer-service-table th:nth-child(8) { width: 9.8%; }
-.customer-service-table th:nth-child(9) { width: 6.6%; }
-.line-haul-table th:nth-child(1) { width: 18.8%; }
-.line-haul-table th:nth-child(2) { width: 36.8%; }
-.line-haul-table th:nth-child(3) { width: 9.4%; }
-.line-haul-table th:nth-child(4) { width: 12.2%; }
-.line-haul-table th:nth-child(5) { width: 14.1%; }
-.line-haul-table th:nth-child(6) { width: 8.7%; }
+.customer-service-table th:nth-child(1) { width: 5.46%; }
+.customer-service-table th:nth-child(2) { width: 12.81%; }
+.customer-service-table th:nth-child(3) { width: 11.30%; }
+.customer-service-table th:nth-child(4) { width: 12.81%; }
+.customer-service-table th:nth-child(5) { width: 6.21%; }
+.customer-service-table th:nth-child(6) { width: 6.50%; }
+.customer-service-table th:nth-child(7) { width: 28.72%; }
+.customer-service-table th:nth-child(8) { width: 10.92%; }
+.customer-service-table th:nth-child(9) { width: 5.27%; }
+.line-haul-table th:nth-child(1) { width: 18.83%; }
+.line-haul-table th:nth-child(2) { width: 37.85%; }
+.line-haul-table th:nth-child(3) { width: 9.42%; }
+.line-haul-table th:nth-child(4) { width: 12.24%; }
+.line-haul-table th:nth-child(5) { width: 14.12%; }
+.line-haul-table th:nth-child(6) { width: 7.53%; }
 .automation-account-table th:nth-child(1) { width: 18.8%; }
 .automation-account-table th:nth-child(2) { width: 14.1%; }
 .automation-account-table th:nth-child(3) { width: 12.2%; }

@@ -92,11 +92,11 @@
   .waybill-table th[data-col="sender"] { width: 94px; }
   .waybill-table th[data-col="destination"] { width: 132px; }
   .waybill-table th[data-col="goods"] { width: 82px; }
-  .waybill-table th[data-col="payment"] { width: 64px; }
+  .waybill-table th[data-col="payment"] { width: 84px; }
   .waybill-table th[data-col="fee"] { width: 84px; }
-  .waybill-table th[data-col="status"] { width: 142px; }
+  .waybill-table th[data-col="status"] { width: 110px; }
   .waybill-table th[data-col="photos"] { width: 86px; }
-  .waybill-table th[data-w="actions"] { width: 28px; }
+  .waybill-table th[data-w="actions"] { width: 40px; }
   .waybill-table th.waybill-col-fee { padding: 0 16px 0 0; text-align: right; }
   .waybill-table td.waybill-col-fee { padding: 12px 16px 0 0; text-align: right; }
   .waybill-table tbody tr { height: 58px; cursor: pointer; }
@@ -157,16 +157,16 @@
   @media (min-width: 640px) and (max-width: 1439px) {
     .waybill-table { min-width: 902px; }
     .waybill-table :is(th, td)[data-col="sender"], .waybill-table :is(th, td)[data-col="payment"] { display: none; }
-    .waybill-table th[data-col="no"] { width: 132px; }
-    .waybill-table th[data-col="date"] { width: 88px; }
-    .waybill-table th[data-col="receiver"] { width: 104px; }
-    .waybill-table th[data-col="destination"] { width: 122px; }
+    .waybill-table th[data-col="no"] { width: 108px; }
+    .waybill-table th[data-col="date"] { width: 100px; }
+    .waybill-table th[data-col="receiver"] { width: 116px; }
+    .waybill-table th[data-col="destination"] { width: 126px; }
     .waybill-table th[data-col="goods"] { width: 96px; }
     .waybill-table th[data-col="fee"] { width: 84px; }
     .waybill-table th[data-col="status"] { width: 120px; }
     .waybill-table th[data-col="photos"] { width: 72px; }
     .waybill-table :is(th, td)[data-col="photos"] { padding-left: 8px; }
-    .waybill-table th[data-w="actions"] { width: 44px; }
+    .waybill-table th[data-w="actions"] { width: 40px; }
   }
   .waybill-detail-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); border-radius: var(--radius-xl); }
   .waybill-detail-dialog:not([open]) { display: none; }

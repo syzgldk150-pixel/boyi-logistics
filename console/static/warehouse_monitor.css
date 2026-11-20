@@ -201,7 +201,14 @@
 .wm-location { padding-bottom: 12px; border-bottom: 1px solid var(--line-subtle); }
 .wm-location-text { margin: -4px 16px 0; color: var(--text-secondary); font-size: var(--fs-body); }
 .wm-table-wrap { border: 0 !important; border-radius: 0 !important; }
-.wm-table { min-width: 1062px; }
+.wm-table { min-width: 1062px; table-layout: fixed; }
+/* ㊳ 列宽 352/100/200/130/180/100（1062 内宽占比） */
+.wm-table th:nth-child(1) { width: 33.15%; }
+.wm-table th:nth-child(2) { width: 9.42%; }
+.wm-table th:nth-child(3) { width: 18.83%; }
+.wm-table th:nth-child(4) { width: 12.24%; }
+.wm-table th:nth-child(5) { width: 16.95%; }
+.wm-table th:nth-child(6) { width: 9.42%; }
 .wm-table th { height: 38px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; border-bottom: 1px solid var(--line-default); }
 .wm-table td { height: 50px; padding: 0 16px; border-bottom: 1px solid var(--line-row); font-size: var(--fs-body); }
 .wm-hint { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line-subtle); color: var(--text-muted); font-size: var(--fs-caption); }

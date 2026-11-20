@@ -91,12 +91,22 @@
 .finance-link { color: var(--text-primary); text-decoration: none; font-weight: 500; }
 .finance-link:hover { color: var(--brand-red); }
 .finance-badge { height: 20px; min-height: 20px; padding: 0 7px; border-radius: var(--r-chip); font-size: var(--fs-tiny); font-weight: 400; }
-/* 账页（科目余额表 / 明细账 / 序时账）画竖线并给行留呼吸。 */
-:is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table :is(th, td) { border-right: 1px solid var(--line-row); }
-:is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table :is(th, td):last-child { border-right: 0; }
+/* 表格栅格（2026-11-20 定稿，rules 7.1.1 / 7.1.2）：财务表列距 24（文字距线 12）、
+   每个列边界 1px #e7e9ed 竖线、整表左对齐（含金额）；空值写「—」。 */
+.finance-table th, .finance-table td { padding: 0 12px; }
+.finance-table .num, .finance-table tfoot .num, .finance-table th.num { text-align: left; }
+.finance-table th[scope="colgroup"] { text-align: left; }
+.finance-table :is(th, td) { border-right: 1px solid var(--line-default); }
+.finance-table :is(th, td):last-child { border-right: 0; }
+.finance-table tbody td:empty:not(.finance-cont)::before { content: "—"; color: var(--text-disabled); }
 :is(#finance-panel-trial, #finance-panel-ledger, #finance-panel-journal) .finance-table tbody tr:hover td { background: transparent; }
+/* ⑰ 科目余额表：两级表头 56，竖线只在 3 个分组边界，组内借/贷之间不画线。 */
 #finance-panel-trial .finance-table tbody td { height: 65px; }
-#finance-panel-trial .finance-table thead tr + tr th { border-top: 1px solid var(--line-default); }
+#finance-panel-trial .finance-table thead tr:first-child th { height: 30px; border-bottom: 0; }
+#finance-panel-trial .finance-table thead tr:first-child th[rowspan] { height: 56px; border-bottom: 1px solid var(--line-default); }
+#finance-panel-trial .finance-table thead tr + tr th { height: 26px; font-weight: 400; }
+#finance-panel-trial .finance-table :is(tbody, tfoot) td:is(:nth-child(2), :nth-child(4), :nth-child(6)) { border-right: 0; }
+#finance-panel-trial .finance-table thead tr + tr th:is(:nth-child(1), :nth-child(3), :nth-child(5)) { border-right: 0; }
 /* Dialogs: radius 14, head 60, body 16/20, foot 60. */
 .finance-dialog { padding: 0; border: 0; border-radius: var(--r-modal); }
 .finance-dialog::backdrop { background: var(--overlay); }

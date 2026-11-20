@@ -806,7 +806,8 @@
   .shipment-tab-panel { padding: 0; }
   .shipment-decrypt-note { margin: 12px 16px; border-color: var(--line-default); border-radius: var(--r-block); }
   .tracking-table-wrap { border: 0; border-radius: 0; }
-  .tracking-table { min-width: 760px; }
+  .tracking-table { min-width: 760px; table-layout: fixed; }
+  .tracking-table .wide { min-width: 0; }
   .tracking-table th { height: 38px; padding: 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); border-bottom: 1px solid var(--line-default); vertical-align: middle; }
   .tracking-table td { height: 58px; padding: 10px 16px; border-bottom-color: var(--line-row); color: var(--text-primary); vertical-align: middle; line-height: 1.5; }
   .tracking-table .mono { font-family: var(--font-num); }
@@ -1286,7 +1287,14 @@
       container.innerHTML = '<div class="tracking-empty">' + escapeHtml(emptyText || '暂无数据') + '</div>';
       return;
     }
-    var html = '<div class="tracking-table-wrap"><table class="tracking-table"><thead><tr>';
+    var html = '<div class="tracking-table-wrap"><table class="tracking-table">';
+    // 列宽按规格（⑤ 扫描轨迹 / ⑦ 子单详情，1062 内宽的占比）。
+    if (columns.every(function(col) { return col.width; })) {
+      html += '<colgroup>' + columns.map(function(col) {
+        return '<col style="width:' + (col.width / 10.62).toFixed(2) + '%">';
+      }).join('') + '</colgroup>';
+    }
+    html += '<thead><tr>';
     columns.forEach(function(col) {
       html += '<th>' + escapeHtml(col.label) + '</th>';
     });
@@ -1912,27 +1920,27 @@
     var children = document.getElementById('shipmentChildren');
     childrenTab.textContent = '子单详情(' + rows.length + ')';
     renderTable(children, [
-      { label: '子单号', key: 'child_waybill_no', mono: true },
-      { label: '扫描网点', key: 'scan_station' },
-      { label: '扫描类型', key: 'scan_type' },
-      { label: '扫描时间', key: 'scan_time', mono: true },
-      { label: '扫描轨迹', key: 'description', wide: true }
+      { label: '子单号', key: 'child_waybill_no', mono: true, width: 180 },
+      { label: '扫描网点', key: 'scan_station', width: 130 },
+      { label: '扫描类型', key: 'scan_type', width: 90 },
+      { label: '扫描时间', key: 'scan_time', mono: true, width: 130 },
+      { label: '扫描轨迹', key: 'description', wide: true, width: 532 }
     ], rows, '暂无子单详情');
   }
 
   function routeColumnsForShipment(data) {
     if (data && (data.type === 'ronghui_tms' || data.type === 'ronghui')) {
       return [
-        { label: '扫描网点', key: 'scan_station' },
-        { label: '扫描时间', key: 'scan_time', mono: true },
-        { label: '跟踪记录', key: 'description', wide: true },
-        { label: '货物跟踪查询电话', key: 'contact', wide: true, multiline: true }
+        { label: '扫描网点', key: 'scan_station', width: 144 },
+        { label: '扫描时间', key: 'scan_time', mono: true, width: 148 },
+        { label: '跟踪记录', key: 'description', wide: true, width: 532 },
+        { label: '货物跟踪查询电话', key: 'contact', wide: true, multiline: true, width: 238 }
       ];
     }
     return [
-      { label: '扫描时间', key: 'scan_time', mono: true },
-      { label: '描述', key: 'description', wide: true },
-      { label: '货物跟踪查询电话', key: 'contact', wide: true, multiline: true }
+      { label: '扫描时间', key: 'scan_time', mono: true, width: 148 },
+      { label: '描述', key: 'description', wide: true, width: 676 },
+      { label: '货物跟踪查询电话', key: 'contact', wide: true, multiline: true, width: 238 }
     ];
   }
 

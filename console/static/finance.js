@@ -566,8 +566,9 @@
         const row = document.createElement("tr");
         if (index === 0) row.className = "finance-row--first";
         if (voucher.status === "cancelled") row.classList.add("finance-row--cancelled");
-        cell(row, index ? "" : voucher.posting_date);
-        const no = cell(row, "");
+        // 同一凭证的续行不重复日期、凭证号、状态，留白而不是写「—」。
+        cell(row, index ? "" : voucher.posting_date, index ? "finance-cont" : "");
+        const no = cell(row, "", index ? "finance-cont" : "");
         if (!index) {
           const link = document.createElement("button");
           link.type = "button"; link.className = "finance-link"; link.textContent = voucher.voucher_no;
@@ -576,7 +577,7 @@
         }
         cell(row, line.summary); cell(row, `${line.account_code} ${line.account_name || ""}`);
         cell(row, zeroBlank(line.debit), "num"); cell(row, zeroBlank(line.credit), "num");
-        cell(row, index ? "" : STATUS_TEXT[voucher.status]);
+        cell(row, index ? "" : STATUS_TEXT[voucher.status], index ? "finance-cont" : "");
         rows.push(row);
       });
     }

@@ -1712,7 +1712,7 @@ class ReceiptTemplateTests(unittest.TestCase):
             ".receipt-table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-y: auto; overflow-x: hidden;",
             ".receipt-table { width: 100%; min-width: 0; table-layout: fixed; }",
             ".receipt-col-photo { width: 7.2%; }",
-            ".receipt-col-actions { width: 10.2%; }",
+            ".receipt-col-actions { width: 9.05%; }",
         ):
             self.assertIn(expected, template)
 
