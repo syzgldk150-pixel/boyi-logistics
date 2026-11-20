@@ -303,6 +303,23 @@ class RonghuiContextTests(unittest.TestCase):
         current.get.assert_not_called()
 
 
+    def test_empty_menu_with_login_home_reports_expired_login(self):
+        current = Mock()
+        current.request.return_value = Response(ValueError("empty"), text="")
+        login = Response(status_code=302)
+        login.headers = {"Location": "/system/login"}
+        current.get.return_value = login
+        with self.assertRaises(TMSAuthStateError):
+            source._context(current, source.WORK_MENU)
+
+    def test_empty_menu_with_live_home_keeps_menu_error(self):
+        current = Mock()
+        current.request.return_value = Response(ValueError("empty"), text="")
+        current.get.return_value = Response(text="<html>synthetic home</html>")
+        with self.assertRaises(source.RonghuiMonitoringError):
+            source._context(current, source.WORK_MENU)
+
+
 class MonitoringAdapterIntegrationTests(unittest.TestCase):
     def tearDown(self):
         monitoring._ITEM_CACHE.clear()

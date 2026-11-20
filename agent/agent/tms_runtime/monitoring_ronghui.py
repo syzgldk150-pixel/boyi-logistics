@@ -9,9 +9,11 @@ from typing import Any
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime.monitoring_window import RECENT_NOTE, is_recent, latest_activity
 from agent.tms_runtime.scripts.customer_service_problem import (
+    CustomerServiceProblemError,
     _resolve_ronghui_page_context,
     _ronghui_headers,
 )
+from agent.tms_runtime.session_validators import looks_like_ronghui_login
 
 ORIGIN = "https://tms.ronghuiwl.com"
 HOME = f"{ORIGIN}/module/index?mv=index"
@@ -98,12 +100,26 @@ def _read(session, context, call_id, data, *, paged=False, timeout=20):
     return rows, total
 
 
+def _home_requires_login(session) -> bool:
+    """Whether the Ronghui home page sends this session to the login page."""
+    try:
+        response = session.get(HOME, timeout=20, allow_redirects=False)
+    except TMSAuthStateError:
+        return True
+    except Exception:
+        return False
+    return looks_like_ronghui_login(response)
+
+
 def _context(session, menu):
     try:
         return _resolve_ronghui_page_context(session, menu)
     except TMSAuthStateError:
         raise
-    except Exception:
+    except Exception as exc:
+        # 实测 2026-11-20：登录失效时菜单接口返回 200 空内容，首页才跳登录页；以首页结果区分登录失效与菜单缺失。
+        if isinstance(exc, CustomerServiceProblemError) and exc.code == "INVALID_RESPONSE" and _home_requires_login(session):
+            raise TMSAuthStateError("AUTH_REQUIRED", "融辉登录态已失效，请到业务账号重新登录。") from None
         raise RonghuiMonitoringError(f"无法取得融辉“{menu}”页面，请检查账号登录及菜单权限。") from None
 
 
