@@ -249,6 +249,16 @@ def test_migrations_087_090_repository_lifecycle(database):  # noqa: F811
     rules, _ = quote_catalog(approved, business_date=date(2026, 11, 12))
     assert [item.fee_kind for item in rules] == ["upstairs"]
 
+    drafted = repo.add_drafted(fee_name="上楼费", content=seed["content"], checks=seed["checks"], actor_id="7",
+                               version_label="AI草稿", detail={"ai_run_id": "run-1", "pages": "50-52"})
+    again = repo.get(drafted["rule_id"])
+    assert drafted["new_fee"] is False and (again["fee_kind"], again["status"], again["version_label"]) == ("upstairs", "DRAFT", "AI草稿")
+    assert again["events"][0]["action"] == "DRAFT" and again["events"][0]["detail"]["pages"] == "50-52"
+    assert repo.get(UPSTAIRS_ID)["status"] == "APPROVED"  # the approved version is untouched
+    brand_new = repo.add_drafted(fee_name="仓储费", content=seed["content"], checks=[], actor_id="7", version_label="AI草稿",
+                                 detail={})
+    assert brand_new["new_fee"] is True and repo.get(brand_new["rule_id"])["fee_kind"].startswith("fee_")
+
     created = repo.create_fee(fee_name="进仓服务费", actor_id="7")
     fresh = repo.get(created)
     assert fresh["fee_kind"].startswith("fee_") and fresh["status"] == "DRAFT" and fresh["trial_count"] == 0

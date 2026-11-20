@@ -130,6 +130,43 @@ def render_page(path, page):
         document.close()
 
 
+MAX_BATCH_IMAGE_BYTES = 1_400_000  # all pages together, base64 + JSON under the parent 2 MB output cap
+MAX_BATCH_PAGES = 4
+
+
+def render_pages(path, pages):
+    """Several pages as smaller grey PNGs for an AI draft (业务手册 → 计算规则 → 从手册起草, 2026-11-20).
+
+    Tables come out of the text layer scrambled, so the model also sees the pages. One download
+    serves the whole batch; the scale drops until every page fits the shared output cap.
+    """
+    import base64
+    import io
+
+    import pypdfium2 as pdfium
+
+    if not 1 <= len(pages) <= MAX_BATCH_PAGES or len(set(pages)) != len(pages):
+        raise ValueError("page_batch")
+    document = pdfium.PdfDocument(path)
+    try:
+        if not 1 <= len(document) <= 200 or any(not 1 <= page <= len(document) for page in pages):
+            raise ValueError("page_out_of_range")
+        for scale in (1.4, 1.1, 0.9):
+            images, total = [], 0
+            for page in pages:
+                image = document[page - 1].render(scale=scale).to_pil().convert("L")
+                output = io.BytesIO()
+                image.save(output, format="PNG", optimize=True)
+                encoded = base64.b64encode(output.getvalue()).decode("ascii")
+                total += len(encoded)
+                images.append({"page": page, "width": image.width, "height": image.height, "png_base64": encoded})
+            if total <= MAX_BATCH_IMAGE_BYTES:
+                return {"pages": images}
+        raise ValueError("image_limit")
+    finally:
+        document.close()
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     try:
@@ -139,6 +176,8 @@ if __name__ == "__main__":
             resource.setrlimit(resource.RLIMIT_AS, (768*1024*1024, 768*1024*1024))
         if len(sys.argv) == 4 and sys.argv[1] == "--render":
             result = {"data": render_page(sys.argv[3], int(sys.argv[2]))}
+        elif len(sys.argv) == 4 and sys.argv[1] == "--render-batch":
+            result = {"data": render_pages(sys.argv[3], [int(item) for item in sys.argv[2].split(",")])}
         else:
             result = {"data": extract_pages(sys.argv[1])}
     except Exception:

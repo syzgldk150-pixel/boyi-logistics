@@ -154,7 +154,7 @@ def agent_permission(method: str, path: str) -> str:
     if _under(path, "/internal/v1/admin/fee-quotes"):
         return "handbook:view"  # 报价 reads approved rules (and one waybill); it only keeps a quote record
     if any(_under(path, prefix) for prefix in ("/internal/v1/admin/handbook", "/internal/v1/admin/fee-rules",
-                                              "/internal/v1/admin/knowledge-sources")):
+                                              "/internal/v1/admin/fee-drafts", "/internal/v1/admin/knowledge-sources")):
         return handbook_permission(path, read)
     if path.startswith("/internal/v1/automation-projects/module-slots/waybill-entry"):
         return "waybill.write:view" if read else "waybill.write:operate"

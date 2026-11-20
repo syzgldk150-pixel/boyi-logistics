@@ -74,6 +74,13 @@ class KnowledgeCli:
             _fail("KNOWLEDGE_ARGUMENT_INVALID", "页码无效。")
         return self._pdf_child(object_id, ("--render", str(page)), deadline=deadline)
 
+    def render_pdf_pages(self, object_id, pages, *, deadline):
+        """Download the PDF once and draw up to four pages as smaller PNGs (for an AI draft)."""
+        if not isinstance(pages, (list, tuple)) or not 1 <= len(pages) <= 4 or any(
+                type(page) is not int or not 1 <= page <= 200 for page in pages):
+            _fail("KNOWLEDGE_ARGUMENT_INVALID", "页码无效。")
+        return self._pdf_child(object_id, ("--render-batch", ",".join(str(page) for page in pages)), deadline=deadline)
+
     def _pdf_child(self, object_id, options, *, deadline):
         object_id = _identity(object_id)
         if os.name != "posix":
@@ -189,6 +196,66 @@ class FeishuKnowledgeSource:
         if data.get("page") != page or not image.startswith(b"\x89PNG\r\n\x1a\n"):
             _fail("KNOWLEDGE_PDF_RENDER_FAILED", "PDF 页面截图没有生成。")
         return image
+
+    def pdf_document(self, node_token: str) -> dict:
+        """One authorized PDF read in full (page texts and bookmarks), for 计算规则 → 从手册起草.
+
+        The node must sit in an authorized space and be a PDF file; it is read twice around the
+        download so an edit during the read is not mixed in.
+        """
+        node_token = _identity(node_token)
+        read = self._pdf_reader
+        if read is None:
+            _fail("KNOWLEDGE_PDF_UNAVAILABLE", "PDF 读取尚未配置。")
+        if not self._slots.acquire(blocking=False):
+            _fail("KNOWLEDGE_BUSY", "知识读取暂忙，请稍后重试。")
+        deadline = time.monotonic() + 40
+        try:
+            raw = _data(self._cli(("wiki", "spaces", "get_node"), {"token": node_token}, deadline=deadline)).get("node")
+            spaces = dict((space_id, name) for name, space_id in self._spaces(deadline))
+            space_id = raw.get("space_id") if isinstance(raw, dict) else None
+            if space_id not in spaces:
+                _fail("KNOWLEDGE_SCOPE_MISMATCH", "该文档不在授权的知识库里。")
+            before = self._node(node_token, space_id, deadline)
+            if before.get("obj_type") != "file":
+                _fail("KNOWLEDGE_FORMAT_UNSUPPORTED", "从手册起草只支持 PDF 文件。")
+            body = _data(read(before["obj_token"], deadline=deadline))
+            after = self._node(node_token, space_id, deadline)
+            for key in ("obj_token", "obj_edit_time", "title"):
+                if before.get(key) != after.get(key):
+                    _fail("KNOWLEDGE_CHANGED_DURING_READ", "文档在读取期间更新，请重试。")
+            pages = body.get("pages")
+            if not isinstance(pages, list) or not pages:
+                _fail("KNOWLEDGE_PDF_INVALID", "PDF 没有可读的文字。")
+            return {"node_token": node_token, "space": spaces[space_id], "obj_token": after["obj_token"],
+                    "title": str(after.get("title") or "").strip()[:200], "edit_time": str(after.get("obj_edit_time") or "")[:40],
+                    "page_count": len(pages), "pages": pages, "outline": body.get("outline") or []}
+        finally:
+            self._slots.release()
+
+    def pdf_page_images(self, document_id: str, pages: list[int]) -> list[bytes]:
+        """Pages of one PDF as PNG bytes in page order, rendered four at a time."""
+        import base64
+
+        render = getattr(self._cli, "render_pdf_pages", None)
+        if render is None:
+            _fail("KNOWLEDGE_PDF_UNAVAILABLE", "PDF 页面截图尚未配置。")
+        images = []
+        for start in range(0, len(pages), 4):
+            batch = list(pages[start:start + 4])
+            data = _data(render(document_id, batch, deadline=time.monotonic() + 25))
+            rendered = data.get("pages")
+            if not isinstance(rendered, list) or [item.get("page") for item in rendered if isinstance(item, dict)] != batch:
+                _fail("KNOWLEDGE_PDF_RENDER_FAILED", "PDF 页面截图没有生成。")
+            for item in rendered:
+                try:
+                    image = base64.b64decode(str(item.get("png_base64") or ""), validate=True)
+                except ValueError:
+                    image = b""
+                if not image.startswith(b"\x89PNG\r\n\x1a\n"):
+                    _fail("KNOWLEDGE_PDF_RENDER_FAILED", "PDF 页面截图没有生成。")
+                images.append(image)
+        return images
 
     def _pages(self, command, parameters, *, deadline, limit=300):
         rows, cursor, seen = [], "", set()

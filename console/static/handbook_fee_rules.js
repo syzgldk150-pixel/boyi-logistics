@@ -10,7 +10,7 @@
   // validates every save, tick, submission, approval and trial; this page only edits the form,
   // shows results and forwards actions.
   const STATUS = { DRAFT: "DRAFT", PENDING: "PENDING", APPROVED: "ACTIVE", RETIRED: "RETIRED" };
-  const ACTION_TEXT = { CREATE: "新建费用", COPY: "复制为草稿", SAVE: "保存草稿", CHECK: "核对", DATE: "设执行日期", SUBMIT: "提交审核", WITHDRAW: "退回草稿", APPROVE: "审核生效", RETIRE: "作废", TRIAL: "试算" };
+  const ACTION_TEXT = { CREATE: "新建费用", DRAFT: "AI 起草", COPY: "复制为草稿", SAVE: "保存草稿", CHECK: "核对", DATE: "设执行日期", SUBMIT: "提交审核", WITHDRAW: "退回草稿", APPROVE: "审核生效", RETIRE: "作废", TRIAL: "试算" };
   const TYPE = { fixed: "固定金额", rate: "单价×数值", amount: "按数值计金额", sum: "相加", max: "取大", tiers: "分档", when: "按条件",
     lookup: "按选项", clamp: "最低/最高", each_piece: "逐件计费", use: "引用公共部分", none: "无金额" };
   const NO_AMOUNT = { NEGOTIATE: "需协商", NOT_PROVIDED: "可不提供服务", MANUAL: "需人工判断", ACTUAL: "实报实销" };
@@ -30,6 +30,9 @@
     const base = "/handbook/fee-rules";
     const $ = (selector) => root.querySelector(selector);
     const feedback = UI.feedback($("[data-fee-status]"));
+    // 从手册起草 (方案 B) lives in handbook_fee_draft.js and borrows the editor panel while open.
+    const draft = window.FeeDraft && canEdit ? window.FeeDraft.create({ UI, onSaved: draftSaved }) : null;
+    const inDraft = (event) => Boolean(draft?.active() && $("[data-fee-editor]").contains(event.target));
     const state = { versions: [], current: null, busy: false, dirty: false, tab: "review", expanded: new Set(), trial: null,
       trialValues: {}, json: null, jsonError: "", pages: new Map(), persist: null, persistTimer: 0, editQuestions: false };
 
@@ -400,6 +403,7 @@
       }
       if (item.action === "CHECK") return `核对（收费表已勾 ${detail.lines ?? 0} 行 · 已回答 ${detail.answered ?? 0} 个问题${detail.done ? ` · 已勾 ${detail.done} 项` : ""}）`;
       if (item.action === "DATE") return `设执行日期 ${detail.effective_from || ""}`;
+      if (item.action === "DRAFT") return `AI 起草（${detail.document || "手册"} 第 ${detail.pages || "?"} 页${detail.new_fee ? "，新费用" : "，存为新版本"}）`;
       if (item.action === "SAVE" && detail.fee_name) return `保存草稿（费用改名为“${detail.fee_name}”）`;
       if (item.action === "RETIRE" && detail.reason) return `作废（${detail.reason}）`;
       return ACTION_TEXT[item.action] || item.action;
@@ -707,7 +711,16 @@
       return keys;
     }
 
+    async function draftSaved(created) {
+      if (!created.length) { state.current = null; renderList(); renderEditor(); return; }
+      await loadList();
+      await openVersion(created[0].rule_id);
+      const fresh = created.filter((item) => !item.already);
+      feedback.success(`已保存 ${fresh.length || created.length} 个草稿：${created.map((item) => item.fee_name).join("、")}。请在“核对”里对照原页逐行确认。`);
+    }
+
     root.addEventListener("input", (event) => {
+      if (inDraft(event)) { draft.handle(event); return; }
       const target = event.target;
       const record = state.current;
       if (!record || target.closest("[data-fee-trial-form]") || target.matches("[data-json]")) return;
@@ -738,6 +751,7 @@
     });
 
     root.addEventListener("change", (event) => {
+      if (inDraft(event)) { draft.handle(event); return; }
       const target = event.target;
       const record = state.current;
       if (!record) return;
@@ -769,6 +783,7 @@
     });
 
     root.addEventListener("click", async (event) => {
+      if (inDraft(event)) { draft.handle(event); return; }
       const target = event.target.closest("button");
       if (!target || target.disabled || state.busy) return;
       const record = state.current;
@@ -777,6 +792,11 @@
       if (target.hasAttribute("data-fee-create")) {
         if (!(await leaveOk())) return;
         createFee();
+      } else if (target.hasAttribute("data-fee-draft") && draft) {
+        if (!(await leaveOk())) return;
+        state.current = null; state.dirty = false;
+        renderList();
+        draft.mount($("[data-fee-editor]"));
       } else if (target.hasAttribute("data-fee-batch-dates")) {
         if (!(await leaveOk())) return;
         batchDates();

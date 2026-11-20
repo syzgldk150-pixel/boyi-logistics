@@ -138,6 +138,7 @@ from agent.business_query import (
     MySQLAutomationOperationsRepository,
 )
 from agent.business_modules_api import create_business_module_router
+from agent.fee_drafts_api import create_fee_drafts_router
 from agent.fee_rules_api import create_fee_quotes_router, create_fee_rules_router
 from agent.handbook_api import create_handbook_router
 from agent.handbook_try_api import create_handbook_try_router
@@ -252,6 +253,7 @@ customer_service_ai: "CustomerServiceAIService | None" = None
 plugin_flow_editor: "PluginFlowEditor | None" = None
 agent_handbook_service = None
 fee_rule_repository = None
+fee_draft_service = None
 fee_quote_waybill_reader = None
 handbook_try_runtime = None
 knowledge_watch_service = None
@@ -693,7 +695,7 @@ async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
     global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service, agent_review_service, fee_rule_repository
-    global fee_quote_waybill_reader
+    global fee_quote_waybill_reader, fee_draft_service
     global handbook_try_runtime, knowledge_watch_service
     global automation_project_entrypoints
     global feishu_binding_service
@@ -915,6 +917,7 @@ async def lifespan(app: FastAPI):
     fee_rule_repository = FeeRuleRepository(runtime.memory.connection_factory)
     agent_review_service = _agent_review_service(runtime, project_policy_service, business_service)
     knowledge_watch_service = _knowledge_watch_service(runtime, fee_rule_repository)
+    fee_draft_service = _fee_draft_service(runtime, fee_rule_repository, ai_task_gateway)
     fee_quote_waybill_reader = _fee_quote_waybill_reader(business_service)
     agent_business_actions = _agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
                                                      project_policy_service.identity_access)
@@ -1103,6 +1106,12 @@ app.include_router(
         admin_provider=lambda request: _require_console_admin_request(request),
         super_admin_provider=lambda request: _require_console_super_admin_request(request),
         source_page_provider=lambda title, page: _fee_source_pages().page(title, page),
+    )
+)
+app.include_router(
+    create_fee_drafts_router(
+        service_provider=lambda: fee_draft_service,
+        admin_provider=lambda request: _require_console_admin_request(request),
     )
 )
 app.include_router(
@@ -1837,6 +1846,18 @@ def _knowledge_watch_service(runtime, fee_rules):
     return KnowledgeWatchService(repository=KnowledgeWatchRepository(runtime.memory.connection_factory),
                                  list_documents=FeishuKnowledgeSource().list_documents,
                                  rule_versions=fee_rules.list_versions, notify=notify)
+
+
+def _fee_draft_service(runtime, fee_rules, gateway):
+    """业务手册 → 计算规则 → 从手册起草: knowledge-base PDFs, page pictures and the shared AI gateway."""
+    from agent.fee_drafting import FeeDraftService
+    from shared.knowledge_watch_repository import KnowledgeWatchRepository
+    from tools.feishu_knowledge import FeishuKnowledgeSource
+
+    knowledge = FeishuKnowledgeSource()
+    return FeeDraftService(documents=KnowledgeWatchRepository(runtime.memory.connection_factory).documents,
+                           read_pdf=knowledge.pdf_document, page_images=knowledge.pdf_page_images,
+                           gateway=gateway, repository=fee_rules)
 
 
 _FEE_SOURCE_PAGES = None

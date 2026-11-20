@@ -470,3 +470,49 @@ button[disabled] { cursor: not-allowed; }
 /* 业务手册 tabs are underlined; the shell's selected-tab pill (style.css) does not apply here. */
 .main-content .handbook [role="tab"][aria-selected="true"] { background: none; box-shadow: none; }
 .hb-filter { white-space: nowrap; }
+.hb-fee-tools { gap: 16px; }
+
+/* 计算规则 → 从手册起草 (2026-11-20, 方案 B): pick a PDF and a chapter, the AI drafts, keep drafts. */
+.hb-draft__steps { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0; padding: 4px 0 12px; border-bottom: 1px solid var(--line-subtle); font-size: var(--fs-caption); color: var(--text-tertiary); }
+.hb-draft__steps li { display: flex; align-items: center; gap: 6px; }
+.hb-draft__steps li span { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line-strong); font-family: var(--font-num); }
+.hb-draft__steps li[data-state="current"] { color: var(--text-primary); font-weight: 500; }
+.hb-draft__steps li[data-state="current"] span { border-color: var(--brand-red); color: var(--brand-red); }
+.hb-draft__steps li[data-state="done"] span { border-color: var(--status-success); color: var(--status-success); }
+.hb-draft__body { display: grid; gap: 12px; padding-top: 12px; font-size: var(--fs-body); }
+.hb-draft__body > p { margin: 0; line-height: 1.7; }
+.hb-draft__loading { padding: 32px 0; text-align: center; }
+.hb-draft__docs, .hb-draft__chapters, .hb-draft__fees, .hb-draft__stages, .hb-draft__lines { list-style: none; margin: 0; padding: 0; }
+.hb-draft__docs { display: grid; gap: 8px; }
+.hb-draft__doc { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 1px solid var(--line-default); border-radius: var(--r-block); background: var(--bg-surface); font: inherit; text-align: left; cursor: pointer; }
+.hb-draft__doc:hover { border-color: var(--line-strong); background: var(--bg-subtle); }
+.hb-draft__doc > span { display: grid; gap: 2px; flex: 1; }
+.hb-draft__doc svg { width: 16px; height: 16px; color: var(--text-tertiary); }
+.hb-draft__picked { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 10px 12px; border-radius: var(--r-block); background: var(--bg-subtle); }
+.hb-draft__chapters { display: grid; gap: 2px; max-height: 420px; overflow: auto; padding: 4px 0; border: 1px solid var(--line-subtle); border-radius: var(--r-block); }
+.hb-draft__chapters li { padding-left: calc(var(--level, 0) * 18px); }
+.hb-draft__chapters label, .hb-draft__custom label { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: var(--r-control); cursor: pointer; }
+.hb-draft__chapters label:hover { background: var(--bg-subtle); }
+.hb-draft__chapters label[data-disabled="true"] { color: var(--text-disabled); cursor: default; }
+.hb-draft__chapters label > span:first-of-type { flex: 1; }
+.hb-draft__body input[type="radio"], .hb-draft__body input[type="checkbox"] { appearance: auto !important; width: 14px; height: 14px; flex: none; }
+.hb-draft__custom { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hb-draft__custom input[type="number"] { width: 72px; min-height: 32px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: var(--r-control); font: inherit; }
+.hb-draft__go { flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 4px; }
+.hb-draft__stages { display: grid; gap: 8px; }
+.hb-draft__stages li { display: flex; align-items: center; gap: 10px; color: var(--text-tertiary); }
+.hb-draft__stages li span { display: inline-grid; place-items: center; width: 20px; height: 20px; }
+.hb-draft__stages li[data-state="current"] { color: var(--text-primary); font-weight: 500; }
+.hb-draft__stages li[data-state="current"] svg { width: 16px; height: 16px; animation: hb-spin 1.2s linear infinite; color: var(--brand-red); }
+.hb-draft__stages li[data-state="done"] span { color: var(--status-success); }
+.hb-draft__fees { display: grid; gap: 12px; }
+.hb-draft__fee { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line-default); border-radius: var(--r-block); }
+.hb-draft__fee[data-picked="false"] { opacity: 0.6; }
+.hb-draft__fee-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hb-draft__fee-head label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.hb-draft__lines { display: grid; gap: 4px; }
+.hb-draft__lines li { display: flex; justify-content: space-between; gap: 12px; line-height: 1.6; }
+.hb-draft__lines li .hb-meta { flex: none; }
+.hb-draft__questions { padding: 8px 10px; border-radius: var(--r-control); background: var(--status-warn-surface); font-size: var(--fs-caption); }
+.hb-draft__questions ul { margin: 4px 0 0; padding-left: 18px; }
+@media (max-width: 720px) { .hb-draft__lines li { flex-direction: column; gap: 0; } }

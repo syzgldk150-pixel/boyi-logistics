@@ -66,6 +66,15 @@ RULE = {
     "trial_count": 0, "people": {"6": "示例编辑"},
     "submit_blockers": ["还没有填写执行日期（以总部通知为准）。", "保存后还没有试算过，请至少试算一个场景。"],
 }
+JOB_ID = "33333333-4444-4555-8666-777777777777"
+DRAFT_JOB = {"job_id": JOB_ID, "status": "DONE", "stage": "完成", "chapter": "第一章 上楼", "start": 2, "end": 3, "elapsed": 64,
+             "document_title": "示例物流手册 V1", "saved": {}, "stages": ["读取手册", "生成页面图片", "AI 起草", "检查结果"],
+             "result": {"skipped": ["第 3 页的图示没有整理"], "fees": [
+                 {"index": 0, "name": "上楼费", "existing": True, "params": ["结算重量", "送到几楼"], "questions": [
+                     {"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""}],
+                  "lines": [{"text": "有电梯：5 元 + 0.06 元/kg × 结算重量", "location": "第一章 第 2 页"}]},
+                 {"index": 1, "name": "示例搬运费", "existing": False, "params": [], "questions": [],
+                  "lines": [{"text": "示例搬运费：20 元", "location": "第一章 第 3 页"}]}]}}
 # A 1×1 PNG standing in for a manual page picture.
 PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABc3UBGAAAAABJRU5ErkJggg=="
 SOURCES = {
@@ -116,7 +125,7 @@ def _open(browser, user):
     context = browser.new_context(viewport={"width": 1440, "height": 1080})
     page = context.new_page()
     page.set_default_timeout(5000)
-    errors, posts = [], []
+    errors, posts, polls = [], [], []
     page.on("pageerror", lambda error: errors.append(str(error)))
 
     def serve(route):
@@ -144,6 +153,19 @@ def _open(browser, user):
             reply = {"document": "示例物流手册 V1", "page": 1, "png_base64": PIXEL}
         elif path == "/handbook/fee-rules/effective-dates":
             reply = {"updated": 1}
+        elif path == "/handbook/fee-drafts/documents":
+            reply = {"documents": [{"node_token": "n1", "title": "示例物流手册 V1.pdf", "space": "示例空间"}]}
+        elif path == "/handbook/fee-drafts/outline":
+            reply = {"node_token": "n1", "title": "示例物流手册 V1.pdf", "page_count": 30, "chapters": [
+                {"title": "第一篇 收费", "level": 0, "start": 1, "end": 30},
+                {"title": "第一章 上楼", "level": 1, "start": 2, "end": 3}]}
+        elif path == "/handbook/fee-drafts/jobs":
+            reply = {"job_id": JOB_ID}
+        elif path == f"/handbook/fee-drafts/jobs/{JOB_ID}":
+            polls.append(1)
+            reply = DRAFT_JOB if len(polls) > 1 else {**DRAFT_JOB, "status": "RUNNING", "stage": "AI 起草", "result": None}
+        elif path == f"/handbook/fee-drafts/jobs/{JOB_ID}/save":
+            reply = {"created": [{"rule_id": RULE_ID, "fee_name": "上楼费", "new_fee": False}]}
         elif path == f"/handbook/fee-rules/{RULE_ID}/checks":
             reply = {"saved": True, "row_version": 2}
         elif path == f"/handbook/fee-rules/{RULE_ID}":
@@ -293,6 +315,35 @@ def test_editor_sees_workflow_and_no_approval(browser):
         assert "未写入任何数据" in answer and page.locator("[data-try-recent] button").count() == 1
         _shot(page, "57-try")
         assert errors == []
+
+
+def test_editor_drafts_fees_from_a_manual_chapter(browser):
+    context, page, errors, posts = _open(browser, {"id": 6, "role": "admin", "access_permissions": ("handbook:view", "handbook:operate")})
+    with context:
+        page.click("[data-handbook-tab='fees']")
+        page.wait_for_selector("[data-line]")  # the first draft opens by itself
+        page.click("[data-fee-draft]")
+        page.click("[data-draft-doc='n1']")
+        page.wait_for_selector("[data-draft-chapter='1']")
+        assert page.locator("[data-draft-chapter='0']").is_disabled()  # 30 pages is too long for one draft
+        assert page.locator("[data-draft-start]").is_disabled()
+        page.check("[data-draft-chapter='1']")
+        page.click("[data-draft-start]")
+        page.wait_for_selector(".hb-draft__stages")
+        assert "正在起草 第一章 上楼" in page.inner_text("[data-fee-editor]")
+        page.wait_for_selector(".hb-draft__fee", timeout=12000)
+        result = page.inner_text("[data-fee-editor]")
+        assert "起草了 2 项费用" in result and "已有同名 · 存为新版本" in result and "新费用" in result
+        assert "第 3 页的图示没有整理" in result and "混装时怎么收？" in result
+        page.uncheck("[data-draft-pick='1']")
+        _shot(page, "54-draft")
+        page.click("[data-draft-save]")
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已保存 1 个草稿')")
+        start = [body for path, body in posts if path == "/handbook/fee-drafts/jobs"][-1]
+        assert start == {"node_token": "n1", "start": 2, "end": 3, "chapter": "第一章 上楼"}
+        assert [body for path, body in posts if path.endswith("/save")][-1] == {"indices": [0]}
+        page.wait_for_selector("[data-line]")  # the kept draft opens in 核对
+        assert not errors
 
 
 def test_super_admin_review_needs_confirmation(browser):

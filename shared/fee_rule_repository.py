@@ -191,7 +191,7 @@ class FeeRuleRepository:
         """Trial runs on this version since its content was last saved (or copied)."""
         cursor.execute("SELECT COUNT(*) AS n FROM agent_fee_rule_events WHERE rule_id=%s AND action='TRIAL' AND event_id >"
                        " COALESCE((SELECT MAX(event_id) FROM agent_fee_rule_events WHERE rule_id=%s"
-                       " AND action IN ('SAVE', 'COPY', 'CREATE')), 0)", (rule_id, rule_id))
+                       " AND action IN ('SAVE', 'COPY', 'CREATE', 'DRAFT')), 0)", (rule_id, rule_id))
         return int(self._rows(cursor)[0]["n"])
 
     def get(self, rule_id: str) -> dict[str, Any]:
@@ -285,6 +285,28 @@ class FeeRuleRepository:
                             actor_id, actor_id))
             self._event(cursor, new_id, "CREATE", actor_id, {"fee_name": name})
         return new_id
+
+    def add_drafted(self, *, fee_name: Any, content: Mapping[str, Any], checks: Any, actor_id: str,
+                    version_label: str, detail: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep one AI-drafted fee (计算规则 → 从手册起草) as a draft: a new version of the fee with the
+        same name, or a new fee. Approved versions are untouched; the draft goes through 核对."""
+        name, label, checks = normalize_fee_name(fee_name), normalize_label(version_label), normalize_checks(checks)
+        if not isinstance(content, Mapping):
+            raise FeeRuleError("FEE_RULE_CONTENT_INVALID", "规则内容格式无效。")
+        new_id = str(uuid.uuid4())
+        with self._cursor() as cursor:
+            cursor.execute("SELECT fee_kind FROM agent_fee_rule_versions WHERE fee_name=%s AND status<>'RETIRED'"
+                           " GROUP BY fee_kind", (name,))
+            kinds = [row["fee_kind"] for row in self._rows(cursor)]
+            if len(kinds) > 1:
+                raise FeeRuleError("FEE_RULE_NAME_TAKEN", f"有多种费用都叫“{name}”，请先在计算规则里改名后再保存。")
+            kind = kinds[0] if kinds else "fee_" + secrets.token_hex(6)
+            cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, fee_name, version_label, status,"
+                           " effective_from, content_json, checks_json, created_by, updated_by)"
+                           " VALUES (%s, %s, %s, %s, 'DRAFT', NULL, %s, %s, %s, %s)",
+                           (new_id, kind, name, label, _dump(content), _dump(checks), actor_id, actor_id))
+            self._event(cursor, new_id, "DRAFT", actor_id, {**dict(detail), "fee_name": name, "new_fee": not kinds})
+        return {"rule_id": new_id, "fee_name": name, "new_fee": not kinds}
 
     def copy_to_draft(self, rule_id: str, *, actor_id: str) -> str:
         """Start a new draft from any version; approved versions themselves stay unchanged."""

@@ -30,6 +30,7 @@ _FEE_FIELDS = {"save": ("fee_name", "version_label", "effective_from", "content"
                "checks": ("checks", "row_version"), "trial": ("values", "boundary"), "copy": ()}
 _QUOTE_FIELDS = ("billing_date", "fee_kinds", "values", "tracking_number")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_NODE_TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
 
 
 class HandbookServiceMixin:
@@ -176,6 +177,41 @@ class HandbookServiceMixin:
         endpoint = f"/internal/v1/admin/fee-rules/source-page?document={quote(document, safe='')}&page={int(page)}"
         result = self._agent_request("GET", endpoint, timeout=40, console_principal=context["_console_principal"])
         self._handbook_reply(handler, result, "手册原页图片暂时无法读取。")
+
+    # -- 从手册起草 (方案 B) -----------------------------------------------------------------
+
+    def _handle_fee_drafts(self, handler: BaseHTTPRequestHandler, action: str, job_id: str | None = None,
+                           query: dict[str, list[str]] | None = None) -> None:
+        """Documents, outline, start a draft, read a draft job, keep chosen drafts; the Agent does the work."""
+        write = action in {"start", "save"}
+        context = self._handbook_context(handler, write=write)
+        if context is None:
+            return
+        principal = context["_console_principal"]
+        base = "/internal/v1/admin/fee-drafts"
+        if job_id is not None and not _ENTRY_ID.fullmatch(job_id):
+            self._send_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "message": "没有找到这次起草。"})
+            return
+        if action == "documents":
+            result = self._agent_request("GET", f"{base}/documents", timeout=15, console_principal=principal)
+        elif action == "outline":
+            node = str(((query or {}).get("node_token") or [""])[0]).strip()
+            if not _NODE_TOKEN.fullmatch(node):
+                self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "请选择文档。"})
+                return
+            result = self._agent_request("GET", f"{base}/outline?node_token={quote(node, safe='')}", timeout=60,
+                                         console_principal=principal)
+        elif action == "start":
+            body = self._parse_json_body(handler)
+            payload = {key: body[key] for key in ("node_token", "start", "end", "chapter") if key in body}
+            result = self._agent_request("POST", f"{base}/jobs", payload=payload, timeout=15, console_principal=principal)
+        elif action == "job":
+            result = self._agent_request("GET", f"{base}/jobs/{job_id}", timeout=15, console_principal=principal)
+        else:
+            body = self._parse_json_body(handler)
+            result = self._agent_request("POST", f"{base}/jobs/{job_id}/save", payload={"indices": body.get("indices")},
+                                         timeout=30, console_principal=principal)
+        self._handbook_reply(handler, result, "从手册起草暂时不可用，请稍后重试。")
 
     # -- 报价 -----------------------------------------------------------------------------
 
