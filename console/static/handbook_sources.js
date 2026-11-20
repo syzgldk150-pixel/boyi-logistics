@@ -56,7 +56,8 @@
           <p>${escapeHtml(item.detail)}</p>
           <p class="hb-meta">${doc?.space ? `空间：${escapeHtml(doc.space)} · ` : ""}${escapeHtml(formatTime(item.detected_at))} 检查${checked && item.checked_at ? ` · ${escapeHtml(formatTime(item.checked_at))} 已检查` : ""}</p>
           <p class="hb-meta">${rules.length ? `<i class="hb-dot" data-tone="ok"></i>关联规则：${escapeHtml(rules.join("、"))}` : "尚未被规则引用"}</p>
-          ${!checked && canEdit ? `<div class="hb-actions"><button class="ghost-btn hb-btn-sm" type="button" data-check="${item.reminder_id}">标记已检查</button></div>` : ""}</li>`;
+          ${!checked && canEdit ? `<div class="hb-actions"><button class="ghost-btn hb-btn-sm" type="button" data-check="${item.reminder_id}">标记已检查</button>
+            ${/\.pdf$/i.test(item.title || "") ? `<button class="ghost-btn hb-btn-sm" type="button" data-draft-from="${escapeHtml(item.node_token)}"><i data-feather="zap"></i><span>从这份文件起草</span></button>` : ""}</div>` : ""}</li>`;
       }).join("") : `<li class="hb-card hb-empty hb-empty--wide"><i data-feather="check-circle"></i><p>没有需要处理的变化。</p>${last ? `<span class="hb-meta">上次检查 ${escapeHtml(formatTime(last.at))}</span>` : ""}</li>`;
 
       const query = state.query.trim().toLowerCase();
@@ -99,6 +100,12 @@
     root.addEventListener("click", (event) => {
       const target = event.target.closest("button");
       if (!target || target.disabled) return;
+      if (target.dataset.draftFrom) {
+        // 改版只看变化 (2026-11-20): open 计算规则 → 从手册起草 with this document chosen.
+        document.querySelector("[data-handbook-tab='fees']")?.click();
+        document.dispatchEvent(new CustomEvent("handbook:draft-from", { detail: { nodeToken: target.dataset.draftFrom } }));
+        return;
+      }
       if (target.hasAttribute("data-sources-scan")) {
         run("正在检查知识库，可能需要十几秒……", async () => { await request("/handbook/sources/scan", {}); await reload(); }, "检查完成");
       } else if (target.hasAttribute("data-sources-check-all")) {

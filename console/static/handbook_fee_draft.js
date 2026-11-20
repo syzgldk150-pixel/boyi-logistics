@@ -64,18 +64,27 @@
         <p class="hb-meta">已用 ${Number(job.elapsed || 0)} 秒。AI 会把每个数字对照原文检查，不合格会自动重做一次。</p>`;
     }
 
+    function compareText(compare) {
+      if (!compare) return "";
+      return `<p class="hb-meta hb-draft__compare">与现行 ${escapeHtml(compare.version_label || "")}${compare.effective_from ? `（执行日期 ${escapeHtml(compare.effective_from)}）` : ""}相比：
+        <b>${compare.changed}</b> 行有变化或新增 · ${compare.same} 行不变（保存后沿用已核对）${compare.removed?.length ? ` · <b>${compare.removed.length}</b> 行删掉了` : ""}</p>`;
+    }
+
     function feeCard(fee) {
       const picked = state.picked.has(fee.index);
       const open = state.open.has(fee.index);
-      const lines = fee.lines || [];
-      const shown = open ? lines : lines.slice(0, 5);
+      // A new version of an existing fee shows what changed first; unchanged lines fold away.
+      const lines = fee.compare ? [...(fee.lines || [])].sort((a, b) => Number(Boolean(b.changed)) - Number(Boolean(a.changed))) : fee.lines || [];
+      const shown = open ? lines : fee.compare ? lines.filter((line) => line.changed).slice(0, 8) : lines.slice(0, 5);
       const saved = (state.job.saved || {})[String(fee.index)];
       return `<li class="hb-draft__fee" data-picked="${picked}">
         <div class="hb-draft__fee-head"><label><input type="checkbox" data-draft-pick="${fee.index}" ${picked ? "checked" : ""} ${saved ? "disabled" : ""}><b>${escapeHtml(fee.name)}</b></label>
           ${saved ? '<span class="hb-badge" data-tone="active">已保存</span>' : fee.existing ? '<span class="hb-badge" data-tone="pending">已有同名 · 存为新版本</span>' : '<span class="hb-badge">新费用</span>'}</div>
         ${fee.params?.length ? `<p class="hb-meta">要填：${escapeHtml(fee.params.join("、"))}</p>` : ""}
-        <ul class="hb-draft__lines">${shown.map((line) => `<li><span>${escapeHtml(line.text)}</span><span class="hb-meta">${escapeHtml(line.location || "")}</span></li>`).join("")}</ul>
-        ${lines.length > 5 ? `<button class="hb-link" type="button" data-draft-more="${fee.index}">${open ? "收起" : `展开全部 ${lines.length} 行`}</button>` : ""}
+        ${compareText(fee.compare)}
+        <ul class="hb-draft__lines">${shown.map((line) => `<li data-changed="${Boolean(fee.compare && line.changed)}"><span>${fee.compare && line.changed ? '<span class="hb-badge" data-tone="pending">有变化</span> ' : ""}${escapeHtml(line.text)}</span><span class="hb-meta">${escapeHtml(line.location || "")}</span></li>`).join("")}</ul>
+        ${fee.compare?.removed?.length && open ? `<ul class="hb-draft__lines hb-draft__removed">${fee.compare.removed.map((text) => `<li><span><span class="hb-badge">删掉了</span> ${escapeHtml(text)}</span></li>`).join("")}</ul>` : ""}
+        ${lines.length > shown.length || open ? `<button class="hb-link" type="button" data-draft-more="${fee.index}">${open ? "收起" : `展开全部 ${lines.length} 行${fee.compare?.removed?.length ? "和删掉的行" : ""}`}</button>` : ""}
         ${fee.questions?.length ? `<div class="hb-draft__questions"><b>需要拍板</b><ul>${fee.questions.map((item) => `<li>${escapeHtml(item.text)}</li>`).join("")}</ul></div>` : ""}</li>`;
     }
 
@@ -186,9 +195,18 @@
     }
 
     return {
-      async mount(node) {
+      async mount(node, { nodeToken = "" } = {}) {
         state.node = node;
         state.error = "";
+        if (nodeToken) {
+          // From a 知识来源 reminder: that document, straight to choosing a chapter.
+          state.job = null; state.picked = new Set(); state.open = new Set();
+          state.document = nodeToken; state.step = 1; state.chapter = null; state.outline = null;
+          state.loading = "正在读取手册目录……第一次需要十几秒。"; render();
+          await guarded(async () => { state.outline = await request(`${BASE}/outline?node_token=${encodeURIComponent(nodeToken)}`); state.loading = ""; });
+          if (!state.outline) { state.step = 0; state.documents = (await request(`${BASE}/documents`).catch(() => ({ documents: [] }))).documents; render(); }
+          return;
+        }
         if (state.job && state.job.status === "RUNNING") { state.step = 2; render(); poll(); return; }
         if (state.job && state.job.status === "DONE" && state.step === 3) { render(); return; }
         state.step = 0; state.loading = "正在读取知识来源里的 PDF……";

@@ -516,3 +516,8 @@ button[disabled] { cursor: not-allowed; }
 .hb-draft__questions { padding: 8px 10px; border-radius: var(--r-control); background: var(--status-warn-surface); font-size: var(--fs-caption); }
 .hb-draft__questions ul { margin: 4px 0 0; padding-left: 18px; }
 @media (max-width: 720px) { .hb-draft__lines li { flex-direction: column; gap: 0; } }
+/* 改版只看变化 (2026-11-20, 方案 C) */
+.hb-lines li[data-changed="true"] { background: var(--status-warn-surface); }
+.hb-draft__lines li[data-changed="true"] { font-weight: 500; }
+.hb-draft__compare { margin: 0; }
+.hb-draft__removed li { color: var(--text-tertiary); text-decoration: line-through; }

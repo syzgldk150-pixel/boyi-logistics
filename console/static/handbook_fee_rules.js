@@ -317,14 +317,17 @@
         if (!groups.length || groups[groups.length - 1].key !== key) groups.push({ key, document: line.document, location: line.location, pages: line.pages || [], lines: [] });
         groups[groups.length - 1].lines.push(line);
       });
+      const compare = record.compare;
       return `<div class="hb-card__head"><h3>收费表</h3><span class="hb-meta" data-tone="${ticked === lines.length ? "ok" : "warn"}">已核对 ${ticked} / ${lines.length} 行</span></div>
         <p class="hb-meta">逐行对照手册原页：金额、档位和条件都对就打勾。不对请点“改”到规则内容里修改，保存后改动的那一行要重新核对。</p>
+        ${compare ? `<div class="hb-alert" data-tone="info"><i data-feather="git-pull-request"></i><span>与${compare.status === "APPROVED" ? "现行" : ""} ${escapeHtml(compare.version_label || "")}${compare.effective_from ? `（执行日期 ${escapeHtml(compare.effective_from)}）` : ""}相比：
+          <b>${compare.changed}</b> 行有变化或新增（标了“有变化”，重点核对）· ${compare.same} 行不变（已沿用上一版的核对）${compare.removed?.length ? `<br>上一版有、这一版删掉的：${compare.removed.map(escapeHtml).join("；")}` : ""}</span></div>` : ""}
         ${groups.map((group) => `<div class="hb-linegroup">
           <div class="hb-linegroup__head"><span>${group.document ? `${escapeHtml(group.document)} · ${escapeHtml(group.location || "未写页码")}` : '<span class="hb-meta" data-tone="warn">缺出处</span>'}</span>
             <span class="hb-actions">${pageButtons(group.document, group.pages)}</span></div>
-          <ul class="hb-lines">${group.lines.map((line) => `<li data-done="${line.done}">
+          <ul class="hb-lines">${group.lines.map((line) => `<li data-done="${line.done}" data-changed="${Boolean(record.compare && line.changed)}">
             <label><input type="checkbox" data-line="${escapeHtml(line.sig)}" ${line.done ? "checked" : ""} ${canTick ? "" : "disabled"}>
-              <span>${escapeHtml(line.text)}</span></label>
+              <span>${record.compare && line.changed ? '<span class="hb-badge" data-tone="pending">有变化</span> ' : ""}${escapeHtml(line.text)}</span></label>
             ${canEdit && record.status === "DRAFT" ? `<button class="hb-link" type="button" data-line-edit="${escapeHtml(line.path)}">改</button>` : ""}</li>`).join("")}</ul></div>`).join("")}`;
     }
 
@@ -710,6 +713,13 @@
       eachRoot((_node, path) => keys.add(path.join(".")));
       return keys;
     }
+
+    document.addEventListener("handbook:draft-from", async (event) => {
+      if (!draft || !(await leaveOk())) return;
+      state.current = null; state.dirty = false;
+      renderList();
+      draft.mount($("[data-fee-editor]"), { nodeToken: event.detail?.nodeToken || "" });
+    });
 
     async function draftSaved(created) {
       if (!created.length) { state.current = null; renderList(); renderEditor(); return; }

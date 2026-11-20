@@ -108,7 +108,10 @@ class _Repository:
         self.added = []
 
     def list_versions(self, include_retired=False):
-        return [{"fee_name": "开箱清点", "status": "DRAFT"}]
+        content = copy.deepcopy(BATCH["count_check"]["content"])
+        content["formula"]["tiers"][1]["then"]["max"] = "80"  # the version in force differs in one line
+        return [{"rule_id": "r-live", "fee_kind": "count_check", "fee_name": "开箱清点", "status": "APPROVED",
+                 "version_label": "V6.0", "effective_from": "2026-01-01", "content": content, "checks": []}]
 
     def add_drafted(self, **kwargs):
         self.added.append(kwargs)
@@ -171,6 +174,8 @@ def test_a_job_reads_once_drafts_and_keeps_chosen_fees_as_drafts():
     assert view["status"] == "DONE" and view["document_title"] == "示例手册 V1"
     fee = view["result"]["fees"][0]
     assert fee["existing"] is True and fee["lines"][1]["text"].endswith("（最低 5 元，最高 100 元）")
+    assert (fee["compare"]["version_label"], fee["compare"]["same"], fee["compare"]["changed"]) == ("V6.0", 1, 1)
+    assert [line["changed"] for line in fee["lines"]] == [False, True]
     assert reads == ["n1"]  # the outline read is reused by the job
     assert gateway.calls == [("handbook.fee_draft", "第 59–60 页", 2, "fee-draft:n1:59-60")]
     with pytest.raises(FeeRuleError, match="没有找到这次起草"):

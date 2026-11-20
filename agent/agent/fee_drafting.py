@@ -20,7 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 from shared.ai_tasks import AITaskError
 from shared.fee_rule_drafting import DRAFT_LABEL, chapters, drafting_payload, drafting_spec, page_range
 from shared.fee_rule_lines import fee_lines
-from shared.handbook_fee_rules import FeeRuleError
+from shared.handbook_fee_rules import FeeRuleError, base_version, compare_lines
 from shared.redaction import redact_text
 
 logger = logging.getLogger(__name__)
@@ -112,17 +112,22 @@ class FeeDraftService:
                 raise FeeRuleError("FEE_DRAFT_READ_FAILED", f"页面图片没有生成：{redact_text(str(exc))[:160]}") from exc
             self._set(job_id, stage=STAGES[2])
             title = str(document["title"]).removesuffix(".pdf").removesuffix(".PDF").strip()
-            existing = sorted({item["fee_name"] for item in await asyncio.to_thread(self._repository.list_versions)
-                               if item.get("status") != "RETIRED"})
+            versions = [item for item in await asyncio.to_thread(self._repository.list_versions)
+                        if item.get("status") != "RETIRED"]
+            existing = sorted({item["fee_name"] for item in versions})
             payload = drafting_payload(document=title, pages=pages, existing=existing, chapter=job["chapter"])
             answer = await self._gateway.run(drafting_spec(document=title, pages=pages, existing=existing), payload,
                                              subject_ref=f"fee-draft:{job['node_token']}:{first}-{last}",
                                              actor_id=job["actor_id"], images=images)
             self._set(job_id, stage=STAGES[3])
-            fees = [{"index": index, "name": fee["name"], "existing": fee["existing"], "content": fee["content"],
-                     "questions": fee["questions"], "lines": fee_lines(fee["content"]),
-                     "params": [param.get("label") for param in fee["content"].get("params") or []]}
-                    for index, fee in enumerate(answer.result["fees"])]
+            fees = []
+            for index, fee in enumerate(answer.result["fees"]):
+                lines = fee_lines(fee["content"])
+                # 改版只看变化: an existing fee shows what differs from its version in force.
+                compare = compare_lines(lines, base_version(versions, fee_name=fee["name"])) if fee["existing"] else None
+                fees.append({"index": index, "name": fee["name"], "existing": fee["existing"], "content": fee["content"],
+                             "questions": fee["questions"], "lines": lines, "compare": compare,
+                             "params": [param.get("label") for param in fee["content"].get("params") or []]})
             self._set(job_id, status="DONE", stage="完成", run_id=answer.run_id, document_title=title,
                       result={"fees": fees, "skipped": answer.result["skipped"]}, finished=self._clock())
         except AITaskError as exc:

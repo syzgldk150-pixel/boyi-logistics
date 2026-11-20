@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 RULE_STATUSES = ("DRAFT", "PENDING", "APPROVED", "RETIRED")
 # Which date of a waybill picks the rule version: its billing (开单) date,
@@ -70,6 +70,56 @@ def review_lines(record: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     ticked = {item.get("sig") for item in record.get("checks") or [] if item.get("kind") == "line"}
     return [{**line, "done": line["sig"] in ticked} for line in fee_lines(record.get("content"))]
+
+
+def base_version(versions: Iterable[Mapping[str, Any]], *, fee_kind: str | None = None, fee_name: str | None = None,
+                 exclude: str | None = None) -> Mapping[str, Any] | None:
+    """The version a new one is compared with (改版只看变化, 2026-11-20): the fee's approved version
+    with the latest effective date, else its most recently updated version that is not retired."""
+    same = [item for item in versions if item.get("rule_id") != exclude and item.get("status") != "RETIRED"
+            and ((fee_kind and item.get("fee_kind") == fee_kind) or (fee_name and item.get("fee_name") == fee_name))]
+    approved = [item for item in same if item.get("status") == "APPROVED"]
+    if approved:
+        return max(approved, key=lambda item: (str(item.get("effective_from") or ""), str(item.get("approved_at") or "")))
+    return max(same, key=lambda item: str(item.get("updated_at") or ""), default=None)
+
+
+def compare_lines(lines: Sequence[Mapping[str, Any]], base: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """How a version's 收费表 differs from ``base``, by line text: unchanged lines, changed or new
+    lines, and lines the base had that are gone. Marks each line's ``changed``."""
+    if base is None:
+        return None
+    from shared.fee_rule_lines import fee_lines
+
+    before = [line["text"] for line in fee_lines(base.get("content"))]
+    known = set(before)
+    current = {line["text"] for line in lines}
+    for line in lines:
+        line["changed"] = line["text"] not in known
+    return {"rule_id": base.get("rule_id"), "version_label": base.get("version_label"), "status": base.get("status"),
+            "effective_from": base.get("effective_from"), "same": sum(not line["changed"] for line in lines),
+            "changed": sum(line["changed"] for line in lines), "removed": [text for text in before if text not in current]}
+
+
+def carry_over(checks: Sequence[Mapping[str, Any]], content: Any, base: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Keep what was already checked on ``base`` for a new version: a line with the same text keeps
+    its tick (only changed lines need checking again) and the same question keeps its answer."""
+    result = [dict(item) for item in checks]
+    if base is None:
+        return result
+    from shared.fee_rule_lines import fee_lines
+
+    ticked = {line["text"] for line in review_lines(base) if line["done"] or base.get("status") == "APPROVED"}
+    have = {item.get("sig") for item in result if item.get("kind") == "line"}
+    for line in fee_lines(content):
+        if line["text"] in ticked and line["sig"] not in have:
+            result.append({"kind": "line", "sig": line["sig"], "done": True})
+    answers = {item.get("text"): item for item in base.get("checks") or [] if item.get("kind") == "question" and item.get("answer")}
+    for item in result:
+        old = answers.get(item.get("text"))
+        if item.get("kind") == "question" and item.get("answer") is None and old and old["answer"] in (item.get("options") or []):
+            item["answer"], item["note"] = old["answer"], old.get("note") or ""
+    return result
 
 
 def approval_blockers(record: Mapping[str, Any]) -> list[str]:
@@ -160,5 +210,6 @@ def quote_catalog(records: Iterable[Mapping[str, Any]], *, business_date: date) 
 
 __all__ = [
     "FEE_NAME_LIMIT", "FeeRuleError", "FeeRuleSet", "RULE_STATUSES", "VERSION_DATE_BASIS", "approval_blockers",
+    "base_version", "carry_over", "compare_lines",
     "parse_content", "quote_catalog", "review_lines", "rule_from_record", "select_rule", "submit_blockers",
 ]

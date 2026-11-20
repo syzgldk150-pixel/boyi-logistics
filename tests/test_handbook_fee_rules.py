@@ -259,6 +259,18 @@ def test_migrations_087_090_repository_lifecycle(database):  # noqa: F811
                                  detail={})
     assert brand_new["new_fee"] is True and repo.get(brand_new["rule_id"])["fee_kind"].startswith("fee_")
 
+    copied = repo.get(repo.copy_to_draft(UPSTAIRS_ID, actor_id="7"))
+    assert all(line["done"] for line in copied["lines"]) and copied["compare"]["changed"] == 0  # copying keeps the checks
+    assert [item["answer"] for item in copied["checks"] if item.get("kind") == "question"] == [item["answer"] for item in answered]
+    edited = copy.deepcopy(copied["content"])
+    edited["definitions"]["普货"]["cases"][2]["then"]["items"][0]["amount"] = "6"
+    repo.save_draft(copied["rule_id"], version_label="V6.2", effective_from=None, content=edited, checks=copied["checks"],
+                    actor_id="7", expected_row_version=copied["row_version"])
+    changed = repo.get(copied["rule_id"])
+    assert sum(not line["done"] for line in changed["lines"]) == 1 and changed["compare"]["changed"] == 1
+    assert [line["text"] for line in changed["lines"] if line["changed"]] == [line["text"] for line in changed["lines"] if not line["done"]]
+    repo.retire(copied["rule_id"], actor_id="1", expected_row_version=changed["row_version"])
+
     created = repo.create_fee(fee_name="进仓服务费", actor_id="7")
     fresh = repo.get(created)
     assert fresh["fee_kind"].startswith("fee_") and fresh["status"] == "DRAFT" and fresh["trial_count"] == 0
@@ -407,3 +419,26 @@ def test_quote_api_uses_approved_rules_by_billing_date_and_keeps_the_quote():
     prefill = client.post("/internal/v1/admin/fee-quotes/waybill", json={"tracking_number": "r00099990001"}).json()["data"]
     assert prefill["tracking_number"] == "R00099990001" and prefill["pieces"] == 2
     assert client.post("/internal/v1/admin/fee-quotes/waybill", json={"tracking_number": "x"}).status_code == 422
+
+
+# -- 改版只看变化 (2026-11-20, 方案 C) ---------------------------------------------------------------
+
+def test_a_new_version_keeps_checks_of_unchanged_lines_and_shows_what_changed():
+    from shared.handbook_fee_rules import base_version, carry_over, compare_lines
+
+    old = _approved("count_check")
+    old["checks"] = [{"kind": "question", "text": "按哪个件数？", "options": ["签收件数", "其他（写明做法）"], "answer": "签收件数", "note": ""}]
+    other = {**_approved("count_check", effective="2026-06-01"), "rule_id": "r-old"}
+    draft = {**_approved("count_check"), "rule_id": "r-new", "status": "DRAFT"}
+    assert base_version([old, other, draft], fee_kind="count_check", exclude="r-new") is old  # the latest in force
+    content = copy.deepcopy(old["content"])
+    content["formula"]["tiers"][1]["then"]["max"] = "120"
+    checks = carry_over([{"kind": "question", "text": "按哪个件数？", "options": ["签收件数", "其他（写明做法）"], "answer": None, "note": ""}],
+                        content, old)
+    lines = review_lines({"content": content, "checks": checks})
+    assert [line["done"] for line in lines] == [True, False]  # only the changed line is left to check
+    assert checks[0]["answer"] == "签收件数"
+    compare = compare_lines(lines, old)
+    assert (compare["same"], compare["changed"], compare["version_label"]) == (1, 1, "V6.1")
+    assert [line["changed"] for line in lines] == [False, True] and "最高 100 元" in compare["removed"][0]
+    assert compare_lines(lines, None) is None

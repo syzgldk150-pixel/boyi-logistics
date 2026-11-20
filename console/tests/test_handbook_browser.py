@@ -61,7 +61,9 @@ RULE = {
         {"sig": "42ef3975026d82f5", "text": "其他情况 › 楼层加收 › 送到几楼 ≤ 2：0 元", "path": "formula.else.tiers.0.then", "kind": "fixed",
          "document": "", "location": "", "pages": [], "done": False},
         {"sig": "a6b3908a945bcfac", "text": "其他情况 › 楼层加收 › 送到几楼 > 2：0.1 元/kg × 结算重量", "path": "formula.else.tiers.1.then",
-         "kind": "rate", "document": "", "location": "", "pages": [], "done": False}],
+         "kind": "rate", "document": "", "location": "", "pages": [], "done": False, "changed": True}],
+    "compare": {"rule_id": "r-live", "version_label": "示例手册 V0", "status": "APPROVED", "effective_from": "2026-01-01",
+                "same": 2, "changed": 1, "removed": ["旧的一行：3 元"]},
     "events": [{"action": "SAVE", "actor_id": "6", "created_at": "2026-11-15T10:12:00"}],
     "trial_count": 0, "people": {"6": "示例编辑"},
     "submit_blockers": ["还没有填写执行日期（以总部通知为准）。", "保存后还没有试算过，请至少试算一个场景。"],
@@ -80,8 +82,8 @@ PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABc3U
 SOURCES = {
     "last_scan": {"at": "2026-11-15T08:30:00+08:00", "documents": 2, "reminders": 1, "baseline": False},
     "documents": [{"node_token": "n1", "title": "示例物流手册", "space": "示例空间", "edit_time": "1763170000", "cited_by": ["上楼费 示例手册 V1"]},
-                  {"node_token": "n2", "title": "示例收费调整通知", "space": "示例空间", "edit_time": "1763170000", "cited_by": []}],
-    "reminders": [{"reminder_id": 7, "node_token": "n2", "kind": "NEW", "title": "示例收费调整通知", "detail": "标题像收费通知", "status": "OPEN", "detected_at": "2026-11-15T00:30:00"}],
+                  {"node_token": "n2", "title": "示例收费调整通知.pdf", "space": "示例空间", "edit_time": "1763170000", "cited_by": []}],
+    "reminders": [{"reminder_id": 7, "node_token": "n2", "kind": "NEW", "title": "示例收费调整通知.pdf", "detail": "标题像收费通知", "status": "OPEN", "detected_at": "2026-11-15T00:30:00"}],
 }
 TRIAL = {"result": {"outcome": "AMOUNT", "outcome_text": "金额", "amount": "20.00", "reason": "", "missing": [],
                     "steps": ["楼层加收：送到几楼 5，落在 > 2 这一档", "0.1 元/kg × 结算重量 200 = 20", "合计 20.00"],
@@ -237,6 +239,7 @@ def test_editor_sees_workflow_and_no_approval(browser):
         side = page.inner_text(".hb-side")
         assert "生效检查" in side and "还差 4 项" in side and "0 / 4 项通过" in side and "保存后还没有试算" in side
         assert "2 处缺出处" in side and "1 项未回答" in side
+        assert "1 行有变化或新增" in review and "旧的一行：3 元" in review and page.locator("[data-changed='true']").count() == 1
         page.check("[data-line='38914bb1e4808a64']")
         page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('核对已保存')")
         ticked = [body for path, body in _posts if path.endswith("/checks")][-1]
@@ -343,6 +346,17 @@ def test_editor_drafts_fees_from_a_manual_chapter(browser):
         assert start == {"node_token": "n1", "start": 2, "end": 3, "chapter": "第一章 上楼"}
         assert [body for path, body in posts if path.endswith("/save")][-1] == {"indices": [0]}
         page.wait_for_selector("[data-line]")  # the kept draft opens in 核对
+        assert not errors
+
+
+def test_a_knowledge_reminder_opens_drafting_for_that_document(browser):
+    context, page, errors, _posts = _open(browser, {"id": 6, "role": "admin", "access_permissions": ("handbook:view", "handbook:operate")})
+    with context:
+        page.click("[data-handbook-tab='sources']")
+        page.click("[data-draft-from='n2']")
+        page.wait_for_selector("[data-draft-chapter='1']")
+        assert page.locator("[data-handbook-tab='fees']").get_attribute("aria-selected") == "true"
+        assert "示例物流手册 V1.pdf" in page.inner_text("[data-fee-editor]")
         assert not errors
 
 

@@ -3,7 +3,7 @@
 {% block breadcrumb %}业务手册{% endblock %}
 {% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261120-draft1">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261120-change1">{% endblock %}
 {% block content %}
 {# frontend-spec 52–58: 页签都是工作台（报价 2026-11-19 新增）；动作按身份隐藏，状态与阻塞项常驻可见。 #}
 <section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-label="业务手册">
@@ -163,9 +163,9 @@
 <script src="/static/handbook_common.js?v=20261119-spec52c"></script>
 <script src="/static/handbook.js?v=20261119-spec52c"></script>
 <script src="/static/handbook_fee_form.js?v=20261119-quote1"></script>
-<script src="/static/handbook_fee_draft.js?v=20261120-draft1"></script>
-<script src="/static/handbook_fee_rules.js?v=20261120-draft1"></script>
+<script src="/static/handbook_fee_draft.js?v=20261120-change1"></script>
+<script src="/static/handbook_fee_rules.js?v=20261120-change1"></script>
 <script src="/static/handbook_quote.js?v=20261120-robot1"></script>
 <script src="/static/handbook_try.js?v=20261119-spec52c"></script>
-<script src="/static/handbook_sources.js?v=20261119-spec52c"></script>
+<script src="/static/handbook_sources.js?v=20261120-change1"></script>
 {% endblock %}

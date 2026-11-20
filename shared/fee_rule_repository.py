@@ -19,8 +19,8 @@ from typing import Any, Callable, Iterator, Mapping
 
 from shared.admin_display_names import fetch_admin_display_names
 from shared.fee_rule_lines import fee_lines
-from shared.handbook_fee_rules import (FEE_NAME_LIMIT, FeeRuleError, approval_blockers, parse_content, review_lines,
-                                       submit_blockers)
+from shared.handbook_fee_rules import (FEE_NAME_LIMIT, FeeRuleError, approval_blockers, base_version, carry_over,
+                                       compare_lines, parse_content, review_lines, submit_blockers)
 
 ConnectionFactory = Callable[[], Any]
 _LABEL_LIMIT = 60
@@ -206,9 +206,17 @@ class FeeRuleRepository:
                 record["created_by"], record["updated_by"], record["submitted_by"], record["approved_by"],
                 *(item["actor_id"] for item in record["events"])})
         record["lines"] = review_lines(record)
+        if record["status"] in ("DRAFT", "PENDING"):
+            record["compare"] = compare_lines(record["lines"], self._base(record["fee_kind"], exclude=rule_id))
         record["submit_blockers"] = submit_blockers(record, trial_count=record["trial_count"])
         record["blockers"] = approval_blockers(record)
         return record
+
+    def _base(self, fee_kind: str, *, exclude: str) -> Mapping[str, Any] | None:
+        with self._cursor() as cursor:
+            cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE fee_kind=%s AND rule_id<>%s AND status<>'RETIRED'",
+                           (fee_kind, exclude))
+            return base_version([self._record(row) for row in self._rows(cursor)], fee_kind=fee_kind, exclude=exclude)
 
     def record_trial(self, rule_id: str, *, actor_id: str, detail: Mapping[str, Any]) -> None:
         """Note one trial calculation in the operation log; trials count towards submission."""
@@ -301,6 +309,10 @@ class FeeRuleRepository:
             if len(kinds) > 1:
                 raise FeeRuleError("FEE_RULE_NAME_TAKEN", f"有多种费用都叫“{name}”，请先在计算规则里改名后再保存。")
             kind = kinds[0] if kinds else "fee_" + secrets.token_hex(6)
+            if kinds:
+                cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE fee_kind=%s AND status<>'RETIRED'", (kind,))
+                base = base_version([self._record(row) for row in self._rows(cursor)], fee_kind=kind)
+                checks = carry_over(checks, content, base)
             cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, fee_name, version_label, status,"
                            " effective_from, content_json, checks_json, created_by, updated_by)"
                            " VALUES (%s, %s, %s, %s, 'DRAFT', NULL, %s, %s, %s, %s)",
@@ -314,8 +326,10 @@ class FeeRuleRepository:
         with self._cursor() as cursor:
             source = self._get(cursor, rule_id, lock=False)
             label = normalize_label((source["version_label"] + "-修改")[:_LABEL_LIMIT])
-            checks = [{**item, "answer": None, "note": ""} if item.get("kind") == "question" else {"text": item["text"], "done": False}
-                      for item in source["checks"] if item.get("kind") != "line"]
+            # Lines and answers stay checked; editing a number clears that line's tick on save.
+            checks = carry_over([{**item, "answer": None, "note": ""} if item.get("kind") == "question"
+                                 else {"text": item["text"], "done": False}
+                                 for item in source["checks"] if item.get("kind") != "line"], source["content"], source)
             cursor.execute("INSERT INTO agent_fee_rule_versions (rule_id, fee_kind, fee_name, version_label, status,"
                            " effective_from, content_json, checks_json, based_on, created_by, updated_by)"
                            " VALUES (%s, %s, %s, %s, 'DRAFT', NULL, %s, %s, %s, %s, %s)",
