@@ -863,7 +863,13 @@
       }
     });
 
-    run("正在读取……", loadList);
+    // Open the first version that still needs work (else the first one), so the 核对 view is
+    // what people see on arrival instead of an empty panel.
+    run("正在读取……", async () => {
+      await loadList();
+      const first = state.versions.find((item) => item.status === "DRAFT" || item.status === "PENDING") || state.versions[0];
+      if (first && !state.current) await openVersion(first.rule_id);
+    });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
