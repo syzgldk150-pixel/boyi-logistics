@@ -3,7 +3,7 @@
 {% block breadcrumb %}业务手册{% endblock %}
 {% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261120-review1">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261120-review2">{% endblock %}
 {% block content %}
 {# frontend-spec 52–58: 页签都是工作台（报价 2026-11-19 新增）；动作按身份隐藏，状态与阻塞项常驻可见。 #}
 <section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-label="业务手册">
@@ -48,7 +48,7 @@
       <aside class="hb-card hb-list" aria-labelledby="fee-list-title">
         <div class="hb-card__head"><div><h2 id="fee-list-title">计算规则</h2><p class="hb-card__sub" data-fee-summary>正在读取……</p></div>
           {% if can_edit %}<button class="ghost-btn hb-btn-sm" type="button" data-fee-create><i data-feather="plus"></i><span>新建费用</span></button>{% endif %}</div>
-        {% if can_edit %}<div class="hb-list__tools"><button class="hb-link" type="button" data-fee-batch-dates><i data-feather="calendar"></i><span>批量设执行日期</span></button></div>{% endif %}
+        {% if can_edit %}<div class="hb-fee-tools"><button class="hb-link" type="button" data-fee-batch-dates><i data-feather="calendar"></i><span>批量设执行日期</span></button></div>{% endif %}
         <ul class="hb-rows" data-fee-list></ul>
         <div class="hb-rules-note">
           <h3>规则说明</h3>

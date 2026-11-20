@@ -464,6 +464,9 @@ button[disabled] { cursor: not-allowed; }
 .hb-page { max-height: calc(100vh - 140px); overflow: auto; padding: 12px 16px; background: var(--bg-subtle); }
 .hb-page img { display: block; width: 100%; height: auto; background: #fff; }
 .hb-page p { margin: 24px 0; text-align: center; }
-.hb-list__tools { display: flex; justify-content: flex-end; margin-top: -4px; }
-.hb-list__tools .hb-link { display: inline-flex; align-items: center; gap: 4px; }
-.hb-list__tools svg { width: 14px; height: 14px; }
+.hb-fee-tools { display: flex; justify-content: flex-end; margin-top: -4px; }
+.hb-fee-tools .hb-link { display: inline-flex; align-items: center; gap: 4px; }
+.hb-fee-tools svg { width: 14px; height: 14px; }
+/* 业务手册 tabs are underlined; the shell's selected-tab pill (style.css) does not apply here. */
+.main-content .handbook [role="tab"][aria-selected="true"] { background: none; box-shadow: none; }
+.hb-filter { white-space: nowrap; }

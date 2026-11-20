@@ -193,6 +193,9 @@ def test_editor_sees_workflow_and_no_approval(browser):
         assert page.locator("[data-handbook-tab='entries'] [data-tab-count]").inner_text() == "1"
         assert "写作提示" in page.inner_text("[data-handbook-editor]")
         assert "全部 1" in page.inner_text("[data-entries-filters]")
+        # 2026-11-20: a clashing .hb-list__tools rule wrapped these filters one character per line.
+        assert page.locator("[data-entries-filters]").bounding_box()["height"] < 40
+        assert page.evaluate("getComputedStyle(document.querySelector('.hb-tab[aria-selected=\"true\"]')).boxShadow") == "none"
         _shot(page, "52-entries")
         page.click("[data-handbook-answer]")
         page.check("input[name='hb-answer-1'][value='不包含']")
