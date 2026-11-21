@@ -80,21 +80,21 @@
   .waybill-refresh-status { flex: 0 1 auto; margin: 0; padding: 0 8px; height: 20px; display: inline-flex; align-items: center; border: 0; border-radius: var(--r-chip); background: var(--status-warn-soft); color: var(--status-warn); font-size: var(--fs-tiny); }
   .waybill-notice { margin: 0 16px 10px; }
   .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; }
-  .waybill-table { width: 100%; min-width: 1062px; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-body); text-align: left; }
+  .waybill-table { width: 100%; min-width: 1130px; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-body); text-align: left; }
   .waybill-table th { position: sticky; top: 0; z-index: 1; height: 38px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; white-space: nowrap; border-bottom: 1px solid var(--line-default); }
   /* ③: every cell is top-aligned so the first lines share one baseline (12 + 16 + 2 + 14 + 14 = 58). */
   .waybill-table td { padding: 12px 0 0 16px; border-bottom: 1px solid var(--line-row); vertical-align: top; overflow: hidden; }
   .waybill-table tbody tr:last-child td { border-bottom: 0; }
   .waybill-table th[data-col="pick"] { width: 40px; }
-  .waybill-table th[data-col="no"] { width: 124px; }
+  .waybill-table th[data-col="no"] { width: 136px; }
   .waybill-table th[data-col="date"] { width: 92px; }
-  .waybill-table th[data-col="receiver"] { width: 94px; }
-  .waybill-table th[data-col="sender"] { width: 94px; }
-  .waybill-table th[data-col="destination"] { width: 132px; }
-  .waybill-table th[data-col="goods"] { width: 82px; }
-  .waybill-table th[data-col="payment"] { width: 84px; }
+  .waybill-table th[data-col="receiver"] { width: 112px; }
+  .waybill-table th[data-col="sender"] { width: 112px; }
+  .waybill-table th[data-col="destination"] { width: 150px; }
+  .waybill-table th[data-col="goods"] { width: 96px; }
+  .waybill-table th[data-col="payment"] { width: 72px; }
   .waybill-table th[data-col="fee"] { width: 84px; }
-  .waybill-table th[data-col="status"] { width: 110px; }
+  /* 状态不设宽度：宽屏多出来的空间全部给状态，其余列保持紧凑。 */
   .waybill-table th[data-col="photos"] { width: 86px; }
   .waybill-table th[data-w="actions"] { width: 40px; }
   .waybill-table th.waybill-col-fee { padding: 0 16px 0 0; text-align: right; }
@@ -128,6 +128,9 @@
   .waybill-table td.waybill-col-date { overflow: visible; }
   .waybill-col-date .waybill-cell-main { font-family: var(--font-num); font-variant-numeric: normal; overflow: visible; }
   .waybill-fee { font-family: var(--font-num); font-weight: 500; white-space: nowrap; color: var(--text-primary); }
+  /* 状态列：胶囊改成 inline-block，长状态在列宽内省略号截断，悬停看全文。 */
+  .waybill-col-status .waybill-status-pill { display: inline-block; max-width: calc(100% - 12px); overflow: hidden; text-overflow: ellipsis; vertical-align: top; line-height: 20px; }
+  .waybill-col-status .waybill-status-pill::before { display: inline-block; margin-right: 5px; vertical-align: middle; }
   .waybill-col-status .waybill-cell-sub { padding-right: 12px; font-family: var(--font-ui); }
   .waybill-table :is(th, td).waybill-col-actions { padding-left: 0; overflow: visible; white-space: nowrap; }
   .waybill-table td.waybill-col-status { padding-top: 10px; }
@@ -155,15 +158,15 @@
   .waybill-page-jump input { width: 44px; height: 28px; padding: 0 6px; border: 1px solid var(--line-default); border-radius: var(--r-small-button); background: var(--bg-surface); color: var(--text-primary); font: 400 var(--fs-body)/1 var(--font-num); text-align: center; }
   /* 1280 breakpoint (⑨): drop 发货人 / 结算方式, keep key, status and actions. */
   @media (min-width: 640px) and (max-width: 1439px) {
-    .waybill-table { min-width: 902px; }
+    .waybill-table { min-width: 918px; }
+    .waybill-table th[data-col="status"] { width: auto; }
     .waybill-table :is(th, td)[data-col="sender"], .waybill-table :is(th, td)[data-col="payment"] { display: none; }
-    .waybill-table th[data-col="no"] { width: 108px; }
+    .waybill-table th[data-col="no"] { width: 124px; }
     .waybill-table th[data-col="date"] { width: 100px; }
     .waybill-table th[data-col="receiver"] { width: 116px; }
     .waybill-table th[data-col="destination"] { width: 126px; }
     .waybill-table th[data-col="goods"] { width: 96px; }
     .waybill-table th[data-col="fee"] { width: 84px; }
-    .waybill-table th[data-col="status"] { width: 120px; }
     .waybill-table th[data-col="photos"] { width: 72px; }
     .waybill-table :is(th, td)[data-col="photos"] { padding-left: 8px; }
     .waybill-table th[data-w="actions"] { width: 40px; }
