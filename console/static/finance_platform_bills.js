@@ -79,6 +79,7 @@
   let trail = [];
   let result = null;
   let busy = false;
+  let seq = 0; // 每次查询的序号：被新查询或切换条件取代的旧响应直接丢弃
   let lastColumns = [];
   let exportRows = null; // {header: [...], rows: [[...]]}
 
@@ -144,7 +145,8 @@
   // -- query -----------------------------------------------------------------------------------------
   // append=true 是滚动到底的续接：保留已加载的行，只在表底显示「正在加载下一批…」，不整页 loading（rules 7.7）。
   async function run(state, { append = false } = {}) {
-    if (busy) return;
+    if (busy && append) return;
+    const mine = ++seq;
     busy = true;
     const previous = append ? result : null;
     current = state;
@@ -165,6 +167,7 @@
     try {
       const response = await fetch(`/finance/platform-bills/${platform}?${query}`, { credentials: "same-origin", headers: { "X-Requested-With": "XMLHttpRequest" } });
       const payload = await response.json().catch(() => ({}));
+      if (mine !== seq) return;
       if (response.status === 403) {
         if (append) setLoadingMore(false);
         stateBlock("denied", "没有查看对账单的权限", "需要身份“后台页面”中的“财务”为可见；请联系超级管理员。");
@@ -182,6 +185,7 @@
       }
       say(append ? `已加载 ${(result.rows || []).length} 条` : `已读取${VIEW_TITLES[state.action] || ""}`);
     } catch (error) {
+      if (mine !== seq) return;
       if (append) {
         // 续接失败不丢已加载的行：恢复上一批结果，在页脚写明原因，可再次滚动重试。
         current = { ...state, page: Math.max(1, (state.page || 2) - 1) };
@@ -194,8 +198,10 @@
       stateBlock("error", `没有读到${NAME}的数据`, escapeHtml(error.message || "读取失败，请稍后重试。"), '<button type="button" class="ghost-btn" data-bill-retry>重试</button>');
       say(error.message || "读取失败");
     } finally {
-      busy = false;
-      syncDates();
+      if (mine === seq) {
+        busy = false;
+        syncDates();
+      }
     }
   }
 
@@ -568,6 +574,7 @@
 
   // -- events -----------------------------------------------------------------------------------------
   function resetView(message) {
+    seq += 1; busy = false;
     trail = []; current = null; result = null; renderTrail(); hideExtras(); syncDates();
     els.body.innerHTML = `<div class="pb-empty"><b>${escapeHtml(message)}</b><span>每次查询都直接读取平台最新数据，不显示旧数据。</span></div>`;
   }

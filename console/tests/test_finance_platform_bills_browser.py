@@ -69,7 +69,7 @@ def _render(platform):
     return app.sent_html
 
 
-def _open(browser, platform, replies):
+def _open(browser, platform, replies, held=None):
     html = _render(platform)
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     page = context.new_page()
@@ -89,6 +89,9 @@ def _open(browser, platform, replies):
         if parsed.path == f"/finance/platform-bills/{platform}":
             query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
             queries.append(query)
+            if held is not None and len(queries) == 1:
+                held.append((route, query))  # 首次查询先挂起，模拟平台慢返回
+                return None
             data = replies.get(query["action"])
             if data is None:
                 return route.fulfill(status=502, content_type="application/json", body=json.dumps({"ok": False, "message": "示例平台失败原因"}, ensure_ascii=False))
@@ -177,4 +180,22 @@ def test_yunda_detail_moves_constants_and_pairs_fee_items(browser):
         page.wait_for_function("document.querySelectorAll('.pb-table tbody tr').length === 4")
         assert queries[-1]["page"] == "2" and queries[-1]["page_size"] == "200"
         assert "已加载 4 / 共 2,891 条" in page.inner_text("[data-bill-pager]")
+        assert errors == []
+
+
+def test_changing_site_while_loading_drops_the_stale_reply(browser):
+    # 2026-11-21：首次查询未返回时切换网点，旧响应回来后读 current.action 报 null 错误。
+    held = []
+    context, page, errors, queries = _open(browser, "ronghui", {"summary": RH_SUMMARY}, held=held)
+    with context:
+        page.wait_for_function("document.querySelector('.pb-skel') !== null")
+        assert len(held) == 1
+        page.dispatch_event("[data-bill-account]", "change")
+        page.wait_for_selector(".pb-table--summary")
+        assert len(queries) == 2
+        stale, _ = held[0]
+        stale.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {**RH_SUMMARY, "groups": [], "rows": []}}, ensure_ascii=False))
+        page.wait_for_timeout(300)
+        assert page.locator(".pb-table--summary").count() == 1 and "3,909.22" in page.inner_text(".pb-result")
+        assert page.locator("[data-bill-query]").is_enabled()
         assert errors == []
