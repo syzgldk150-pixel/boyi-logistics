@@ -80,7 +80,7 @@
   .waybill-refresh-status { flex: 0 1 auto; margin: 0; padding: 0 8px; height: 20px; display: inline-flex; align-items: center; border: 0; border-radius: var(--r-chip); background: var(--status-warn-soft); color: var(--status-warn); font-size: var(--fs-tiny); }
   .waybill-notice { margin: 0 16px 10px; }
   .waybill-table-shell { max-height: min(70dvh, 840px); overflow: auto; }
-  .waybill-table { width: 100%; min-width: 1230px; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-body); text-align: left; }
+  .waybill-table { width: 100%; min-width: 1250px; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-body); text-align: left; }
   .waybill-table th { position: sticky; top: 0; z-index: 1; height: 38px; padding: 0 0 0 16px; background: var(--fill-nodata); color: var(--text-secondary); font-size: var(--fs-label); font-weight: 500; white-space: nowrap; border-bottom: 1px solid var(--line-default); }
   /* ③: every cell is top-aligned so the first lines share one baseline (12 + 16 + 2 + 14 + 14 = 58). */
   .waybill-table td { padding: 12px 0 0 16px; border-bottom: 1px solid var(--line-row); vertical-align: top; overflow: hidden; }
@@ -89,13 +89,11 @@
   .waybill-table th[data-col="no"] { width: 136px; }
   .waybill-table th[data-col="date"] { width: 92px; }
   /* 收货人/发货人/到站/货物不设宽度：宽屏多出来的空间由这四列平分，日期、结算、费用、状态保持固定。 */
-  .waybill-table th[data-col="payment"] { width: 84px; }
+  .waybill-table th[data-col="payment"] { width: 104px; }
   .waybill-table th[data-col="fee"] { width: 84px; }
   .waybill-table th[data-col="status"] { width: 260px; }
   .waybill-table th[data-col="photos"] { width: 86px; }
   .waybill-table th[data-w="actions"] { width: 40px; }
-  .waybill-table th.waybill-col-fee { padding: 0 16px 0 0; text-align: right; }
-  .waybill-table td.waybill-col-fee { padding: 12px 16px 0 0; text-align: right; }
   .waybill-table tbody tr { height: 58px; cursor: pointer; }
   .waybill-table tbody tr:hover { background: var(--bg-subtle); }
   .waybill-table tbody tr.is-selected, .waybill-table tbody tr.is-picked { background: var(--bg-selected); }
