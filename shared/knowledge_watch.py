@@ -16,7 +16,12 @@ _EXTENSION = re.compile(r"\.(pdf|docx?|xlsx?)$", re.IGNORECASE)
 
 
 def comparable_title(title: Any) -> str:
-    return _EXTENSION.sub("", re.sub(r"\s+", "", str(title or ""))).lower()
+    """A document title reduced to its words and numbers, so a rule's source “融辉物流网络管理手册 V6.1”
+    finds the knowledge file “《融辉物流网络管理手册》-6.1.pdf” (2026-11-23): spaces, book-title marks,
+    dashes, dots and a “V” before the version number do not count. Callers still require one match."""
+    text = _EXTENSION.sub("", str(title or "").strip()).lower()
+    text = re.sub(r"[\W_]+", "", text)
+    return re.sub(r"v(?=\d)", "", text)
 
 
 def rule_sources(content: Any) -> list[Mapping[str, Any]]:

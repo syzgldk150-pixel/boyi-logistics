@@ -37,7 +37,7 @@
     const $ = (selector) => root.querySelector(selector);
     const feedback = UI.feedback($("[data-fee-status]"));
     const draft = window.FeeDraft ? window.FeeDraft.create({ UI, onChange: draftChanged }) : null;
-    const state = { versions: [], current: null, step: 0, busy: false, search: "", showRetired: false, drawer: false, menu: false,
+    const state = { versions: [], current: null, step: 0, busy: false, search: "", drawer: false, menu: false,
       dirty: false, checksDirty: false, saving: false, saveTimer: 0, saveState: "saved", saveError: "", conflict: null, staleBody: false,
       structureOpen: false, manual: false, expanded: new Set(["formula"]), json: null, jsonError: "", editPath: "", showSame: false,
       editQuestions: false, trial: null, trialValues: {}, pages: new Map(), viewer: { document: "", page: 0, zoom: 100, sig: "" } };
@@ -212,16 +212,14 @@
     function renderList() {
       const list = $("[data-fee-list]");
       const query = state.search.trim().toLowerCase();
-      const retired = state.versions.filter((item) => item.status === "RETIRED");
-      const shown = state.versions.filter((item) => (state.showRetired || item.status !== "RETIRED")
+      // 作废的版本不再列出（2026-11-23 用户要求）：机器人和报价都不用它们。
+      const shown = state.versions.filter((item) => item.status !== "RETIRED"
         && (!query || `${item.fee_name} ${item.version_label}`.toLowerCase().includes(query)));
       const live = state.versions.filter((item) => item.status !== "RETIRED");
       const fees = new Set(live.map((item) => item.fee_kind)).size;
       const drafts = live.filter((item) => item.status === "DRAFT").length;
       UI.setTabCount("fees", fees);
       $("[data-fee-summary]").textContent = `${fees} 个费用 · ${live.length} 个版本 · ${drafts} 个草稿`;
-      const toggle = $("[data-fee-retired]");
-      if (toggle) { toggle.textContent = state.showRetired ? `隐藏已作废（${retired.length}）` : `显示已作废（${retired.length}）`; toggle.hidden = !retired.length; }
       if (!shown.length) {
         list.innerHTML = `<li class="fs-list__empty hb-meta">${query ? "没有找到匹配的费用。" : "还没有费用规则。"}</li>`;
         return;
@@ -250,7 +248,7 @@
     // ⋯ (spec 69 A): only what can be done now; 删除 for never-submitted drafts, 作废 for the rest (super admin).
     function menuItems(record) {
       const list = [];
-      if (canEdit && record.status !== "DRAFT") list.push(["copy", "复制为新草稿"]);
+      if (canEdit && record.status !== "DRAFT" && record.status !== "RETIRED") list.push(["copy", "复制为新草稿"]);
       if (editableDraft(record)) list.push(["rename", "重命名"]);
       if (canEdit && state.versions.some((item) => item.status === "DRAFT")) list.push(["dates", "批量设执行日期"]);
       const danger = [];
@@ -1173,7 +1171,7 @@
       if (action === "withdraw" && !(await confirmAction(superAdmin
         ? { title: "退回草稿？", body: "退回后由发起人修改，需要重新提交审核。", confirm: "退回草稿" }
         : { title: "撤回为草稿？", body: "撤回后回到草稿，可以继续改；审核人不会再看到这一版。", confirm: "撤回为草稿" }))) return;
-      if (action === "retire" && !(await confirmAction({ title: "作废此版本？", body: "作废后不可恢复，机器人和报价都不会再使用该版本。版本会保留在「显示已作废」里。", confirm: "作废此版本", danger: true }))) return;
+      if (action === "retire" && !(await confirmAction({ title: "作废此版本？", body: "作废后不可恢复，机器人和报价都不会再使用该版本，左栏也不再显示。", confirm: "作废此版本", danger: true }))) return;
       if (action === "delete" && !(await confirmAction({ title: "删除这份草稿？", body: "删除后无法恢复，这份草稿会被彻底删掉。左栏也会同步移除。", confirm: "删除草稿", danger: true }))) return;
       if (action === "submit") {
         if (!(await settle())) { feedback.error("没有提交", "还有修改没保存，请先处理底栏的保存状态。"); return; }
@@ -1213,7 +1211,6 @@
       if (target.hasAttribute("data-fee-create")) { createFee(); return; }
       if (target.hasAttribute("data-fee-draft")) { createFee({ fromManual: true }); return; }
       if (target.hasAttribute("data-fee-batch-dates")) { batchDates(); return; }
-      if (target.hasAttribute("data-fee-retired")) { state.showRetired = !state.showRetired; renderList(); return; }
       if (target.hasAttribute("data-fee-drawer")) { state.drawer = !state.drawer; renderEditor(); return; }
       if (target.hasAttribute("data-fee-drawer-close")) { state.drawer = false; renderEditor(); return; }
       if (target.dataset.feeOpen) {

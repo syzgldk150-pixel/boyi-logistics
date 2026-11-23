@@ -205,3 +205,10 @@ def test_migration_088_repository(database):  # noqa: F811
     assert (reminder["reminder_id"], reminder["status"], reminder["kind"]) == (ids[0], "OPEN", "CHANGED")
     assert repo.mark_checked(ids[0], actor_id="7") is True and repo.mark_checked(ids[0], actor_id="7") is False
     assert repo.reminders()[0]["status"] == "CHECKED"
+
+
+def test_citations_match_titles_by_words_and_numbers_only():
+    from shared.knowledge_watch import comparable_title
+
+    assert comparable_title("《融辉物流网络管理手册》-6.1.pdf") == comparable_title("融辉物流网络管理手册 V6.1")
+    assert comparable_title("融辉物流网络管理手册 V6.0") != comparable_title("融辉物流网络管理手册 V6.1")

@@ -30,3 +30,14 @@ def test_pages_come_from_the_one_document_with_that_title_and_are_kept_for_a_whi
     now[0] = 601.0
     pages.page("融辉物流网络管理手册 V6.1", 51)
     assert listed == [1, 1]  # the document list is read again after ten minutes
+
+
+def test_a_source_name_finds_the_knowledge_file_despite_marks_dashes_and_the_version_v():
+    """2026-11-23 on ECS: sources say “融辉物流网络管理手册 V6.1”, the file is “《融辉物流网络管理手册》-6.1.pdf”."""
+    files = [{"title": "《融辉物流网络管理手册》-6.1.pdf", "obj_token": "doc-1"}, {"title": "网点操作手册 (2).pdf", "obj_token": "doc-2"}]
+    pages = FeeSourcePages(list_documents=lambda: files, render_page=lambda document_id, page: document_id.encode())
+    assert pages.page("融辉物流网络管理手册 V6.1", 60) == b"doc-1"
+    assert pages.page("《融辉物流网络管理手册》-6.1", 61) == b"doc-1"  # the name AI drafts write
+    assert pages.page("网点操作手册（2）", 1) == b"doc-2"
+    with pytest.raises(FeeRuleError, match="没有找到文档"):
+        pages.page("融辉物流网络管理手册 V6.0", 1)  # a different version is still a different document
