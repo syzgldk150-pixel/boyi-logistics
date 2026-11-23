@@ -144,8 +144,9 @@ def pages_of(location: Any) -> list[int]:
 def fee_lines(content: Any) -> list[dict[str, Any]]:
     """One line per amount (or no-amount outcome) of a rule, in formula order, then shared parts.
 
-    Each line: ``sig`` (fingerprint), ``text``, ``path`` (to the block, dot-separated as in the
-    editor), ``kind``, and the nearest ``document`` / ``location`` / ``pages`` of its source.
+    Each line: ``sig`` (fingerprint), ``text`` (``condition``：``amount``, the two columns of 核对原文),
+    ``path`` (to the block, dot-separated as in the editor), ``kind``, and the nearest ``document`` /
+    ``location`` / ``pages`` of its source.
     """
     if not isinstance(content, Mapping):
         return []
@@ -162,7 +163,9 @@ def fee_lines(content: Any) -> list[dict[str, Any]]:
         source = node.get("source") if isinstance(node.get("source"), Mapping) else source
         fingerprint = json.dumps({"text": line, "node": node, "path": path, "source": source},
                                  ensure_ascii=False, sort_keys=True, default=str)
+        condition = head + ("（" + "，".join(suffix) + "）" if suffix else "")
         lines.append({"sig": hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:16], "text": line,
+                      "condition": condition, "amount": text,
                       "path": ".".join(path), "kind": node.get("type"),
                       "document": str((source or {}).get("document") or ""),
                       "location": str((source or {}).get("location") or ""),

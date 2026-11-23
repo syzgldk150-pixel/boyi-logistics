@@ -16,6 +16,7 @@ _FEE_RULE = re.compile(r"/handbook/fee-rules/([^/]+)")
 _FEE_ACTION = re.compile(r"/handbook/fee-rules/([^/]+)/([a-z]+)")
 _DRAFT_JOB = re.compile(r"/handbook/fee-drafts/jobs/([^/]+)")
 _DRAFT_SAVE = re.compile(r"/handbook/fee-drafts/jobs/([^/]+)/save")
+_DRAFT_CANCEL = re.compile(r"/handbook/fee-drafts/jobs/([^/]+)/cancel")
 _SOURCE_CHECK = re.compile(r"/handbook/sources/reminders/(\d{1,18})/check")
 _REVIEW = re.compile(r"/settings/llm/reviews/([^/]+)/(approve|reject)")
 
@@ -51,6 +52,9 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
         return True
     if path == "/handbook/fee-drafts/outline":
         app._handle_fee_drafts(handler, "outline", query=query)
+        return True
+    if path == "/handbook/fee-drafts/jobs":
+        app._handle_fee_drafts(handler, "latest", query=query)
         return True
     match = _DRAFT_JOB.fullmatch(path)
     if match:
@@ -88,6 +92,10 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     match = _DRAFT_SAVE.fullmatch(path)
     if match:
         app._handle_fee_drafts(handler, "save", match.group(1))
+        return True
+    match = _DRAFT_CANCEL.fullmatch(path)
+    if match:
+        app._handle_fee_drafts(handler, "cancel", match.group(1))
         return True
     if path == "/handbook/quote":
         app._handle_fee_quote(handler, "quote")

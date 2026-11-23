@@ -25,7 +25,7 @@ _ACTIONS = frozenset({"save", "compile", "trial", "acknowledge", "submit", "with
                       "approve", "pause", "retire", "resume"})
 _VERSION_ACTIONS = frozenset({"approve", "submit", "withdraw", "discard"})
 _TIMEOUTS = {"compile": 150, "trial": 330}
-_FEE_ACTIONS = frozenset({"copy", "save", "checks", "trial", "submit", "withdraw", "approve", "retire"})
+_FEE_ACTIONS = frozenset({"copy", "save", "checks", "trial", "submit", "withdraw", "approve", "retire", "delete"})
 _FEE_FIELDS = {"save": ("fee_name", "version_label", "effective_from", "content", "checks", "row_version"),
                "checks": ("checks", "row_version"), "trial": ("values", "boundary"), "copy": ()}
 _QUOTE_FIELDS = ("billing_date", "fee_kinds", "values", "tracking_number")
@@ -182,8 +182,9 @@ class HandbookServiceMixin:
 
     def _handle_fee_drafts(self, handler: BaseHTTPRequestHandler, action: str, job_id: str | None = None,
                            query: dict[str, list[str]] | None = None) -> None:
-        """Documents, outline, start a draft, read a draft job, keep chosen drafts; the Agent does the work."""
-        write = action in {"start", "save"}
+        """Documents, outline, start a draft (optionally inside one draft), read or cancel a draft job, the
+        newest job of a draft, keep chosen drafts; the Agent does the work."""
+        write = action in {"start", "save", "cancel"}
         context = self._handbook_context(handler, write=write)
         if context is None:
             return
@@ -203,10 +204,20 @@ class HandbookServiceMixin:
                                          console_principal=principal)
         elif action == "start":
             body = self._parse_json_body(handler)
-            payload = {key: body[key] for key in ("node_token", "start", "end", "chapter") if key in body}
+            payload = {key: body[key] for key in ("node_token", "start", "end", "chapter", "rule_id") if key in body}
             result = self._agent_request("POST", f"{base}/jobs", payload=payload, timeout=15, console_principal=principal)
         elif action == "job":
             result = self._agent_request("GET", f"{base}/jobs/{job_id}", timeout=15, console_principal=principal)
+        elif action == "latest":
+            rule_id = str(((query or {}).get("rule_id") or [""])[0]).strip()
+            if not _ENTRY_ID.fullmatch(rule_id):
+                self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "没有找到这个规则版本。"})
+                return
+            result = self._agent_request("GET", f"{base}/jobs?rule_id={quote(rule_id, safe='')}", timeout=15,
+                                         console_principal=principal)
+        elif action == "cancel":
+            result = self._agent_request("POST", f"{base}/jobs/{job_id}/cancel", payload={}, timeout=15,
+                                         console_principal=principal)
         else:
             body = self._parse_json_body(handler)
             result = self._agent_request("POST", f"{base}/jobs/{job_id}/save", payload={"indices": body.get("indices")},

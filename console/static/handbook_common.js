@@ -136,6 +136,9 @@
         item.tabIndex = selected ? 0 : -1;
         document.getElementById(item.getAttribute("aria-controls")).hidden = !selected;
       });
+      // 说明条目 sits under “更多” (2026-11-22): close the menu and mark it while one of its tabs is open.
+      const more = page.querySelector("[data-handbook-more]");
+      if (more) { more.open = false; more.dataset.selected = String(more.contains(tab)); }
       try { window.localStorage.setItem("handbook.tab", tab.dataset.handbookTab); } catch (_error) { /* optional */ }
     }
     tabs.forEach((tab, index) => {

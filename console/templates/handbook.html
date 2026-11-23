@@ -3,24 +3,26 @@
 {% block breadcrumb %}业务手册{% endblock %}
 {% block subtitle %}机器人的业务说明与规则{% endblock %}
 {% block body_class %}handbook-page{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261120-change1">{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/handbook.css?v=20261123-steps1">{% endblock %}
 {% block content %}
 {# frontend-spec 52–58: 页签都是工作台（报价 2026-11-19 新增）；动作按身份隐藏，状态与阻塞项常驻可见。 #}
 <section class="handbook" data-handbook data-can-edit="{{ 'true' if can_edit else 'false' }}" data-super-admin="{{ 'true' if is_super_admin else 'false' }}" aria-label="业务手册">
   <div class="hb-tabbar">
     <nav class="hb-tabs" role="tablist" aria-label="业务手册">
-      <button class="hb-tab" type="button" role="tab" id="handbook-tab-entries" aria-selected="true" aria-controls="handbook-panel-entries" data-handbook-tab="entries">说明条目<span class="hb-tab__count" data-tab-count hidden></span></button>
-      <button class="hb-tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="false" aria-controls="handbook-panel-fees" data-handbook-tab="fees" tabindex="-1">计算规则<span class="hb-tab__count" data-tab-count hidden></span></button>
+      <button class="hb-tab" type="button" role="tab" id="handbook-tab-fees" aria-selected="true" aria-controls="handbook-panel-fees" data-handbook-tab="fees">计算规则<span class="hb-tab__count" data-tab-count hidden></span></button>
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-quote" aria-selected="false" aria-controls="handbook-panel-quote" data-handbook-tab="quote" tabindex="-1">报价</button>
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-sources" aria-selected="false" aria-controls="handbook-panel-sources" data-handbook-tab="sources" tabindex="-1">知识来源<span class="hb-tab__count" data-tab-count hidden></span></button>
       <button class="hb-tab" type="button" role="tab" id="handbook-tab-try" aria-selected="false" aria-controls="handbook-panel-try" data-handbook-tab="try" tabindex="-1">试问</button>
+      {# 2026-11-22：说明条目用得少，收进“更多” #}
+      <details class="hb-more" data-handbook-more><summary class="hb-tab">更多<i data-feather="chevron-down"></i></summary>
+        <div class="hb-more__menu"><button class="hb-tab hb-more__item" type="button" role="tab" id="handbook-tab-entries" aria-selected="false" aria-controls="handbook-panel-entries" data-handbook-tab="entries" tabindex="-1">说明条目<span class="hb-tab__count" data-tab-count hidden></span></button></div></details>
     </nav>
     {% if is_super_admin %}<span class="hb-role" data-tone="admin"><i data-feather="shield"></i>超级管理员 · 可审核</span>
     {% elif can_edit %}<span class="hb-role"><i data-feather="shield"></i>运营编辑 · 可编辑</span>
     {% else %}<span class="hb-role" data-tone="viewer"><i data-feather="eye"></i>只读 · 仅查看</span>{% endif %}
   </div>
 
-  <div id="handbook-panel-entries" role="tabpanel" aria-labelledby="handbook-tab-entries" class="hb-panel" data-handbook-entries-panel>
+  <div id="handbook-panel-entries" role="tabpanel" aria-labelledby="handbook-tab-entries" class="hb-panel" data-handbook-entries-panel hidden>
     <div class="hb-feedback" data-handbook-status role="status" aria-live="polite" hidden></div>
     {% if not can_edit %}<p class="hb-note"><i data-feather="lock"></i>当前身份只能查看：可以看说明、编译结果和试问，编辑和审核操作已隐藏。</p>{% endif %}
     <div class="hb-work hb-work--entries" data-entries-work>
@@ -42,29 +44,24 @@
     <div class="hb-review-page" data-handbook-review-page hidden></div>
   </div>
 
-  <div id="handbook-panel-fees" role="tabpanel" aria-labelledby="handbook-tab-fees" class="hb-panel" data-fee-rules hidden>
+  {# frontend-spec 59–69（2026-11-23）：计算规则六步分步式。左栏费用列表 240，右侧工作区：页头 / 步骤条 / 步骤内容 / 底栏。 #}
+  <div id="handbook-panel-fees" role="tabpanel" aria-labelledby="handbook-tab-fees" class="hb-panel" data-fee-rules>
     <div class="hb-feedback" data-fee-status role="status" aria-live="polite" hidden></div>
-    <div class="hb-work hb-work--fees">
-      <aside class="hb-card hb-list" aria-labelledby="fee-list-title">
-        <div class="hb-card__head"><div><h2 id="fee-list-title">计算规则</h2><p class="hb-card__sub" data-fee-summary>正在读取……</p></div>
-          {% if can_edit %}<button class="ghost-btn hb-btn-sm" type="button" data-fee-create><i data-feather="plus"></i><span>新建费用</span></button>{% endif %}</div>
-        {% if can_edit %}<div class="hb-fee-tools"><button class="hb-link" type="button" data-fee-draft><i data-feather="zap"></i><span>从手册起草</span></button>
-          <button class="hb-link" type="button" data-fee-batch-dates><i data-feather="calendar"></i><span>批量设执行日期</span></button></div>{% endif %}
-        <ul class="hb-rows" data-fee-list></ul>
-        <div class="hb-rules-note">
-          <h3>规则说明</h3>
-          <ul>
-            <li>新增费用点“从手册起草”：选知识库里的手册章节，AI 起草成草稿</li>
-            <li>打开费用先看“核对”：对照手册原页逐行打勾，回答需要拍板的问题</li>
-            <li>每种费用由积木组成：参数、计算结构、数字与出处</li>
-            <li>单据按开单日期选用当时生效的版本</li>
-            <li>草稿 / 待审核只可试算，不用于报价</li>
-            <li>已生效版本不可修改，复制为新草稿</li>
-          </ul>
-        </div>
+    <div class="fs-work" data-drawer="false">
+      <aside class="hb-card fs-list" aria-labelledby="fee-list-title">
+        <div class="fs-list__head"><h2 id="fee-list-title">费用</h2>
+          {% if can_edit %}<button class="hb-link fs-list__more" type="button" data-fee-batch-dates title="批量设执行日期" aria-label="批量设执行日期">⋯</button>{% endif %}</div>
+        {% if can_edit %}<div class="fs-list__btns"><button class="fs-dark" type="button" data-fee-create>＋ 新建费用</button>
+          <button class="ghost-btn" type="button" data-fee-draft>从手册起草</button></div>{% endif %}
+        <label class="hb-search"><i data-feather="search"></i><input type="search" data-fee-search placeholder="搜索费用或版本" aria-label="搜索费用或版本"></label>
+        <ul class="fs-list__rows" data-fee-list><li class="fs-list__empty hb-meta">正在读取……</li></ul>
+        <div class="fs-list__foot"><button class="hb-link" type="button" data-fee-retired hidden>显示已作废</button>
+          <p class="hb-meta" data-fee-summary></p>
+          {% if can_edit %}<p class="hb-meta">「⋯」：批量设执行日期</p>{% endif %}</div>
       </aside>
-      <section class="hb-card hb-fee" aria-labelledby="fee-editor-title" data-fee-editor>
-        <div class="hb-empty"><i data-feather="file-text"></i><p>从左侧选择一个规则版本。</p></div>
+      <button class="fs-scrim" type="button" data-fee-drawer-close aria-label="关闭费用列表"></button>
+      <section class="hb-card fs-ws" aria-labelledby="fee-editor-title" data-fee-editor>
+        <div class="fs-blank fs-blank--line"><p class="hb-meta">正在读取……</p></div>
       </section>
     </div>
   </div>
@@ -160,11 +157,11 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/handbook_common.js?v=20261119-spec52c"></script>
+<script src="/static/handbook_common.js?v=20261123-steps1"></script>
 <script src="/static/handbook.js?v=20261119-spec52c"></script>
 <script src="/static/handbook_fee_form.js?v=20261119-quote1"></script>
-<script src="/static/handbook_fee_draft.js?v=20261120-change1"></script>
-<script src="/static/handbook_fee_rules.js?v=20261120-change1"></script>
+<script src="/static/handbook_fee_draft.js?v=20261123-steps1"></script>
+<script src="/static/handbook_fee_rules.js?v=20261123-steps1"></script>
 <script src="/static/handbook_quote.js?v=20261120-robot1"></script>
 <script src="/static/handbook_try.js?v=20261119-spec52c"></script>
 <script src="/static/handbook_sources.js?v=20261120-change1"></script>

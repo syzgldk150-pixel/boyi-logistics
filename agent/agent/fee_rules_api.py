@@ -2,8 +2,8 @@
 
 The request middleware already checked the live identity against
 ``shared.identity_routes.agent_permission``: the 业务手册 module grants reading
-and editing (create a fee, save, tick checks, submit, withdraw, copy, trial);
-approve and retire need a super administrator, re-checked here. Quoting only
+and editing (create a fee, save, tick checks, submit, withdraw, copy, trial, delete a
+never-submitted draft); approve and retire need a super administrator, re-checked here. Quoting only
 needs the module to be visible: it reads approved rules and keeps a quote record.
 Blocks and calculation live in ``shared.fee_engine``, versions and approval in
 ``shared.handbook_fee_rules``, storage in ``shared.fee_rule_repository``.
@@ -184,7 +184,7 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
         return await run(lambda: repository().save_draft(
             rule_id, version_label=req.version_label, effective_from=req.effective_from, content=req.content,
             checks=req.checks, fee_name=req.fee_name, actor_id=actor.actor_id,
-            expected_row_version=req.row_version) or {"saved": True})
+            expected_row_version=req.row_version))
 
     @router.post("/{rule_id}/checks")
     async def checks(rule_id: str, req: ChecksRequest, request: Request):
@@ -211,10 +211,11 @@ def create_fee_rules_router(*, repository_provider: Callable[[], Any], admin_pro
 
     @router.post("/{rule_id}/{action}")
     async def change(rule_id: str, action: str, req: RowVersion, request: Request):
-        if action not in {"submit", "withdraw", "approve", "retire"}:
+        if action not in {"submit", "withdraw", "approve", "retire", "delete"}:
             return JSONResponse(status_code=404, content=api_failure("NOT_FOUND", "不支持的操作"))
         actor = (super_admin_provider if action in {"approve", "retire"} else admin_provider)(request)
-        return await run(lambda: getattr(repository(), action)(
+        method = "delete_draft" if action == "delete" else action
+        return await run(lambda: getattr(repository(), method)(
             rule_id, actor_id=actor.actor_id, expected_row_version=req.row_version) or {"action": action})
 
     return router

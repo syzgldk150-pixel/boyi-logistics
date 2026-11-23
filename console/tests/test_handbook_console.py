@@ -217,11 +217,25 @@ class FeeRulesConsoleTests(_ConsoleCase):
 
     def test_unknown_action_or_id_is_refused_locally(self):
         app, calls = self._app(lambda *a: self.fail("must not call the Agent"))
-        app._handle_fee_rules_post(_handler({}), RULE_ID, "delete")
+        app._handle_fee_rules_post(_handler({}), RULE_ID, "erase")
         self.assertEqual(HTTPStatus.NOT_FOUND, app.sent_status)
         app._handle_fee_rules_get(_handler({}), "../x")
         self.assertEqual(HTTPStatus.NOT_FOUND, app.sent_status)
         self.assertEqual([], calls)
+
+    def test_delete_and_draft_jobs_of_one_draft_forward_only_their_fields(self):
+        app, calls = self._app(lambda *a: {"ok": True, "data": {}}, roles=("admin",))
+        app._handle_fee_rules_post(_handler({"row_version": 2, "status": "DRAFT"}), RULE_ID, "delete")
+        self.assertEqual((f"/internal/v1/admin/fee-rules/{RULE_ID}/delete", {"row_version": 2}), (calls[0]["endpoint"], calls[0]["payload"]))
+        app._handle_fee_drafts(_handler({"node_token": "n1", "start": 2, "end": 3, "chapter": "", "rule_id": RULE_ID, "x": 1}), "start")
+        self.assertEqual({"node_token", "start", "end", "chapter", "rule_id"}, set(calls[1]["payload"]))
+        app._handle_fee_drafts(_handler({}), "latest", query={"rule_id": [RULE_ID]})
+        self.assertEqual(("GET", f"/internal/v1/admin/fee-drafts/jobs?rule_id={RULE_ID}"), (calls[2]["method"], calls[2]["endpoint"]))
+        app._handle_fee_drafts(_handler({}), "latest", query={"rule_id": ["../x"]})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, app.sent_status)
+        app._handle_fee_drafts(_handler({"x": 1}), "cancel", RULE_ID)
+        self.assertEqual((f"/internal/v1/admin/fee-drafts/jobs/{RULE_ID}/cancel", {}), (calls[3]["endpoint"], calls[3]["payload"]))
+        self.assertEqual(4, len(calls))
 
     def test_page_has_the_fee_rules_tab(self):
         html = HandbookPageTests()._render({"id": 1, "role": "super_admin", "is_legacy_basic_auth": False})

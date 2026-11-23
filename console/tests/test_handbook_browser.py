@@ -52,31 +52,42 @@ RULE_CONTENT = {
 }
 RULE = {
     "rule_id": RULE_ID, "fee_kind": "upstairs", "fee_name": "上楼费", "version_label": "示例手册 V1 草稿", "status": "DRAFT",
-    "effective_from": None, "row_version": 1, "updated_at": "2026-11-15T10:12:00", "content": RULE_CONTENT,
+    "effective_from": None, "row_version": 1, "updated_at": "2026-11-15T10:12:00", "updated_by": "6", "content": RULE_CONTENT,
     "params": RULE_CONTENT["params"], "content_problems": [],
     "checks": [{"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""}],
     "lines": [
-        {"sig": "38914bb1e4808a64", "text": "有电梯 = 是 › 有电梯：5 元 + 0.06 × 结算重量", "path": "formula.cases.0.then", "kind": "sum",
+        {"sig": "38914bb1e4808a64", "text": "有电梯 = 是 › 有电梯：5 元 + 0.06 × 结算重量", "condition": "有电梯 = 是 › 有电梯",
+         "amount": "5 元 + 0.06 × 结算重量", "path": "formula.cases.0.then", "kind": "sum",
          "document": "示例物流手册 V1", "location": "第一章 第 1 页", "pages": [1], "done": False},
-        {"sig": "42ef3975026d82f5", "text": "其他情况 › 楼层加收 › 送到几楼 ≤ 2：0 元", "path": "formula.else.tiers.0.then", "kind": "fixed",
+        {"sig": "42ef3975026d82f5", "text": "其他情况 › 楼层加收 › 送到几楼 ≤ 2：0 元", "condition": "其他情况 › 楼层加收 › 送到几楼 ≤ 2",
+         "amount": "0 元", "path": "formula.else.tiers.0.then", "kind": "fixed",
          "document": "", "location": "", "pages": [], "done": False},
-        {"sig": "a6b3908a945bcfac", "text": "其他情况 › 楼层加收 › 送到几楼 > 2：0.1 元/kg × 结算重量", "path": "formula.else.tiers.1.then",
+        {"sig": "a6b3908a945bcfac", "text": "其他情况 › 楼层加收 › 送到几楼 > 2：0.1 元/kg × 结算重量", "condition": "其他情况 › 楼层加收 › 送到几楼 > 2",
+         "amount": "0.1 元/kg × 结算重量", "path": "formula.else.tiers.1.then",
          "kind": "rate", "document": "", "location": "", "pages": [], "done": False, "changed": True}],
     "compare": {"rule_id": "r-live", "version_label": "示例手册 V0", "status": "APPROVED", "effective_from": "2026-01-01",
                 "same": 2, "changed": 1, "removed": ["旧的一行：3 元"]},
     "events": [{"action": "SAVE", "actor_id": "6", "created_at": "2026-11-15T10:12:00"}],
-    "trial_count": 0, "people": {"6": "示例编辑"},
+    "trial_count": 0, "people": {"6": "示例编辑"}, "can_delete": True,
+    "progress": {"lines": 3, "ticked": 0, "questions": 1, "answered": 0},
     "submit_blockers": ["还没有填写执行日期（以总部通知为准）。", "保存后还没有试算过，请至少试算一个场景。"],
 }
 JOB_ID = "33333333-4444-4555-8666-777777777777"
 DRAFT_JOB = {"job_id": JOB_ID, "status": "DONE", "stage": "完成", "chapter": "第一章 上楼", "start": 2, "end": 3, "elapsed": 64,
-             "document_title": "示例物流手册 V1", "saved": {}, "stages": ["读取手册", "生成页面图片", "AI 起草", "检查结果"],
-             "result": {"skipped": ["第 3 页的图示没有整理"], "fees": [
-                 {"index": 0, "name": "上楼费", "existing": True, "params": ["结算重量", "送到几楼"], "questions": [
-                     {"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""}],
-                  "lines": [{"text": "有电梯：5 元 + 0.06 元/kg × 结算重量", "location": "第一章 第 2 页"}]},
-                 {"index": 1, "name": "示例搬运费", "existing": False, "params": [], "questions": [],
-                  "lines": [{"text": "示例搬运费：20 元", "location": "第一章 第 3 页"}]}]}}
+             "title": "示例物流手册 V1.pdf", "document_title": "示例物流手册 V1", "node_token": "n1", "rule_id": RULE_ID,
+             "stages": ["读取手册", "生成页面图片", "AI 起草", "检查结果"], "result": {"filled": True, "lines": 3, "questions": 1, "skipped": []}}
+
+
+def rule(**changes):
+    """A copy of RULE with changes; ``ticked=True`` ticks every line and gives each a source."""
+    data = json.loads(json.dumps(RULE, ensure_ascii=False))
+    if changes.pop("ticked", False):
+        for line in data["lines"]:
+            line.update(done=True, document="示例物流手册 V1", location="第一章 第 1 页", pages=[1])
+    data.update(changes)
+    return data
+
+
 # A 1×1 PNG standing in for a manual page picture.
 PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABc3UBGAAAAABJRU5ErkJggg=="
 SOURCES = {
@@ -149,7 +160,7 @@ def _open(browser, user):
                                   "latest_status": ENTRY["versions"][0]["status"], "summary": "大家说“示例店”就是示例区网点。"}]}
         elif path == f"/handbook/entries/{ENTRY_ID}":
             reply = ENTRY
-        elif path == "/handbook/fee-rules":
+        elif path == "/handbook/fee-rules" and request.method == "GET":
             reply = {"versions": [{k: v for k, v in RULE.items() if k not in {"content", "checks", "events", "lines"}}]}
         elif path == "/handbook/fee-rules/source-page":
             reply = {"document": "示例物流手册 V1", "page": 1, "png_base64": PIXEL}
@@ -161,13 +172,17 @@ def _open(browser, user):
             reply = {"node_token": "n1", "title": "示例物流手册 V1.pdf", "page_count": 30, "chapters": [
                 {"title": "第一篇 收费", "level": 0, "start": 1, "end": 30},
                 {"title": "第一章 上楼", "level": 1, "start": 2, "end": 3}]}
+        elif path == "/handbook/fee-drafts/jobs" and request.method == "GET":
+            reply = {"job": None}
         elif path == "/handbook/fee-drafts/jobs":
             reply = {"job_id": JOB_ID}
         elif path == f"/handbook/fee-drafts/jobs/{JOB_ID}":
             polls.append(1)
             reply = DRAFT_JOB if len(polls) > 1 else {**DRAFT_JOB, "status": "RUNNING", "stage": "AI 起草", "result": None}
-        elif path == f"/handbook/fee-drafts/jobs/{JOB_ID}/save":
-            reply = {"created": [{"rule_id": RULE_ID, "fee_name": "上楼费", "new_fee": False}]}
+        elif path == f"/handbook/fee-drafts/jobs/{JOB_ID}/cancel":
+            reply = {**DRAFT_JOB, "status": "CANCELLED", "error": "已取消起草。"}
+        elif path == "/handbook/fee-rules" and request.method == "POST":
+            reply = {"rule_id": RULE_ID}
         elif path == f"/handbook/fee-rules/{RULE_ID}/checks":
             reply = {"saved": True, "row_version": 2}
         elif path == f"/handbook/fee-rules/{RULE_ID}":
@@ -175,7 +190,9 @@ def _open(browser, user):
         elif path == f"/handbook/fee-rules/{RULE_ID}/trial":
             reply = {**TRIAL, "trial_count": 1}
         elif path == f"/handbook/fee-rules/{RULE_ID}/save":
-            reply = {"saved": True}
+            reply = {"saved": True, "row_version": 2}
+        elif re.fullmatch(f"/handbook/fee-rules/{RULE_ID}/(submit|withdraw|approve|retire|delete|copy)", path):
+            reply = {"action": path.rsplit("/", 1)[-1], "rule_id": RULE_ID}
         elif path == "/handbook/quote/catalog":
             reply = CATALOG
         elif path == "/handbook/quote/recent":
@@ -204,92 +221,51 @@ def _shot(page, name):
         page.screenshot(path=str(Path(SHOTS) / f"{name}.png"), full_page=True)
 
 
+EDITOR = {"id": 6, "role": "admin", "access_permissions": ("handbook:view", "handbook:operate")}
+
+
+def _entries(page):
+    """说明条目 sits under “更多” since 2026-11-22."""
+    page.click("[data-handbook-more] summary")
+    page.click("[data-handbook-tab='entries']")
+
+
+def _serve_rule(page, data, versions=None):
+    body = json.dumps({"ok": True, "data": data}, ensure_ascii=False)
+    page.route(f"**/handbook/fee-rules/{RULE_ID}", lambda route: route.fulfill(content_type="application/json", body=body))
+    listed = versions if versions is not None else [{k: v for k, v in data.items() if k not in {"content", "checks", "events", "lines"}}]
+    page.route("**/handbook/fee-rules", lambda route: route.fallback() if route.request.method != "GET" else route.fulfill(
+        content_type="application/json", body=json.dumps({"ok": True, "data": {"versions": listed}}, ensure_ascii=False)))
+
+
+def _status(page, text):
+    page.wait_for_function(f"document.querySelector('[data-fee-status]').innerText.includes({json.dumps(text)})")
+
+
 def test_editor_sees_workflow_and_no_approval(browser):
-    context, page, errors, _posts = _open(browser, {"id": 6, "role": "admin", "access_permissions": ("handbook:view", "handbook:operate")})
+    context, page, errors, _posts = _open(browser, EDITOR)
     with context:
+        # 计算规则 is the first tab now; 说明条目 moved into “更多”.
+        assert page.locator("[data-handbook-tab='fees']").get_attribute("aria-selected") == "true"
+        _entries(page)
         page.click(f"[data-entry='{ENTRY_ID}']")
         page.wait_for_selector(".hb-steps")
+        assert page.locator("[data-handbook-more]").get_attribute("data-selected") == "true"
         assert "这条说明正在生效中" in page.inner_text("[data-handbook-editor]")
         result = page.inner_text("[data-handbook-result]")
         assert "需要你确认 1 项歧义" in result and "不会生效" in result and "还差 1 项歧义确认" in result and "32" in result
         assert page.locator("[data-handbook-submit], [data-handbook-review], [data-review-approve]").count() == 0
         assert page.locator(".hb-submit button.primary-btn[disabled]").count() == 1
-        assert page.locator("[data-handbook-tab='entries'] [data-tab-count]").inner_text() == "1"
+        assert page.locator("[data-handbook-tab='entries'] [data-tab-count]").text_content() == "1"
         assert "写作提示" in page.inner_text("[data-handbook-editor]")
         assert "全部 1" in page.inner_text("[data-entries-filters]")
         # 2026-11-20: a clashing .hb-list__tools rule wrapped these filters one character per line.
         assert page.locator("[data-entries-filters]").bounding_box()["height"] < 40
-        assert page.evaluate("getComputedStyle(document.querySelector('.hb-tab[aria-selected=\"true\"]')).boxShadow") == "none"
         _shot(page, "52-entries")
         page.click("[data-handbook-answer]")
         page.check("input[name='hb-answer-1'][value='不包含']")
         page.click("[data-handbook-answer-save]")
         page.wait_for_function("document.querySelector('[data-handbook-status]').innerText.includes('已保存确认')")
-        page.click("[data-handbook-tab='fees']")
-        page.click(f"[data-fee-open='{RULE_ID}']")
-        # 核对 is the first view: the saved rule as 收费表 lines, ticked against the manual page.
-        page.wait_for_selector("[data-line]")
-        review = page.inner_text("[data-fee-editor]")
-        assert "已核对 0 / 3 行" in review and "有电梯 = 是 › 有电梯：5 元 + 0.06 × 结算重量" in review and "缺出处" in review
-        assert "混装时怎么收？" in review and page.locator("[data-question-text]").count() == 0
-        page.click("[data-edit-questions]")  # editors may reword a draft's question
-        assert page.locator("[data-question-text='0']").input_value() == "混装时怎么收？"
-        page.click("[data-edit-questions]")
-        assert page.locator("[data-meta='version_label']").count() == 0
-        side = page.inner_text(".hb-side")
-        assert "生效检查" in side and "还差 4 项" in side and "0 / 4 项通过" in side and "保存后还没有试算" in side
-        assert "2 处缺出处" in side and "1 项未回答" in side
-        assert "1 行有变化或新增" in review and "旧的一行：3 元" in review and page.locator("[data-changed='true']").count() == 1
-        page.check("[data-line='38914bb1e4808a64']")
-        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('核对已保存')")
-        ticked = [body for path, body in _posts if path.endswith("/checks")][-1]
-        assert ticked == {"row_version": 1, "checks": [
-            {"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""},
-            {"kind": "line", "sig": "38914bb1e4808a64", "done": True}]}
-        page.check("input[data-answer='0'][value='需人工判断（现在的做法）']")
-        page.wait_for_timeout(800)
-        answered = [body for path, body in _posts if path.endswith("/checks")][-1]
-        assert answered["checks"][0]["answer"] == "需人工判断（现在的做法）"
-        page.click("[data-source-page='1']")
-        page.wait_for_selector(".hb-page img")
-        assert "示例物流手册 V1 · 第 1 页" in page.inner_text(".hb-dialog--page")
-        page.click("[data-page-close]")
-        _shot(page, "54-review")
-        page.click("[data-fee-batch-dates]")
-        page.fill("[data-batch-date]", "2026-12-01")
-        page.click(".hb-dialog .primary-btn")
-        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('设执行日期')")
-        dates = [body for path, body in _posts if path.endswith("/effective-dates")][-1]
-        assert dates == {"effective_from": "2026-12-01", "versions": [{"rule_id": RULE_ID, "row_version": 1}]}
-        page.click("[data-fee-tab='content']")
-        page.wait_for_selector(".hb-fold")
-        assert "缺出处" in page.inner_text("[data-fee-editor]") and "标识" not in page.inner_text("[data-fee-editor]")
-        page.fill("[data-meta='fee_name']", "上楼费")
-        assert page.locator("[data-fee-action='submit']").is_disabled()
-        _shot(page, "54-fees")
-        page.click("[data-fee-tab='trial']")
-        page.click("[data-fee-trial='boundary']")
-        page.wait_for_selector(".hb-trial__amount")
-        editor = page.inner_text("[data-fee-editor]")
-        assert "未生效 · 只供核对" in editor and "¥ 20.00" in editor and "其余参数按本次填写" in editor
-        trial = [body for path, body in _posts if path.endswith("/trial")][-1]
-        assert trial == {"values": {}, "boundary": True}
-        page.fill("[data-param='weight']", "200")
-        page.fill("[data-param='floor']", "5")
-        page.select_option("[data-param='elevator']", "false")
-        page.press("[data-param='floor']", "Enter")
-        page.wait_for_function("document.querySelectorAll('[data-fee-trial-result] .hb-trial').length === 1")
-        page.wait_for_timeout(200)
-        trial = [body for path, body in _posts if path.endswith("/trial")][-1]
-        assert trial == {"values": {"weight": "200", "floor": 5, "elevator": False}, "boundary": False}
-        _shot(page, "55-trial")
-        page.click("[data-fee-tab='content']")
-        page.click("[data-fold-all]")
-        page.fill("[data-f='formula.else.tiers.1.then.rate']", "0.2")
-        page.click("[data-fee-action='save']")
-        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已保存')")
-        saved = [body for path, body in _posts if path.endswith("/save")][-1]
-        assert saved["content"]["formula"]["else"]["tiers"][1]["then"]["rate"] == "0.2" and saved["fee_name"] == "上楼费"
         page.click("[data-handbook-tab='quote']")
         page.wait_for_selector("[data-quote-fee='upstairs']")
         assert "1 种费用在这个日期不能报价" in page.inner_text("[data-quote-fees]")
@@ -320,44 +296,209 @@ def test_editor_sees_workflow_and_no_approval(browser):
         assert errors == []
 
 
-def test_editor_drafts_fees_from_a_manual_chapter(browser):
-    context, page, errors, posts = _open(browser, {"id": 6, "role": "admin", "access_permissions": ("handbook:view", "handbook:operate")})
+def test_fee_rule_opens_on_check_step_and_ticks_lines(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
     with context:
-        page.click("[data-handbook-tab='fees']")
-        page.wait_for_selector("[data-line]")  # the first draft opens by itself
-        page.click("[data-fee-draft]")
+        # The draft opens on its first open step: ① has a draft, so ② 核对原文.
+        page.wait_for_selector(".fs-line")
+        steps = page.inner_text(".fs-steps")
+        assert "核对原文" in steps and "还差 3 行" in steps
+        assert page.locator(".fs-step[data-state='done']").count() == 1  # ① 起草; ③ still has an unanswered question
+        body = page.inner_text("[data-fee-body]")
+        assert "还差 3 行" in body and "有电梯 = 是 › 有电梯" in body and "5 元 + 0.06 × 结算重量" in body
+        assert "1 行有变化" in body and "旧的一行：3 元" in body and "缺出处" in body
+        # Lines without a source cannot be ticked; the cited page shows on the left.
+        assert page.locator("[data-line-tick='42ef3975026d82f5']").is_disabled()
+        page.wait_for_selector(".fs-viewer img")
+        assert page.locator("[data-fee-next]").is_disabled()
+        assert "下一步" in page.inner_text(".fs-foot") and "保存草稿" not in page.inner_text("[data-fee-editor]")
+        list_text = page.inner_text("[data-fee-list]")
+        assert "上楼费" in list_text and "已核对 0 / 3 行" in list_text
+        _shot(page, "62-check")
+        page.click("[data-line-tick='38914bb1e4808a64']")
+        page.wait_for_timeout(700)
+        ticked = [body for path, body in posts if path.endswith("/checks")][-1]
+        assert ticked == {"row_version": 1, "checks": [
+            {"kind": "question", "text": "混装时怎么收？", "options": ["需人工判断（现在的做法）", "其他（写明做法）"], "answer": None, "note": ""},
+            {"kind": "line", "sig": "38914bb1e4808a64", "done": True}]}
+        # 改 opens the line's own fields in place; edits save by themselves about a second later.
+        page.click("[data-line-edit='formula.else.tiers.1.then']")
+        page.fill("[data-f='formula.else.tiers.1.then.rate']", "0.2")
+        page.wait_for_timeout(1500)
+        saved = [body for path, body in posts if path.endswith("/save")][-1]
+        assert saved["content"]["formula"]["else"]["tiers"][1]["then"]["rate"] == "0.2" and saved["fee_name"] == "上楼费"
+        assert "已自动保存" in page.inner_text(".fs-foot")
+        # A later step stays closed until the open one is done.
+        page.click("[data-fee-step='3']")
+        assert "先完成第 ② 步" in page.inner_text("[data-fee-body]")
+        page.click("[data-fee-step='0']")
+        assert "规则初稿已经有了" in page.inner_text("[data-fee-body]")
+        page.click("[data-fee-structure]")
+        page.wait_for_selector(".hb-fold")
+        assert errors == []
+
+
+def test_fee_rule_questions_trial_and_submit(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
+    with context:
+        _serve_rule(page, rule(ticked=True))
+        page.reload()
+        page.wait_for_selector(".fs-q")
+        assert "已回答 0 / 1" in page.inner_text("[data-fee-body]") and "没有「保存」按钮" in page.inner_text("[data-fee-body]")
+        page.check("input[data-answer='0'][value='其他（写明做法）']")
+        page.wait_for_selector("[data-answer-note='0']")
+        assert "回第 ① 步修改规则结构" in page.inner_text("[data-fee-body]")
+        page.fill("[data-answer-note='0']", "混装按重的一件收")
+        page.wait_for_timeout(800)
+        answered = [body for path, body in posts if path.endswith("/checks")][-1]
+        assert answered["checks"][0]["answer"] == "其他（写明做法）" and answered["checks"][0]["note"] == "混装按重的一件收"
+        _shot(page, "63-decide")
+        answered_rule = rule(ticked=True, checks=[{**RULE["checks"][0], "answer": "需人工判断（现在的做法）"}])
+        _serve_rule(page, answered_rule)
+        page.reload()
+        page.wait_for_selector("[data-fee-trial-form]")
+        page.fill("[data-param='weight']", "200")
+        page.fill("[data-param='floor']", "5")
+        page.select_option("[data-param='elevator']", "false")
+        page.press("[data-param='floor']", "Enter")
+        page.wait_for_selector(".fs-result")
+        trial = [body for path, body in posts if path.endswith("/trial")][-1]
+        assert trial == {"values": {"weight": "200", "floor": 5, "elevator": False}, "boundary": False}
+        result = page.inner_text("[data-fee-body]")
+        assert "¥20.00" in result and "未生效 · 只供核对" in result and "合计 20.00" in result
+        page.click("[data-fee-trial='boundary']")
+        page.wait_for_selector(".fs-table")
+        assert "¥ 20.00" in page.inner_text(".fs-table")
+        _shot(page, "64-trial")
+        ready = {**answered_rule, "trial_count": 1, "effective_from": "2026-12-01", "submit_blockers": [],
+                 "events": [{"action": "TRIAL", "actor_id": "6", "created_at": "2026-11-15T10:20:00", "detail": {"values": {"weight": "200"}, "amount": "20.00", "outcome": "AMOUNT"}},
+                            *RULE["events"]]}
+        _serve_rule(page, ready)
+        page.reload()
+        page.wait_for_selector("[data-fee-submit]")
+        body = page.inner_text("[data-fee-body]")
+        assert "可以提交：核对、拍板、试算都已完成" in body and "2026-12-01（含）之后" in body and "2026-11-30 及之前" in body
+        assert "仍按 示例手册 V0" in body and "1 个场景" in body and "3 / 3 行全部核对" in body
+        assert page.locator("[data-fee-body] [data-fee-submit], [data-fee-body] [data-fee-action='submit']").count() == 0  # only in the footer
+        _shot(page, "65-submit")
+        page.click("[data-fee-submit]")
+        dialog = page.locator("dialog.hb-dialog")
+        assert "期间不可修改" in dialog.inner_text()
+        dialog.locator("button[value='ok']").click()
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已提交审核')")
+        assert [body for path, body in posts if path.endswith("/submit")][-1] == {"row_version": 1}
+        assert errors == []
+
+
+def test_editor_drafts_one_fee_from_a_manual_inside_a_draft(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
+    with context:
+        empty = rule(empty=True, checks=[], compare=None, content={"schema": 1, "params": [], "formula": {"type": "none", "outcome": "MANUAL", "reason": "规则还没有填写。"}, "reminders": []},
+                     params=[], progress={"lines": 0, "ticked": 0, "questions": 0, "answered": 0})
+        _serve_rule(page, empty)
+        page.reload()
+        page.wait_for_selector(".fs-choice")
+        body = page.inner_text("[data-fee-body]")
+        assert "从手册起草" in body and "手动填写" in body and "推荐" in body and "起草完成后，这一步会变成摘要" in body
+        assert "先完成起草" in page.inner_text(".fs-foot") and page.locator("[data-fee-next]").is_disabled()
+        assert "卡在第 ① 步" in page.inner_text("[data-fee-list]")
+        _shot(page, "59-draft-empty")
+        page.click("[data-fee-from-manual]")
         page.click("[data-draft-doc='n1']")
         page.wait_for_selector("[data-draft-chapter='1']")
         assert page.locator("[data-draft-chapter='0']").is_disabled()  # 30 pages is too long for one draft
-        assert page.locator("[data-draft-start]").is_disabled()
         page.check("[data-draft-chapter='1']")
         page.click("[data-draft-start]")
-        page.wait_for_selector(".hb-draft__stages")
-        assert "正在起草 第一章 上楼" in page.inner_text("[data-fee-editor]")
-        page.wait_for_selector(".hb-draft__fee", timeout=12000)
-        result = page.inner_text("[data-fee-editor]")
-        assert "起草了 2 项费用" in result and "已有同名 · 存为新版本" in result and "新费用" in result
-        assert "第 3 页的图示没有整理" in result and "混装时怎么收？" in result
-        page.uncheck("[data-draft-pick='1']")
-        _shot(page, "54-draft")
-        page.click("[data-draft-save]")
-        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已保存 1 个草稿')")
+        page.wait_for_selector(".fs-progress")
+        progress = page.inner_text("[data-fee-body]")
+        assert "进行中" in progress and "读取手册" in progress and "AI 起草" in progress and "取消起草" in progress
+        assert "AI 起草中，先等它完成" in page.inner_text(".fs-foot")
         start = [body for path, body in posts if path == "/handbook/fee-drafts/jobs"][-1]
-        assert start == {"node_token": "n1", "start": 2, "end": 3, "chapter": "第一章 上楼"}
-        assert [body for path, body in posts if path.endswith("/save")][-1] == {"indices": [0]}
-        page.wait_for_selector("[data-line]")  # the kept draft opens in 核对
-        assert not errors
+        assert start == {"node_token": "n1", "start": 2, "end": 3, "chapter": "第一章 上楼", "rule_id": RULE_ID}
+        _shot(page, "60-drafting")
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('起草完成')", timeout=12000)
+        assert errors == []
+
+
+def test_draft_failure_offers_retry_and_manual(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
+    with context:
+        empty = rule(empty=True, checks=[], compare=None, progress={"lines": 0, "ticked": 0, "questions": 0, "answered": 0})
+        _serve_rule(page, empty)
+        failed = {**DRAFT_JOB, "status": "FAILED", "result": None, "error": "第 2–3 页没有找到“上楼费”的收费，没有生成初稿。"}
+        page.route("**/handbook/fee-drafts/jobs?rule_id=*", lambda route: route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"job": failed}}, ensure_ascii=False)))
+        page.reload()
+        page.wait_for_selector(".fs-fail")
+        body = page.inner_text("[data-fee-body]")
+        assert "需要处理" in body and "第 2–3 页没有找到" in body and "上次尝试" in body and "重新起草" in body
+        assert "起草失败，先重试或换范围" in page.inner_text(".fs-foot")
+        _shot(page, "61-draft-failed")
+        page.click("[data-draft-manual]")
+        page.wait_for_selector("[data-json]")
+        assert errors == []
+
+
+def test_menu_deletes_a_never_submitted_draft(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
+    with context:
+        page.wait_for_selector(".fs-line")
+        page.click("[data-fee-menu]")
+        menu = page.inner_text(".fs-menu")
+        assert "删除草稿" in menu and "重命名" in menu and "作废" not in menu
+        page.click("[data-fee-menu-item='delete']")
+        dialog = page.locator("dialog.hb-dialog")
+        assert "删除后无法恢复" in dialog.inner_text()
+        dialog.locator("button[value='ok']").click()
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已删除草稿')")
+        assert [body for path, body in posts if path.endswith("/delete")][-1] == {"row_version": 1}
+        assert errors == []
+
+
+def test_a_conflict_offers_reload_instead_of_overwriting(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
+    with context:
+        page.wait_for_selector(".fs-line")
+        page.route(f"**/handbook/fee-rules/{RULE_ID}/save", lambda route: route.fulfill(status=409, content_type="application/json",
+                   body=json.dumps({"ok": False, "message": "这个版本刚被别人修改过，请刷新后再操作。"}, ensure_ascii=False)))
+        page.click("[data-fee-step='0']")
+        page.fill("[data-meta='fee_name']", "上楼费（改）")
+        page.wait_for_selector(".fs-conflict", timeout=4000)
+        assert "已被 示例编辑 修改" in page.inner_text(".fs-conflict") and "载入最新" in page.inner_text(".fs-conflict")
+        _shot(page, "69-conflict")
+        page.click("[data-fee-reload]")
+        page.wait_for_function("!document.querySelector('.fs-conflict')")
+        assert errors == []
 
 
 def test_a_knowledge_reminder_opens_drafting_for_that_document(browser):
-    context, page, errors, _posts = _open(browser, {"id": 6, "role": "admin", "access_permissions": ("handbook:view", "handbook:operate")})
+    context, page, errors, posts = _open(browser, EDITOR)
     with context:
+        page.wait_for_selector(".fs-line")
         page.click("[data-handbook-tab='sources']")
         page.click("[data-draft-from='n2']")
+        dialog = page.locator("dialog.hb-dialog")
+        dialog.locator("[data-dialog-input]").fill("示例调整费")
+        dialog.locator("button[value='ok']").click()
         page.wait_for_selector("[data-draft-chapter='1']")
         assert page.locator("[data-handbook-tab='fees']").get_attribute("aria-selected") == "true"
+        assert [body for path, body in posts if path == "/handbook/fee-rules"][-1] == {"fee_name": "示例调整费"}
         assert "示例物流手册 V1.pdf" in page.inner_text("[data-fee-editor]")
         assert not errors
+
+
+def test_narrow_screen_keeps_the_list_in_a_drawer(browser):
+    context, page, errors, _posts = _open(browser, EDITOR)
+    with context:
+        page.set_viewport_size({"width": 1180, "height": 900})
+        page.wait_for_selector(".fs-line")
+        assert page.locator(".fs-list").bounding_box()["x"] < 0  # off screen
+        page.click(".fs-ws [data-fee-drawer]")
+        page.wait_for_timeout(300)
+        assert page.locator(".fs-list").bounding_box()["x"] >= 0
+        page.click(f"[data-fee-open='{RULE_ID}']")
+        page.wait_for_timeout(300)
+        assert page.locator(".fs-list").bounding_box()["x"] < 0
+        assert errors == []
 
 
 def test_super_admin_review_needs_confirmation(browser):
@@ -370,6 +511,7 @@ def test_super_admin_review_needs_confirmation(browser):
         ready["versions"][0]["blockers"] = ready["versions"][0]["submit_blockers"] = []
         ready["events"].insert(0, {"version": 2, "action": "SUBMIT", "actor_id": "6", "detail": None, "created_at": "2026-11-15T10:07:00+00:00"})
         page.route(f"**/handbook/entries/{ENTRY_ID}", lambda route: route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": ready}, ensure_ascii=False)))
+        _entries(page)
         page.click(f"[data-entry='{ENTRY_ID}']")
         page.wait_for_selector("button[data-handbook-review]")
         page.click("button[data-handbook-review]")
@@ -391,6 +533,10 @@ def test_super_admin_review_needs_confirmation(browser):
 def test_viewer_sees_no_actions(browser):
     context, page, errors, _posts = _open(browser, {"id": 5, "role": "admin", "access_permissions": ("handbook:view",)})
     with context:
+        page.wait_for_selector(".fs-line")
+        assert page.locator("[data-fee-create], [data-fee-draft], [data-line-tick], [data-fee-menu]").count() == 0
+        assert page.locator("[data-meta='fee_name']").count() == 0 or page.locator("[data-meta='fee_name']").is_disabled()
+        _entries(page)
         page.click(f"[data-entry='{ENTRY_ID}']")
         page.wait_for_selector(".hb-steps")
         assert page.locator("[data-handbook-save], [data-handbook-compile], [data-handbook-new]").count() == 0
@@ -398,4 +544,60 @@ def test_viewer_sees_no_actions(browser):
         page.click("[data-handbook-tab='sources']")
         page.wait_for_selector(".hb-reminder")
         assert page.locator("[data-check], [data-sources-scan]").count() == 0
+        assert errors == []
+
+
+def test_super_admin_reviews_and_sees_the_overview(browser):
+    context, page, errors, posts = _open(browser, {"id": 1, "role": "super_admin", "is_legacy_basic_auth": False})
+    with context:
+        pending = rule(ticked=True, status="PENDING", effective_from="2026-12-01", submitted_by="6", submitted_at="2026-11-22T08:40:00",
+                       checks=[{**RULE["checks"][0], "answer": "需人工判断（现在的做法）"}], trial_count=1, blockers=[], submit_blockers=[], can_delete=False)
+        _serve_rule(page, pending)
+        page.reload()
+        page.wait_for_selector(".fs-await")
+        assert page.locator(".fs-step__lock").count() == 5
+        body = page.inner_text("[data-fee-body]")
+        assert "已提交，等待你审核" in body and "提交人 示例编辑" in body and "收费表（供核对，不可改）" in body
+        assert "等待你审核" in page.inner_text(".fs-foot")
+        _shot(page, "66-review-admin")
+        page.click("[data-fee-action='approve']")
+        dialog = page.locator("dialog.hb-dialog")
+        assert "2026-12-01" in dialog.inner_text()
+        dialog.locator("button[value='cancel']").click()
+        assert not [path for path, _body in posts if path.endswith("/approve")]
+        page.click("[data-fee-menu]")
+        assert "作废此版本" in page.inner_text(".fs-menu") and "删除草稿" not in page.inner_text(".fs-menu")
+        page.keyboard.press("Escape")
+        approved = {**pending, "status": "APPROVED", "approved_by": "1", "approved_at": "2026-11-22T09:05:00"}
+        _serve_rule(page, approved)
+        page.reload()
+        page.wait_for_selector(".fs-tiles")
+        assert page.locator(".fs-steps").count() == 0
+        body = page.inner_text("[data-fee-body]")
+        assert "生效概览" in body and "长期有效" in body and "全部有手册出处" in body and "复制为新草稿以修改" in body
+        assert "只读 · 已生效" in page.inner_text(".fs-foot")
+        _shot(page, "68-approved")
+        page.click("[data-fee-action='copy']")
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已复制为新草稿')")
+        assert errors == []
+
+
+def test_editor_waits_while_a_version_is_in_review(browser):
+    context, page, errors, posts = _open(browser, EDITOR)
+    with context:
+        pending = rule(ticked=True, status="PENDING", effective_from="2026-12-01", submitted_by="6", submitted_at="2026-11-22T08:40:00",
+                       checks=[{**RULE["checks"][0], "answer": "需人工判断（现在的做法）"}], trial_count=1, blockers=[], submit_blockers=[], can_delete=False)
+        _serve_rule(page, pending)
+        page.reload()
+        page.wait_for_selector(".fs-wait")
+        body = page.inner_text("[data-fee-body]")
+        assert "等待超级管理员审核" in body and "撤回为草稿" in body and "前面的步骤是锁住的" in body
+        assert page.locator("[data-fee-action='approve']").count() == 0
+        page.click("[data-fee-step='2']")
+        assert page.locator("input[data-answer]").first.is_disabled()
+        _shot(page, "67-review-editor")
+        page.click("[data-fee-step='5']")
+        page.click("[data-fee-action='withdraw']")
+        page.locator("dialog.hb-dialog button[value='ok']").click()
+        page.wait_for_function("document.querySelector('[data-fee-status]').innerText.includes('已撤回为草稿')")
         assert errors == []

@@ -185,7 +185,15 @@ class FeeRuleRepository:
             cursor.execute("SELECT * FROM agent_fee_rule_versions" + where +
                            " ORDER BY fee_kind, (status='RETIRED'), (status='APPROVED') DESC, effective_from DESC,"
                            " updated_at DESC LIMIT 200")
-            return [self._record(row) for row in self._rows(cursor)]
+            records = [self._record(row) for row in self._rows(cursor)]
+        for record in records:
+            # 费用列表 (frontend-spec 59–68) shows one line of progress per version.
+            lines = [] if record["content"] == EMPTY_CONTENT else review_lines(record)
+            record["progress"] = {"lines": len(lines), "ticked": sum(line["done"] for line in lines),
+                                  "questions": sum(item.get("kind") == "question" for item in record["checks"]),
+                                  "answered": sum(item.get("kind") == "question" and item.get("answer") is not None
+                                                  for item in record["checks"])}
+        return records
 
     def _trial_count(self, cursor: Any, rule_id: str) -> int:
         """Trial runs on this version since its content was last saved (or copied)."""
@@ -193,6 +201,10 @@ class FeeRuleRepository:
                        " COALESCE((SELECT MAX(event_id) FROM agent_fee_rule_events WHERE rule_id=%s"
                        " AND action IN ('SAVE', 'COPY', 'CREATE', 'DRAFT')), 0)", (rule_id, rule_id))
         return int(self._rows(cursor)[0]["n"])
+
+    def _ever_submitted(self, cursor: Any, rule_id: str) -> bool:
+        cursor.execute("SELECT 1 FROM agent_fee_rule_events WHERE rule_id=%s AND action='SUBMIT' LIMIT 1", (rule_id,))
+        return bool(self._rows(cursor))
 
     def get(self, rule_id: str) -> dict[str, Any]:
         with self._cursor() as cursor:
@@ -202,10 +214,12 @@ class FeeRuleRepository:
             record["events"] = [{"action": row["action"], "actor_id": row["actor_id"], "detail": _load(row["detail_json"]),
                                  "created_at": _iso(row["created_at"])} for row in self._rows(cursor)]
             record["trial_count"] = self._trial_count(cursor, rule_id)
+            record["can_delete"] = record["status"] == "DRAFT" and not self._ever_submitted(cursor, rule_id)
             record["people"] = fetch_admin_display_names(cursor, {
                 record["created_by"], record["updated_by"], record["submitted_by"], record["approved_by"],
                 *(item["actor_id"] for item in record["events"])})
         record["lines"] = review_lines(record)
+        record["empty"] = record["content"] == EMPTY_CONTENT  # ① 起草 has not produced a rule yet
         if record["status"] in ("DRAFT", "PENDING"):
             record["compare"] = compare_lines(record["lines"], self._base(record["fee_kind"], exclude=rule_id))
         record["submit_blockers"] = submit_blockers(record, trial_count=record["trial_count"])
@@ -278,9 +292,10 @@ class FeeRuleRepository:
 
     def create_fee(self, *, fee_name: Any, actor_id: str, content: Mapping[str, Any] | None = None,
                    checks: Any = None) -> str:
-        """A new kind of fee, as an empty draft (or an AI draft's content); it computes nothing until approved."""
+        """A new kind of fee, as an empty draft (or an AI draft's content); it computes nothing until approved.
+        The effective date is asked for in step ⑤ (日期与提交), so no reminder item is added for it."""
         name = normalize_fee_name(fee_name)
-        checks = normalize_checks(checks if checks is not None else [{"text": "执行日期以总部通知为准，尚未填写。"}])
+        checks = normalize_checks(checks if checks is not None else [])
         new_id = str(uuid.uuid4())
         with self._cursor() as cursor:
             cursor.execute("SELECT 1 FROM agent_fee_rule_versions WHERE fee_name=%s AND status<>'RETIRED' LIMIT 1", (name,))
@@ -339,10 +354,12 @@ class FeeRuleRepository:
         return new_id
 
     def save_draft(self, rule_id: str, *, version_label: Any, effective_from: Any, content: Any, checks: Any,
-                   actor_id: str, expected_row_version: int, fee_name: Any = None) -> None:
-        """Save a draft as typed. Incomplete content may be saved; submitting re-checks it.
+                   actor_id: str, expected_row_version: int, fee_name: Any = None) -> dict[str, Any]:
+        """Save a draft as typed (自动保存). Incomplete content may be saved; submitting re-checks it.
 
-        Renaming the fee renames every version of it, so the list keeps one name per fee.
+        Renaming the fee renames every version of it, so the list keeps one name per fee. A save
+        that leaves the rule content as it was (a new name, a date, question texts) is logged as
+        ``EDIT`` so earlier trials still count. Returns the new ``row_version``.
         """
         label, effective, checks = normalize_label(version_label), normalize_date(effective_from), normalize_checks(checks)
         if not isinstance(content, Mapping):
@@ -360,7 +377,40 @@ class FeeRuleRepository:
             cursor.execute("UPDATE agent_fee_rule_versions SET version_label=%s, effective_from=%s, content_json=%s,"
                            " checks_json=%s, updated_by=%s, row_version=row_version+1 WHERE rule_id=%s",
                            (label, effective, _dump(content), _dump(checks), actor_id, rule_id))
-            self._event(cursor, rule_id, "SAVE", actor_id, {"fee_name": name} if name != record["fee_name"] else None)
+            action = "EDIT" if _dump(content) == _dump(record["content"]) else "SAVE"
+            self._event(cursor, rule_id, action, actor_id, {"fee_name": name} if name != record["fee_name"] else None)
+        return {"saved": True, "row_version": record["row_version"] + 1}
+
+    def fill_drafted(self, rule_id: str, *, content: Mapping[str, Any], checks: Any, actor_id: str,
+                     detail: Mapping[str, Any]) -> None:
+        """Put one AI-drafted fee (① 起草, started from this draft) into the draft: its content and
+        questions replace what was there; lines and answers the fee's base version had carry over."""
+        checks = normalize_checks(checks)
+        if not isinstance(content, Mapping):
+            raise FeeRuleError("FEE_RULE_CONTENT_INVALID", "规则内容格式无效。")
+        with self._cursor() as cursor:
+            record = self._get(cursor, rule_id, lock=True)
+            if record["status"] != "DRAFT":
+                raise FeeRuleError("FEE_RULE_STATE", "这份草稿已经提交或作废，起草结果没有写入。")
+            cursor.execute("SELECT * FROM agent_fee_rule_versions WHERE fee_kind=%s AND rule_id<>%s AND status<>'RETIRED'",
+                           (record["fee_kind"], rule_id))
+            base = base_version([self._record(row) for row in self._rows(cursor)], fee_kind=record["fee_kind"], exclude=rule_id)
+            kept = [item for item in record["checks"] if item.get("kind") is None]
+            checks = carry_over([*kept, *checks], content, base)
+            cursor.execute("UPDATE agent_fee_rule_versions SET content_json=%s, checks_json=%s, updated_by=%s,"
+                           " row_version=row_version+1 WHERE rule_id=%s", (_dump(dict(content)), _dump(checks), actor_id, rule_id))
+            self._event(cursor, rule_id, "DRAFT", actor_id, {**dict(detail), "fee_name": record["fee_name"], "filled": True})
+
+    def delete_draft(self, rule_id: str, *, actor_id: str, expected_row_version: int) -> None:
+        """Delete a draft that was never submitted, for good (frontend-spec 69 B): the version row
+        and its operation log go. Anyone who may edit the 业务手册 may do it; submitted versions are
+        retired instead (super administrators only)."""
+        with self._cursor() as cursor:
+            self._lock(cursor, rule_id, expected_row_version, ("DRAFT",))
+            if self._ever_submitted(cursor, rule_id):
+                raise FeeRuleError("FEE_RULE_STATE", "这份草稿提交过审核，不能删除，只能由超级管理员作废。")
+            cursor.execute("DELETE FROM agent_fee_rule_events WHERE rule_id=%s", (rule_id,))
+            cursor.execute("DELETE FROM agent_fee_rule_versions WHERE rule_id=%s", (rule_id,))
 
     def set_checks(self, rule_id: str, *, checks: Any, actor_id: str, expected_row_version: int) -> int:
         """Tick items and 收费表 lines, answer questions, on a draft or a submitted version (the

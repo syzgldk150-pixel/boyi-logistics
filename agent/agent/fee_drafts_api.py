@@ -1,6 +1,6 @@
 """Signed Console API for 业务手册 → 计算规则 → 从手册起草 (方案 B, 2026-11-20).
 
-Reading needs the 业务手册 module visible; starting a draft and keeping drafts needs it
+Reading needs the 业务手册 module visible; starting, cancelling a draft and keeping drafts needs it
 operable (``shared.identity_routes``). The work is in ``agent.fee_drafting.FeeDraftService``.
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ class StartRequest(BaseModel):
     start: int
     end: int
     chapter: str = Field(default="", max_length=200)
+    rule_id: str | None = Field(default=None, min_length=36, max_length=36)
 
 
 class SaveRequest(BaseModel):
@@ -60,8 +61,24 @@ def create_fee_drafts_router(*, service_provider: Callable[[], Any], admin_provi
     async def start(req: StartRequest, request: Request):
         actor = admin_provider(request)
         try:
+            target = await run_in_threadpool(service().draft_target, req.rule_id) if req.rule_id else ""
             return api_success(service().start(node_token=req.node_token, start=req.start, end=req.end,
-                                               chapter=req.chapter, actor_id=actor.actor_id))
+                                               chapter=req.chapter, actor_id=actor.actor_id, rule_id=req.rule_id,
+                                               target=target))
+        except FeeRuleError as exc:
+            return _failure(exc)
+
+    @router.get("/jobs")
+    async def latest(request: Request, rule_id: str = ""):
+        """The newest job started from one draft by this person (null when there is none)."""
+        actor = admin_provider(request)
+        return await run(lambda: {"job": service().latest_for_rule(rule_id, actor_id=actor.actor_id)})
+
+    @router.post("/jobs/{job_id}/cancel")
+    async def cancel(job_id: str, request: Request):
+        actor = admin_provider(request)
+        try:  # in memory only, and on the event loop: Task.cancel is not thread-safe
+            return api_success(service().cancel(job_id, actor_id=actor.actor_id))
         except FeeRuleError as exc:
             return _failure(exc)
 

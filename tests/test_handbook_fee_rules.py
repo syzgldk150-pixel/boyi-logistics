@@ -274,6 +274,9 @@ def test_migrations_087_090_repository_lifecycle(database):  # noqa: F811
     created = repo.create_fee(fee_name="进仓服务费", actor_id="7")
     fresh = repo.get(created)
     assert fresh["fee_kind"].startswith("fee_") and fresh["status"] == "DRAFT" and fresh["trial_count"] == 0
+    assert fresh["checks"] == [] and fresh["can_delete"] is True and fresh["empty"] is True  # the date is asked in step ⑤, not as an item
+    listed = {item["rule_id"]: item for item in repo.list_versions(include_retired=True)}
+    assert listed[UPSTAIRS_ID]["progress"]["lines"] == len(saved["lines"]) and listed[created]["progress"]["lines"] == 0
     with pytest.raises(FeeRuleError, match="已经有名为"):
         repo.create_fee(fee_name="进仓服务费", actor_id="7")
     repo.save_draft(created, fee_name="进仓费", version_label="草稿1", effective_from=None, content=fresh["content"],
@@ -282,6 +285,44 @@ def test_migrations_087_090_repository_lifecycle(database):  # noqa: F811
     with pytest.raises(FeeRuleError, match="已经有名为"):
         repo.save_draft(created, fee_name="上楼费", version_label="草稿1", effective_from=None, content=fresh["content"],
                         checks=fresh["checks"], actor_id="7", expected_row_version=repo.get(created)["row_version"])
+
+    # 自动保存 (2026-11-23): a save that leaves the rule as it was keeps trials; saves return the row version.
+    current = repo.get(created)
+    repo.record_trial(created, actor_id="7", detail={"outcome": "MANUAL"})
+    result = repo.save_draft(created, version_label="草稿1", effective_from="2026-12-01", content=current["content"],
+                             checks=current["checks"], actor_id="7", expected_row_version=current["row_version"])
+    after = repo.get(created)
+    assert result == {"saved": True, "row_version": current["row_version"] + 1} == {"saved": True, "row_version": after["row_version"]}
+    assert after["trial_count"] == 1 and after["events"][0]["action"] == "EDIT"
+    # ① 起草 inside a draft: the AI's fee replaces the content and questions; the draft keeps its name.
+    repo.fill_drafted(created, content=seed["content"], checks=seed["checks"], actor_id="7", detail={"pages": "50-52"})
+    filled = repo.get(created)
+    assert filled["content"] == seed["content"] and filled["fee_name"] == "进仓费" and filled["trial_count"] == 0
+    assert filled["empty"] is False
+    assert [item["text"] for item in filled["checks"] if item.get("kind") == "question"] == [item["text"] for item in seed["checks"]]
+    assert filled["events"][0]["action"] == "DRAFT" and filled["events"][0]["detail"]["filled"] is True
+    # Deleting: a never-submitted draft goes for good; a submitted one may only be retired.
+    with pytest.raises(FeeRuleError, match="别人修改"):
+        repo.delete_draft(created, actor_id="7", expected_row_version=filled["row_version"] - 1)
+    repo.delete_draft(created, actor_id="7", expected_row_version=filled["row_version"])
+    with pytest.raises(FeeRuleError, match="没有找到"):
+        repo.get(created)
+    assert created not in {item["rule_id"] for item in repo.list_versions(include_retired=True)}
+    with pytest.raises(FeeRuleError, match="当前状态"):
+        repo.delete_draft(UPSTAIRS_ID, actor_id="7", expected_row_version=repo.get(UPSTAIRS_ID)["row_version"])
+    submitted = repo.get(drafted["rule_id"])
+    resubmit = [{**item, "answer": item["options"][0]} if item.get("kind") == "question" else {**item, "done": True}
+                for item in submitted["checks"] if item.get("kind") != "line"]
+    ticks = [{"kind": "line", "sig": line["sig"], "done": True} for line in submitted["lines"]]
+    repo.save_draft(drafted["rule_id"], version_label="AI草稿", effective_from="2026-12-01", content=submitted["content"],
+                    checks=[*resubmit, *ticks], actor_id="7", expected_row_version=submitted["row_version"])
+    repo.record_trial(drafted["rule_id"], actor_id="7", detail={"outcome": "AMOUNT"})
+    repo.submit(drafted["rule_id"], actor_id="7", expected_row_version=repo.get(drafted["rule_id"])["row_version"])
+    repo.withdraw(drafted["rule_id"], actor_id="7", expected_row_version=repo.get(drafted["rule_id"])["row_version"])
+    back = repo.get(drafted["rule_id"])
+    assert back["status"] == "DRAFT" and back["can_delete"] is False
+    with pytest.raises(FeeRuleError, match="只能由超级管理员作废"):
+        repo.delete_draft(drafted["rule_id"], actor_id="7", expected_row_version=back["row_version"])
 
     quote_id = repo.record_quote(actor_id="7", channel="console", billing_date=date(2026, 11, 12), fee_kinds=["upstairs"],
                                  values={"floor": 3}, result={"total": "44.00", "complete": True, "items": []},
@@ -315,6 +356,13 @@ def _client(record, super_admin=None, approved=()):
 
         def retire(self, rule_id, **kwargs):
             calls.append("retire")
+
+        def delete_draft(self, rule_id, *, actor_id, expected_row_version):
+            calls.append(("delete", actor_id, expected_row_version))
+
+        def save_draft(self, rule_id, *, expected_row_version, **kwargs):
+            calls.append(("save", kwargs["fee_name"], expected_row_version))
+            return {"saved": True, "row_version": expected_row_version + 1}
 
         def set_checks(self, rule_id, *, checks, actor_id, expected_row_version):
             calls.append(("checks", len(checks), expected_row_version))
@@ -442,3 +490,22 @@ def test_a_new_version_keeps_checks_of_unchanged_lines_and_shows_what_changed():
     assert (compare["same"], compare["changed"], compare["version_label"]) == (1, 1, "V6.1")
     assert [line["changed"] for line in lines] == [False, True] and "最高 100 元" in compare["removed"][0]
     assert compare_lines(lines, None) is None
+
+
+def test_agent_api_deletes_never_submitted_drafts_and_save_returns_the_row_version():
+    record = {**UPSTAIRS, "row_version": 3}
+    client, calls = _client(record)
+    base = f"/internal/v1/admin/fee-rules/{UPSTAIRS['rule_id']}"
+    deleted = client.post(f"{base}/delete", json={"row_version": 3})
+    assert deleted.status_code == 200 and ("delete", "7", 3) in calls  # editors may delete; no super administrator needed
+    saved = client.post(f"{base}/save", json={"row_version": 3, "fee_name": "上楼费", "version_label": "草稿1",
+                                              "content": UPSTAIRS["content"], "checks": []})
+    assert saved.json()["data"] == {"saved": True, "row_version": 4}
+    assert client.post(f"{base}/erase", json={"row_version": 3}).status_code == 404
+
+
+def test_fee_lines_split_condition_and_amount_for_the_check_step():
+    lines = fee_lines(BATCH["upstairs"]["content"])
+    assert lines and all(line["amount"] and line["amount"] in line["text"] for line in lines)
+    assert all(line["text"].startswith(line["condition"].split("（")[0]) for line in lines)
+    assert any(line["condition"] and line["text"] == f"{line['condition']}：{line['amount']}" for line in lines)

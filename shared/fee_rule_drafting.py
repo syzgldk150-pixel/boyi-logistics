@@ -242,12 +242,22 @@ def _squash(text: str) -> str:
 
 
 def check_draft(answer: Any, *, document: str, pages: Sequence[Mapping[str, Any]],
-                existing: Sequence[str] = ()) -> dict[str, Any]:
+                existing: Sequence[str] = (), target: str = "") -> dict[str, Any]:
     """Validate and normalize one model answer against the pages it was given; raise ValueError with
-    every problem in Chinese (the gateway hands them back to the model once)."""
+    every problem in Chinese (the gateway hands them back to the model once).
+
+    With ``target`` (起草一个费用, 2026-11-23) the answer is about that one fee: either exactly one
+    fee of that name, or no fee and the reason in ``skipped`` when the pages do not have it.
+    """
     if not isinstance(answer, Mapping) or not isinstance(answer.get("fees"), list):
         raise ValueError("回答必须是 {\"fees\": [...], \"skipped\": [...]}。")
     fees = answer["fees"]
+    if target:
+        if not fees:
+            skipped = [str(item).strip()[:200] for item in answer.get("skipped") or [] if str(item).strip()][:10]
+            return {"fees": [], "skipped": skipped}
+        if len(fees) != 1 or not isinstance(fees[0], Mapping) or str(fees[0].get("name") or "").strip() != target:
+            raise ValueError(f"只整理“{target}”这一项：fees 里只能有一项，名称必须是“{target}”；这几页没有这项收费时 fees 留空，原因写在 skipped 里。")
     if not 1 <= len(fees) <= MAX_FEES:
         raise ValueError(f"fees 要有 1 到 {MAX_FEES} 项；这几页里没有收费时，请把原因写在 skipped 里并给出最接近的一项。")
     texts = {int(page["page"]): str(page.get("text") or "") for page in pages}
@@ -314,21 +324,26 @@ def check_draft(answer: Any, *, document: str, pages: Sequence[Mapping[str, Any]
 
 
 def drafting_payload(*, document: str, pages: Sequence[Mapping[str, Any]], existing: Sequence[str],
-                     chapter: str = "") -> dict[str, Any]:
+                     chapter: str = "", target: str = "") -> dict[str, Any]:
     text_pages = [{"page": int(page["page"]), "text": str(page.get("text") or "")} for page in pages]
     if sum(len(item["text"]) for item in text_pages) > MAX_TEXT:
         raise FeeRuleError("FEE_DRAFT_TOO_LONG", "这几页文字太多，请选小一点的范围。")
-    return {"document": document, "chapter": chapter, "pages": text_pages,
+    extra = {"only_fee": target, "only_fee_note": f"这次只整理“{target}”这一项收费：fees 里最多一项，名称必须是“{target}”；"
+             "这几页没有写这项收费时，fees 留空，在 skipped 里写明原因（例如“第 12–19 页没有提到{target}”）。其他费用一律不整理。"} if target else {}
+    return {**extra, "document": document, "chapter": chapter, "pages": text_pages,
             "page_range": f"第 {text_pages[0]['page']}–{text_pages[-1]['page']} 页",
             "existing_fees": list(existing)[:60],
             "note": "页面图片按页码顺序附在前面；表格以图片为准，文字层里的表格可能是乱序的。",
             "format_example": _EXAMPLE}
 
 
-def drafting_spec(*, document: str, pages: Sequence[Mapping[str, Any]], existing: Sequence[str]) -> AITaskSpec:
-    """The AI task for one read: its validator is bound to these pages."""
-    return AITaskSpec(task_id="handbook.fee_draft", prompt_version="2026-11-20.1", system_prompt=SYSTEM_PROMPT,
-                      validate=lambda answer: check_draft(answer, document=document, pages=pages, existing=existing),
+def drafting_spec(*, document: str, pages: Sequence[Mapping[str, Any]], existing: Sequence[str],
+                  target: str = "") -> AITaskSpec:
+    """The AI task for one read: its validator is bound to these pages (and to one fee with ``target``)."""
+    return AITaskSpec(task_id="handbook.fee_draft", prompt_version="2026-11-23.1" if target else "2026-11-20.1",
+                      system_prompt=SYSTEM_PROMPT,
+                      validate=lambda answer: check_draft(answer, document=document, pages=pages, existing=existing,
+                                                          target=target),
                       max_retries=1, timeout_seconds=240)
 
 

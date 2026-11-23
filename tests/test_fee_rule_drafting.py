@@ -101,6 +101,22 @@ def test_the_task_is_bound_to_the_pages_it_read():
     assert payload["page_range"] == "第 59–60 页" and payload["existing_fees"] == ["上楼费"]
 
 
+def test_drafting_one_fee_accepts_only_that_fee_or_none():
+    """① 起草 inside a draft (2026-11-23): the AI drafts only the draft's fee."""
+    result = check_draft({"fees": [_fee()], "skipped": []}, document="示例手册 V1", pages=PAGES, target="开箱清点")
+    assert [fee["name"] for fee in result["fees"]] == ["开箱清点"]
+    none = check_draft({"fees": [], "skipped": ["第 59–60 页没有提到打牛费"]}, document="示例手册 V1", pages=PAGES, target="打牛费")
+    assert none == {"fees": [], "skipped": ["第 59–60 页没有提到打牛费"]}
+    with pytest.raises(ValueError, match="只整理“打牛费”这一项"):
+        check_draft({"fees": [_fee()], "skipped": []}, document="示例手册 V1", pages=PAGES, target="打牛费")
+    with pytest.raises(ValueError, match="只能有一项"):
+        check_draft({"fees": [_fee(), _fee("其他费")], "skipped": []}, document="示例手册 V1", pages=PAGES, target="开箱清点")
+    payload = drafting_payload(document="示例手册 V1", pages=PAGES, existing=[], target="打牛费")
+    assert payload["only_fee"] == "打牛费" and "其他费用一律不整理" in payload["only_fee_note"]
+    assert "only_fee" not in drafting_payload(document="示例手册 V1", pages=PAGES, existing=[])
+    assert drafting_spec(document="示例手册 V1", pages=PAGES, existing=[], target="打牛费").prompt_version == "2026-11-23.1"
+
+
 # -- the drafting job (agent/agent/fee_drafting.py) --------------------------------------------
 
 class _Repository:
@@ -112,6 +128,14 @@ class _Repository:
         content["formula"]["tiers"][1]["then"]["max"] = "80"  # the version in force differs in one line
         return [{"rule_id": "r-live", "fee_kind": "count_check", "fee_name": "开箱清点", "status": "APPROVED",
                  "version_label": "V6.0", "effective_from": "2026-01-01", "content": content, "checks": []}]
+
+    def get(self, rule_id):
+        return {"rule_id": rule_id, "fee_name": "开箱清点", "status": self.status}
+
+    status = "DRAFT"
+
+    def fill_drafted(self, rule_id, **kwargs):
+        self.filled = (rule_id, kwargs)
 
     def add_drafted(self, **kwargs):
         self.added.append(kwargs)
@@ -252,3 +276,82 @@ def test_pages_are_rendered_in_one_batch_under_the_output_cap(tmp_path):
     for pages in ([1, 2, 3, 4, 5], [1, 1], [6]):
         with pytest.raises(ValueError):
             render_pages(str(path), pages)
+
+
+def test_a_job_started_from_a_draft_fills_that_draft_or_says_the_fee_is_not_there():
+    repository = _Repository()
+    service, _ = _service(_Gateway({"fees": [_fee()], "skipped": []}), repository)
+    target = service.draft_target("r-draft")
+
+    async def scenario(svc, name):
+        job = svc.start(node_token="n1", start=59, end=60, chapter="", actor_id="7", rule_id="r-draft", target=name)
+        with pytest.raises(FeeRuleError, match="已经在起草中"):
+            svc.start(node_token="n1", start=59, end=60, chapter="", actor_id="8", rule_id="r-draft", target=name)
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if svc.job(job["job_id"], actor_id="7")["status"] != "RUNNING":
+                break
+        return svc.latest_for_rule("r-draft", actor_id="7")
+
+    view = asyncio.run(scenario(service, target))
+    assert view["status"] == "DONE" and view["rule_id"] == "r-draft" and view["result"]["filled"] is True
+    rule_id, kwargs = repository.filled
+    assert rule_id == "r-draft" and kwargs["detail"]["pages"] == "59-60" and kwargs["content"]["formula"]
+    with pytest.raises(FeeRuleError, match="直接写进草稿"):
+        service.save(view["job_id"], indices=[0], actor_id="7")
+    assert service.latest_for_rule("r-other", actor_id="7") is None
+
+    missing = _Repository()
+    other, _ = _service(_Gateway({"fees": [], "skipped": ["这两页没有打牛费"]}), missing)
+    failed = asyncio.run(scenario(other, "打牛费"))
+    assert failed["status"] == "FAILED" and "第 59–60 页没有找到“打牛费”" in failed["error"] and "这两页没有打牛费" in failed["error"]
+    assert not hasattr(missing, "filled")
+    missing.status = "PENDING"
+    with pytest.raises(FeeRuleError, match="只有草稿"):
+        other.draft_target("r-draft")
+
+
+def test_a_cancelled_job_writes_nothing():
+    class Slow(_Gateway):
+        async def run(self, spec, payload, **kwargs):
+            await asyncio.sleep(5)
+            return await super().run(spec, payload, **kwargs)
+
+    repository = _Repository()
+    service, _ = _service(Slow({"fees": [_fee()], "skipped": []}), repository)
+
+    async def scenario():
+        job = service.start(node_token="n1", start=59, end=60, chapter="", actor_id="7", rule_id="r-draft", target="开箱清点")
+        await asyncio.sleep(0.05)
+        view = service.cancel(job["job_id"], actor_id="7")
+        await asyncio.sleep(0.05)
+        return view, service.job(job["job_id"], actor_id="7")
+
+    cancelled, later = asyncio.run(scenario())
+    assert cancelled["status"] == later["status"] == "CANCELLED" and not hasattr(repository, "filled")
+    with pytest.raises(FeeRuleError, match="没有找到这次起草"):
+        service.cancel(cancelled["job_id"], actor_id="8")
+
+
+def test_drafts_api_starts_inside_a_draft_reads_its_latest_job_and_cancels():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from agent.fee_drafts_api import create_fee_drafts_router
+    from shared.identity_routes import agent_permission
+
+    service, _ = _service(_Gateway({"fees": [_fee()], "skipped": []}))
+    app = FastAPI()
+    app.include_router(create_fee_drafts_router(service_provider=lambda: service,
+                                                admin_provider=lambda request: SimpleNamespace(actor_id="7")))
+    client = TestClient(app)
+    base = "/internal/v1/admin/fee-drafts"
+    rule_id = "44444444-5555-4666-8777-888888888888"
+    assert client.get(f"{base}/jobs", params={"rule_id": rule_id}).json()["data"] == {"job": None}
+    started = client.post(f"{base}/jobs", json={"node_token": "n1", "start": 59, "end": 60, "chapter": "", "rule_id": rule_id})
+    assert started.status_code == 200
+    job_id = started.json()["data"]["job_id"]
+    assert client.get(f"{base}/jobs", params={"rule_id": rule_id}).json()["data"]["job"]["job_id"] == job_id
+    assert client.post(f"{base}/jobs/{job_id}/cancel").json()["data"]["status"] in {"CANCELLED", "DONE", "FAILED"}
+    assert client.post(f"{base}/jobs", json={"node_token": "n1", "start": 59, "end": 60, "rule_id": "short"}).status_code == 422
+    assert agent_permission("POST", f"{base}/jobs/{job_id}/cancel") == "handbook:operate"
