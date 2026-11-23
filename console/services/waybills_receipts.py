@@ -299,12 +299,10 @@ class WaybillsReceiptsServiceMixin:
             filters["sort"] = "open_date_desc"
         page = positive_int("page", 1)
         page_size = min(max(positive_int("page_size", 50), 10), 100)
-        # A keyword (运单号/电话/收货人/发货人) searches every open date: the date range is
-        # dropped and the stored records are read directly, since 融辉/韵达 are only queried by date.
-        keyword_search = bool(filters["q"])
-        if keyword_search:
-            requested_date_from = requested_date_to = ""
-            filters["date_from"] = filters["date_to"] = ""
+        # A keyword (运单号/电话/收货人/发货人) with a date range is an ordinary live query of
+        # that range (2026-11-23: the page's date must apply). Only a keyword without any date
+        # reads every stored date, since 融辉/韵达 are only queried by date.
+        keyword_search = bool(filters["q"]) and not (requested_date_from or requested_date_to)
         if not keyword_search and self._waybill_sync_providers(filters["source"]) and not (requested_date_from or requested_date_to) and (
             filters["q"] or filters["payment_method"] or filters["delivery_method"]
             or filters["status"] != "all" or filters["source"] != "all"

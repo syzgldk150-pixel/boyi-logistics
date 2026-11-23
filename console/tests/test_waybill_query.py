@@ -512,7 +512,7 @@ class WaybillQueryRenderTests(unittest.TestCase):
         self.assertEqual("2026/05/12", repository.calls[0]["filters"]["date_from"])
         self.assertEqual("2026/05/13", repository.calls[0]["filters"]["date_to"])
 
-    def test_keyword_searches_every_date_without_platform_query(self):
+    def test_keyword_without_date_searches_every_date_without_platform_query(self):
         for list_read in (True, False):
             with self.subTest(list_read=list_read):
                 self._assert_keyword_searches_every_date(list_read)
@@ -528,8 +528,6 @@ class WaybillQueryRenderTests(unittest.TestCase):
                 handler,
                 {
                     "q": ["2003441361"],
-                    "date_from": ["2026-06-22"],
-                    "date_to": ["2026-06-22"],
                     "page_size": ["50"],
                     "source": ["yunda"],
                     "payment_method": ["到付"],
@@ -554,6 +552,24 @@ class WaybillQueryRenderTests(unittest.TestCase):
         )
         self.assertEqual(1, repository.calls[0]["page"])
         self.assertEqual(50, repository.calls[0]["page_size"])
+
+    def test_keyword_with_date_range_is_filtered_within_that_range(self):
+        # 2026-11-23: the page's date applies to a keyword like every other filter.
+        repository = _WaybillRepo()
+        app = _build_waybill_app(repository)
+        query = {"q": ["2003441361"], "date_from": ["2026-06-20"], "date_to": ["2026-06-22"],
+                 "page_size": ["50"], "source": ["yunda"]}
+
+        page_load = _RenderHandler(admin=True, list_read=False)
+        app._render_waybills(page_load, dict(query))
+        self.assertEqual([], repository.calls)
+        self.assertIn("data-waybill-live-pending", page_load.wfile.getvalue().decode("utf-8"))
+
+        app._render_waybills(_RenderHandler(admin=True, list_read=True), dict(query))
+        self.assertEqual(1, len(repository.calls))
+        filters = repository.calls[0]["filters"]
+        self.assertEqual(("2003441361", "2026/06/20", "2026/06/22"),
+                         (filters["q"], filters["date_from"], filters["date_to"]))
 
     def test_sort_param_does_not_query_by_itself(self):
         repository = _WaybillRepo()

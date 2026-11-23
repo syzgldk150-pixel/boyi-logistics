@@ -1591,7 +1591,7 @@
     }
   }
 
-  // A keyword search reads every stored date, then asks the selected source
+  // A keyword without any date reads every stored date, then asks the selected source
   // (全部 = every platform) again only for the open dates of the rows still
   // unsigned there, one day at a time, so a parcel signed since the last sync
   // shows its current state. Asking for the whole span between the oldest and
@@ -1989,9 +1989,10 @@
       const params = new URLSearchParams(new FormData(form));
       const pageSize = current.querySelector("[data-waybill-page-size]");
       if (pageSize instanceof HTMLSelectElement) params.set(pageSize.name, pageSize.value);
-      // A keyword searches every open date, so the date range is not sent.
-      const keywordSearch = Boolean((params.get("q") || "").trim());
-      if (keywordSearch) { params.delete("date_from"); params.delete("date_to"); }
+      // A keyword is filtered within the chosen date range like every other filter;
+      // only a keyword without any date searches every stored date.
+      const keywordSearch = Boolean((params.get("q") || "").trim())
+        && !(params.get("date_from") || "").trim() && !(params.get("date_to") || "").trim();
       normalizeParams(params);
       url.search = params.toString();
       const activeQuery = event.submitter?.matches("[data-waybill-query]") === true;
