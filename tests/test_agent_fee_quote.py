@@ -105,6 +105,20 @@ def test_missing_parameters_are_asked_in_one_list_then_the_same_waybill_is_used(
     assert len(platform.calls) == 1  # the waybill is read once for the thread
 
 
+def test_with_a_lift_the_floor_is_not_asked():
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]))
+    text, decision = ask(turn, f"{CODE} 有电梯上楼，普货", CODE)
+    assert decision.decision == "EXECUTE" and "送到几楼" not in text and "· 上楼费：" in text
+
+
+def test_without_a_lift_the_floor_is_still_asked():
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]))
+    text, decision = ask(turn, f"{CODE} 无电梯上楼，普货", CODE)
+    assert decision.decision == "CLARIFY" and "送到几楼" in text
+    text, decision = ask(turn, "5")
+    assert decision.decision == "EXECUTE" and "· 上楼费：37.60 元" in text
+
+
 def test_without_named_fees_the_approved_ones_are_listed_and_fees_can_be_added():
     turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=ALL)
     text, decision = ask(turn, f"{CODE} 要收多少钱", CODE)

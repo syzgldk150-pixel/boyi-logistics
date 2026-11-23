@@ -317,7 +317,12 @@ class BusinessTurn:
             state.values.setdefault(name, value)
         state.piece_note = state.piece_note or piece_note
         state.values.update(fee_actions.parse_values(params, message, asked=state.asked))
-        wanted = fee_actions.needed(params, state.values, fee_actions.first_groups(chosen))
+        # “送到几楼 或 台阶数” only matters on the branch that uses it (有电梯 does not): ask it up front
+        # only alongside other missing values, so one list still covers everything; otherwise the
+        # calculation below says whether it is needed.
+        wanted = fee_actions.needed(params, state.values)
+        if wanted:
+            wanted = fee_actions.needed(params, state.values, fee_actions.first_groups(chosen))
         # Brought up but not counted ("拆木架"), or asked last time and still unanswered: ask, don't take 0.
         brought_up = fee_actions.mentioned(params, message, state.values)
         brought_up += [param for param in params if param.key in state.asked and param.key not in state.values
@@ -326,8 +331,14 @@ class BusinessTurn:
         result = None
         if not wanted:
             result = quote(chosen, state.values)
-            labels = set(result.missing)
-            wanted = [param for param in params if param.label in labels and param.key not in state.values]
+            # A “first one given” group comes back as “送到几楼或步梯台阶数”: ask its first parameter.
+            by_label = {param.label: param for param in params if param.key not in state.values}
+            for label in result.missing:
+                parts = [by_label[part] for part in label.split("或") if part in by_label]
+                if label in by_label:
+                    parts = [by_label[label]]
+                if parts and parts[0] not in wanted:
+                    wanted.append(parts[0])
             if result.missing and not wanted:
                 store.remember(key, state)
                 return (f"还需要：{'、'.join(result.missing)}，机器人问不到这些（例如每件的长宽），"
