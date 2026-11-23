@@ -718,11 +718,12 @@ button[disabled] { cursor: not-allowed; }
 .fs-pager { display: inline-flex; align-items: center; gap: 10px; font-family: var(--font-num); }
 .fs-pager .hb-link { font-size: 14px; padding: 0 4px; }
 .fs-pager .hb-link:disabled { color: var(--text-disabled); cursor: default; }
-.fs-lines { border: 1px solid var(--line-default); border-radius: 8px; overflow: hidden; display: grid; grid-template-rows: 30px auto; max-height: 640px; }
-.fs-lines__head { display: grid; grid-template-columns: 1fr 96px 92px; align-items: center; padding: 0 12px; background: #fafbfc; border-bottom: 1px solid var(--line-default); font-size: 10px; color: var(--text-tertiary); }
+/* Flex column so the rows scroll inside the 640 cap (an auto grid row grew past it and the extra rows were clipped). */
+.fs-lines { border: 1px solid var(--line-default); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; max-height: 640px; }
+.fs-lines__head { flex: none; height: 30px; display: grid; grid-template-columns: 1fr 96px 92px; align-items: center; padding: 0 12px; background: #fafbfc; border-bottom: 1px solid var(--line-default); font-size: 10px; color: var(--text-tertiary); }
 .fs-lines__head span:nth-child(2) { text-align: right; padding-right: 8px; }
 .fs-lines__head span:nth-child(3) { padding-left: 8px; }
-.fs-lines__body { overflow-y: auto; }
+.fs-lines__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .fs-lines__body ul { list-style: none; margin: 0; padding: 0; }
 .fs-lines__group { height: 24px; padding: 0 12px; display: flex; align-items: center; background: var(--bg-subtle); font-size: 10px; color: var(--text-tertiary); }
 .fs-line { position: relative; display: grid; grid-template-columns: 1fr 92px; align-items: center; border-bottom: 1px solid var(--line-subtle); }

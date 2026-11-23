@@ -1591,60 +1591,65 @@
     }
   }
 
-  // A keyword search reads every stored date, then asks 融辉/韵达 again for the
-  // open dates of the rows still unsigned there, so a parcel signed since the
-  // last sync shows its current state instead of the stored one.
-  const KEYWORD_REFRESH_MAX_DAYS = 31;
-  function unsignedPlatformRange() {
-    const sources = new Set();
-    const dates = [];
+  // A keyword search reads every stored date, then asks the selected source
+  // (全部 = every platform) again only for the open dates of the rows still
+  // unsigned there, one day at a time, so a parcel signed since the last sync
+  // shows its current state. Asking for the whole span between the oldest and
+  // newest unsigned row used to page up to 31 days and time out.
+  const KEYWORD_REFRESH_MAX_DATES = 10;
+  function unsignedPlatformDates() {
+    const dates = new Set();
     panel()?.querySelectorAll("[data-waybill-unsigned-platform]").forEach((row) => {
       const date = String(row.dataset.openDate || "").slice(0, 10).replaceAll("/", "-");
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-      sources.add(row.dataset.waybillUnsignedPlatform);
-      dates.push(date);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date)) dates.add(date);
     });
-    if (!dates.length) return null;
-    dates.sort();
-    const from = dates[0];
-    const to = dates[dates.length - 1];
-    const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000 + 1;
-    if (days > KEYWORD_REFRESH_MAX_DAYS) return { tooWide: true };
-    return { source: sources.size === 1 ? Array.from(sources)[0] : "all", from, to };
+    return Array.from(dates).sort().reverse();
   }
 
   async function queryKeyword(url) {
     const stored = { message: "已按关键词搜索全部日期（融辉、韵达为已同步的记录）", kind: "success" };
     if (!(await loadWaybills(url, { notice: stored }))) return;
-    const range = unsignedPlatformRange();
-    if (!range) return;
-    if (range.tooWide) {
-      setRefreshNotice("已按关键词搜索全部日期；未签收的融辉、韵达运单开单日期跨度超过 31 天，状态为已同步的记录，请缩小关键词后重新查询。", "warning");
+    const dates = unsignedPlatformDates();
+    if (!dates.length) return;
+    if (dates.length > KEYWORD_REFRESH_MAX_DATES) {
+      setRefreshNotice(`已按关键词搜索全部日期；未签收的融辉、韵达运单分布在 ${dates.length} 个开单日期（一次最多核对 ${KEYWORD_REFRESH_MAX_DATES} 个），状态为已同步的记录，请把关键词写得更具体后重新查询。`, "warning");
       return;
     }
+    const source = url.searchParams.get("source") || "all";
     const sequence = loadNumber;
     refreshController?.abort();
     const controller = new AbortController();
     refreshController = controller;
-    setRefreshNotice("正在向原平台核对未签收运单的最新状态…");
     setBusy(true);
-    const timeout = window.setTimeout(() => controller.abort(), 105000);
+    let refreshedAt = "";
+    let currentDate = "";
+    let timeout = 0;
     try {
-      const response = await fetch("/waybills/source-refresh", {
-        method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: range.source, date_from: range.from, date_to: range.to }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (sequence !== loadNumber || controller !== refreshController) return;
-      if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || "原平台查询失败。");
-      const data = result.data;
-      const warnings = (data.warnings || []).join("；");
-      if (!data.refreshed || !data.complete) throw new Error(warnings || "原平台没有完整返回。");
-      await loadWaybills(url, { pushState: false, notice: { message: `已按关键词搜索全部日期，未签收运单已向原平台核对（${data.refreshed_at}）`, kind: "success" } });
+      for (const [index, date] of dates.entries()) {
+        currentDate = date;
+        setRefreshNotice(dates.length > 1
+          ? `正在向原平台核对未签收运单的最新状态（${index + 1} / ${dates.length}：${date}）…`
+          : "正在向原平台核对未签收运单的最新状态…");
+        timeout = window.setTimeout(() => controller.abort(), 105000);
+        const response = await fetch("/waybills/source-refresh", {
+          method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source, date_from: date, date_to: date }),
+        });
+        const result = await response.json().catch(() => ({}));
+        window.clearTimeout(timeout);
+        if (sequence !== loadNumber || controller !== refreshController) return;
+        if (!response.ok || result.ok !== true || !result.data) throw new Error(result.message || "原平台查询失败。");
+        const data = result.data;
+        const warnings = (data.warnings || []).join("；");
+        if (!data.refreshed || !data.complete) throw new Error(warnings || "原平台没有完整返回。");
+        refreshedAt = data.refreshed_at || refreshedAt;
+      }
+      await loadWaybills(url, { pushState: false, notice: { message: `已按关键词搜索全部日期，未签收运单已向原平台核对（${refreshedAt}）`, kind: "success" } });
     } catch (error) {
       if (sequence !== loadNumber || controller !== refreshController) return;
-      const reason = error?.name === "AbortError" ? "原平台查询超时" : (error.message || "原平台查询失败");
-      setRefreshNotice(`未签收运单没能向原平台核对，状态为已同步的记录：${reason}`, "warning");
+      const reason = error?.name === "AbortError" ? "原平台查询超时，请稍后重新查询" : (error.message || "原平台查询失败");
+      const where = dates.length > 1 ? `（开单日期 ${currentDate}）` : "";
+      setRefreshNotice(`未签收运单没能向原平台核对${where}，状态为已同步的记录：${reason}`, "warning");
       setBusy(false);
     } finally {
       window.clearTimeout(timeout);
