@@ -786,6 +786,27 @@
       return views[step]();
     }
 
+    const SCROLLERS = [".fs-lines__body", ".fs-viewer__paper", "[data-fee-body]"];
+    function captureScroll(node) {
+      const inner = SCROLLERS.map((selector) => {
+        const el = node.querySelector(selector);
+        return el ? [selector, el.scrollTop, el.scrollLeft] : null;
+      }).filter(Boolean);
+      const outer = [];
+      for (let el = node.parentElement; el; el = el.parentElement) {
+        if (el.scrollTop || el.scrollLeft) outer.push([el, el.scrollTop, el.scrollLeft]);
+      }
+      return { inner, outer, x: window.scrollX, y: window.scrollY };
+    }
+    function restoreScroll(node, kept) {
+      kept.inner.forEach(([selector, top, left]) => {
+        const el = node.querySelector(selector);
+        if (el) { el.scrollTop = top; el.scrollLeft = left; }
+      });
+      kept.outer.forEach(([el, top, left]) => { el.scrollTop = top; el.scrollLeft = left; });
+      window.scrollTo(kept.x, kept.y);
+    }
+
     function renderEditor() {
       const node = $("[data-fee-editor]");
       const record = state.current;
@@ -801,8 +822,14 @@
         return;
       }
       const flat = record.status === "APPROVED" || record.status === "RETIRED";
+      // Re-rendering the same rule and step (e.g. after 「✓ 对」) keeps every scroll position:
+      // the 收费表 list used to jump back to its first row on each tick.
+      const view = `${record.rule_id}:${state.step}`;
+      const kept = view === state.renderedView ? captureScroll(node) : null;
       node.innerHTML = `${headerHtml(record)}${flat ? "" : stepperHtml(record)}
         <div class="fs-body" data-fee-body>${conflictHtml()}${bodyHtml(record)}</div>${footerHtml(record)}`;
+      state.renderedView = view;
+      if (kept) restoreScroll(node, kept);
       state.staleBody = false;
       if (window.feather) window.feather.replace();
     }
@@ -939,6 +966,16 @@
       await flush();
       for (let tries = 0; state.saving && tries < 100; tries += 1) await new Promise((resolve) => { window.setTimeout(resolve, 100); });
       return !state.dirty && !state.checksDirty && state.saveState === "saved" && !state.conflict;
+    }
+
+    // Scroll only the 收费表 box (never the page) so the newly selected row is in view.
+    function revealSelectedLine() {
+      const box = root.querySelector(".fs-lines__body");
+      const row = box?.querySelector('.fs-line[data-selected="true"]');
+      if (!box || !row) return;
+      const top = row.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+      if (top < box.scrollTop) box.scrollTop = top - 24;
+      else if (top + row.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = top + row.offsetHeight - box.clientHeight + 8;
     }
 
     function setLine(record, sig, done) {
@@ -1264,11 +1301,18 @@
       if (target.dataset.lineTick || target.dataset.lineUntick) {
         const sig = target.dataset.lineTick || target.dataset.lineUntick;
         setLine(record, sig, Boolean(target.dataset.lineTick));
+        let moved = false;
         if (target.dataset.lineTick) {
-          const next = linesOf(record).find((line) => !line.done && line.document);
-          if (next) selectLine(next);
+          // Move on to the next unchecked row below this one (wrapping round), not the table's first.
+          const lines = linesOf(record);
+          const at = lines.findIndex((line) => line.sig === sig);
+          const open = (line) => !line.done && line.document;
+          const next = lines.slice(at + 1).find(open) || lines.slice(0, Math.max(at, 0)).find(open);
+          if (next) { selectLine(next); moved = true; }
         }
-        schedule("checks"); renderEditor(); return;
+        schedule("checks"); renderEditor();
+        if (moved) revealSelectedLine();
+        return;
       }
       if (target.dataset.lineEdit) { state.editPath = state.editPath === target.dataset.lineEdit ? "" : target.dataset.lineEdit; renderEditor(); return; }
       if (target.hasAttribute("data-fee-show-same")) { state.showSame = !state.showSame; renderEditor(); return; }

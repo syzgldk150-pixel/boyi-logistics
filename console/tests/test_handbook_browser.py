@@ -315,7 +315,13 @@ def test_fee_rule_opens_on_check_step_and_ticks_lines(browser):
         list_text = page.inner_text("[data-fee-list]")
         assert "上楼费" in list_text and "已核对 0 / 3 行" in list_text
         _shot(page, "62-check")
-        page.click("[data-line-tick='38914bb1e4808a64']")
+        # 2026-11-23: a tick re-renders the list but keeps its scroll position (it used to jump to the top).
+        page.add_style_tag(content=".fs-lines { max-height: 90px !important; }")
+        scrolled = page.evaluate("""() => { const box = document.querySelector('.fs-lines__body');
+            box.scrollTop = box.scrollHeight; return box.scrollTop; }""")
+        assert scrolled > 0
+        page.evaluate("document.querySelector(\"[data-line-tick='38914bb1e4808a64']\").click()")
+        assert page.evaluate("document.querySelector('.fs-lines__body').scrollTop") > 0
         page.wait_for_timeout(700)
         ticked = [body for path, body in posts if path.endswith("/checks")][-1]
         assert ticked == {"row_version": 1, "checks": [
