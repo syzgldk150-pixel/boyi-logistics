@@ -318,6 +318,11 @@ class BusinessTurn:
         state.piece_note = state.piece_note or piece_note
         state.values.update(fee_actions.parse_values(params, message, asked=state.asked))
         wanted = fee_actions.needed(params, state.values, fee_actions.first_groups(chosen))
+        # Brought up but not counted ("拆木架"), or asked last time and still unanswered: ask, don't take 0.
+        brought_up = fee_actions.mentioned(params, message, state.values)
+        brought_up += [param for param in params if param.key in state.asked and param.key not in state.values
+                       and param.default is not None and param not in brought_up]
+        wanted += [param for param in brought_up if param not in wanted]
         result = None
         if not wanted:
             result = quote(chosen, state.values)

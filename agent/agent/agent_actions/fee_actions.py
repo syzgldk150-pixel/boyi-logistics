@@ -197,17 +197,43 @@ def fee_aliases(name: str) -> list[str]:
     """Words that name a fee: 上楼费 → 上楼费、上楼；拆托/拆木架木箱 → 拆托、拆木架木箱 ..."""
     words = {name, _core(name)}
     for part in re.split(r"[/／、]", _core(name)):
-        part = part.strip()
-        if part:
-            words |= {part, part.removesuffix("费")}
-    return sorted((word for word in words if len(word) >= 2), key=len, reverse=True)
+        part = part.strip().removesuffix("费")
+        if not part:
+            continue
+        words.add(part)
+        # People say the start of a long name: 拆木架木箱 → 拆木架、二次上门签收 → 二次上门.
+        words |= {part[:end] for end in range(3, len(part))}
+        # One verb over two things: 拆木架木箱 → 拆木架、拆木箱.
+        if len(part) >= 5 and len(part) % 2:
+            words |= {part[0] + part[index:index + 2] for index in range(1, len(part), 2)}
+    return sorted((word for word in words if len(word) >= 2), key=lambda word: (-len(word), word))
 
 
 def match_fees(message: str, rules: Sequence[Any]) -> list[str]:
     text = unicodedata.normalize("NFKC", message or "")
     if _ALL.search(text):
         return [rule.fee_kind for rule in rules]
-    return [rule.fee_kind for rule in rules if any(alias in text for alias in fee_aliases(rule.name))]
+    named = [rule.fee_kind for rule in rules if any(alias in text for alias in fee_aliases(rule.name))]
+    return [*named, *implied_fees(text, rules, named)] if named else []
+
+
+def implied_fees(message: str, rules: Sequence[Any], named: Sequence[str]) -> list[str]:
+    """Fees not named but described alongside a named one: "拆木架，有电梯，5楼" also means 上楼费,
+    because 有电梯 / 5楼 answer parameters only that fee has. Only floors, yes/no and choices
+    count (a bare "3件" could belong to many fees)."""
+    owners: dict[str, set[str]] = {}
+    for rule in rules:
+        for param in rule.rule.params:
+            owners.setdefault(param.key, set()).add(rule.fee_kind)
+    implied = []
+    for rule in rules:
+        if rule.fee_kind in named:
+            continue
+        own = [param for param in rule.rule.params if owners[param.key] == {rule.fee_kind}
+               and (param.key == "floor" or param.type in {"bool", "choice"})]
+        if own and parse_values(own, message):
+            implied.append(rule.fee_kind)
+    return implied
 
 
 def _unit_pattern(unit: str) -> str | None:
@@ -343,6 +369,32 @@ def first_groups(rules: Sequence[Any]) -> list[tuple[str, ...]]:
     return list(dict.fromkeys(groups))
 
 
+def _mention_words(label: str) -> list[str]:
+    """What a person says to bring up a count parameter: 拆木架/木箱件数 → 拆木架、木箱."""
+    words = []
+    for part in re.split(r"[/／、]", _label_core(label)):
+        part = re.sub(r"(?:件数|个数|数量|次数|数)$", "", part.strip())
+        if len(part) >= 2:
+            words.append(part)
+    return words
+
+
+def mentioned(params: Sequence[Any], message: str, values: Mapping[str, Any]) -> list[Any]:
+    """Number parameters with a default that the message brings up without giving a value
+    ("拆木架" but not how many): asked rather than quietly taken at their default."""
+    text = unicodedata.normalize("NFKC", message or "")
+    found = []
+    for param in params:
+        if param.type != "number" or param.default is None or param.key in values:
+            continue
+        for word in _mention_words(param.label):
+            at = text.find(word)
+            if at >= 0 and not _NEGATION.search(text[:at][-4:]):
+                found.append(param)
+                break
+    return found
+
+
 def needed(params: Sequence[Any], values: Mapping[str, Any], groups: Sequence[tuple[str, ...]] = ()) -> list[Any]:
     """Required parameters not given yet, plus the first of each “one of these” group with none given."""
     by_key = {param.key: param for param in params}
@@ -397,6 +449,6 @@ def render_quote(state: QuoteState, rules: Sequence[Any], unavailable: Sequence[
     return "\n".join(lines)
 
 
-__all__ = ["FeeActionError", "QuoteState", "WaybillFacts", "ask_text", "fee_aliases", "first_groups", "match_fees", "needed",
+__all__ = ["FeeActionError", "QuoteState", "WaybillFacts", "ask_text", "fee_aliases", "first_groups", "implied_fees", "match_fees", "mentioned", "needed",
            "parse_elevator", "parse_floor", "parse_values", "piece_rows", "prefill", "reminders", "render_quote",
            "waybill_facts"]

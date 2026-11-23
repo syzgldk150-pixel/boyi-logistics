@@ -132,7 +132,31 @@ def test_parameters_are_told_apart_by_label_and_unit():
     assert fee_actions.parse_values(params, "拆托3个，木箱2件") == {"pallet_count": "3", "crate_count": "2"}
     assert fee_actions.parse_values(params, "3") == {}  # a bare number is taken only for the one thing asked
     assert fee_actions.parse_values(params, "3", asked=["pallet_count"]) == {"pallet_count": "3"}
-    assert fee_actions.fee_aliases("拆托/拆木架木箱") == ["拆托/拆木架木箱", "拆木架木箱", "拆托"]
+    assert fee_actions.fee_aliases("拆托/拆木架木箱") == ["拆托/拆木架木箱", "拆木架木箱", "拆木架木", "拆木架", "拆木箱", "拆托"]
+    assert "二次上门" in fee_actions.fee_aliases("二次上门签收/取回单")
+
+
+def test_a_fee_named_by_part_of_its_name_is_counted_and_its_count_asked_not_taken_as_zero():
+    platform = Platform(rows=[row(settlement_weight=420, actual_weight=420, quantity=3)])
+    turn = _turn(platform, rules=ALL)
+    text, decision = ask(turn, f"{CODE}，拆木架，有电梯，5楼，普货", CODE)
+    assert decision.decision == "CLARIFY" and "拆木架/木箱件数" in text and "拆托个数" not in text
+    assert "上楼费、拆托/拆木架木箱" in text
+    text, decision = ask(turn, "2")
+    assert decision.decision == "EXECUTE"
+    assert "· 上楼费：30.20 元" in text  # 5 + 0.06 × 420
+    assert "· 拆托/拆木架木箱：20.00 元" in text and "合计：50.20 元" in text  # 10 元/件 × 2
+
+
+def test_a_count_said_with_the_fee_or_negated_is_not_asked_again():
+    rules = {item["fee_kind"]: item for item in ALL}
+    from shared.handbook_fee_rules import rule_from_record
+
+    params = rule_from_record(rules["unpacking"]).content.params
+    assert [p.key for p in fee_actions.mentioned(params, "拆木架", {})] == ["crate_count"]
+    assert fee_actions.mentioned(params, "拆木架", {"crate_count": "2"}) == []
+    assert fee_actions.mentioned(params, "不拆托，拆木箱", {"crate_count": "1"}) == []
+    assert fee_actions.mentioned(params, "上楼费多少", {}) == []
 
 
 def test_no_approved_rule_for_the_billing_date_gives_no_amount():
