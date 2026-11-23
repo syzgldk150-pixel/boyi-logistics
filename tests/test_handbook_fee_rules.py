@@ -70,6 +70,28 @@ def test_quote_catalog_offers_one_version_per_fee_and_explains_the_rest():
     assert unavailable[0]["fee_kind"] == "revisit" and "不是有效的积木" in unavailable[0]["reason"]
 
 
+UPSTAIRS_PIECES_HINT_090 = "按“件数 × 每件重量”填写；床垫类还要填长度和宽度"
+
+
+def as_seeded_by_090(kind):
+    """The fixture is the state after all migrations; migration 092 later made 上楼费's 货物明细 optional."""
+    content = json.loads(json.dumps(BATCH[kind]["content"]))
+    if kind == "upstairs":
+        pieces = content["params"][5]
+        assert pieces["key"] == "pieces"
+        pieces.pop("required")
+        pieces["hint"] = UPSTAIRS_PIECES_HINT_090
+    return content
+
+
+def test_migration_092_makes_upstairs_pieces_optional_only_on_untouched_drafts():
+    sql = (ROOT / "agent" / "migrations" / "092_agent_fee_upstairs_pieces_optional.sql").read_text(encoding="utf-8")
+    pieces = BATCH["upstairs"]["content"]["params"][5]
+    assert pieces["key"] == "pieces" and pieces["required"] is False and pieces["hint"] in sql
+    assert "'$.params[5].required', CAST('false' AS JSON)" in sql
+    assert "status='DRAFT'" in sql and "$.params[5].key'))='pieces'" in sql and "29e79711-0f15-5421-9cbc-ec74d21d0e3d" in sql
+
+
 def test_migration_090_seeds_exactly_the_first_batch_and_retires_the_old_format():
     sql = (ROOT / "agent" / "migrations" / "090_agent_fee_rule_blocks.sql").read_text(encoding="utf-8")
     values = sql.split("VALUES", 1)[1].split("CREATE TABLE", 1)[0]
@@ -79,7 +101,7 @@ def test_migration_090_seeds_exactly_the_first_batch_and_retires_the_old_format(
     for row in rows:
         kind = row[1]
         assert row[2] == BATCH[kind]["name"] and row[3:5] == ["V6.1-草稿1", "DRAFT"]
-        assert json.loads(row[5]) == BATCH[kind]["content"] and json.loads(row[6]) == BATCH[kind]["checks"]
+        assert json.loads(row[5]) == as_seeded_by_090(kind) and json.loads(row[6]) == BATCH[kind]["checks"]
         rule_from_record({"fee_kind": kind, "fee_name": row[2], "version_label": row[3], "status": "DRAFT",
                           "effective_from": None, "content": json.loads(row[5])})
     assert "JSON_EXTRACT(content_json, '$.schema') IS NULL" in sql and "status='RETIRED'" in sql

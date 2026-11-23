@@ -160,6 +160,11 @@
     function scenarioText(detail) {
       const shown = Object.entries(detail.values || {}).slice(0, 5).map(([key, value]) => {
         const param = params().find((item) => item.key === key);
+        if (Array.isArray(value)) {
+          const rows = value.map((row) => [`${row.count ?? 1} 件`, ...(param?.fields || []).filter((f) => row[f.key] != null && row[f.key] !== "")
+            .map((f) => `${f.label} ${row[f.key]}${f.unit || ""}`)].join(" × ")).join("；");
+          return `${param?.label || key} ${rows}`;
+        }
         const text = value === true ? "是" : value === false ? "否" : param?.options?.find((option) => option.value === value)?.label || value;
         return `${param?.label || key} ${text}${param?.unit ? ` ${param.unit}` : ""}`;
       }).join(" · ");

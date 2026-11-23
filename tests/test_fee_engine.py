@@ -175,7 +175,7 @@ def test_other_value_added_services_page_63():
 def test_missing_values_are_all_listed():
     result = calculate(RULES["upstairs"], {"floor": 3})
     assert result.outcome == "MISSING"  # floor and stairs are either-or, so neither is listed here
-    assert result.missing == ("结算重量", "有电梯", "货物类型", "货物明细")
+    assert result.missing == ("结算重量", "有电梯", "货物类型")  # 货物明细 is optional: asked only when used
 
 
 def test_invalid_values_are_all_reported_at_once():
@@ -273,7 +273,7 @@ def test_quote_group_with_an_undecided_fee_counts_neither():
 
 def test_quote_lists_missing_values_once():
     result = _quote(["upstairs", "unloading"], {"floor": 3})
-    assert result.missing == ("结算重量", "有电梯", "货物类型", "货物明细")
+    assert result.missing == ("结算重量", "有电梯", "货物类型", "货物明细")  # 卸货费 still needs 货物明细
     assert result.total == Decimal("0") and not result.complete
 
 
@@ -297,3 +297,13 @@ def test_boundary_rows_show_each_tier_change():
     assert rows[("单件实际重量", "120.01")]["outcome"] == "NEGOTIATE"
 
 
+
+
+def test_upstairs_pieces_are_only_needed_when_the_rule_uses_them():
+    rule = parse_rule(BATCH["upstairs"]["content"])
+    base = {"settlement_weight": "300", "floor": 7, "goods_type": "general"}
+    with_lift = calculate(rule, {**base, "elevator": True})
+    assert (with_lift.outcome, with_lift.amount) == ("AMOUNT", Decimal("23.00"))  # 5 + 0.06 × 300, no 货物明细
+    assert calculate(rule, {**base, "elevator": False}).missing == ("货物明细",)
+    assert calculate(rule, {**base, "elevator": False, "pieces": [{"count": 1}]}).missing == ("货物明细的单件实际重量",)
+    assert calculate(rule, {**base, "elevator": True, "goods_type": "pallet"}).missing == ("货物明细",)

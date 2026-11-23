@@ -54,7 +54,7 @@ SYSTEM_PROMPT = """你是物流公司的收费规则录入员。用户给你一�
 - 数字：{"key": "settlement_weight", "label": "结算重量", "type": "number", "unit": "kg", "min": "0.01", "max": "100000", "prefill": "settlement_weight"}；整数加 "integer": true；可加 "default"、"required": false、"hint"
 - 单选：{"key": "goods_type", "label": "货物类型", "type": "choice", "options": [{"value": "general", "label": "普货"}, ...]}
 - 是/否：{"key": "elevator", "label": "有电梯", "type": "bool"}
-- 逐件明细：{"key": "pieces", "label": "货物明细", "type": "pieces", "fields": [{"key": "weight", "label": "单件实际重量", "unit": "kg", "min": "0"}], "prefill": "pieces"}（每行自带件数 count）
+- 逐件明细：{"key": "pieces", "label": "货物明细", "type": "pieces", "fields": [{"key": "weight", "label": "单件实际重量", "unit": "kg", "min": "0"}], "prefill": "pieces", "required": false, "hint": "什么情况才需要填"}（每行自带件数 count；只在部分情况用到逐件数据时一律写 "required": false，用到时系统会自动提示补填）
 - prefill 只能是 settlement_weight（运单结算重量）、pieces（运单件数）、actual_weight（运单实际重量）
 
 取值写法（用在 of、by、left 等处）：参数 key；逐件计费里用 "piece.weight"、"piece.count"；{"const": "10"}；
