@@ -8,6 +8,8 @@ from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
 from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
 from agent.automation_plugins.manifest import canonical_json_bytes
 from agent.automation_plugins.yunda_connectors_v2 import build_yunda_connectors
+from shared.send_data_workbook import read_workbook
+from tests.production_connector_support import with_send_data_export
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 from tests.test_automation_plugin_connector_runtime_v2 import _AccountResolver
 
@@ -52,7 +54,8 @@ def _host(tmp_path,plugin,*,empty=False,special_flags=()):
         yunda_original_data_read=lambda _,bill:{"Sender_Name":"寄件人","Sender_Phone":"07310000000","Buyer_Name":"收货人","Buyer_Mobile":"13800000000","Buyer_Address":"测试地址"},
         yunda_renderer_detail_read=lambda _account,bill,_dot:{"Logistics_Id":bill,"price":{"Total":"81.85"}},append_yunda_dispatch_bitable=write,
         replace_yunda_send_bitable=write,replace_yunda_send_sheet=write,replace_yunda_waybill_projection=projection)
-    registry=ConnectorRegistry(build_yunda_connectors(build_host_primitive_handler_map(ports)))
+    nas_files={}
+    registry=ConnectorRegistry(build_yunda_connectors(with_send_data_export(build_host_primitive_handler_map(ports),nas_files)))
     dispatch_plugin=plugin=="sync_yunda_dispatch_forecast_v2"
     prefix="yunda_dispatch" if dispatch_plugin else "yunda_send"
     resources={"dispatch_forecast_bitable":"feishu_bitable"} if dispatch_plugin else {"send_waybills_bitable":"feishu_bitable","send_waybills_sheet":"feishu_sheet"}
@@ -64,7 +67,9 @@ def _host(tmp_path,plugin,*,empty=False,special_flags=()):
     context=CoreBrokerInvocationContext(automation_id="isolated-yunda",plugin_version="2.0.0",tool_name=plugin,
         operation="service.invoke",action="run",role="__system__",account_bindings={prefix+"_source":("isolated-yunda-account",)},
         resource_bindings={role:"isolated-"+role for role in resources})
-    return PackagedConnectorHost(tmp_path,plugin,registry,context,resource_resolver=Resources(),account_resolver=_AccountResolver(system="yunda")),writes
+    host=PackagedConnectorHost(tmp_path,plugin,registry,context,resource_resolver=Resources(),account_resolver=_AccountResolver(system="yunda"))
+    host.nas_files=nas_files
+    return host,writes
 
 
 @pytest.mark.parametrize("empty",[False,True])
@@ -82,9 +87,12 @@ def test_yunda_send_zip_reads_two_sources_and_preserves_amounts_in_three_outputs
     host,writes=_host(tmp_path,"sync_yunda_send_waybills_v2")
     result=host.execute({"target_date":"2026-09-11","sync_sql":True,"sync_sheet":True},operation="run")
     assert result["status"]=="SUCCESS",result
-    assert len(writes)==3 and len(host.receipts)==3
+    assert len(writes)==3 and len(host.receipts)==4
     assert all(item[1][0]["status"] == "signed" for item in writes)
     assert all(item[1][0]["提付"]=="115.00" and item[1][0]["录单运费"]=="81.85" for item in writes)
+    columns,rows=read_workbook(host.nas_files[("韵达寄件","2026-09-11.xlsx")])
+    assert "来源网点" not in columns and len(rows)==len(writes[0][1])
+    assert rows[0][columns.index("提付")]==115 and rows[0][columns.index("录单运费")]==81.85
 
 
 def test_yunda_send_zip_preserves_three_signed_and_one_sent_special_line_status(tmp_path):

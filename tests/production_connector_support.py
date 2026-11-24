@@ -48,3 +48,25 @@ class ConnectorTestHost:
             result.host_evidence_ref = f"isolated-host-receipt-{len(self.calls)}"
             return result
         return self.plugin.service_invoke_adapter(host,operation,**kwargs)
+
+
+def with_send_data_export(handlers, files=None, *, site="示例网点"):
+    """Add the NAS send-data workbook primitives over an in-memory folder."""
+    from agent.automation_plugins.send_data_export_handlers import (
+        SendDataExportPorts, build_send_data_export_handler_map,
+    )
+
+    files = {} if files is None else files
+
+    class _Store:
+        def read_optional(self, folder, name):
+            return files.get((folder, name))
+
+        def write(self, folder, name, content):
+            files[(folder, name)] = content
+
+    merged = dict(handlers)
+    merged.update(build_send_data_export_handler_map(SendDataExportPorts(
+        describe_account=lambda account_id, system: {"account_id": account_id, "system": system},
+        ronghui_site_name=lambda _descriptor: site, open_store=_Store), cursor_secret=b"n" * 32))
+    return merged

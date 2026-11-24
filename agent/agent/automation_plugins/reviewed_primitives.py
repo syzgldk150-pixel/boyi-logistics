@@ -47,6 +47,8 @@ _DIRECT_PRIMITIVES = frozenset({
     ("network.request", "feishu.bitable.replace_snapshot"),
     ("network.request", "feishu.bitable.replace_yunda_send_waybills_date"),
     ("network.request", "feishu.bitable.write_records"),
+    ("network.request", "nas.send_data.ronghui.replace_site"),
+    ("network.request", "nas.send_data.yunda.replace_date"),
     ("network.request", "feishu.sheet.add"),
     ("network.request", "feishu.sheet.read_rows"),
     ("network.request", "feishu.sheet.replace"),

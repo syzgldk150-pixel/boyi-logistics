@@ -2,7 +2,7 @@
 from agent.connector_namespaces import YUNDA_DISPATCH_TOOL, YUNDA_SEND_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
-from agent.automation_plugins.connector_schemas import TEXT, DATE, BOOL, COUNT, CURSOR, object_schema as obj, array_schema as arr, record_schema as record, source_record_schema
+from agent.automation_plugins.connector_schemas import send_data_workbook_schemas, TEXT, DATE, BOOL, COUNT, CURSOR, object_schema as obj, array_schema as arr, record_schema as record, source_record_schema
 from agent.automation_plugins.host_primitive_support import _YUNDA_DISPATCH_FIELDS, _YUNDA_SEND_FIELDS
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
@@ -58,5 +58,7 @@ def build_yunda_connectors(reviewed):
             output = obj({**common_result,**{key:COUNT for key in ("upserted","updates","creates","deleted_stale")}},list(common_result))
             operation = op("replace_date","projection.invoke","waybill.yunda.replace_date",Effect.INTERNAL_WRITE,sink_input,output)
             result.append(ConnectorDescriptor(service="connector.boyi.yunda_send_projection@1",title="韵达寄件投影",
-                binding_kind=Kind.HOST_INTERNAL,account_role=None,allowed_systems=(),operations=(operation,)))
+                binding_kind=Kind.HOST_INTERNAL,account_role=None,allowed_systems=(),operations=(operation,
+                op("export_workbook","network.request","nas.send_data.yunda.replace_date",Effect.EXTERNAL_WRITE,
+                   *send_data_workbook_schemas()))))
     return tuple(result)

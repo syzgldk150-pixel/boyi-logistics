@@ -48,6 +48,7 @@ from plugin_core_adapters.capability_session import (
 )
 from plugin_core_adapters.daily_send import build_production_daily_send_handler_map
 from plugin_core_adapters.route_status import build_production_route_status_handler_map
+from plugin_core_adapters.send_data_export import build_production_send_data_export_handler_map
 from plugin_core_adapters.finance_source import build_production_finance_source_handler_map
 from plugin_core_adapters.delivery_site import (
     build_production_delivery_site_handler_map,
@@ -2368,6 +2369,11 @@ def build_production_host_primitive_handler_map(
         (
             ROUTE_STATUS_TOOL,
             build_production_route_status_handler_map(cursor_secret=cursor_secret),
+            frozenset(),
+        ),
+        (
+            "send_data_export",
+            build_production_send_data_export_handler_map(cursor_secret=cursor_secret, account_manager=manager),
             frozenset(),
         ),
         (

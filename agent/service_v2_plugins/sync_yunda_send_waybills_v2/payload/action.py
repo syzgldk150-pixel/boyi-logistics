@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from yunda_send_fields import FIELD_NAMES as _FIELDS, delivery_method as _delivery_method, normalize_record as _normalize_record
@@ -36,6 +37,7 @@ _ALLOWED_ARGUMENTS = frozenset(
         "dry_run",
         "sql_only",
         "sync_sql",
+        "sync_nas",
     }
 )
 
@@ -296,6 +298,49 @@ def _verified_resource(
     return result
 
 
+_WORKBOOK_NUMERIC_FIELDS = frozenset({
+    "件数", "实际重量", "现付", "月结", "提付", "录单运费", "结算重量", "体积",
+    "体积重量", "到付款", "运费", "代收货款", "保价金额",
+})
+
+
+def _workbook_cell(field: str, value: object) -> object:
+    text = _text(value)
+    if not text:
+        return None
+    if field in _WORKBOOK_NUMERIC_FIELDS:
+        try:
+            number = Decimal(text.replace(",", ""))
+        except (InvalidOperation, ValueError):
+            return text
+        if number.is_finite():
+            return int(number) if number == number.to_integral_value() else float(number)
+    return text
+
+
+def _export_workbook(
+    records: list[dict[str, object]],
+    *,
+    target_date: str,
+    broker: Callable[..., object],
+) -> tuple[dict[str, object], str]:
+    """Replace the day's NAS workbook “韵达寄件/<日期>.xlsx” with this snapshot."""
+    rows = [[_workbook_cell(field, record.get(field)) for field in _FIELDS] for record in records]
+    result = _committed(
+        broker(
+            "network.request",
+            action="nas.send_data.yunda.replace_date",
+            role=_ACCOUNT_ROLE,
+            arguments={"target_date": target_date, "columns": list(_FIELDS), "rows": rows},
+        ),
+        "Yunda send NAS workbook",
+    )
+    if result.get("verified") is not True or result.get("record_count") != len(rows):
+        raise ValueError("Yunda send NAS workbook was not independently verified")
+    return {"nas_written": len(rows), "nas_file": _text(result.get("file"))}, broker_evidence_ref(
+        result, "Yunda send NAS workbook")
+
+
 def run_action(
     arguments: dict[str, object],
     broker: Callable[..., object],
@@ -310,6 +355,7 @@ def run_action(
         ("dry_run", False),
         ("sql_only", False),
         ("sync_sql", True),
+        ("sync_nas", True),
     ):
         flag = values.get(name, default)
         if not isinstance(flag, bool):
@@ -360,6 +406,7 @@ def run_action(
         "sql_upserted": 0,
         "sql_deleted_stale": 0,
         "sheet_rows": 0,
+        "nas_written": 0,
     }
     for target_date in dates:
         records, source_counts, page_evidence_count, evidence_refs = _collect_date(
@@ -380,6 +427,7 @@ def run_action(
             "sql_upserted": 0,
             "sql_deleted_stale": 0,
             "sheet_rows": 0,
+            "nas_written": 0,
         }
         if not flags["dry_run"]:
             if not flags["sql_only"]:
@@ -451,6 +499,10 @@ def run_action(
                 summary["sheet_rows"] = int(sheet.get("written") or 0)
                 if summary["sheet_rows"] != len(records):
                     raise ValueError("Yunda send sheet write count changed")
+            if flags["sync_nas"]:
+                nas_summary, nas_ref = _export_workbook(records, target_date=target_date, broker=bounded_broker)
+                summary.update(nas_summary)
+                all_evidence.append(nas_ref)
         for key in totals:
             totals[key] += int(summary.get(key) or 0)
         per_date.append(summary)
@@ -473,6 +525,7 @@ def run_action(
         "end_date": dates[-1],
         "dry_run": flags["dry_run"],
         "sql_only": flags["sql_only"],
+        "sync_nas": flags["sync_nas"],
         "per_date": per_date,
         "evidence": {
             "source": "service_v2_plugin",

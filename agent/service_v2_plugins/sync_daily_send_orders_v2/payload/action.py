@@ -39,6 +39,7 @@ _ALLOWED_ARGUMENTS = frozenset(
         "dry_run",
         "sql_only",
         "sync_sql",
+        "sync_nas",
     }
 )
 _FIELD_MAP = (
@@ -753,6 +754,49 @@ def _replace_projection(
     )
 
 
+def _workbook_cell(field: str, value: object, target_date: str) -> object:
+    if field == _DATE_FIELD:
+        return target_date
+    if value in (None, ""):
+        return None
+    if field in _NUMERIC_FIELDS:
+        return value if isinstance(value, int) else float(str(value))
+    return str(value)
+
+
+def _export_workbook(
+    records: list[dict[str, object]],
+    *,
+    target_date: str,
+    broker: Callable[..., object],
+) -> tuple[dict[str, object], list[str]]:
+    """Replace this account's rows of the day's NAS workbook (Host fills 来源网点)."""
+    rows = [
+        [_workbook_cell(field, record["fields"].get(field), target_date) for field in _BITABLE_FIELDS]
+        for record in records
+    ]
+    result = _committed(
+        broker(
+            "network.request",
+            action="nas.send_data.ronghui.replace_site",
+            role=_ACCOUNT_ROLE,
+            arguments={"target_date": target_date, "columns": list(_BITABLE_FIELDS), "rows": rows},
+        ),
+        "send-data NAS workbook",
+    )
+    if result.get("verified") is not True:
+        raise ValueError("send-data NAS workbook was not verified")
+    if _nonnegative_int(result.get("record_count"), "NAS workbook record count") != len(rows):
+        raise ValueError("send-data NAS workbook record count changed")
+    summary = {
+        "nas_written": len(rows),
+        "nas_file": _text(result.get("file")),
+        "nas_site": _text(result.get("site")),
+        "nas_file_rows": _nonnegative_int(result.get("file_record_count"), "NAS workbook row count"),
+    }
+    return summary, [broker_evidence_ref(result, "send-data NAS workbook")]
+
+
 def _sync_date(
     *,
     target_date: str,
@@ -763,6 +807,7 @@ def _sync_date(
     dry_run: bool,
     sql_only: bool,
     sync_sql: bool,
+    sync_nas: bool,
     broker: Callable[..., object],
 ) -> tuple[dict[str, object], list[str]]:
     raw_rows, evidence_refs, source_pages = _collect_source(
@@ -798,6 +843,7 @@ def _sync_date(
         "sql_deleted_stale": 0,
         "source_pages": source_pages,
         "bitable_pages": 0,
+        "nas_written": 0,
         "dry_run": dry_run,
         "sql_only": sql_only,
     }
@@ -830,6 +876,10 @@ def _sync_date(
                     "sql_deleted_stale": deleted_stale,
                 }
             )
+        if sync_nas:
+            nas_summary, refs = _export_workbook(bitable_records, target_date=target_date, broker=broker)
+            summary.update(nas_summary)
+            evidence_refs.extend(refs)
         return summary, evidence_refs
 
     existing, refs, pages = _list_bitable_records(
@@ -905,6 +955,10 @@ def _sync_date(
                 "sql_deleted_stale": deleted_stale,
             }
         )
+    if sync_nas:
+        nas_summary, refs = _export_workbook(bitable_records, target_date=target_date, broker=broker)
+        summary.update(nas_summary)
+        evidence_refs.extend(refs)
     return summary, evidence_refs
 
 
@@ -936,6 +990,7 @@ def run_action(
     dry_run = _flag(values, "dry_run", False)
     sql_only = _flag(values, "sql_only", False)
     sync_sql = _flag(values, "sync_sql", True)
+    sync_nas = _flag(values, "sync_nas", True)
     page_size = _bounded_int(
         values.get("page_size"),
         default=_SOURCE_PAGE_SIZE,
@@ -1000,6 +1055,7 @@ def run_action(
                 dry_run=dry_run,
                 sql_only=sql_only,
                 sync_sql=sync_sql,
+                sync_nas=sync_nas,
                 broker=bounded_broker,
             )
             per_date.append(summary)
@@ -1032,6 +1088,7 @@ def run_action(
         "sql_deleted_stale",
         "source_pages",
         "bitable_pages",
+        "nas_written",
     )
     data: dict[str, object] = {key: sum(int(summary.get(key) or 0) for summary in per_date) for key in total_keys}
     data.update(
@@ -1042,6 +1099,7 @@ def run_action(
             "dry_run": dry_run,
             "sql_only": sql_only,
             "sync_sql": sync_sql,
+            "sync_nas": sync_nas,
             "per_date": per_date,
             "requires_reconciliation": bool(data["unmatched_existing"]),
         }
@@ -1088,6 +1146,8 @@ def run_action(
         source_system = "ronghui+internal_projection" if sync_sql and not dry_run else "ronghui"
     elif sync_sql and not dry_run:
         source_system = "ronghui+feishu+mysql"
+    if sync_nas and not dry_run:
+        source_system += "+nas"
     else:
         source_system = "ronghui+feishu"
     return success_result(

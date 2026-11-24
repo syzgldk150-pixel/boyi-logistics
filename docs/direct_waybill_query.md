@@ -2,7 +2,7 @@
 module: 寄件查询
 type: 业务说明
 status: active
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # 寄件数据查询与覆盖范围（架构 V1 / P4）
@@ -128,4 +128,15 @@ isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests
 - 融辉：“运单管理 / 主面单打印”页（补打）。菜单入口的 `authenticationKey/pageId` 作请求头，`FIDN_FACE_SINGLE_PRINT_ONE4`（`BILL_CODE`）返回该单打印数据，不带页面头会被拒为“非法的请求”。页面 `printBillNew` 整理数据、`printKH` 画默认“客户联”（页面默认：不打印运费、手机号不加密、不显示 LOGO、收件人不加密），`PRINT_INITA(0mm,0mm,80mm,100mm)` + `SET_PRINT_PAGESIZE(0,75mm,90mm)`。Agent 逐行移植并对两函数源码（去空白、内嵌图片掩码）做 SHA-256 指纹，融辉改动页面代码即停止打印并提示到原站打印；“扫码下单”图片每次从页面读取。实际打印后按页面 `updateBillPrintTime` 以 `TAB_PRINT_COUNT_ADD` 经 `saveTables` 记录，写前后各读一次 `PRINT_NUM`，加 1 才算核实。寄件账号（大祥站）有该菜单；操作场账号查不到寄件单。
 - 韵达：INMS 主单打印弹窗 `printer/main/index.html`。先按开单日期在寄件列表找到该单的 `Id`（填仓列表中的单明确拒绝，原站打印未核实），`printer/main/info.html`（`ids`、`getTemplateType=new`）返回面单数据，`printer/getTemplate/.html`（`method=Print_Template`）返回 C-Lodop 模板；按页面做法对每个数据键做一次 `String.replace`，再解析为只含字面量参数的 `LODOP.X(...)` 语句。原弹窗预览隐藏了打印按钮（打印走弹窗“打印”），这里去掉该设置以便在预览中打印。打印记录为 `printer/insertPrintLog/.html`（`method=main`、`print_data[0][Logistics_Id]`），原站没有可回读的打印次数，结果标为“已提交、无法核实”。
 - 浏览器：Agent 只返回白名单内的 C-Lodop 调用（`PRINT_INITA`、`ADD_PRINT_TEXT/HTM/LINE/IMAGE/BARCODE/RECT`、`SET_PRINT_STYLEA` 等），`console/static/js/platform_label_print.js` 再校验一次后执行，平台脚本不在 Console 同源运行；不使用平台的 C-Lodop 授权，预览底部不会显示平台授权方。预览关闭时 C-Lodop 返回打印份数，大于 0 才回写原站一次（同一请求 UUID 幂等）。
+
+## 每日寄件 Excel 存 NAS（2026-11-24）
+
+“获取当日寄件数据”（融辉，大祥站与大祥S站两个实例）与“韵达寄件运单同步”2.2.0 起，在原有飞书与数据库同步之后，把同一份当天数据写成 Excel 放到 NAS（办公室电脑映射为 `Z:\寄件数据`）：
+
+- 融辉：`融辉寄件/<发件日期>.xlsx`，两个融辉账号合在一张表。第一列“来源网点”由宿主按所绑账号登录信息里的网点名（`userInfo` Cookie 的 `loginSiteName`）填写，插件不能自报；每个账号只替换自己网点的行，另一个网点的行原样保留（按表头名对齐）。其余列与飞书寄件表相同。
+- 韵达：`韵达寄件/<寄件日期>.xlsx`，整表替换为本次结果，列与韵达寄件表相同。
+- 同一天再拉取就覆盖成最新全天数据，作废单随之消失；按日期范围拉取时每天各写一个文件。实例设置 `sync_nas=false` 可关闭这一步，预览（`dry_run`）不写。
+- 宿主原语 `network.request` / `nas.send_data.ronghui.replace_site`（挂在 `connector.boyi.daily_send_source@1` 的 `export_workbook`）与 `nas.send_data.yunda.replace_date`（挂在 `connector.boyi.yunda_send_projection@1`），实现见 `agent/agent/automation_plugins/send_data_export_handlers.py`，表格读写合并在 `shared/send_data_workbook.py`，WebDAV 在 `shared/send_data_nas_store.py`。同一文件的写入在进程内串行：读旧表、合并、写入，再读回逐格核对；读回不一致或写后读不回记为写入结果未知。文本单元格一律按文本写入，以“=”开头的内容不会变成公式。
+- NAS 经 Tailscale 用 WebDAV 访问，账号放在服务器 NAS 配置文件（默认 `~/.boyi-receipt-share/nas.env`，与回单共享同一文件）的独立键：`SEND_DATA_NAS_USER`、`SEND_DATA_NAS_PASS`，可选 `SEND_DATA_NAS_URL`（缺省用 `RECEIPT_NAS_URL`）与 `SEND_DATA_NAS_FOLDER`（缺省 `/NAS资料/寄件数据`）。每次写入时读取，缺配置、账号被拒、文件被占用（有人用 Excel 打开着，WebDAV 返回 423）都会让本次同步失败并写明原因；飞书与数据库此前已完成的写入不回退。
+- 回归：`tests/test_send_data_export.py`、`tests/test_sync_daily_send_orders_plugin_action.py`、`tests/test_yunda_action_payloads.py`、`tests/test_daily_send_plugin_router.py`（真实 ZIP 沙箱）。
 

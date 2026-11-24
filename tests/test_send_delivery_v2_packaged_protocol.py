@@ -7,11 +7,13 @@ import pytest
 
 from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import CoreBrokerInvocationContext
+from shared.send_data_workbook import read_workbook
 from agent.automation_plugins.daily_send_connectors_v2 import build_daily_send_connectors
 from agent.automation_plugins.daily_send_handlers import DailySendHandlerPorts, build_daily_send_handler_map
 from agent.automation_plugins.delivery_connectors_v2 import build_delivery_connectors
 from agent.automation_plugins.delivery_site_handlers import DeliverySiteHandlerPorts, build_delivery_site_handler_map
 from agent.automation_plugins.host_primitive_handlers import HostPrimitivePorts, build_host_primitive_handler_map
+from tests.production_connector_support import with_send_data_export
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 
 
@@ -35,6 +37,7 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
         'TOPAYMENT':'0','INSURANCE':'100','BL_INDENTURE':'0','SEND_MAN_ADDRESS':'测试寄件地址','R_BILLCODE':'HR001'}
     projections=[]
     deleted=[]
+    nas_files={}
     def remove(resource, ids):
         deleted.extend(ids)
         records[:] = [record for record in records if record['record_id'] not in ids]
@@ -54,7 +57,7 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
         source_page=lambda *_:{'items':[row,{'BILL_CODE':'H001','REGISTER_DATE':'2026-05-12 09:00:00'}],'total':2},
         bitable_list=lambda resource,offset,size,fields:[{'record_id':item['record_id'],'fields':{key:item['fields'].get(key) for key in fields}} for item in records[offset:offset+size]],
         bitable_delete=remove,bitable_write=write,projection_replace=project)
-    registry=ConnectorRegistry(build_daily_send_connectors(build_daily_send_handler_map(ports,cursor_secret=b'd'*32)))
+    registry=ConnectorRegistry(build_daily_send_connectors(with_send_data_export(build_daily_send_handler_map(ports,cursor_secret=b'd'*32), nas_files)))
     host=_host(tmp_path,'sync_daily_send_orders_v2',registry,'daily_send','send_order_bitable')
     result=host.execute({'target_date':'2026-05-12'},operation='run')
     assert result['status']=='SUCCESS',result
@@ -73,6 +76,9 @@ def test_daily_send_zip_replaces_only_target_date_and_matches_projection(tmp_pat
     published = next(item['fields'] for item in records if item['fields']['运单编号']=='R001')
     assert published['录单运费']=='12.50' and published['运费']=='8.25'
     assert published['到付款']==0 and published['需要回单']=='否'
+    columns, rows = read_workbook(nas_files[('融辉寄件', '2026-05-12.xlsx')])
+    assert columns[:3] == ['来源网点', '运单编号', '发件日期'] and len(rows) == 1
+    assert rows[0][:3] == ['示例网点', 'R001', '2026-05-12'] and rows[0][columns.index('录单运费')] == 12.5
     # A completed invocation releases its own synchronization scope.
     again=host.execute({'target_date':'2026-05-12'},operation='run')
     assert again['status']=='SUCCESS',again
@@ -100,7 +106,7 @@ def test_cancelled_daily_send_zip_releases_scope_after_its_host_call_finishes(tm
         bitable_write=write,
         projection_replace=lambda rows, *_: {"ok": True, "verified": True, "upserted": len(rows), "updates": 0, "creates": len(rows), "deleted_stale": 0},
     )
-    registry = ConnectorRegistry(build_daily_send_connectors(build_daily_send_handler_map(ports, cursor_secret=b"c" * 32)))
+    registry = ConnectorRegistry(build_daily_send_connectors(with_send_data_export(build_daily_send_handler_map(ports, cursor_secret=b"c" * 32))))
     host = _host(tmp_path, "sync_daily_send_orders_v2", registry, "daily_send", "send_order_bitable")
     async def cancel():
         task = asyncio.create_task(host._execute({"target_date": "2026-05-12"}, operation="run", entrypoint="console"))
@@ -133,7 +139,7 @@ def test_daily_send_zip_rejects_missing_or_masked_cost_before_writing(tmp_path, 
         bitable_list=forbidden, bitable_delete=forbidden, bitable_write=forbidden,
         projection_replace=forbidden,
     )
-    registry = ConnectorRegistry(build_daily_send_connectors(build_daily_send_handler_map(ports, cursor_secret=b"m" * 32)))
+    registry = ConnectorRegistry(build_daily_send_connectors(with_send_data_export(build_daily_send_handler_map(ports, cursor_secret=b"m" * 32))))
     host = _host(tmp_path, "sync_daily_send_orders_v2", registry, "daily_send", "send_order_bitable")
     result = host.execute({"target_date": "2026-05-12"}, operation="run")
     assert result["status"] == "FAILED", result

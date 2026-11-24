@@ -264,6 +264,16 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
                 "readback_sha256": "c" * 64,
                 "evidence_ref": evidence_ref,
             }
+        if action == "nas.send_data.yunda.replace_date":
+            columns, rows = arguments["columns"], arguments["rows"]
+            assert role == "account_id" and arguments["target_date"] == "2026-08-15"
+            assert [row[columns.index("运单编号")] for row in rows] == ["YD-1", "YD-2"]
+            assert rows[0][columns.index("提付")] == 115 and rows[1][columns.index("录单运费")] == 1037.25
+            return {
+                "committed": True, "verified": True, "target_date": "2026-08-15",
+                "file": "韵达寄件/2026-08-15.xlsx", "site": "", "record_count": 2,
+                "file_record_count": 2, "readback_sha256": "f" * 64, "evidence_ref": evidence_ref,
+            }
         raise AssertionError(action)
 
     result = action.run_action(
@@ -280,11 +290,13 @@ def test_yunda_send_payload_owns_source_merge_enrichment_and_commit_order() -> N
     assert result["data"]["written"] == 2
     assert result["data"]["sql_upserted"] == 2
     assert result["data"]["sheet_rows"] == 2
+    assert result["data"]["nas_written"] == 2
     actions = [item[1] for item in calls]
-    assert actions[-3:] == [
+    assert actions[-4:] == [
         "feishu.bitable.replace_yunda_send_waybills_date",
         "waybill.yunda.replace_date",
         "feishu.sheet.replace_yunda_send_waybills",
+        "nas.send_data.yunda.replace_date",
     ]
     assert actions.count("yunda.send_waybill.renderer_detail") == 1
     assert not any(
@@ -311,8 +323,16 @@ def test_yunda_send_empty_source_clears_every_requested_snapshot() -> None:
                 "pagination_complete": True,
                 "evidence_ref": f"broker-evidence:{action}",
             }
-        assert arguments["records"] == []
         assert arguments["target_date"] == "2026-08-24"
+        if action == "nas.send_data.yunda.replace_date":
+            assert arguments["rows"] == []
+            return {
+                "committed": True, "verified": True, "target_date": "2026-08-24",
+                "file": "韵达寄件/2026-08-24.xlsx", "site": "", "record_count": 0,
+                "file_record_count": 0, "readback_sha256": "a" * 64,
+                "evidence_ref": "broker-evidence:yunda-empty-nas",
+            }
+        assert arguments["records"] == []
         if action == "waybill.yunda.replace_date":
             return {
                 "committed": True,
@@ -346,6 +366,7 @@ def test_yunda_send_empty_source_clears_every_requested_snapshot() -> None:
         "feishu.bitable.replace_yunda_send_waybills_date",
         "waybill.yunda.replace_date",
         "feishu.sheet.replace_yunda_send_waybills",
+        "nas.send_data.yunda.replace_date",
     ]
 
 

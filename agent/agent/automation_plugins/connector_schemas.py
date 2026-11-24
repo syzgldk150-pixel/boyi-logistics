@@ -31,3 +31,14 @@ def source_record_schema(*, depth=0):
         value = {"oneOf": [CELL, nested, array_schema({"oneOf": [CELL, nested]}, maximum=512)]}
     return {"type": "object", "properties": {}, "required": [], "additionalProperties": value,
             "maxProperties": 512, "propertyNames": {"type": "string", "minLength": 1, "maxLength": 128}}
+
+
+def send_data_workbook_schemas():
+    """Input/output of the NAS send-data workbook primitives (one platform, one date)."""
+    cell = {"oneOf": [{"type": "string", "maxLength": 2000}, {"type": "number"}, {"type": "null"}]}
+    inputs = object_schema({"target_date": DATE,
+                            "columns": array_schema({"type": "string", "minLength": 1, "maxLength": 64}, maximum=64),
+                            "rows": array_schema(array_schema(cell, maximum=64))})
+    outputs = object_schema({"committed": BOOL, "verified": BOOL, "target_date": DATE, "file": TEXT, "site": TEXT,
+                             "record_count": COUNT, "file_record_count": COUNT, "readback_sha256": TEXT})
+    return inputs, outputs

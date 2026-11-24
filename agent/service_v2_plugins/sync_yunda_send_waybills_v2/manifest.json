@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_yunda_send_waybills_v2",
   "name": "韵达寄件运单同步",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "韵达寄件运单同步：插件独立完成分页、字段适配、核对与输出，宿主只提供平台和存储接口。",
   "host_api": {
     "minimum": "2.0.0",
@@ -62,6 +62,7 @@
       "name": "service.invoke",
       "operations": [
         "commit",
+        "export_workbook",
         "original_data",
         "renderer_detail",
         "replace_date",
@@ -181,6 +182,10 @@
       "sync_sql": {
         "type": "boolean",
         "description": "是否同步控制台 waybills SQL 表，默认 true"
+      },
+      "sync_nas": {
+        "type": "boolean",
+        "description": "是否把当天寄件数据写入 NAS“寄件数据/韵达寄件/日期.xlsx”，默认 true"
       }
     },
     "required": []

@@ -6,6 +6,8 @@ from agent.automation_plugins.connector_registry import ConnectorRegistry
 from agent.automation_plugins.core_adapter import AccountManagerSessionResolver, CoreBrokerInvocationContext
 from agent.automation_plugins.daily_send_connectors_v2 import build_daily_send_connectors
 from agent.automation_plugins.daily_send_handlers import build_daily_send_handler_map
+from agent.automation_plugins.send_data_export_handlers import SendDataExportPorts, build_send_data_export_handler_map
+from shared.send_data_workbook import read_workbook
 from plugin_core_adapters.daily_send import build_production_daily_send_ports
 from tests.service_v2_production_protocol_support import PackagedConnectorHost
 
@@ -129,6 +131,20 @@ def test_current_daily_send_v2_package_runs_production_ports_through_write_verif
         ports,
         cursor_secret=b"daily-send-router-generation-secret-v1",
     )
+    nas_files: dict[tuple[str, str], bytes] = {}
+
+    class _NasStore:
+        def read_optional(self, folder, name):
+            return nas_files.get((folder, name))
+
+        def write(self, folder, name, content):
+            nas_files[(folder, name)] = content
+
+    handlers.update(build_send_data_export_handler_map(SendDataExportPorts(
+        describe_account=lambda account_id, system: {"account_id": account_id, "system": system},
+        ronghui_site_name=lambda descriptor: "示例网点",
+        open_store=_NasStore,
+    ), cursor_secret=b"daily-send-router-generation-secret-v1"))
 
     resolver = _ResourceResolver()
     context = CoreBrokerInvocationContext(
@@ -165,6 +181,11 @@ def test_current_daily_send_v2_package_runs_production_ports_through_write_verif
     assert bitable_rows[0]["fields"]["运费"] == "8.25"
     assert projection_rows[0]["recorded_cost"] == "12.50"
     assert projection_rows[0]["freight_fee"] == "8.25"
+    assert raw["data"]["nas_written"] == 1
+    columns, rows = read_workbook(nas_files[("融辉寄件", f"{_TARGET_DATE}.xlsx")])
+    assert columns[:3] == ["来源网点", "运单编号", "发件日期"]
+    assert rows[0][:3] == ["示例网点", _SOURCE_ROW["BILL_CODE"], _TARGET_DATE]
+    assert rows[0][columns.index("录单运费")] == 12.5
     assert resolver.calls and set(resolver.calls) == {(_RESOURCE_ID, ("feishu_bitable",))}
     assert _ACCOUNT_ID not in repr(raw)
     assert _RESOURCE_ID not in repr(raw)

@@ -70,6 +70,15 @@ def _evidence(index: int) -> str:
     return f"test-evidence:{index}"
 
 
+def _nas_result(arguments, evidence_ref):
+    assert arguments["columns"][:2] == ["运单编号", "发件日期"] and "来源网点" not in arguments["columns"]
+    assert all(row[1] == arguments["target_date"] for row in arguments["rows"])
+    return {"committed": True, "verified": True, "target_date": arguments["target_date"],
+            "file": f"融辉寄件/{arguments['target_date']}.xlsx", "site": "示例网点",
+            "record_count": len(arguments["rows"]), "file_record_count": len(arguments["rows"]),
+            "readback_sha256": "0" * 64, "evidence_ref": evidence_ref}
+
+
 def test_final_snapshot_ignores_only_known_other_business_dates():
     action = _load_action()
     old = {"fields": {"发件日期": "2026-01-24", "运单编号": None}}
@@ -149,6 +158,8 @@ def test_payload_updates_unique_existing_ids_and_preserves_unmatched_rows():
             projections.extend(arguments["records"])
             return {"committed": True, "upserted": 2, "updates": 1, "creates": 1,
                     "deleted_stale": 1, "evidence_ref": evidence}
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {"committed": True, "released": True, "evidence_ref": evidence}
         raise AssertionError(action)
@@ -247,6 +258,8 @@ def test_sql_only_uses_the_account_bound_projection_and_never_feishu():
                 "deleted_stale": 2,
                 "evidence_ref": evidence_ref,
             }
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {
                 "committed": True,
@@ -308,6 +321,8 @@ def test_empty_source_preserves_unmatched_bitable_rows_and_reports_them():
                 "deleted_stale": 1,
                 "evidence_ref": evidence_ref,
             }
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {
                 "committed": True,
@@ -359,6 +374,8 @@ def test_dry_run_reads_the_existing_snapshot_but_never_mutates_any_sink():
                 ],
                 "evidence_ref": evidence_ref,
             }
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {
                 "committed": True,
@@ -403,6 +420,8 @@ def test_incomplete_source_pagination_fails_closed_and_releases_the_lock():
                 "total": 1,
                 "evidence_ref": _evidence(len(calls)),
             }
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {
                 "committed": True,
@@ -425,6 +444,8 @@ def test_invalid_lock_evidence_still_releases_an_acquired_lease():
         calls.append(action)
         if action == "sync_daily_send_orders.lock.acquire":
             return {"acquired": True, "lease_ref": "lease-no-evidence"}
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             assert arguments == {"lease_ref": "lease-no-evidence"}
             return {
@@ -467,6 +488,8 @@ def test_invalid_financial_value_fails_before_any_external_write_and_releases_lo
                 "total": 1,
                 "evidence_ref": _evidence(len(calls)),
             }
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {
                 "committed": True,
@@ -514,6 +537,8 @@ def test_source_row_outside_requested_date_fails_before_sink_access(source_dates
                 "total": 1,
                 "evidence_ref": _evidence(len(calls)),
             }
+        if action == "nas.send_data.ronghui.replace_site":
+            return _nas_result(arguments, _evidence(len(calls)))
         if action == "sync_daily_send_orders.lock.release":
             return {
                 "committed": True,
@@ -551,3 +576,44 @@ def test_payload_is_standalone_and_has_no_whole_tool_fallback():
     assert '"/send_order"' not in source
     assert "call_http_service" not in source
     assert json.loads(json.dumps({"source": source}))["source"] == source
+
+
+@pytest.mark.parametrize("sync_nas", [True, False])
+def test_nas_workbook_gets_the_same_snapshot_after_the_other_sinks(sync_nas):
+    action = _load_action()
+    calls: list[str] = []
+    sent: list[dict[str, object]] = []
+
+    def broker(operation, *, action, role, arguments):
+        calls.append(action)
+        evidence_ref = _evidence(len(calls))
+        if action == "sync_daily_send_orders.lock.acquire":
+            return {"acquired": True, "lease_ref": "lease-nas", "evidence_ref": evidence_ref}
+        if action == "ronghui.send_order.read_page":
+            return {"items": [{"BILL_CODE": "R001", "REGISTER_DATE": "2026-05-12 09:30:00", "GUEST_FREIGHT": "12.50",
+                               "PIECE_NUMBER": "2", "SEND_MAN": "示例寄件人", "BL_INDENTURE": "1"}],
+                    "total": 1, "evidence_ref": evidence_ref}
+        if action == "waybill.ronghui.replace_date":
+            return {"committed": True, "upserted": 1, "updates": 0, "creates": 1, "deleted_stale": 0,
+                    "evidence_ref": evidence_ref}
+        if action == "nas.send_data.ronghui.replace_site":
+            assert role == "account_id"
+            sent.append(arguments)
+            return _nas_result(arguments, evidence_ref)
+        if action == "sync_daily_send_orders.lock.release":
+            return {"committed": True, "released": True, "evidence_ref": evidence_ref}
+        raise AssertionError(action)
+
+    result = action.run_action({"target_date": "2026-05-12", "sql_only": True, "sync_nas": sync_nas}, broker)
+
+    assert result["status"] == "SUCCESS"
+    if not sync_nas:
+        assert "nas.send_data.ronghui.replace_site" not in calls and result["data"]["nas_written"] == 0
+        return
+    assert calls[-2:] == ["nas.send_data.ronghui.replace_site", "sync_daily_send_orders.lock.release"]
+    columns, row = sent[0]["columns"], sent[0]["rows"][0]
+    assert row[columns.index("运单编号")] == "R001" and row[columns.index("发件日期")] == "2026-05-12"
+    assert row[columns.index("录单运费")] == 12.5 and row[columns.index("件数")] == 2
+    assert row[columns.index("需要回单")] == "是" and row[columns.index("运费")] is None
+    assert result["data"]["nas_written"] == 1 and result["data"]["per_date"][0]["nas_site"] == "示例网点"
+    assert result["meta"]["source_system"].endswith("+nas")

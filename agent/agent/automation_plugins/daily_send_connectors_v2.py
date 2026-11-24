@@ -2,7 +2,7 @@
 from agent.connector_namespaces import DAILY_SEND_TOOL
 from agent.automation_plugins.connector_compatibility import ConnectorRequirementContract
 from agent.automation_plugins.connector_registry import ConnectorBindingKind as Kind, ConnectorDescriptor, ConnectorOperation
-from agent.automation_plugins.connector_schemas import BOOL, COUNT, DATE, TEXT, array_schema as arr, object_schema as obj, source_record_schema
+from agent.automation_plugins.connector_schemas import BOOL, COUNT, DATE, TEXT, array_schema as arr, object_schema as obj, send_data_workbook_schemas, source_record_schema
 from agent.automation_plugins.host_capability_registry import CapabilityEffect as Effect
 from agent.automation_plugins.reviewed_connectors import reviewed_connector_handler
 
@@ -16,6 +16,7 @@ def build_daily_send_connectors(reviewed):
         ('release', 'ledger.invoke', 'sync_daily_send_orders.lock.release', Effect.INTERNAL_WRITE, obj({'lease_ref':TEXT}), obj({'committed':BOOL, 'released':BOOL})),
         ('read_page', 'browser.invoke', 'ronghui.send_order.read_page', Effect.READ, obj({'target_date':DATE, 'page_index':COUNT, 'page_size':COUNT}), obj({'items':rows, 'total':COUNT})),
         ('replace_date', 'projection.invoke', 'waybill.ronghui.replace_date', Effect.INTERNAL_WRITE, obj({'records':rows, 'target_date':DATE}), obj({'committed':BOOL, 'upserted':COUNT, 'updates':COUNT, 'creates':COUNT, 'deleted_stale':COUNT})),
+        ('export_workbook', 'network.request', 'nas.send_data.ronghui.replace_site', Effect.EXTERNAL_WRITE, *send_data_workbook_schemas()),
     )
     resource_specs = (
         ('list_records', 'network.request', 'feishu.bitable.list_records', Effect.READ, obj({'offset':COUNT,'page_size':COUNT,'fields':arr(TEXT)}), obj({'items':arr(obj({'record_ref':TEXT,'fields':source_record_schema(depth=2)}))})),

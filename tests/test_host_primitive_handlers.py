@@ -237,6 +237,8 @@ def test_production_map_registers_only_available_closed_primitives() -> None:
         ("projection.invoke", "waybill.yunda.replace_date"),
         ("projection.invoke", "waybill.delivery_status.update"),
         ("projection.invoke", "waybill.delivery_status.lookup"),
+        ("network.request", "nas.send_data.ronghui.replace_site"),
+        ("network.request", "nas.send_data.yunda.replace_date"),
         ("projection.invoke", "waybill.ronghui.replace_date"),
         ("projection.invoke", "waybill.ronghui.route_status.pending"),
         ("projection.invoke", "waybill.ronghui.route_status.update"),
