@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 
 PLUGIN_ID = 'quote_prices_v2'
-PLUGIN_VERSION = '1.0.9'
+PLUGIN_VERSION = '1.0.10'
 SERVICE_NAME = 'plugin.quote_prices_v2.quote@1'
 _REQUEST_FIELDS = {
     "schema_version",

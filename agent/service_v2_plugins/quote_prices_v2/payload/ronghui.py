@@ -240,9 +240,16 @@ def _base(client, request, context, area, destination):
             "DISPATCH_SITE_CODE": dispatch["DISPATCH_SITE_CODE"], "SEND_SITE_CENTER_CODE": send_code,
         }), "目的中心")
         destination_code, destination_name = _text(centre, "SITE_CODE"), _text(centre, "SITE_NAME")
-    route = _query(client, "ronghui_route", {
+    # The live page (mRouteChange) shows the first plan route and leaves the
+    # route blank when none is configured, e.g. when the destination centre is
+    # the sending centre itself (邵阳操作场 → 邵阳隆回站, checked 2026-11-24).
+    routes = _rows(client.request("ronghui_route", {
         "SEND_CENTER_CODE": send_code, "DESTINATION_CENTER_CODE": destination_code,
-    }, "计划路由")
+    }), "计划路由")
+    route_name = routes[0].get("ROUTE_NAME") if routes else ""
+    if route_name is not None and not isinstance(route_name, (str, int)) or isinstance(route_name, bool):
+        raise QuoteError("融辉计划路由字段格式无效")
+    route_name = str(route_name or "").strip()
     ratio = _query(client, "ronghui_weight_ratio", {
         "SEND_SITE_CODE": site, "DESTINATION_CODE": _text(destination, "DESTINATION_CODE"),
     }, "体积重比率")
@@ -263,7 +270,7 @@ def _base(client, request, context, area, destination):
         "DESTINATION_CODE": _text(destination, "DESTINATION_CODE"), "DESTINATION": _text(destination, "DESTINATION_NAME"),
         "SEND_CENTER_CODE": send_code, "SEND_CENTER": _text(send, "SITE_NAME"),
         "DESTINATION_CENTER_CODE": destination_code, "DESTINATION_CENTER": destination_name,
-        "ROUTE_NAME": _text(route, "ROUTE_NAME"),
+        "ROUTE_NAME": route_name,
         "ACCEPT_PROVINCE": area["province"], "ACCEPT_CITY": area["city"],
         "ACCEPT_COUNTY": "|".join(area[key] for key in ("province", "city", "county")),
         "ACCEPT_TOWN": area["town"], "ACCEPT_MAN_ADDRESS": request["address"],

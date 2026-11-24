@@ -82,7 +82,7 @@ def test_product_bands_use_settlement_weight(weight, volume, count):
     assert len(quote(FakeClient(), dict(INPUT, weight=str(weight), volume=str(volume)))["quotes"]) == count
 
 
-@pytest.mark.parametrize("endpoint", ["ronghui_destination_name", "ronghui_destination", "ronghui_send_site", "ronghui_send_center", "ronghui_destination_center", "ronghui_route", "ronghui_weight_ratio", "ronghui_goods_type", "ronghui_insurance"])
+@pytest.mark.parametrize("endpoint", ["ronghui_destination_name", "ronghui_destination", "ronghui_send_site", "ronghui_send_center", "ronghui_destination_center", "ronghui_weight_ratio", "ronghui_goods_type", "ronghui_insurance"])
 def test_empty_essential_lookup_does_not_use_default_or_old_result(endpoint):
     client = FakeClient()
     client.responses[endpoint] = []
@@ -91,12 +91,41 @@ def test_empty_essential_lookup_does_not_use_default_or_old_result(endpoint):
     assert not any(name == "ronghui_quote" for name, _ in client.calls)
 
 
-@pytest.mark.parametrize("endpoint", ["ronghui_destination_name", "ronghui_destination", "ronghui_send_center", "ronghui_destination_center", "ronghui_route"])
+@pytest.mark.parametrize("endpoint", ["ronghui_destination_name", "ronghui_destination", "ronghui_send_center", "ronghui_destination_center"])
 def test_ambiguous_lookup_does_not_take_first(endpoint):
     client = FakeClient()
     client.responses[endpoint] *= 2
     with pytest.raises(QuoteError, match="不唯一"):
         quote(client, INPUT)
+
+
+def _quoted_route_names(client):
+    return {json.loads(body["data"])[0]["ROUTE_NAME"] for name, body in client.calls if name == "ronghui_quote"}
+
+
+def test_missing_plan_route_is_left_blank_like_the_live_page():
+    # 2026-11-24: sending and destination centre are the same 操作场, the
+    # platform has no plan route, and the live page still calculates the fee.
+    client = FakeClient()
+    client.responses["ronghui_route"] = []
+    result = quote(client, INPUT)
+    assert result["quotes"] and _quoted_route_names(client) == {""}
+
+
+def test_several_plan_routes_use_the_first_like_the_live_page():
+    client = FakeClient()
+    client.responses["ronghui_route"] = [{"ROUTE_NAME": "测试路线甲"}, {"ROUTE_NAME": "测试路线乙"}]
+    quote(client, INPUT)
+    assert _quoted_route_names(client) == {"测试路线甲"}
+
+
+@pytest.mark.parametrize("value", [{"x": 1}, True, 1.5])
+def test_invalid_plan_route_name_fails(value):
+    client = FakeClient()
+    client.responses["ronghui_route"] = [{"ROUTE_NAME": value}]
+    with pytest.raises(QuoteError, match="计划路由"):
+        quote(client, INPUT)
+    assert not any(name == "ronghui_quote" for name, _ in client.calls)
 
 
 @pytest.mark.parametrize("index", [0, -1, 3, 1.5, 2.00000001, float("nan"), float("inf"), float("-inf"), True, "2"])
