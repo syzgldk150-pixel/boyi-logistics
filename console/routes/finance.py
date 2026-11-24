@@ -55,6 +55,10 @@ _REVIEW_SUGGEST = re.compile(r"/finance/reviews/(\d{1,18})/suggest")
 _PERIOD_ACTION = re.compile(r"/finance/periods/(\d{4}-\d{2})/(close|reopen)")
 _BILL_PAGES = {"/modules/finance/ronghui-bills": "ronghui", "/modules/finance/yunda-bills": "yunda"}
 _BILL_QUERY = re.compile(r"/finance/platform-bills/(ronghui|yunda)")
+_DELIVERY_GET = {"/finance/delivery-bills": "bill", "/finance/delivery-bills/rules": "rules",
+                 "/finance/delivery-bills/settings": "settings"}
+_DELIVERY_POST = re.compile(r"/finance/delivery-bills/(confirm|revoke|fees/prepare|fees/compute|fees/save|rules|rules/trial|settings)")
+_DELIVERY_RETIRE = re.compile(r"/finance/delivery-bills/rules/(\d{1,18})/retire")
 
 
 def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[str, list[str]]) -> bool:
@@ -63,6 +67,12 @@ def handle_get(app: Any, handler: Any, path: str, _raw_path: str, query: dict[st
         return True
     if path in _BILL_PAGES:
         app._render_platform_bills(handler, _BILL_PAGES[path])
+        return True
+    if path == "/modules/finance/delivery-bills":
+        app._render_delivery_bills(handler)
+        return True
+    if path in _DELIVERY_GET:
+        app._handle_delivery_bills_get(handler, _DELIVERY_GET[path], query)
         return True
     match = _BILL_QUERY.fullmatch(path)
     if match:
@@ -103,6 +113,14 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
               "/finance/line-rules": "line_rule_save"}
     if path in simple:
         app._handle_finance_ledger_post(handler, simple[path])
+        return True
+    match = _DELIVERY_POST.fullmatch(path)
+    if match:
+        app._handle_delivery_bills_post(handler, match.group(1))
+        return True
+    match = _DELIVERY_RETIRE.fullmatch(path)
+    if match:
+        app._handle_delivery_bills_post(handler, "rules/retire", match.group(1))
         return True
     match = _REVIEW_SUGGEST.fullmatch(path)
     if match:

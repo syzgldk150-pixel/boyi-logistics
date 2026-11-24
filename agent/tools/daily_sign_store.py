@@ -982,6 +982,72 @@ def upsert_ledger_rows(
     }
 
 
+def _business_day(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def list_station_arrivals(start: date, end: date, *, through: date, station: str = TARGET_STATION) -> dict[str, Any]:
+    """财务“派件账单”：每日到货表（到货统计的生效成功运行）里目的站为 ``station`` 的单。只读。
+
+    历史未齐单会在之后几天的统计里继续出现，每单只按第一次出现的日期计。返回第一次出现在
+    ``start``–``end`` 的单（到货表日期）、截至 ``through`` 出现过的全部单号（核对“融辉已结算但
+    到货表没有”用）和 ``start``–``end`` 里没有生效统计的日期。
+    """
+    if not start <= end <= through:
+        raise ValueError("arrival range must satisfy start <= end <= through")
+    ensure_daily_sign_tables()
+    connection = _daily_sign_connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT i.tracking_number, r.business_date, i.goods_name, i.package_type, i.delivery_method
+                FROM arrival_stat_items i
+                JOIN arrival_stat_runs r ON r.run_id = i.run_id
+                WHERE r.status = 'success' AND r.is_active = TRUE AND r.business_date <= %s
+                  AND i.destination_station = %s
+                ORDER BY r.business_date, r.id
+                """,
+                (through, station),
+            )
+            first: dict[str, dict[str, Any]] = {}
+            for row in cursor.fetchall() or []:
+                code = clean_text(row.get("tracking_number")).upper()
+                if code and code not in first:
+                    first[code] = {
+                        "tracking_number": code,
+                        "arrival_date": _business_day(row.get("business_date")),
+                        "goods_name": clean_text(row.get("goods_name")),
+                        "package_type": clean_text(row.get("package_type")),
+                        "delivery_method": clean_text(row.get("delivery_method")),
+                    }
+            cursor.execute(
+                "SELECT DISTINCT business_date FROM arrival_stat_runs"
+                " WHERE status = 'success' AND is_active = TRUE AND business_date BETWEEN %s AND %s",
+                (start, end),
+            )
+            present = {_business_day(row.get("business_date")) for row in cursor.fetchall() or []}
+    finally:
+        connection.rollback()
+        connection.close()
+    arrivals = [row for row in first.values() if start <= row["arrival_date"] <= end]
+    days = (end - start).days + 1
+    missing = [
+        day.isoformat()
+        for day in (date.fromordinal(start.toordinal() + offset) for offset in range(days))
+        if day not in present
+    ]
+    return {
+        "arrivals": [{**row, "arrival_date": row["arrival_date"].isoformat()} for row in arrivals],
+        "known": sorted(first),
+        "missing_dates": missing,
+    }
+
+
 def load_daily_sign_state(tracking_numbers: list[str] | None = None) -> dict[str, Any]:
     # None retains the existing full-state reader for other callers. The current
     # R13 report always supplies its complete identity set, including an empty set.

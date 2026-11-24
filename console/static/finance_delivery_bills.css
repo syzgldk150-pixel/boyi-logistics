@@ -1,0 +1,73 @@
+/* 派件账单 · reuses the 对账单 shell (finance_platform_bills.css) and adds the row picker, notices and dialogs. */
+.db-tools { display: flex; gap: 8px; }
+.db-tools .ghost-btn { height: var(--control-h); font-size: var(--fs-caption); }
+.db-views__right { display: flex; align-items: center; gap: 10px; }
+.db-search { height: 30px; width: 180px; padding: 0 10px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-caption); font-family: var(--font-num); }
+.db-notices { display: grid; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--line-subtle); font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-notices p { margin: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.db-notices p[data-tone="warn"] { color: var(--status-warn, #b26b00); }
+.db-bulk { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line-subtle); font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-bulk .primary-btn { height: 30px; font-size: var(--fs-caption); }
+.db-table-wrap { max-height: 640px; overflow: auto; }
+.db-table thead th { position: sticky; top: 0; z-index: 1; }
+.main-content .db-table .db-pick { width: 40px; padding: 0 12px; }
+.db-code { font-family: var(--font-num); }
+.db-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--bg-subtle); font-size: var(--fs-caption); color: var(--text-secondary); white-space: nowrap; }
+.db-badge[data-tone="ok"] { background: #e9f6ee; color: var(--status-success); }
+.db-badge[data-tone="warn"] { background: #fff4e0; color: var(--status-warn, #b26b00); }
+.db-problem { display: block; max-width: 220px; margin-top: 2px; font-size: 11.5px; color: var(--status-warn, #b26b00); white-space: normal; }
+.db-sub { display: block; font-size: 11.5px; color: var(--text-muted); font-weight: 400; }
+
+.db-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); box-shadow: 0 12px 40px rgba(13, 17, 23, 0.18); }
+.db-dialog--wide { width: min(980px, calc(100vw - 32px)); }
+.db-dialog::backdrop { background: rgba(13, 17, 23, 0.35); }
+.db-dialog[open] { display: flex; flex-direction: column; }
+.db-dialog__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line-default); }
+.db-dialog__head h2 { margin: 0; font-size: var(--fs-section); font-weight: 500; font-family: var(--font-num); }
+.db-dialog__body { display: grid; gap: 10px; padding: 14px 18px; overflow: auto; font-size: var(--fs-body); }
+.db-dialog__body h3 { margin: 6px 0 0; font-size: var(--fs-body); font-weight: 500; color: var(--text-primary); }
+.db-dialog__foot { display: flex; justify-content: flex-end; gap: 10px; padding: 10px 18px; border-top: 1px solid var(--line-default); }
+.db-dialog__foot:empty { display: none; }
+.db-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; margin: 0; }
+.db-facts dt { font-size: 11.5px; color: var(--text-muted); }
+.db-facts dd { margin: 2px 0 0; font-family: var(--font-num); }
+.main-content .db-mini thead th, .main-content .db-mini tbody td { height: 36px; padding: 0 10px; font-size: var(--fs-caption); }
+.db-steps { margin: 0; padding-left: 20px; font-size: var(--fs-caption); color: var(--text-secondary); line-height: 1.7; }
+.db-steps-box summary { cursor: pointer; font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-hint { margin: 0; font-size: var(--fs-caption); color: var(--text-tertiary); line-height: 1.6; }
+.db-hint[data-tone="warn"] { color: var(--status-warn, #b26b00); }
+.db-alert { margin: 0; padding: 8px 12px; border-radius: var(--r-control); background: #fff4e0; font-size: var(--fs-caption); color: var(--status-warn, #b26b00); }
+.db-error { margin: 0; font-size: var(--fs-caption); color: var(--status-danger); }
+.db-actions { display: flex; justify-content: flex-end; }
+.db-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 14px; }
+.db-grid__wide { grid-column: 1 / -1; }
+.db-grid .pb-field input, .db-grid .pb-field select, .db-trial .pb-field input { min-width: 0; width: 100%; box-sizing: border-box; }
+.db-rule-form { display: grid; gap: 10px; padding-top: 6px; border-top: 1px solid var(--line-subtle); }
+.db-rule-form h3 { margin: 4px 0 0; }
+.db-trial { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.db-trial .ghost-btn { height: var(--control-h); }
+.db-trial__result { font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-dialog textarea { width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-body); }
+.db-fee-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 12px; }
+.db-fee-pick { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-body); cursor: pointer; }
+.db-fee-pick input, .db-pick input { appearance: auto; -webkit-appearance: checkbox; width: 15px; height: 15px; margin-top: 2px; }
+.db-manual { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 8px 12px; border-radius: var(--r-control); background: var(--bg-subtle); }
+.db-manual b { flex-basis: 100%; font-size: var(--fs-caption); font-weight: 500; }
+
+/* Parameter form drawn by handbook_fee_form.js (same classes as 业务手册 → 报价). */
+.db .hb-fee__cells { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.db .hb-cell { display: grid; gap: 5px; min-width: 0; flex: 1 1 150px; font-size: var(--fs-tiny, 12px); color: var(--text-tertiary); }
+.db .hb-cell--full { flex-basis: 100%; }
+.db .hb-cell--xs { flex: 0 1 80px; }
+.db .hb-cell--sm { flex: 1 1 110px; }
+.db .hb-cell input, .db .hb-cell select { width: 100%; box-sizing: border-box; min-height: 34px; font: inherit; font-size: var(--fs-body); padding: 6px 10px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); }
+.db .hb-pieces { border: 1px solid var(--line-subtle); border-radius: var(--r-control); padding: 8px 10px; }
+.db .hb-piece-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.db .hb-meta { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.db .hb-link { padding: 0; border: 0; background: none; font: inherit; font-size: var(--fs-caption); color: var(--status-danger); cursor: pointer; }
+.db .hb-btn-sm { height: 28px; padding: 0 10px; font-size: var(--fs-caption); }
+
+@media (max-width: 1280px) {
+  .db-tools { width: 100%; }
+  .db-search { width: 140px; }
+}

@@ -1050,6 +1050,7 @@ class QuoteRule:
     name: str
     version: str
     rule: Rule
+    rule_id: str = ""  # the stored version it came from, when known
 
 
 @dataclass(frozen=True)

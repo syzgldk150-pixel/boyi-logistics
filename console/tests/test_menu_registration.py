@@ -42,6 +42,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "finance",
         "finance_ronghui_bills",
         "finance_yunda_bills",
+        "finance_delivery_bills",
         "dispatch",
         "line_haul",
         "automations",
@@ -72,6 +73,7 @@ def test_registered_menu_projection_preserves_existing_console_contract() -> Non
         "/modules/finance",
         "/modules/finance/ronghui-bills",
         "/modules/finance/yunda-bills",
+        "/modules/finance/delivery-bills",
     ]
     assert all(not item["group"] or item["group"] in NAVIGATION_GROUPS for item in CONSOLE_NAVIGATION)
 

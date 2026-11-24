@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}派件账单 | {{ app_title }}{% endblock %}
+{% block body_class %}finance-page platform-bills-page delivery-bills-page{% endblock %}
+{% block breadcrumb %}派件账单{% endblock %}
+{% block subtitle %}财务模块 · {{ station }}派件：融辉结算给网点的钱与应付派送款{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance_platform_bills.css?v=20261120-grid">
+<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261124-db1">{% endblock %}
+
+{% block content %}
+{# 派件账单（2026-11-24）：每日到货表里大祥S站的单 ∩ 融辉结算明细里已有“付派送费”的单。
+   每次查询都实时读融辉，Agent 组好账单后在本次查询内（30 分钟）确认、改增值费；页面不计算金额。 #}
+<section class="pb db" data-delivery-bills data-can-manage="{{ 'true' if can_manage else 'false' }}"
+  data-super-admin="{{ 'true' if is_super_admin else 'false' }}" data-max-span="{{ max_span_days }}">
+  <nav class="pb-modules" aria-label="财务模块">
+    <a class="pb-modules__item" href="/modules/finance">财务账簿</a>
+    <a class="pb-modules__item" href="/modules/finance/ronghui-bills">融辉对账单</a>
+    <a class="pb-modules__item" href="/modules/finance/yunda-bills">韵达对账单</a>
+    <a class="pb-modules__item" href="/modules/finance/delivery-bills" aria-current="page">派件账单</a>
+  </nav>
+
+  <form class="pb-card pb-filters" data-db-filters novalidate>
+    <label class="pb-field">网点 <select disabled><option>{{ station }}</option></select></label>
+    <label class="pb-field">到货表日期 开始 <input type="date" data-db-start></label>
+    <label class="pb-field">结束 <input type="date" data-db-end></label>
+    <div class="pb-quick" role="group" aria-label="快捷区间">
+      <button type="button" class="ghost-btn" data-db-range="7">近 7 天</button>
+      <button type="button" class="ghost-btn" data-db-range="month">本月</button>
+      <button type="button" class="ghost-btn" data-db-range="last-month">上月</button>
+    </div>
+    <button type="submit" class="primary-btn pb-filters__go" data-db-query>查询</button>
+    <div class="db-tools">
+      <button type="button" class="ghost-btn" data-db-open-rules>派送费规则</button>
+      {% if is_super_admin %}<button type="button" class="ghost-btn" data-db-open-settings>设置</button>{% endif %}
+    </div>
+    <p class="pb-filters__error" data-db-date-error role="alert" hidden></p>
+  </form>
+
+  <section class="pb-card pb-result" aria-label="派件账单">
+    <div class="pb-views">
+      <div class="pb-views__tabs" role="tablist" aria-label="按状态查看">
+        <button type="button" role="tab" aria-selected="true" data-db-filter="all">全部</button>
+        <button type="button" role="tab" aria-selected="false" tabindex="-1" data-db-filter="pending">待确认</button>
+        <button type="button" role="tab" aria-selected="false" tabindex="-1" data-db-filter="confirmed">已确认</button>
+        <button type="button" role="tab" aria-selected="false" tabindex="-1" data-db-filter="problem">需处理</button>
+      </div>
+      <div class="db-views__right">
+        <input type="search" class="db-search" placeholder="搜索单号" aria-label="搜索单号" data-db-search>
+        <button type="button" class="ghost-btn pb-views__export" data-db-export disabled>导出 CSV</button>
+      </div>
+    </div>
+    <div class="pb-context" data-db-context hidden></div>
+    <div class="pb-strip" data-db-strip hidden></div>
+    <div class="db-notices" data-db-notices hidden></div>
+    {% if can_manage %}
+    <div class="db-bulk" data-db-bulk hidden>
+      <span data-db-picked>已选 0 单</span>
+      <button type="button" class="primary-btn" data-db-confirm-picked disabled>确认所选</button>
+    </div>
+    {% endif %}
+    <div data-db-body>
+      <div class="pb-empty" data-kind="idle"><b>选择到货表日期后点“查询”</b><span>系统会实时读取融辉结算明细，只列出融辉已结算（有“付派送费”）的单。</span></div>
+    </div>
+    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计（派送费、折让、回单服务费、手续费、增值收入），不含派到付款；应付＝派送费（起步价＋超重加价，按融辉结算重量）＋已保存的增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
+    <p class="sr-only" role="status" aria-live="polite" data-db-status></p>
+  </section>
+
+  <dialog class="db-dialog" data-db-detail aria-labelledby="db-detail-title">
+    <header class="db-dialog__head"><h2 id="db-detail-title" data-db-detail-title>单号</h2>
+      <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
+    <div class="db-dialog__body" data-db-detail-body></div>
+    <footer class="db-dialog__foot" data-db-detail-foot></footer>
+  </dialog>
+
+  <dialog class="db-dialog db-dialog--wide" data-db-fees aria-labelledby="db-fees-title">
+    <header class="db-dialog__head"><h2 id="db-fees-title" data-db-fees-title>增值费</h2>
+      <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
+    <div class="db-dialog__body" data-db-fees-body></div>
+    <footer class="db-dialog__foot" data-db-fees-foot></footer>
+  </dialog>
+
+  <dialog class="db-dialog db-dialog--wide" data-db-rules aria-labelledby="db-rules-title">
+    <header class="db-dialog__head"><h2 id="db-rules-title">派送费规则</h2>
+      <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
+    <div class="db-dialog__body">
+      <p class="db-hint">每票起步价＋超重加价，按融辉结算重量计算；按到货表日期取“执行日期不晚于该日”的最新一版。已有确认单用过的版本不能作废，改价请新增一版执行日期更晚的规则。</p>
+      <div data-db-rules-list></div>
+      <form class="db-rule-form" data-db-rule-form novalidate>
+        <h3>{{ '新增一版' if is_super_admin else '试算' }}</h3>
+        <div class="db-grid">
+          {% if is_super_admin %}<label class="pb-field">执行日期 <input type="date" name="effective_from" required></label>{% endif %}
+          <label class="pb-field">起步价（元/票） <input name="start_price" inputmode="decimal" required></label>
+          <label class="pb-field">首重（kg，含在起步价内） <input name="base_weight" inputmode="decimal" required></label>
+          <label class="pb-field">续重单价（元/kg） <input name="extra_price" inputmode="decimal" required></label>
+          <label class="pb-field">续重取整 <select name="rounding">{% for key, label in roundings.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+          {% if is_super_admin %}<label class="pb-field db-grid__wide">备注 <input name="note" maxlength="200"></label>{% endif %}
+        </div>
+        <div class="db-trial">
+          <label class="pb-field">试算结算重量（kg） <input name="trial_weight" inputmode="decimal"></label>
+          <button type="button" class="ghost-btn" data-db-rule-trial>试算</button>
+          <span class="db-trial__result" data-db-rule-trial-result></span>
+        </div>
+        {% if is_super_admin %}<div class="db-actions"><button type="submit" class="primary-btn" data-db-rule-save>保存这一版</button></div>{% endif %}
+        <p class="db-error" data-db-rule-error role="alert" hidden></p>
+      </form>
+    </div>
+  </dialog>
+
+  {% if is_super_admin %}
+  <dialog class="db-dialog" data-db-settings aria-labelledby="db-settings-title">
+    <header class="db-dialog__head"><h2 id="db-settings-title">派件账单设置</h2>
+      <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
+    <form class="db-dialog__body" data-db-settings-form novalidate>
+      <label class="pb-field">融辉结算日期比到货表结束日往后多查（天，0–31） <input name="lookahead_days" inputmode="numeric"></label>
+      <p class="db-hint">实测结算日期比到货表日期晚 0–6 天；默认 10 天。</p>
+      <label class="pb-field">额外计入融辉结算金额的结算类型（每行一个） <textarea name="include_types" rows="3"></textarea></label>
+      <label class="pb-field">不计入的结算类型（每行一个） <textarea name="exclude_types" rows="3"></textarea></label>
+      <p class="db-hint">默认计入以“付”开头的全部结算类型（融辉付给网点的派件收入）；派到付款、罚款等不以“付”开头的不计入。</p>
+      <p class="db-error" data-db-settings-error role="alert" hidden></p>
+      <div class="db-actions"><button type="submit" class="primary-btn">保存设置</button></div>
+    </form>
+  </dialog>
+  {% endif %}
+
+  <dialog class="db-dialog db-dialog--wide" data-db-list aria-labelledby="db-list-title">
+    <header class="db-dialog__head"><h2 id="db-list-title" data-db-list-title>清单</h2>
+      <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
+    <div class="db-dialog__body" data-db-list-body></div>
+  </dialog>
+</section>
+{% endblock %}
+
+{% block scripts %}<script src="/static/handbook_fee_form.js?v=20261119-quote1"></script>
+<script src="/static/finance_delivery_bills.js?v=20261124-db1"></script>{% endblock %}

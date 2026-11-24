@@ -7,7 +7,7 @@ from agent.tms_runtime.direct_execution import call_blocking
 from agent.tms_runtime.receipts_query import fetch_receipt_image_async, query_receipts_async
 from agent.tms_runtime.waybill_photos import query_waybill_photos_async
 from agent.tms_runtime.platform_waybill_print import build_print_log_handler, platform_label_async
-from agent.tms_runtime.platform_prepay_bills import platform_prepay_bills_async
+from agent.tms_runtime.platform_prepay_bills import delivery_bill_settlements_async, platform_prepay_bills_async
 from agent.send_waybills_business import build_direct_waybill_query_service
 from tools.phase7_mysql_store import list_scan_times_for_tracking
 from plugin_core_adapters.waybill_query import prepare_waybill_sources, waybill_connection
@@ -25,6 +25,8 @@ def build_business_service(*, catalog, plugin_catalog, invocations):
     service.register_call("platform-waybill-print-log", build_print_log_handler(invocations))
     # 财务“融辉对账单/韵达对账单”：平台预付款账单原样即时读取（只读，不入库）。
     service.register_read("platform-prepay-bills", platform_prepay_bills_async)
+    # 财务“派件账单”：大祥S站融辉结算明细按结算日期读全（只读，不入库）。
+    service.register_read("delivery-bill-settlements", delivery_bill_settlements_async)
     service.register_read("send-waybills-query", build_direct_waybill_query_service(
         connection_factory=waybill_connection,
         # Ronghui accounts come from plugin instances, not the tool registry.

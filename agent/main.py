@@ -140,6 +140,7 @@ from agent.business_query import (
 from agent.business_modules_api import create_business_module_router
 from agent.fee_drafts_api import create_fee_drafts_router
 from agent.fee_rules_api import create_fee_quotes_router, create_fee_rules_router
+from agent.delivery_bills_api import create_delivery_bills_router, settlement_reader_for
 from agent.handbook_api import create_handbook_router
 from agent.handbook_try_api import create_handbook_try_router
 from agent.knowledge_watch_api import create_knowledge_watch_router
@@ -255,6 +256,8 @@ agent_handbook_service = None
 fee_rule_repository = None
 fee_draft_service = None
 fee_quote_waybill_reader = None
+delivery_bill_finance = None
+delivery_settlement_reader = None
 handbook_try_runtime = None
 knowledge_watch_service = None
 agent_review_service = None
@@ -695,7 +698,7 @@ async def lifespan(app: FastAPI):
     global AGENT_INTERNAL_API_TOKEN, CONSOLE_IDENTITY_VERIFIER, agent_core
     global automation_plugin_runtime, automation_project_policy_service, finance_review_advisor, customer_service_ai
     global plugin_flow_editor, receipt_share_runtime, wechat_bot_runtime, agent_handbook_service, agent_review_service, fee_rule_repository
-    global fee_quote_waybill_reader, fee_draft_service
+    global fee_quote_waybill_reader, fee_draft_service, delivery_bill_finance, delivery_settlement_reader
     global handbook_try_runtime, knowledge_watch_service
     global automation_project_entrypoints
     global feishu_binding_service
@@ -919,6 +922,9 @@ async def lifespan(app: FastAPI):
     knowledge_watch_service = _knowledge_watch_service(runtime, fee_rule_repository)
     fee_draft_service = _fee_draft_service(runtime, fee_rule_repository, ai_task_gateway)
     fee_quote_waybill_reader = _fee_quote_waybill_reader(business_service)
+    # 财务 → 派件账单：融辉结算明细经普通业务接口读取，派件记录在 finance_db（迁移 093）。
+    delivery_settlement_reader = settlement_reader_for(business_service)
+    delivery_bill_finance = FinanceRepository(runtime.memory.connection_factory)
     agent_business_actions = _agent_business_actions(business_service, runtime, asyncio.get_running_loop(),
                                                      project_policy_service.identity_access)
     agent_business_actions.reviews = agent_review_service
@@ -1119,6 +1125,17 @@ app.include_router(
         repository_provider=lambda: fee_rule_repository,
         admin_provider=lambda request: _require_console_admin_request(request),
         waybill_reader=lambda tracking, actor: fee_quote_waybill_reader(tracking, actor),
+    )
+)
+app.include_router(
+    create_delivery_bills_router(
+        finance_provider=lambda: delivery_bill_finance,
+        fee_rules_provider=lambda: fee_rule_repository,
+        arrivals_reader=lambda start, end, through: _station_arrivals(start, end, through),
+        settlement_reader=lambda start, end, actor: delivery_settlement_reader(start, end, actor),
+        waybill_reader=lambda tracking, actor: fee_quote_waybill_reader(tracking, actor),
+        admin_provider=lambda request: _require_console_admin_request(request),
+        super_admin_provider=lambda request: _require_console_super_admin_request(request),
     )
 )
 app.include_router(
@@ -1800,6 +1817,13 @@ def _agent_business_actions(business_service, runtime, loop, identity_access):
     fee_rules = FeeRuleRepository(runtime.memory.connection_factory)
     return BusinessActions(invoke=invoke, cs_accounts=cs_accounts, identity_access=identity_access,
                            fee_rules=fee_rules.approved, fee_quote_recorder=fee_rules.record_quote)
+
+
+def _station_arrivals(start, end, through):
+    """派件账单：每日到货表里邵阳大祥S站的单（tools 只能由组合根注入）。"""
+    from tools.daily_sign_store import list_station_arrivals
+
+    return list_station_arrivals(start, end, through=through)
 
 
 def _fee_quote_waybill_reader(business_service):

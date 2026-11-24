@@ -45,7 +45,8 @@ def test_pages_and_queries_need_finance_view():
         assert console_permission("GET", path) == "finance:view"
     assert business_permission("platform-prepay-bills") == "finance:view"
     group = [item["route"] for item in CONSOLE_NAVIGATION if item["group"] == "finance"]
-    assert group == ["/modules/finance", "/modules/finance/ronghui-bills", "/modules/finance/yunda-bills"]
+    assert group == ["/modules/finance", "/modules/finance/ronghui-bills", "/modules/finance/yunda-bills",
+                     "/modules/finance/delivery-bills"]
 
 
 def test_routes_dispatch():

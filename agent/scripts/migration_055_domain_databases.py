@@ -54,6 +54,9 @@ LATER_FINANCE_TABLES = (
     "finance_source_lines", "finance_line_rules", "finance_reviews", "finance_anomalies",
     # 072: period close and statement lines.
     "finance_period_closes", "finance_account_balances", "finance_report_lines",
+    # 093: 派件账单（派送费规则、每单确认与增值费明细、设置）。
+    "finance_delivery_fee_rules", "finance_delivery_bill_items", "finance_delivery_bill_fee_lines",
+    "finance_delivery_bill_settings",
 )
 
 

@@ -36,6 +36,7 @@ class FeeRuleSet:
     status: str
     effective_from: date | None
     content: Any  # shared.fee_engine.Rule
+    rule_id: str = ""  # the stored version (agent_fee_rule_versions.rule_id), so a result can name it exactly
 
     def __post_init__(self) -> None:
         if self.status not in RULE_STATUSES:
@@ -61,7 +62,7 @@ def rule_from_record(record: Mapping[str, Any]) -> FeeRuleSet:
     if isinstance(effective, str):
         effective = date.fromisoformat(effective)
     return FeeRuleSet(record["fee_kind"], str(record.get("fee_name") or record["fee_kind"]), record["version_label"],
-                      record["status"], effective, parse_content(record["content"]))
+                      record["status"], effective, parse_content(record["content"]), str(record.get("rule_id") or ""))
 
 
 def review_lines(record: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -202,7 +203,7 @@ def quote_catalog(records: Iterable[Mapping[str, Any]], *, business_date: date) 
             unavailable.append({"fee_kind": kind, "name": name, "reason": exc.message})
             continue
         label = f"{chosen.version}（执行日期 {chosen.effective_from.isoformat()}）"
-        rules.append(QuoteRule(kind, chosen.fee_name, label, chosen.content))
+        rules.append(QuoteRule(kind, chosen.fee_name, label, chosen.content, chosen.rule_id))
     rules.sort(key=lambda item: item.name)
     unavailable.sort(key=lambda item: item["name"])
     return rules, unavailable

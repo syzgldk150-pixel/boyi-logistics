@@ -474,6 +474,78 @@ def yunda_bills(session_profile: str, query: dict[str, Any], *, timeout_sec: int
             "page": page, "page_size": size, "footer": table["footer"]}
 
 
+# --------------------------------------------------------------------------- 派件账单
+
+
+# 派件账单一次要读全结算明细：每页 500 行，最多读这么多页（约 2 万行）。
+SETTLEMENT_MAX_PAGES = 40
+
+
+def ronghui_settlement_rows(session_profile: str, start: str, end: str, *, timeout_sec: int) -> dict[str, Any]:
+    """融辉“结算明细查询”按结算日期读全（只读）：派件账单按运单号汇总用。
+
+    与“融辉对账单 · 明细查询”是同一页面、同一接口与条件，只是读完全部分页；平台 total 与实际读到的
+    行数对不上、或超过可读范围时明确失败，不返回部分数据。
+    """
+    session = get_session_broker(session_profile).open_capability_session("ronghui_home", validate=False)
+    page = _ronghui_page(session, timeout_sec)
+    info = _read_user_info(session)
+    site_code = str(info.get("loginSiteCode") or "")
+    if not site_code:
+        raise PlatformBillError("AUTH_REQUIRED", "融辉账号登录信息缺少网点编号，请到“业务账号”重新登录。")
+    grid_id, call_id = RONGHUI_GRIDS["detail"]
+    if call_id not in page["html"]:
+        raise PlatformBillError("PLATFORM_PAGE_CHANGED", "融辉“结算明细查询”页面已变化，需重新核对后才能读取。")
+    fields = {column["field"] for column in ronghui_columns(page["html"], grid_id)}
+    needed = {"BILL_CODE", "BALANCE_TYPE", "BALANCE_CUR_MONEY_TEXT", "BALANCE_DATE", "SETTLEMENT_WEIGHT", "PIECE_NUMBER"}
+    if not needed <= fields:
+        raise PlatformBillError("PLATFORM_PAGE_CHANGED", "融辉“结算明细查询”缺少运单编号、结算类型、金额等列，页面已变化，需重新核对。")
+    span = json.dumps({"start": f"{start} 00:00:00", "end": f"{end} 23:59:59"})
+    form = {"DATE_TYPE": "BALANCE_DATE", "DATE": span, "BALANCE_DATE": span, "CODE": "", "SOURCE_TYPE": "",
+            "CONFIRM_STATUS": "", "CONFIRM_STATUSNEW": "", "SITE_NAME_CODE": site_code}
+    rows: list[Any] = []
+    total = 0
+    for index in range(SETTLEMENT_MAX_PAGES):
+        part = _ronghui_rows(session, page, call_id, {**form, "pageIndex": index, "pageSize": 500}, timeout_sec)
+        rows.extend(part["rows"])
+        total = part["total"]
+        if len(rows) >= total or not part["rows"]:
+            break
+    if len(rows) != total:
+        raise PlatformBillError("PLATFORM_DATA_TOO_LARGE", f"融辉结算明细共 {total} 行，只读到 {len(rows)} 行，请缩短日期范围后重试。")
+    return {"site_code": site_code, "site_name": str(info.get("loginSiteName") or ""), "rows": rows, "total": total}
+
+
+async def delivery_bill_settlements_async(params: dict[str, Any], timeout_sec: int) -> dict[str, Any]:
+    """只读业务接口 ``delivery-bill-settlements``：派件账单固定用大祥S站账号，按结算日期分段（每段≤31 天）读全。"""
+    from shared.finance.delivery_bills import SETTLEMENT_ACCOUNT_ID, date_chunks
+
+    if not isinstance(params, dict) or set(params) != {"account_id", "start", "end"} \
+            or params.get("account_id") != SETTLEMENT_ACCOUNT_ID:
+        raise PlatformBillError("INVALID_PLATFORM_BILL_QUERY", "派件账单结算明细查询参数无效。")
+    try:
+        first, last = dt.date.fromisoformat(str(params["start"])), dt.date.fromisoformat(str(params["end"]))
+    except ValueError as exc:
+        raise PlatformBillError("INVALID_PLATFORM_BILL_QUERY", "日期无效。") from exc
+    if last < first or (last - first).days > 3 * MAX_SPAN_DAYS:
+        raise PlatformBillError("INVALID_PLATFORM_BILL_QUERY", "结算日期范围无效。")
+    read_timeout = min(int(timeout_sec), 40)
+
+    def read() -> dict[str, Any]:
+        profile = _platform_call("ronghui", lambda: _session_profile("ronghui", SETTLEMENT_ACCOUNT_ID))
+        rows: list[Any] = []
+        site = {}
+        for chunk_start, chunk_end in date_chunks(first, last):
+            part = _platform_call("ronghui", lambda a=chunk_start, b=chunk_end: ronghui_settlement_rows(
+                profile, a.isoformat(), b.isoformat(), timeout_sec=read_timeout))
+            rows.extend(part["rows"])
+            site = {"site_code": part["site_code"], "site_name": part["site_name"]}
+        return {"account_id": SETTLEMENT_ACCOUNT_ID, **site, "start": first.isoformat(), "end": last.isoformat(),
+                "rows": rows, "fetched_at": _now()}
+
+    return await call_blocking(read, timeout_sec=timeout_sec)
+
+
 # --------------------------------------------------------------------------- business entry
 
 

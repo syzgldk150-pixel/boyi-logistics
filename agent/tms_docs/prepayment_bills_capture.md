@@ -3,10 +3,10 @@ module: 财务模块
 type: external_page_snapshot
 status: snapshot
 captured_at: 2026-11-18
-verified_at: 2026-11-18
+verified_at: 2026-11-24
 verification_scope: ecs_saved_sessions_read_only
 uncertainty: low
-updated: 2026-11-18
+updated: 2026-11-24
 ---
 
 # 融辉 / 韵达预付款对账单接口核实（2026-11-18）
@@ -45,3 +45,9 @@ updated: 2026-11-18
 | 分部余额 | `author/dynamicPcTabBasic/selectFiledsData` | `menu_code=template_code=account_amount_fb`、`interface_skip:0`、`workType:"branch"`；下拉条件 `auth_type/branch_status/send_status/account_status` 空值必须传一个空格，否则报错 |
 
 - 下钻（与页面一致）：交易汇总行“操作1”→按天、“操作2”→交易明细；按天行“操作”→交易明细；分部余额“账号”→交易汇总查询（新窗口）。参数名为列 `skipData` 的键，值优先取所点行同名字段，行里没有的沿用当前查询条件（分部跳转带 `account`、`sub_data_display`、`time_selsect` 与 `workType=branch`）。
+
+## 2026-11-24 补充：派件账单用到的融辉明细字段
+
+- 在 ECS 用大祥S站账号已保存的登录态只读核实（10-24～11-23 结算日期，1152 行）：“明细查询”表格列含 `BILL_CODE`（运单编号）、`BALANCE_TYPE`（结算类型）、`BALANCE_CUR_MONEY_TEXT`（金额，行数据另有同值的 `BALANCE_CUR_MONEY`）、`BALANCE_DATE`（结算日期）、`FINANCE_DATE`、`SETTLEMENT_WEIGHT`（结算重量）、`PIECE_NUMBER`（件数）、`BL_DEL`（删除状态“否/是”）、`SIGN_DISPATCH_MAN`（签收派件人，大祥S站全为网点管理员，平台里没有司机信息）。
+- 每单最多一笔“付派送费”；同单还可能有付回单服务费、付到付款手续费、派到付款（负数，代收到付款转给融辉）、付上楼费收入、付派送费折让等。系统费、大货服务基金、充值、财务服务费等行没有运单号。结算日期比每日到货表日期晚 0–6 天。
+- 派件账单的取数实现见 `../agent/tms_runtime/platform_prepay_bills.py` 的 `ronghui_settlement_rows`；口径见 `../docs/finance_module.md`。

@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
 from shared.finance.db import fetchone, is_duplicate_key, json_text, request_sha256
+from shared.finance.delivery_bill_repository import DeliveryBillsMixin
 from shared.finance.errors import FinanceError
 from shared.finance.gl.accounts import AccountsMixin
 from shared.finance.gl.balances import ReportsMixin
@@ -35,7 +36,7 @@ ConnectionFactory = Callable[[], Any]
 class FinanceRepository(
     SettingsMixin, AccountsMixin, VouchersMixin, PostingMixin, ReportsMixin, PartiesMixin, PartyLedgerMixin,
     WaybillPostingMixin, LinePostingMixin, SourcesMixin, BatchIntakeMixin, StatementsMixin, PeriodCloseMixin,
-    ReviewAdviceMixin,
+    ReviewAdviceMixin, DeliveryBillsMixin,
 ):
     """General-ledger persistence; the only code that writes ``finance_*`` tables."""
 

@@ -4,7 +4,7 @@ type: 模块文档
 tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, 凭证, 科目余额表, 明细账, Decimal, 重建]
 related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md, ../../docs/finance_connector_contract.md]
 status: active
-updated: 2026-11-18
+updated: 2026-11-24
 ---
 
 # 财务模块（复式记账总账）
@@ -24,7 +24,7 @@ updated: 2026-11-18
 
 ## 平台预付款对账单（融辉 / 韵达，2026-11-18）
 
-侧栏“财务模块”展开为三个子菜单：财务账簿（`/modules/finance`，上述总账页签）、融辉对账单（`/modules/finance/ronghui-bills`）、韵达对账单（`/modules/finance/yunda-bills`）。两张对账单只做平台账单的原样读取，供对账结账核对，不入库、不记账、不展示旧数据：
+侧栏“财务模块”展开为子菜单（2026-11-24 起还有“派件账单”，见下节）：财务账簿（`/modules/finance`，上述总账页签）、融辉对账单（`/modules/finance/ronghui-bills`）、韵达对账单（`/modules/finance/yunda-bills`）。两张对账单只做平台账单的原样读取，供对账结账核对，不入库、不记账、不展示旧数据：
 
 - 取数链路：页面“查询” → Console `GET /finance/platform-bills/{ronghui|yunda}`（`console/services/finance_platform_bills.py`，需 `finance:view`）→ Agent 只读业务接口 `platform-prepay-bills`（`agent/agent/tms_runtime/platform_prepay_bills.py`，`business_permission` 为 `finance:view`）→ 用业务账号已保存的登录态直连平台。失败按平台原因显示（未登录、平台拒绝、接口不可达、页面或格式已变化），不回退旧数据。
 - 取数账号与边界只在 `shared/finance/platform_bills.py`：融辉固定三个网点账号（大祥站、大祥S站、自提部），每个账号一份独立账单；韵达用一级网点账号，分部（二级网点）在同一账号下查询。一次最多 31 天，分页 100/200/500。
@@ -32,6 +32,19 @@ updated: 2026-11-18
 - 韵达：快运预付款系统 → 交易明细及汇总查询（交易汇总查询 → 按天 → 交易明细，下钻参数按平台列的跳转定义取自所点行）；分部预付款 → 账户余额(二级网点)，点账号进入该分部的交易汇总，再可下钻。下钻参数名只接受已核实的条件字段，未知参数明确停止。
 - 金额与字段原样返回（小数保留平台原文），平台合计行（融辉 totalInfo、韵达收入/支出/收支差）原样显示；页面可导出当前表格 CSV。对账、结账规则后续再做。
 - 接口核实记录见 `../tms_docs/prepayment_bills_capture.md`；回归见 `../tests/test_platform_prepay_bills.py` 与 `../../console/tests/test_finance_platform_bills.py`。
+
+## 派件账单（邵阳大祥S站，2026-11-24）
+
+侧栏“财务模块”第四个子菜单“派件账单”（`/modules/finance/delivery-bills`，在韵达对账单下面）。本期只做账单：列出大祥S站派件单、每单融辉结算给网点的钱，并按规则算每单应付（给司机）的派送费与增值费、人工确认；**不绑定司机、不记总账**（下一期在已确认记录上做按司机结算与入账）。用户 2026-11-24 定的口径：
+
+- 账单行＝每日到货表（到货统计生效运行 `arrival_stat_runs/items`，目的站文字为“邵阳大祥S站”，不是派件预报）里第一次出现在所选日期范围的单，且融辉结算明细（大祥S站账号 `ronghui_daxiang_s`）里已有“付派送费”记录（只算融辉已结算的单）。派送、自提、预约自提全部都算。到货表日期＝该单第一次出现在每日到货表的日期。一次最多 31 天。
+- 融辉结算金额＝该单以“付”开头的结算类型合计（派送费、折让、回单服务费、到付/代收手续费、上楼/卸货/清点等增值收入），不计派到付款与罚款；设置里可加例外（超级管理员）。融辉结算日期查询范围＝到货表起始日到“结束日＋N 天”（默认 10，实测结算比到货晚 0–6 天），按 31 天分段读全。
+- 派送费＝每票起步价＋超过首重部分 × 续重单价（可选不足 1 公斤按 1 公斤），按融辉“付派送费”那行的结算重量；规则由超级管理员在页面设置，按到货表日期取“执行日期不晚于该日”的最新在用版本，同一执行日期只能有一版在用（库里唯一约束），已被确认单用过的版本不能作废。表单生成 `shared/fee_engine` 规则内容，与业务手册同一引擎计算。
+- 增值费全部人工：选业务手册已生效规则、填条件，引擎算金额（实时读一次运单详情取开单日期与重量，按开单日期选版本；同组取大；需协商/需人工判断/实报实销由人填金额与说明），保存整组；确认后要改须先撤销确认。
+- 查询：Console `GET /finance/delivery-bills` → Agent `GET /internal/v1/admin/finance/delivery-bills`（`agent/agent/delivery_bills_api.py`）：读设置 → 经普通业务接口 `delivery-bill-settlements`（登记账号使用）实时读融辉结算明细 → 读每日到货表（`tools/daily_sign_store.list_station_arrivals`，组合根注入）→ `shared/finance/delivery_bills.build_bill` 组账单，结果在 Agent 进程内保留 30 分钟快照。确认、保存增值费、撤销都引用快照里服务端组成的行与指纹（不信任浏览器传来的金额），写入后用同一份融辉数据和最新库内状态重组。失败按原因显示，不给旧数据。账单另报三类核对：融辉未结算（不进账单）、融辉已结算但每日到货表没有、到货表缺统计的日期。
+- 存储（迁移 093，`finance_db`）：`finance_delivery_fee_rules`（派送费规则版本）、`finance_delivery_bill_items`（每单增值费与确认；确认时记下融辉金额与分项、结算重量、派送费与规则版本、计算过程、应付合计）、`finance_delivery_bill_fee_lines`（增值费明细，带业务手册规则版本 `rule_id`）、`finance_delivery_bill_settings`（单行设置）。读写只在 `shared/finance/delivery_bill_repository.py`（`FinanceRepository` 的 mixin，`_write` 幂等、确认时 `FOR UPDATE` 锁单并在库里重选派送费规则）。
+- 权限：财务可见即可查看；可操作才能确认、撤销、改增值费；派送费规则与设置只允许超级管理员（Console 与 Agent 各查一次）。
+- 回归：`../../tests/test_finance_delivery_bills.py`、`../../tests/test_finance_delivery_bills_mysql.py`、`../../tests/test_delivery_bills_api.py`、`../../console/tests/test_finance_delivery_bills.py`、`../../console/tests/test_finance_delivery_bills_browser.py`。融辉字段核实见 `../tms_docs/prepayment_bills_capture.md`。
 
 ## 目标架构
 

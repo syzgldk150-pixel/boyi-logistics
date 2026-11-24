@@ -57,7 +57,9 @@ def console_permission(method: str, path: str) -> str:
     # Ledger structure, the start month and cancelling posted vouchers.
     if not read and (_under(path, "/finance/settings") or _under(path, "/finance/accounts") or _under(path, "/finance/doc-rules")
                      or path == "/finance/sources" or (path.startswith("/finance/sources/") and not path.endswith("/files"))
-                     or (path.startswith("/finance/vouchers/") and path.endswith("/cancel"))):
+                     or (path.startswith("/finance/vouchers/") and path.endswith("/cancel"))
+                     or path in {"/finance/delivery-bills/rules", "/finance/delivery-bills/settings"}
+                     or (path.startswith("/finance/delivery-bills/rules/") and path.endswith("/retire"))):
         return SUPER_ADMIN
     if _under(path, "/finance") or _under(path, "/modules/finance") or path == "/module-data-sources/finance":
         return _level("finance", read)
@@ -106,7 +108,7 @@ def handbook_permission(path: str, read: bool) -> str:
 def business_permission(operation: str) -> str:
     if operation.startswith("customer-service-") or operation == "receipts-audit":
         return "customer_service:view" if operation in _READ_OPERATIONS else "customer_service:operate"
-    if operation == "platform-prepay-bills":  # 财务对账单：平台预付款账单只读
+    if operation in {"platform-prepay-bills", "delivery-bill-settlements"}:  # 财务对账单/派件账单：平台账单只读
         return "finance:view"
     if operation == "platform-waybill-print-log":  # 原站打印次数，与寄件运单写入同级
         return "waybill.write:operate"

@@ -4,10 +4,12 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-20
+updated: 2026-11-24
 ---
 
 # 数据库迁移
+
+`093_finance_delivery_bills.sql`（财务 · 派件账单，2026-11-24）在 `finance_db` 新建 4 张表并登记到 `LATER_FINANCE_TABLES`（重建运行库视图）：`finance_delivery_fee_rules`（派送费规则版本：起步价、首重、续重单价、取整、执行日期、引擎内容 JSON、状态 active/retired；生成列 `active_from` 唯一，保证同一执行日期只有一版在用）、`finance_delivery_bill_items`（每单增值费与确认，确认时必须带派送费、规则、应付与融辉金额）、`finance_delivery_bill_fee_lines`（增值费明细，随单级联删除）、`finance_delivery_bill_settings`（单行设置，`INSERT IGNORE` 写入默认往后多查 10 天）。只有建表与默认行，可重复执行；新旧代码兼容，可只回退源码。读写只在 `shared/finance/delivery_bill_repository.py`。发布前核验 Console 与 Agent 账号对这 4 张表及视图的读写权限（写入走 Agent）。
 
 `090_agent_fee_rule_blocks.sql`（内部报价 P1）给 `agent_fee_rule_versions` 加 `fee_name`（每个版本带费用名称，新建费用不再登记在代码里），规则内容改为积木格式（`shared/fee_engine.py`）：把从未生效的旧格式（上楼费专用结构）草稿/待审版本作废并各写一条 RETIRE 记录，以固定编号写入 V6.1 第一批 11 种费用的积木草稿（`INSERT IGNORE`，内容与 `tests/fixtures/fee_rules/v61_first_batch.json` 一致，待核对后由超级管理员带执行日期生效）；新建 `agent_fee_quotes`（每次报价的人、入口、开单日期、费用、参数、结果、合计）。读写只在 `shared/fee_rule_repository.py`。若生产已有生效的旧格式版本，迁移不改它，但它不再能计算，需按新格式重建。
 

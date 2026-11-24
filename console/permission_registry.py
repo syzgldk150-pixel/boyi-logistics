@@ -74,6 +74,7 @@ CONSOLE_PERMISSION_REGISTRATIONS = register_console_permissions(
         ConsolePermissionRegistration("console.menu.finance.view", "finance", "查看财务模块", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.finance_ronghui_bills.view", "finance_ronghui_bills", "查看融辉对账单", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.finance_yunda_bills.view", "finance_yunda_bills", "查看韵达对账单", _ALL_ADMIN_ROLES),
+        ConsolePermissionRegistration("console.menu.finance_delivery_bills.view", "finance_delivery_bills", "查看派件账单", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.dispatch.view", "dispatch", "查看货拉拉调度", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.line_haul.view", "line_haul", "查看专线分流", _ALL_ADMIN_ROLES),
         ConsolePermissionRegistration("console.menu.automations.view", "automations", "查看自动化", _ALL_ADMIN_ROLES),

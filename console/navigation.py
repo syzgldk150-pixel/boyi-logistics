@@ -100,6 +100,7 @@ CONSOLE_MENU_REGISTRATIONS = register_console_menus(
         ConsoleMenuRegistration("finance", "/modules/finance", "财务账簿", "财务", "dollar-sign", "primary", group="finance"),
         ConsoleMenuRegistration("finance_ronghui_bills", "/modules/finance/ronghui-bills", "融辉对账单", "融辉账单", "file-text", "primary", group="finance"),
         ConsoleMenuRegistration("finance_yunda_bills", "/modules/finance/yunda-bills", "韵达对账单", "韵达账单", "file-text", "primary", group="finance"),
+        ConsoleMenuRegistration("finance_delivery_bills", "/modules/finance/delivery-bills", "派件账单", "派件账单", "truck", "primary", group="finance"),
         ConsoleMenuRegistration("dispatch", "/dispatch", "货拉拉调度", "调度", "map-pin", "primary"),
         ConsoleMenuRegistration("line_haul", "/line-haul-contacts", "专线分流", "专线", "map", "primary"),
         ConsoleMenuRegistration("automations", "/automations", "自动化", "自动化", "sliders", "primary"),

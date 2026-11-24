@@ -133,7 +133,7 @@ def waybill_facts(tracking_number: str, payload: Any) -> WaybillFacts:
     actual = _decimal(row.get("actual_weight"))
     return WaybillFacts(tracking_number, billing_date, weight, pieces, actual if actual and actual > 0 else None,
                         str(row.get("upstairs_service") or "").strip() in {"1", "true", "True"},
-                        str(row.get("remark") or "").strip())
+                        str(row.get("remarks") or row.get("remark") or "").strip())
 
 
 def piece_rows(facts: WaybillFacts) -> tuple[list[dict[str, Any]], str]:
