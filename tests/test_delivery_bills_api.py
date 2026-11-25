@@ -25,10 +25,10 @@ class FakeFinance:
         self.items: dict[str, dict] = {}
         self.confirmed_rows: list[dict] = []
         self.saved: list[tuple] = []
-        content = parse_rule_form({"effective_from": "2026-11-01", "start_price": "10", "base_weight": "30",
-                                   "extra_price": "0.5", "rounding": "exact"})["content"]
+        segments = [{"from": "0", "first_weight": "30", "first_price": "10", "extra_price": "0.5"}]
+        content = parse_rule_form({"effective_from": "2026-11-01", "segments": segments, "rounding": "exact"})["content"]
         self.rules = [{"id": 5, "effective_from": "2026-11-01", "status": "active", "content": content,
-                       "start_price": "10.0000", "base_weight": "30.0000", "extra_price": "0.5000", "rounding": "exact",
+                       "segments": segments, "rounding": "exact",
                        "revision": 1, "note": None, "created_by": "超管", "created_at": "2026-11-24 10:00:00",
                        "confirmed_count": 0}]
 
@@ -160,11 +160,13 @@ def test_fees_need_prepare_then_compute_and_save(setup):
 def test_super_admin_only_rules_and_failures_are_explained(setup):
     client, _finance, state = setup
     assert client.post(f"{BASE}/rules", json={"request_id": "x", "effective_from": "2026-12-01"}).status_code == 500
-    trial = client.post(f"{BASE}/rules/trial", json={"rule": {"start_price": "10", "base_weight": "30", "extra_price": "0.5",
-                                                               "rounding": "ceil_kg"}, "settlement_weight": "30.2"}).json()["data"]
-    assert trial["amount"] == "10.50"
+    segments = [{"from": "0", "first_weight": "1", "first_price": "5", "extra_price": "1"},
+                {"from": "50", "first_weight": "50", "first_price": "30", "extra_price": "0.5"}]
+    trial = client.post(f"{BASE}/rules/trial", json={"rule": {"segments": segments, "rounding": "ceil_kg"},
+                                                      "settlement_weight": "120.2"}).json()["data"]
+    assert trial["amount"] == "65.50"
     rules = client.get(f"{BASE}/rules").json()["data"]["rules"]
-    assert "每票 10 元（含 30 公斤）" in rules[0]["description"]
+    assert rules[0]["description"] == "0 公斤起：首重 30 公斤 10 元，续重每公斤 0.5 元；按实际重量"
     expired = client.post(f"{BASE}/revoke", json={"request_id": "x", "snapshot_id": "nope", "tracking_number": "R001",
                                                   "expected_revision": 1})
     assert expired.status_code == 409 and expired.json()["error"]["code"] == "DELIVERY_SNAPSHOT_EXPIRED"

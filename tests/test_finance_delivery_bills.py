@@ -11,6 +11,7 @@ from shared.finance.delivery_bills import (
     build_bill,
     date_chunks,
     delivery_fee,
+    describe_rule,
     parse_fee_choice,
     parse_rule_form,
     parse_settings,
@@ -25,11 +26,19 @@ from shared.finance.errors import FinanceValidationError
 D = dt.date
 
 
-def rule(effective="2026-11-01", start="10", base="30", extra="0.5", rounding="exact", rule_id=1):
-    parsed = parse_rule_form({"effective_from": effective, "start_price": start, "base_weight": base,
-                              "extra_price": extra, "rounding": rounding})
+def seg(start, first_weight, first_price, extra_price):
+    return {"from": start, "first_weight": first_weight, "first_price": first_price, "extra_price": extra_price}
+
+
+def rule(effective="2026-11-01", start="10", base="30", extra="0.5", rounding="exact", rule_id=1, segments=None):
+    segments = segments or [seg("0", base, start, extra)]
+    parsed = parse_rule_form({"effective_from": effective, "segments": segments, "rounding": rounding})
     return {"id": rule_id, "effective_from": effective, "status": "active", "content": parsed["content"],
-            "start_price": start, "base_weight": base, "extra_price": extra, "rounding": rounding}
+            "segments": segments, "rounding": rounding}
+
+
+# 用户 2026-11-25 给的形状（数字虚构）：每段有自己的首重价和续重单价，正好等于下一段起点按下一段算。
+SEGMENTS = [seg("0", "1", "5", "1"), seg("50", "50", "30", "0.5"), seg("200", "200", "100", "0.3")]
 
 
 def settle(code, kind, amount, date="2026-11-05", weight="45.5", pieces="3", deleted="否"):
@@ -47,19 +56,40 @@ def test_delivery_fee_start_price_plus_overweight(weight, rounding, expected):
     assert steps[-1] == f"合计 {expected}"
 
 
+@pytest.mark.parametrize(("weight", "expected"), [
+    ("0.5", "5.00"), ("1", "5.00"), ("49.9", "53.90"),  # 第 1 段：5 + 超过 1kg 部分 × 1
+    ("50", "30.00"), ("120", "65.00"), ("199.99", "105.00"),  # 正好 50 按第 2 段：30 + 超过 50kg 部分 × 0.5
+    ("200", "100.00"), ("250", "115.00"),  # 第 3 段不设上限
+])
+def test_delivery_fee_by_weight_segments(weight, expected):
+    amount, steps = delivery_fee(rule(segments=SEGMENTS), Decimal(weight))
+    assert str(amount) == expected
+    assert steps[-1] == f"合计 {expected}" and "这一档" in steps[0]
+
+
+def test_segments_with_whole_kilogram_rounding():
+    amount, _ = delivery_fee(rule(segments=SEGMENTS, rounding="ceil_kg"), Decimal("120.2"))
+    assert str(amount) == "65.50"  # 30 + 71 × 0.5
+
+
+def test_describe_rule_lists_every_segment():
+    text = describe_rule({"segments": SEGMENTS, "rounding": "exact"})
+    assert text.startswith("0–50 公斤（不含）：首重 1 公斤 5 元，续重每公斤 1 元；50–200 公斤（不含）")
+    assert "200 公斤起：首重 200 公斤 100 元，续重每公斤 0.3 元；按实际重量" in text
+
+
 def test_rule_form_rejects_bad_input():
-    with pytest.raises(FinanceValidationError):
-        parse_rule_form({"effective_from": "2026-11-01", "start_price": "-1", "base_weight": "30", "extra_price": "1",
-                         "rounding": "exact"})
-    with pytest.raises(FinanceValidationError):
-        parse_rule_form({"effective_from": "2026-11-01", "start_price": "1", "base_weight": "30", "extra_price": "1",
-                         "rounding": "round"})
-    with pytest.raises(FinanceValidationError):
-        parse_rule_form({"effective_from": "2026/11/01", "start_price": "1", "base_weight": "30", "extra_price": "1",
-                         "rounding": "exact"})
-    with pytest.raises(FinanceValidationError):
-        parse_rule_form({"effective_from": "2026-11-01", "start_price": "1.00001", "base_weight": "30",
-                         "extra_price": "1", "rounding": "exact"})
+    def form(**changes):
+        return {"effective_from": "2026-11-01", "segments": SEGMENTS, "rounding": "exact", **changes}
+
+    for bad in (form(segments=[seg("0", "30", "-1", "1")]), form(rounding="round"), form(effective_from="2026/11/01"),
+                form(segments=[seg("0", "30", "1.00001", "1")]), form(segments=[]),
+                form(segments=[seg("5", "1", "5", "1")]),  # 第 1 段必须从 0 起
+                form(segments=[seg("0", "1", "5", "1"), seg("50", "1", "5", "1"), seg("50", "1", "5", "1")]),
+                form(segments=[seg("0", "1", "5", "1"), {"from": "50", "first_weight": "50"}]),
+                form(start_price="10")):
+        with pytest.raises(FinanceValidationError):
+            parse_rule_form(bad)
 
 
 def test_counted_types_default_to_payments_with_overrides():

@@ -4,10 +4,12 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # 数据库迁移
+
+`094_finance_delivery_fee_segments.sql`（派件账单派送费改分公斤段，2026-11-25）给 `finance_delivery_fee_rules` 加 `segments_json`（每段起点重量、首重、首重价、续重单价，数字为文本），把已有版本（若有）原样换成从 0 公斤起的一段（原 `content_json` 计算结果不变），然后删去 093 的 `start_price`、`base_weight`、`extra_price` 及其检查约束，重建运行库视图。含 `DROP COLUMN`，只执行一次；回退源码前须先按新段表确认没有依赖，旧代码读不到这三列。
 
 `093_finance_delivery_bills.sql`（财务 · 派件账单，2026-11-24）在 `finance_db` 新建 4 张表并登记到 `LATER_FINANCE_TABLES`（重建运行库视图）：`finance_delivery_fee_rules`（派送费规则版本：起步价、首重、续重单价、取整、执行日期、引擎内容 JSON、状态 active/retired；生成列 `active_from` 唯一，保证同一执行日期只有一版在用）、`finance_delivery_bill_items`（每单增值费与确认，确认时必须带派送费、规则、应付与融辉金额）、`finance_delivery_bill_fee_lines`（增值费明细，随单级联删除）、`finance_delivery_bill_settings`（单行设置，`INSERT IGNORE` 写入默认往后多查 10 天）。只有建表与默认行，可重复执行；新旧代码兼容，可只回退源码。读写只在 `shared/finance/delivery_bill_repository.py`。发布前核验 Console 与 Agent 账号对这 4 张表及视图的读写权限（写入走 Agent）。
 

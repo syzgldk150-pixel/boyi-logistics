@@ -5,7 +5,7 @@
 {% block breadcrumb %}派件账单{% endblock %}
 {% block subtitle %}财务模块 · {{ station }}派件：融辉结算给网点的钱与应付派送款{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/finance_platform_bills.css?v=20261120-grid">
-<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261124-db1">{% endblock %}
+<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261125-seg1">{% endblock %}
 
 {% block content %}
 {# 派件账单（2026-11-24）：每日到货表里大祥S站的单 ∩ 融辉结算明细里已有“付派送费”的单。
@@ -61,7 +61,7 @@
     <div data-db-body>
       <div class="pb-empty" data-kind="idle"><b>选择到货表日期后点“查询”</b><span>系统会实时读取融辉结算明细，只列出融辉已结算（有“付派送费”）的单。</span></div>
     </div>
-    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计（派送费、折让、回单服务费、手续费、增值收入），不含派到付款；应付＝派送费（起步价＋超重加价，按融辉结算重量）＋已保存的增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
+    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计（派送费、折让、回单服务费、手续费、增值收入），不含派到付款；应付＝派送费（按融辉结算重量所在公斤段：首重价＋超出首重部分 × 续重单价）＋已保存的增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
     <p class="sr-only" role="status" aria-live="polite" data-db-status></p>
   </section>
 
@@ -83,18 +83,20 @@
     <header class="db-dialog__head"><h2 id="db-rules-title">派送费规则</h2>
       <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
     <div class="db-dialog__body">
-      <p class="db-hint">每票起步价＋超重加价，按融辉结算重量计算；按到货表日期取“执行日期不晚于该日”的最新一版。已有确认单用过的版本不能作废，改价请新增一版执行日期更晚的规则。</p>
+      <p class="db-hint">按融辉结算重量分公斤段，每段有自己的首重价和续重单价：派送费＝该段首重价＋超过该段首重的重量 × 该段续重单价。重量正好等于下一段起点时按下一段算。按到货表日期取“执行日期不晚于该日”的最新一版；已有确认单用过的版本不能作废，改价请新增一版执行日期更晚的规则。</p>
       <div data-db-rules-list></div>
       <form class="db-rule-form" data-db-rule-form novalidate>
         <h3>{{ '新增一版' if is_super_admin else '试算' }}</h3>
         <div class="db-grid">
           {% if is_super_admin %}<label class="pb-field">执行日期 <input type="date" name="effective_from" required></label>{% endif %}
-          <label class="pb-field">起步价（元/票） <input name="start_price" inputmode="decimal" required></label>
-          <label class="pb-field">首重（kg，含在起步价内） <input name="base_weight" inputmode="decimal" required></label>
-          <label class="pb-field">续重单价（元/kg） <input name="extra_price" inputmode="decimal" required></label>
           <label class="pb-field">续重取整 <select name="rounding">{% for key, label in roundings.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
           {% if is_super_admin %}<label class="pb-field db-grid__wide">备注 <input name="note" maxlength="200"></label>{% endif %}
         </div>
+        <table class="pb-table db-mini db-segments" aria-label="公斤段">
+          <thead><tr><th>公斤段（起点含）</th><th>首重（kg）</th><th>首重价（元/票）</th><th>续重单价（元/kg）</th><th></th></tr></thead>
+          <tbody data-db-segments></tbody>
+        </table>
+        <div><button type="button" class="ghost-btn" data-db-segment-add>添加一段</button></div>
         <div class="db-trial">
           <label class="pb-field">试算结算重量（kg） <input name="trial_weight" inputmode="decimal"></label>
           <button type="button" class="ghost-btn" data-db-rule-trial>试算</button>
@@ -131,4 +133,4 @@
 {% endblock %}
 
 {% block scripts %}<script src="/static/handbook_fee_form.js?v=20261119-quote1"></script>
-<script src="/static/finance_delivery_bills.js?v=20261124-db1"></script>{% endblock %}
+<script src="/static/finance_delivery_bills.js?v=20261125-seg1"></script>{% endblock %}

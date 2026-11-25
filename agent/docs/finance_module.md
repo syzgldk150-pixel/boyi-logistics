@@ -4,7 +4,7 @@ type: 模块文档
 tags: [总账, 复式记账, 小企业会计准则, 权责发生制, 连接器, 凭证, 科目余额表, 明细账, Decimal, 重建]
 related: [project_overview.md, common/finance_data_baseline.md, database_migrations.md, ../../docs/finance_connector_contract.md]
 status: active
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # 财务模块（复式记账总账）
@@ -39,10 +39,10 @@ updated: 2026-11-24
 
 - 账单行＝每日到货表（到货统计生效运行 `arrival_stat_runs/items`，目的站文字为“邵阳大祥S站”，不是派件预报）里第一次出现在所选日期范围的单，且融辉结算明细（大祥S站账号 `ronghui_daxiang_s`）里已有“付派送费”记录（只算融辉已结算的单）。派送、自提、预约自提全部都算。到货表日期＝该单第一次出现在每日到货表的日期。一次最多 31 天。
 - 融辉结算金额＝该单以“付”开头的结算类型合计（派送费、折让、回单服务费、到付/代收手续费、上楼/卸货/清点等增值收入），不计派到付款与罚款；设置里可加例外（超级管理员）。融辉结算日期查询范围＝到货表起始日到“结束日＋N 天”（默认 10，实测结算比到货晚 0–6 天），按 31 天分段读全。
-- 派送费＝每票起步价＋超过首重部分 × 续重单价（可选不足 1 公斤按 1 公斤），按融辉“付派送费”那行的结算重量；规则由超级管理员在页面设置，按到货表日期取“执行日期不晚于该日”的最新在用版本，同一执行日期只能有一版在用（库里唯一约束），已被确认单用过的版本不能作废。表单生成 `shared/fee_engine` 规则内容，与业务手册同一引擎计算。
+- 派送费按融辉“付派送费”那行的结算重量分公斤段计算（2026-11-25 用户定）：每段有起点重量（第 1 段从 0 起）、首重（含 X 公斤）、首重价与续重单价，派送费＝所在段首重价＋超过该段首重的重量 × 该段续重单价（可选不足 1 公斤按 1 公斤）；重量正好等于下一段起点时按下一段算，最后一段不设上限。规则由超级管理员在页面用公斤段表设置，按到货表日期取“执行日期不晚于该日”的最新在用版本，同一执行日期只能有一版在用（库里唯一约束），已被确认单用过的版本不能作废。段表生成 `shared/fee_engine` 的“分档”规则内容（起点含、终点不含），与业务手册同一引擎计算。
 - 增值费全部人工：选业务手册已生效规则、填条件，引擎算金额（实时读一次运单详情取开单日期与重量，按开单日期选版本；同组取大；需协商/需人工判断/实报实销由人填金额与说明），保存整组；确认后要改须先撤销确认。
 - 查询：Console `GET /finance/delivery-bills` → Agent `GET /internal/v1/admin/finance/delivery-bills`（`agent/agent/delivery_bills_api.py`）：读设置 → 经普通业务接口 `delivery-bill-settlements`（登记账号使用）实时读融辉结算明细 → 读每日到货表（`tools/daily_sign_store.list_station_arrivals`，组合根注入）→ `shared/finance/delivery_bills.build_bill` 组账单，结果在 Agent 进程内保留 30 分钟快照。确认、保存增值费、撤销都引用快照里服务端组成的行与指纹（不信任浏览器传来的金额），写入后用同一份融辉数据和最新库内状态重组。失败按原因显示，不给旧数据。账单另报三类核对：融辉未结算（不进账单）、融辉已结算但每日到货表没有、到货表缺统计的日期。
-- 存储（迁移 093，`finance_db`）：`finance_delivery_fee_rules`（派送费规则版本）、`finance_delivery_bill_items`（每单增值费与确认；确认时记下融辉金额与分项、结算重量、派送费与规则版本、计算过程、应付合计）、`finance_delivery_bill_fee_lines`（增值费明细，带业务手册规则版本 `rule_id`）、`finance_delivery_bill_settings`（单行设置）。读写只在 `shared/finance/delivery_bill_repository.py`（`FinanceRepository` 的 mixin，`_write` 幂等、确认时 `FOR UPDATE` 锁单并在库里重选派送费规则）。
+- 存储（迁移 093，`finance_db`；迁移 094 把派送费规则改为公斤段表 `segments_json`）：`finance_delivery_fee_rules`（派送费规则版本）、`finance_delivery_bill_items`（每单增值费与确认；确认时记下融辉金额与分项、结算重量、派送费与规则版本、计算过程、应付合计）、`finance_delivery_bill_fee_lines`（增值费明细，带业务手册规则版本 `rule_id`）、`finance_delivery_bill_settings`（单行设置）。读写只在 `shared/finance/delivery_bill_repository.py`（`FinanceRepository` 的 mixin，`_write` 幂等、确认时 `FOR UPDATE` 锁单并在库里重选派送费规则）。
 - 权限：财务可见即可查看；可操作才能确认、撤销、改增值费；派送费规则与设置只允许超级管理员（Console 与 Agent 各查一次）。
 - 回归：`../../tests/test_finance_delivery_bills.py`、`../../tests/test_finance_delivery_bills_mysql.py`、`../../tests/test_delivery_bills_api.py`、`../../console/tests/test_finance_delivery_bills.py`、`../../console/tests/test_finance_delivery_bills_browser.py`。融辉字段核实见 `../tms_docs/prepayment_bills_capture.md`。
 

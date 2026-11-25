@@ -29,7 +29,7 @@ _POSTS = {
     "fees/compute": ("/fees/compute", ("snapshot_id", "tracking_number", "fee_kinds", "values", "manual"), 20, False),
     "fees/save": ("/fees/save", ("snapshot_id", "tracking_number", "fee_kinds", "values", "manual", "expected_revision"),
                   30, True),
-    "rules": ("/rules", ("effective_from", "start_price", "base_weight", "extra_price", "rounding", "note"), 20, True),
+    "rules": ("/rules", ("effective_from", "segments", "rounding", "note"), 20, True),
     "rules/trial": ("/rules/trial", ("rule", "settlement_weight"), 20, False),
     "settings": ("/settings", ("lookahead_days", "include_types", "exclude_types", "expected_revision"), 20, True),
 }

@@ -154,7 +154,7 @@
     els.strip.innerHTML = [
       ["进账单（融辉已结算）", `${summary.settled_count} 单`, `到货表 ${summary.arrival_count} 单`],
       ["融辉结算金额", money(summary.ronghui_total), "融辉付给网点"],
-      ["派送费", money(summary.delivery_total), "起步价＋超重加价"],
+      ["派送费", money(summary.delivery_total), "按公斤段：首重价＋续重"],
       ["增值费", money(summary.value_added_total), "已保存的"],
       ["应付合计", money(summary.payable_total), `已确认 ${summary.confirmed_count} · 待确认 ${summary.pending_count}`],
       ["差额", money(summary.difference_total), "融辉 − 应付"],
@@ -460,10 +460,45 @@
       box.innerHTML = `<p class="db-alert">${esc(error.message)}</p>`;
     }
   }
+  // 公斤段表：第 1 段从 0 起；每段到下一段起点（不含）为止，最后一段不设上限。
+  const segmentBody = $("[data-db-segments]");
+  function segmentRow(segment = {}, index = 0) {
+    const from = index === 0 ? "0" : (segment.from ?? "");
+    return `<tr data-db-segment>
+      <td><span class="db-seg-from"><input data-field="from" inputmode="decimal" value="${esc(from)}" ${index === 0 ? "readonly" : ""} aria-label="第 ${index + 1} 段起点（kg）"><span data-db-seg-to></span></span></td>
+      <td><input data-field="first_weight" inputmode="decimal" value="${esc(segment.first_weight ?? "")}" aria-label="第 ${index + 1} 段首重（kg）"></td>
+      <td><input data-field="first_price" inputmode="decimal" value="${esc(segment.first_price ?? "")}" aria-label="第 ${index + 1} 段首重价"></td>
+      <td><input data-field="extra_price" inputmode="decimal" value="${esc(segment.extra_price ?? "")}" aria-label="第 ${index + 1} 段续重单价"></td>
+      <td>${index === 0 ? "" : '<button type="button" class="pb-link" data-db-segment-remove>删除</button>'}</td></tr>`;
+  }
+  function readSegments() {
+    return $$("[data-db-segment]", segmentBody).map((row) => Object.fromEntries(
+      $$("input[data-field]", row).map((input) => [input.dataset.field, input.value.trim()])));
+  }
+  function drawSegments(segments) {
+    const list = segments.length ? segments : [{}];
+    segmentBody.innerHTML = list.map((segment, index) => segmentRow(segment, index)).join("");
+    labelSegments();
+  }
+  function labelSegments() {
+    const rows = $$("[data-db-segment]", segmentBody);
+    rows.forEach((row, index) => {
+      const next = rows[index + 1]?.querySelector('[data-field="from"]').value.trim();
+      row.querySelector("[data-db-seg-to]").textContent = index + 1 < rows.length ? ` 至 ${next || "?"} kg（不含）` : " kg 起，不设上限";
+    });
+  }
+  segmentBody.addEventListener("input", labelSegments);
+  segmentBody.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-db-segment-remove]")) return;
+    const segments = readSegments();
+    segments.splice($$("[data-db-segment]", segmentBody).indexOf(event.target.closest("[data-db-segment]")), 1);
+    drawSegments(segments);
+  });
+  $("[data-db-segment-add]").addEventListener("click", () => drawSegments([...readSegments(), {}]));
+  drawSegments([]);
   function ruleValues() {
     const data = Object.fromEntries(new FormData(ruleForm).entries());
-    const rule = { start_price: data.start_price?.trim(), base_weight: data.base_weight?.trim(), extra_price: data.extra_price?.trim(), rounding: data.rounding };
-    return { rule, data };
+    return { rule: { segments: readSegments(), rounding: data.rounding }, data };
   }
   function ruleError(message) { const node = $("[data-db-rule-error]"); node.hidden = !message; node.textContent = message || ""; }
   $("[data-db-open-rules]").addEventListener("click", () => { ruleError(""); els.rules.showModal(); loadRules(); });
@@ -485,6 +520,7 @@
     try {
       await request("/finance/delivery-bills/rules", { method: "POST", write: true, body: { ...rule, effective_from: data.effective_from, note: data.note?.trim() || null } });
       ruleForm.reset();
+      drawSegments([]);
       await loadRules();
       say("派送费规则已保存，请重新查询账单。");
     } catch (error) { ruleError(error.message); }

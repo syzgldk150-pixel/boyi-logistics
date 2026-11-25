@@ -16,8 +16,8 @@ SHOTS = os.environ.get("HANDBOOK_SCREENSHOT_DIR")
 
 
 def _bill(items=None):
-    content = parse_rule_form({"effective_from": "2026-11-01", "start_price": "10", "base_weight": "30",
-                               "extra_price": "0.5", "rounding": "exact"})["content"]
+    content = parse_rule_form({"effective_from": "2026-11-01", "rounding": "exact", "segments": [
+        {"from": "0", "first_weight": "30", "first_price": "10", "extra_price": "0.5"}]})["content"]
     rows = [
         {"BILL_CODE": "R001", "BALANCE_TYPE": "付派送费", "BALANCE_CUR_MONEY": "40.5", "BALANCE_DATE": "2026-11-05",
          "SETTLEMENT_WEIGHT": "45.5", "PIECE_NUMBER": "2", "BL_DEL": "否"},
@@ -100,7 +100,7 @@ def _open(browser, posts):
         if parsed.path == "/finance/delivery-bills":
             return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": _bill()}, ensure_ascii=False))
         if parsed.path == "/finance/delivery-bills/rules":
-            rules = [{"id": 5, "effective_from": "2026-11-01", "description": "每票 10 元（含 30 公斤），超过部分每公斤 0.5 元，按实际重量",
+            rules = [{"id": 5, "effective_from": "2026-11-01", "description": "0–50 公斤（不含）：首重 1 公斤 5 元，续重每公斤 1 元；50 公斤起：首重 50 公斤 30 元，续重每公斤 0.5 元；按实际重量",
                       "status": "active", "confirmed_count": 0, "created_by": "超管", "created_at": "2026-11-24 10:00:00",
                       "revision": 1, "note": None}]
             if route.request.method == "GET":
@@ -116,7 +116,7 @@ def _open(browser, posts):
                                    "bill": _bill({"R001": {"status": "open", "value_added_total": "14.5500", "revision": 1, "lines": [LINE]}})},
                      "confirm": {"results": [{"tracking_number": "R001", "ok": True}, {"tracking_number": "R002", "ok": True}],
                                  "succeeded": 2, "failed": 0, "bill": _bill()},
-                     "rules/trial": {"amount": "10.50", "steps": ["起步价：10", "合计 10.50"]}}.get(action)
+                     "rules/trial": {"amount": "65.50", "steps": ["派送费：结算重量 120.2，落在 ≥ 50 这一档", "合计 65.50"]}}.get(action)
             if reply is None:
                 return route.fulfill(status=404, body="")
             return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": reply}, ensure_ascii=False))
@@ -191,19 +191,35 @@ def test_value_added_fees_are_chosen_filled_computed_and_saved(browser):
         assert errors == []
 
 
-def test_rule_trial(browser):
+def test_rule_segments_editor_and_trial(browser):
     posts = []
     context, page, errors = _open(browser, posts)
     with context:
         page.click("[data-db-open-rules]")
-        page.wait_for_selector("text=每票 10 元")
-        page.fill("[data-db-rule-form] [name=start_price]", "10")
-        page.fill("[data-db-rule-form] [name=base_weight]", "30")
-        page.fill("[data-db-rule-form] [name=extra_price]", "0.5")
+        page.wait_for_selector("text=0–50 公斤")
+        first = "[data-db-segment]:nth-child(1)"
+        assert page.input_value(f"{first} [data-field=from]") == "0"
+        page.fill(f"{first} [data-field=first_weight]", "1")
+        page.fill(f"{first} [data-field=first_price]", "5")
+        page.fill(f"{first} [data-field=extra_price]", "1")
+        page.click("[data-db-segment-add]")
+        second = "[data-db-segment]:nth-child(2)"
+        page.fill(f"{second} [data-field=from]", "50")
+        page.fill(f"{second} [data-field=first_weight]", "50")
+        page.fill(f"{second} [data-field=first_price]", "30")
+        page.fill(f"{second} [data-field=extra_price]", "0.5")
+        assert "至 50 kg（不含）" in page.inner_text(first) and "不设上限" in page.inner_text(second)
+        page.click("[data-db-segment-add]")
+        page.click("[data-db-segment]:nth-child(3) [data-db-segment-remove]")
+        assert page.locator("[data-db-segment]").count() == 2
         page.select_option("[data-db-rule-form] [name=rounding]", "ceil_kg")
-        page.fill("[data-db-rule-form] [name=trial_weight]", "30.2")
+        page.fill("[data-db-rule-form] [name=trial_weight]", "120.2")
         page.click("[data-db-rule-trial]")
-        page.wait_for_selector("text=派送费 10.50 元")
+        page.wait_for_selector("text=派送费 65.50 元")
         action, body, _ = posts[-1]
-        assert action == "rules/trial" and body["rule"]["rounding"] == "ceil_kg" and body["settlement_weight"] == "30.2"
+        assert action == "rules/trial" and body["rule"]["rounding"] == "ceil_kg" and body["settlement_weight"] == "120.2"
+        assert body["rule"]["segments"] == [{"from": "0", "first_weight": "1", "first_price": "5", "extra_price": "1"},
+                                            {"from": "50", "first_weight": "50", "first_price": "30", "extra_price": "0.5"}]
+        if SHOTS:
+            page.locator("[data-db-rules]").screenshot(path=str(Path(SHOTS) / "delivery_rule_segments.png"))
         assert errors == []

@@ -71,3 +71,10 @@
   .db-tools { width: 100%; }
   .db-search { width: 140px; }
 }
+
+/* 公斤段表（派送费规则） */
+.main-content .db-segments tbody td { height: 44px; }
+.db-segments input { width: 100%; min-width: 70px; height: 30px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-body); font-family: var(--font-num); }
+.db-segments input[readonly] { background: var(--bg-subtle); }
+.db-seg-from { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-seg-from input { width: 80px; }

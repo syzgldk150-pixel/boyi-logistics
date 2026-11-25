@@ -41,8 +41,9 @@ def rid() -> str:
 
 
 def add_rule(repo, effective="2026-11-01", start="10"):
-    return repo.create_delivery_rule({"effective_from": effective, "start_price": start, "base_weight": "30",
-                                      "extra_price": "0.5", "rounding": "exact"}, request_id=rid(), actor=ACTOR)
+    return repo.create_delivery_rule({"effective_from": effective, "rounding": "exact", "segments": [
+        {"from": "0", "first_weight": "30", "first_price": start, "extra_price": "0.5"},
+        {"from": "100", "first_weight": "100", "first_price": "60", "extra_price": "0.4"}]}, request_id=rid(), actor=ACTOR)
 
 
 def bill(repo):
@@ -88,13 +89,14 @@ def test_rules_unique_active_date_and_retire(repo):
         add_rule(repo)
     assert taken.value.code == "DELIVERY_RULE_DATE_TAKEN"
     rules = repo.delivery_rules()
-    assert rules[0]["start_price"] == "10.0000" and rules[0]["content"]["schema"] == 1 and rules[0]["confirmed_count"] == 0
+    assert rules[0]["segments"][1] == {"from": "100", "first_weight": "100", "first_price": "60", "extra_price": "0.4"}
+    assert rules[0]["content"]["formula"]["type"] == "tiers" and rules[0]["confirmed_count"] == 0
     repo.retire_delivery_rule(first["id"], {"expected_revision": 1}, request_id=rid(), actor=ACTOR)
     assert repo.delivery_rules()[0]["status"] == "retired"
     add_rule(repo)  # the date is free again once the old version is retired
     with pytest.raises(FinanceValidationError):
-        repo.create_delivery_rule({"effective_from": "2026-11-02", "start_price": "x", "base_weight": "30",
-                                   "extra_price": "1", "rounding": "exact"}, request_id=rid(), actor=ACTOR)
+        repo.create_delivery_rule({"effective_from": "2026-11-02", "rounding": "exact", "segments": [
+            {"from": "0", "first_weight": "30", "first_price": "x", "extra_price": "1"}]}, request_id=rid(), actor=ACTOR)
 
 
 def test_fees_confirm_revoke_round_trip(repo):

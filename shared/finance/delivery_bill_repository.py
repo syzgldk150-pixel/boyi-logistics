@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from shared.finance.db import fetchall, fetchone, json_text
-from shared.finance.delivery_bills import MAX_BATCH, parse_rule_form, parse_settings
+from shared.finance.delivery_bills import MAX_BATCH, parse_rule_form, parse_settings, segments_text
 from shared.finance.errors import FinanceError, FinanceNotFoundError, FinanceValidationError
 from shared.finance.models import FinanceActor, expected_revision, parse_request_id
 from shared.finance.money import quantize_storage
@@ -26,7 +26,7 @@ _ITEM_COLUMNS = (
     " delivery_rule_id, delivery_steps_json, payable_total, confirmed_by, confirmed_at, revision"
 )
 _RULE_COLUMNS = (
-    "id, effective_from, start_price, base_weight, extra_price, rounding, content_json, status, note, created_by,"
+    "id, effective_from, segments_json, rounding, content_json, status, note, created_by,"
     " created_at, retired_by, retired_at, revision"
 )
 
@@ -52,8 +52,7 @@ def _derived(base: str, label: str) -> str:
 
 
 def _rule_view(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {"id": int(row["id"]), "effective_from": _iso(row["effective_from"]), "start_price": _amount(row["start_price"]),
-            "base_weight": _amount(row["base_weight"]), "extra_price": _amount(row["extra_price"]),
+    return {"id": int(row["id"]), "effective_from": _iso(row["effective_from"]), "segments": _load(row["segments_json"]),
             "rounding": row["rounding"], "content": _load(row["content_json"]), "status": row["status"],
             "note": row.get("note"), "created_by": row["created_by"], "created_at": _iso(row["created_at"]),
             "retired_by": row.get("retired_by"), "retired_at": _iso(row.get("retired_at")), "revision": int(row["revision"])}
@@ -165,10 +164,10 @@ class DeliveryBillsMixin:
                            (rule["effective_from"],))
             if fetchone(cursor):
                 raise FinanceError("DELIVERY_RULE_DATE_TAKEN", "这个执行日期已有在用的派送费规则，请先作废旧版或换个日期。")
-            cursor.execute("INSERT INTO finance_delivery_fee_rules (effective_from, start_price, base_weight, extra_price,"
-                           " rounding, content_json, note, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                           (rule["effective_from"], rule["start_price"], rule["base_weight"], rule["extra_price"],
-                            rule["rounding"], json_text(rule["content"]), rule["note"], actor.label))
+            cursor.execute("INSERT INTO finance_delivery_fee_rules (effective_from, segments_json, rounding, content_json,"
+                           " note, created_by) VALUES (%s, %s, %s, %s, %s, %s)",
+                           (rule["effective_from"], json_text(segments_text(rule["segments"])), rule["rounding"],
+                            json_text(rule["content"]), rule["note"], actor.label))
             rule_id = int(cursor.lastrowid)
             return {"id": rule_id, "effective_from": rule["effective_from"].isoformat()}
 
