@@ -279,6 +279,30 @@ def test_edit_failure_keeps_values_and_retries_the_same_request(query_page):
     assert not query_page.errors
 
 
+def test_edit_freight_is_optional_like_entry_and_select_text_fits(query_page):
+    page = query_page.page
+    detail = open_detail(page)
+    detail.locator("[data-waybill-edit]").click()
+    form = detail.locator("[data-waybill-edit-form]")
+    form.wait_for(state="visible")
+    freight = form.locator('[name="field_freight_fee"]')
+    assert freight.evaluate("node => node.required") is False
+    assert form.locator('label[for="edit_field_freight_fee"]').inner_text() == "运费"
+    assert form.locator('[name="field_payment_method"]').evaluate("node => node.required")
+    for name in ("field_delivery_method", "field_payment_method"):
+        room = form.locator(f'[name="{name}"]').evaluate(
+            "node => { const s = getComputedStyle(node);"
+            " return node.clientHeight - parseFloat(s.paddingTop) - parseFloat(s.paddingBottom)"
+            " - parseFloat(s.fontSize) * 1.2; }"
+        )
+        assert room >= 0, name
+    freight.fill("")
+    form.get_by_role("button", name="保存修改", exact=True).click()
+    page.wait_for_function("document.querySelector('[data-waybill-detail-dialog] [data-waybill-detail-message]')?.textContent.includes('已修改')")
+    assert query_page.edit_requests[-1][2]["fields"]["field_freight_fee"] == ""
+    assert not query_page.errors
+
+
 def test_history_loads_once_on_demand_and_escapes_saved_changes(query_page):
     page = query_page.page
     detail = open_detail(page)
