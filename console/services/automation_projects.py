@@ -97,6 +97,11 @@ from console.services.automation_catalog_projection import (
 # last safe snapshot (refreshed in the background) for up to 12h; every
 # lifecycle mutation still clears it and execution is decided by the Agent.
 AUTOMATION_CATALOG_FRESH_SECONDS = 60.0
+# A catalog read while any instance is mid-switch (for example a settings save
+# still retiring its old generation for a few seconds) must not pin that
+# transient "synchronizing" state on the page for a full minute.
+AUTOMATION_CATALOG_TRANSITION_FRESH_SECONDS = 5.0
+AUTOMATION_CATALOG_TRANSITION_STATES = frozenset({"PREPARING", "READY_TO_COMMIT", "DRAINING", "DISPOSING"})
 AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS = 12 * 3600.0
 
 
@@ -151,8 +156,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Aut
             if cached is not None and cached[0] > current:
                 return copy.deepcopy(cached[1])
             stale = cached is not None and prefer_stale and (
-                cached[0] - AUTOMATION_CATALOG_FRESH_SECONDS
-                + AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS > current
+                cached[2] + AUTOMATION_CATALOG_SNAPSHOT_MAX_AGE_SECONDS > current
             )
             epoch = getattr(self, "_automation_catalog_cache_epoch", 0)
             inflight = getattr(self, "_automation_catalog_inflight", {})
@@ -167,9 +171,7 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Aut
             # Serve the bounded safe snapshot now; the Agent read (seconds on
             # the cross-region database) refreshes it in the background with
             # the principal captured from this request, never a later one.
-            handler.automation_catalog_snapshot_age_seconds = (
-                current - (cached[0] - AUTOMATION_CATALOG_FRESH_SECONDS)
-            )
+            handler.automation_catalog_snapshot_age_seconds = current - cached[2]
             if owner:
                 snapshot_handler = SimpleNamespace(
                     current_admin_user=copy.deepcopy(user)
@@ -216,7 +218,17 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Aut
                     result = ([], [], [], frozenset(), "插件目录已变化，请刷新后继续。", result[5])
                 elif not result[4]:
                     cache = getattr(self, "_automation_catalog_cache", {})
-                    cache[cache_key] = (time.monotonic() + AUTOMATION_CATALOG_FRESH_SECONDS, copy.deepcopy(result))
+                    stored_at = time.monotonic()
+                    in_transition = any(
+                        str(item.get("reconcile_state") or "").upper() in AUTOMATION_CATALOG_TRANSITION_STATES
+                        for item in result[1] if isinstance(item, dict)
+                    )
+                    fresh_for = (
+                        AUTOMATION_CATALOG_TRANSITION_FRESH_SECONDS
+                        if in_transition
+                        else AUTOMATION_CATALOG_FRESH_SECONDS
+                    )
+                    cache[cache_key] = (stored_at + fresh_for, copy.deepcopy(result), stored_at)
                     self._automation_catalog_cache = cache
             future.set_result(copy.deepcopy(result))
             return result

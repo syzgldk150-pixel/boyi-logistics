@@ -8,9 +8,11 @@ import json
 import logging
 import mimetypes
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, wait as _wait_futures
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -143,6 +145,11 @@ class AutomationPluginManagementService:
         self._release_hold_provider = release_hold_provider or (lambda: False)
         self._resource_catalog_provider = resource_catalog_provider
         self._contribution_registry = contribution_registry
+        # Settings saves return once the new generation is active; one worker
+        # then retires the predecessor and retries dependent consumers.
+        self._finalize_lock = threading.Lock()
+        self._finalize_executor: ThreadPoolExecutor | None = None
+        self._finalize_pending: dict[str, Future] = {}
 
     @staticmethod
     def _require_console_actor(actor: Actor, *, super_admin: bool) -> str:
@@ -162,7 +169,11 @@ class AutomationPluginManagementService:
         return "super_admin" if "super_admin" in roles else "admin"
 
     def _require_mutation_allowed(self) -> None:
-        """Fail closed while deployment owns the plugin control plane."""
+        """Fail closed while deployment owns the plugin control plane.
+
+        A mutation also waits for a deferred settings switch to retire its
+        predecessor first, so it never races that work on the same journal.
+        """
 
         try:
             release_held = self._release_hold_provider()
@@ -176,6 +187,107 @@ class AutomationPluginManagementService:
                 "automation plugin mutations are disabled during release hold",
                 code="PLUGIN_RELEASE_HOLD",
             )
+        self.wait_for_settings_finalization()
+
+    def wait_for_settings_finalization(
+        self,
+        automation_id: str | None = None,
+        *,
+        timeout: float = 60.0,
+    ) -> bool:
+        """Wait for deferred settings finalization; True when none is pending."""
+
+        lock = getattr(self, "_finalize_lock", None)
+        if lock is None:
+            return True  # nothing can be pending without the finalizer state
+        with lock:
+            pending = [
+                future
+                for key, future in self._finalize_pending.items()
+                if automation_id is None or key == automation_id
+            ]
+        if not pending:
+            return True
+        _done, not_done = _wait_futures(pending, timeout=timeout)
+        if not_done:
+            logger.warning(
+                "Plugin settings finalization still running after %.0fs; continuing",
+                timeout,
+            )
+        return not not_done
+
+    def _submit_settings_finalization(self, automation_id: str) -> None:
+        with self._finalize_lock:
+            if self._finalize_executor is None:
+                self._finalize_executor = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="plugin-settings-finalize",
+                )
+            future = self._finalize_executor.submit(
+                self._finalize_settings_switch,
+                automation_id,
+            )
+            self._finalize_pending[automation_id] = future
+
+        def forget(done: Future) -> None:
+            with self._finalize_lock:
+                if self._finalize_pending.get(automation_id) is done:
+                    del self._finalize_pending[automation_id]
+
+        future.add_done_callback(forget)
+
+    def _finalize_settings_switch(self, automation_id: str) -> None:
+        """Retire the predecessor generation, then retry dependent consumers.
+
+        The new generation is already committed and active.  Until the old one
+        is disposed the project stays DRAINING (not runnable), exactly as when
+        an old generation still has live leases; startup or any later
+        reconcile also finishes it if this worker cannot.
+        """
+
+        started = time.monotonic()
+        drained = False
+        for attempt in range(2):
+            try:
+                self._targets.finish_project_transition(automation_id)
+                drained = True
+                break
+            except Exception as exc:  # noqa: BLE001 - durable DRAINING remains recoverable
+                logger.warning(
+                    "Plugin settings finalization failed automation_id=%s attempt=%d code=%s",
+                    automation_id,
+                    attempt + 1,
+                    getattr(exc, "code", type(exc).__name__),
+                )
+                if attempt == 0:
+                    time.sleep(2)
+        drain_finished = time.monotonic()
+        if drained:
+            try:
+                self._retry_v2_consumers_after_provider_change(
+                    automation_id,
+                    skip_without_consumers=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - provider state is durable
+                logger.warning(
+                    "Plugin settings dependency retry failed automation_id=%s code=%s",
+                    automation_id,
+                    getattr(exc, "code", type(exc).__name__),
+                )
+        logger.info(
+            "Plugin settings finalization timings automation_id=%s drain_ms=%d "
+            "dependency_ms=%d drained=%s",
+            automation_id,
+            (drain_finished - started) * 1000,
+            (time.monotonic() - drain_finished) * 1000,
+            drained,
+        )
+
+    def _require_entry(self, automation_id: str) -> PluginCatalogEntry:
+        """One-transaction catalog verification (each RDS round trip is ~35 ms)."""
+
+        single = getattr(self._catalog, "require_in_one_snapshot", None)
+        return single(automation_id) if callable(single) else self._catalog.require(automation_id)
 
     @staticmethod
     def _instance_projection(instance: PluginInstanceRecord) -> dict[str, Any]:
@@ -1307,6 +1419,7 @@ class AutomationPluginManagementService:
         request_id: str,
         expected_project_configuration_version: int,
         actor: Actor,
+        defer_finalization: bool = False,
     ) -> dict[str, Any]:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
@@ -1344,28 +1457,43 @@ class AutomationPluginManagementService:
         # account.
         reconcile_failed = False
         saved = time.monotonic()
+        # Only callers that do not read scheduler readiness from this response
+        # defer retiring the predecessor; the new generation is active first.
+        defer = defer_finalization and callable(
+            getattr(self._targets, "finish_project_transition", None)
+        )
         try:
-            self._targets.reconcile_project(automation_id)
+            if defer:
+                self._targets.reconcile_project(
+                    automation_id,
+                    defer_predecessor_dispose=True,
+                )
+            else:
+                self._targets.reconcile_project(automation_id)
         except Exception:  # noqa: BLE001 - desired config already committed fail-closed
             reconcile_failed = True
         reconciled = time.monotonic()
         projection = self._configuration_projection(record)
         if not reconcile_failed:
-            # A settings save keeps the package and its provided services.
-            self._retry_v2_consumers_after_provider_change(
-                automation_id,
-                skip_without_consumers=True,
-            )
+            if defer:
+                self._submit_settings_finalization(automation_id)
+            else:
+                # A settings save keeps the package and its provided services.
+                self._retry_v2_consumers_after_provider_change(
+                    automation_id,
+                    skip_without_consumers=True,
+                )
         logger.info(
             "Plugin configuration save timings automation_id=%s save_ms=%d "
-            "reconcile_ms=%d dependency_ms=%d reconcile_failed=%s",
+            "reconcile_ms=%d dependency_ms=%d reconcile_failed=%s deferred=%s",
             automation_id,
             (saved - started) * 1000,
             (reconciled - saved) * 1000,
             (time.monotonic() - reconciled) * 1000,
             reconcile_failed,
+            defer and not reconcile_failed,
         )
-        entry = self._catalog.require(automation_id)
+        entry = self._require_entry(automation_id)
         projection.update(
             {
                 "runtime_model": entry.runtime_model,
@@ -1466,9 +1594,14 @@ class AutomationPluginManagementService:
         expected_project_configuration_version: int,
         actor: Actor,
     ) -> dict[str, Any]:
-        """Update plugin-owned settings while preserving Console scheduling."""
+        """Update plugin-owned settings while preserving Console scheduling.
 
-        entry = self._catalog.require(automation_id)
+        The settings page only reports the save, so this path returns once the
+        new generation is active and retires the old one in the background.
+        """
+
+        self.wait_for_settings_finalization()
+        entry = self._require_entry(automation_id)
         enabled_entrypoints = (
             entry.current_enabled_entrypoints
             if entry.project_config_version > 0
@@ -1484,6 +1617,7 @@ class AutomationPluginManagementService:
             request_id=request_id,
             expected_project_configuration_version=expected_project_configuration_version,
             actor=actor,
+            defer_finalization=True,
         )
 
     def plugin_settings_history(self, automation_id: str, *, actor: Actor) -> dict[str, Any]:
@@ -1538,6 +1672,7 @@ class AutomationPluginManagementService:
         changes still switch the scheduler entrypoint through a generation.
         """
 
+        self.wait_for_settings_finalization()
         entry = self._catalog.require(automation_id)
         if expected_schedule_sha256 is not None:
             times_only = self._save_schedule_times_only(

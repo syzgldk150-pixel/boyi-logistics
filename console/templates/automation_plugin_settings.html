@@ -142,7 +142,7 @@
       return;
     }
     if (isSave) saving = true;
-    hostFeedback(isSave ? "正在保存插件设置，通常需要半分钟左右，请不要离开本页…" : "正在连接插件设置…", "info");
+    hostFeedback(isSave ? "正在保存插件设置，通常需要 10 秒左右，请不要离开本页…" : "正在连接插件设置…", "info");
     try {
       const response = await fetch(endpoint, {
         method: "POST",

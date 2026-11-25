@@ -225,6 +225,28 @@ def _coeffect_from_row(row: Mapping[str, Any]) -> RuntimeCoeffectSnapshot:
     )
 
 
+def _effect_plan_row(plan: RuntimeEffectPlan) -> dict[str, Any]:
+    return {
+        "kind": plan.kind.value,
+        "effect_key": plan.effect_key,
+        "payload": dict(plan.payload),
+        "reversible": plan.reversible,
+    }
+
+
+def _effect_ack_row(effect: RuntimeEffectRecord) -> dict[str, Any]:
+    return {
+        "effect_id": effect.effect_id,
+        "automation_id": effect.automation_id,
+        "generation": effect.generation,
+        "sequence": effect.sequence,
+        "kind": effect.kind.value,
+        "reversible": effect.reversible,
+        "effect_key": effect.effect_key,
+        "payload": dict(effect.payload),
+    }
+
+
 def _effect_from_row(row: Mapping[str, Any]) -> RuntimeEffectRecord:
     payload = row.get("evidence_json")
     if not isinstance(payload, Mapping):
@@ -679,16 +701,30 @@ class MySQLAutomationPluginRuntimeAdapter:
         with self._orchestration.unit_of_work() as uow:
             row = uow.automation_plugins.reserve_generation_effect_row(
                 snapshot_to_row(snapshot),
-                plan={
-                    "kind": plan.kind.value,
-                    "effect_key": plan.effect_key,
-                    "payload": dict(plan.payload),
-                    "reversible": plan.reversible,
-                },
+                plan=_effect_plan_row(plan),
                 sequence=sequence,
             )
             uow.commit()
         return _effect_from_row(row)
+
+    def reserve_generation_effects(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+        *,
+        plans: Sequence[tuple[int, RuntimeEffectPlan]],
+    ) -> tuple[RuntimeEffectRecord, ...]:
+        """Reserve every missing PLANNED owner of one generation in one transaction."""
+
+        with self._orchestration.unit_of_work() as uow:
+            rows = uow.automation_plugins.reserve_generation_effect_rows(
+                snapshot_to_row(snapshot),
+                plans=[
+                    {"plan": _effect_plan_row(plan), "sequence": sequence}
+                    for sequence, plan in plans
+                ],
+            )
+            uow.commit()
+        return tuple(_effect_from_row(row) for row in rows)
 
     def mark_generation_effect_applied(
         self,
@@ -696,19 +732,25 @@ class MySQLAutomationPluginRuntimeAdapter:
     ) -> RuntimeEffectRecord:
         with self._orchestration.unit_of_work() as uow:
             row = uow.automation_plugins.mark_generation_effect_applied_row(
-                {
-                    "effect_id": effect.effect_id,
-                    "automation_id": effect.automation_id,
-                    "generation": effect.generation,
-                    "sequence": effect.sequence,
-                    "kind": effect.kind.value,
-                    "reversible": effect.reversible,
-                    "effect_key": effect.effect_key,
-                    "payload": dict(effect.payload),
-                }
+                _effect_ack_row(effect)
             )
             uow.commit()
         return _effect_from_row(row)
+
+    def mark_generation_effects_applied_and_prepared(
+        self,
+        automation_id: str,
+        generation: int,
+        effects: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        """ACK applied effects and mark the generation PREPARED atomically."""
+
+        with self._orchestration.unit_of_work() as uow:
+            uow.automation_plugins.mark_generation_effect_applied_rows(
+                [_effect_ack_row(effect) for effect in effects]
+            )
+            uow.automation_plugins.mark_generation_prepared_row(automation_id, generation)
+            uow.commit()
 
     def mark_generation_prepared(self, automation_id: str, generation: int) -> None:
         self._write("mark_generation_prepared_row", automation_id, generation)

@@ -1716,13 +1716,25 @@ class MySQLRuntimeTargetService:
         self._runtime.retry_disabled_route_preparation(target.snapshot, **identity)
         self._reconciler.resume_project(automation_id)
 
+    def _require_entry(self, automation_id: str) -> Any:
+        """One-transaction catalog verification (each RDS round trip is ~35 ms)."""
+
+        single = getattr(self._catalog, "require_in_one_snapshot", None)
+        return single(automation_id) if callable(single) else self._catalog.require(automation_id)
+
+    def finish_project_transition(self, automation_id: str) -> object:
+        """Retire predecessors left DRAINING by a deferred settings switch."""
+
+        return self._reconciler.drain_predecessors(automation_id)
+
     def reconcile_project(
         self,
         automation_id: str,
         *,
         defer_scheduler_enable: bool = False,
+        defer_predecessor_dispose: bool = False,
     ) -> object:
-        entry = self._catalog.require(automation_id)
+        entry = self._require_entry(automation_id)
         runtime = self._runtime.get_project_runtime(automation_id)
         generations = tuple(self._runtime.list_project_generations(automation_id))
         if not entry.enabled and not entry.configured and runtime is None and not generations:
@@ -1872,10 +1884,12 @@ class MySQLRuntimeTargetService:
                 f"{desired.project_config_sha256}:{desired.policy_contract_sha256}",
             )
         )
+        options = {"dispose_predecessor": False} if defer_predecessor_dispose else {}
         return self._reconciler.reconcile(
             desired,
             expected_committed_generation=(runtime.committed_generation if runtime is not None else None),
             request_id=request_id,
+            **options,
         )
 
     def _reconciliation_automation_ids(self) -> tuple[str, ...]:
@@ -2400,7 +2414,7 @@ def build_production_automation_plugin_runtime(
         service_registry=service_registry,
         contribution_registry=contribution_registry,
         projection_lock=runtime_projection_lock,
-        project_enabled=lambda automation_id: catalog.require(automation_id).enabled,
+        project_enabled=lambda automation_id: catalog.require_in_one_snapshot(automation_id).enabled,
     )
     reconciler = AutomationRuntimeReconciler(
         repository=runtime_repository,

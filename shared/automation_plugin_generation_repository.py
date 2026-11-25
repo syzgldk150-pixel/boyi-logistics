@@ -67,6 +67,83 @@ datetime = _repository.datetime
 uuid = _repository.uuid
 
 
+def _effect_reservation(
+    snapshot: Mapping[str, Any],
+    plan: Any,
+    sequence: Any,
+) -> dict[str, Any]:
+    """Validate one effect plan and derive its deterministic journal identity."""
+
+    if not isinstance(snapshot, Mapping) or not isinstance(plan, Mapping):
+        raise ValueError("runtime effect snapshot and plan must be mappings")
+    automation_id = _required_text(snapshot.get("automation_id"), "automation_id")
+    generation = _positive_int(snapshot.get("generation"), "generation")
+    sequence = _positive_int(sequence, "effect_sequence")
+    kind = str(getattr(plan.get("kind"), "value", plan.get("kind")) or "")
+    if kind not in _EFFECT_KINDS:
+        raise ValueError("runtime effect kind is invalid")
+    if plan.get("reversible") is not True:
+        raise ValueError("only reversible runtime effects may persist")
+    effect_key = _required_text(plan.get("effect_key"), "effect_key")
+    payload = plan.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("runtime effect payload must be a mapping")
+    return {
+        "effect_id": str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"boyi:automation-effect:{automation_id}:{generation}:{sequence}:{effect_key}",
+            )
+        ),
+        "automation_id": automation_id,
+        "generation": generation,
+        "sequence": sequence,
+        "kind": kind,
+        "effect_key": effect_key,
+        "payload": payload,
+        "payload_hash": _json_hash(payload),
+    }
+
+
+def _effect_ack(effect: Any) -> dict[str, Any]:
+    """Validate one apply ACK against the identity it claims to acknowledge."""
+
+    if not isinstance(effect, Mapping):
+        raise ValueError("runtime effect must be a mapping")
+    effect_id = _required_text(effect.get("effect_id"), "effect_id")
+    automation_id = _required_text(effect.get("automation_id"), "automation_id")
+    generation = _positive_int(effect.get("generation"), "generation")
+    sequence = _positive_int(effect.get("sequence"), "effect_sequence")
+    kind = str(getattr(effect.get("kind"), "value", effect.get("kind")) or "")
+    effect_key = _required_text(effect.get("effect_key"), "effect_key")
+    payload = effect.get("payload")
+    if kind not in _EFFECT_KINDS or effect.get("reversible") is not True:
+        raise ValueError("runtime effect identity is invalid")
+    if not isinstance(payload, Mapping):
+        raise ValueError("runtime effect payload must be a mapping")
+    return {
+        "effect_id": effect_id,
+        "automation_id": automation_id,
+        "generation": generation,
+        "sequence": sequence,
+        "kind": kind,
+        "effect_key": effect_key,
+        "payload_hash": _json_hash(payload),
+    }
+
+
+def _effect_row_matches(row: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    return (
+        str(row.get("automation_id") or "") == expected["automation_id"]
+        and int(row.get("generation") or 0) == expected["generation"]
+        and int(row.get("effect_sequence") or 0) == expected["sequence"]
+        and str(row.get("effect_kind") or "") == expected["kind"]
+        and str(row.get("effect_key") or "") == expected["effect_key"]
+        and bool(row.get("reversible"))
+        and str(row.get("evidence_sha256") or "") == expected["payload_hash"]
+    )
+
+
 def _project_policy_matches_generation_commit(
     policy: Mapping[str, Any],
     *,
@@ -683,27 +760,42 @@ class AutomationPluginGenerationRepositoryMixin(
         plan: Mapping[str, Any],
         sequence: int,
     ) -> dict[str, Any]:
-        if not isinstance(snapshot, Mapping) or not isinstance(plan, Mapping):
+        return self.reserve_generation_effect_rows(
+            snapshot,
+            plans=({"plan": plan, "sequence": sequence},),
+        )[0]
+
+    def reserve_generation_effect_rows(
+        self,
+        snapshot: Mapping[str, Any],
+        *,
+        plans: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Reserve PLANNED effects of one preparing generation in one transaction.
+
+        The cross-region database makes every statement a ~35 ms round trip, so
+        one generation lock, one coeffect check, one multi-row insert and one
+        locked read-back replace a transaction per effect.
+        """
+
+        if not isinstance(snapshot, Mapping):
             raise ValueError("runtime effect snapshot and plan must be mappings")
-        automation_id = _required_text(snapshot.get("automation_id"), "automation_id")
-        generation = _positive_int(snapshot.get("generation"), "generation")
-        sequence = _positive_int(sequence, "effect_sequence")
-        kind = str(getattr(plan.get("kind"), "value", plan.get("kind")) or "")
-        if kind not in _EFFECT_KINDS:
-            raise ValueError("runtime effect kind is invalid")
-        if plan.get("reversible") is not True:
-            raise ValueError("only reversible runtime effects may persist")
-        effect_key = _required_text(plan.get("effect_key"), "effect_key")
-        payload = plan.get("payload")
-        if not isinstance(payload, Mapping):
-            raise ValueError("runtime effect payload must be a mapping")
-        payload_hash = _json_hash(payload)
-        effect_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"boyi:automation-effect:{automation_id}:{generation}:{sequence}:{effect_key}",
+        reservations = [
+            _effect_reservation(
+                snapshot,
+                item.get("plan") if isinstance(item, Mapping) else None,
+                item.get("sequence") if isinstance(item, Mapping) else None,
             )
-        )
+            for item in plans
+        ]
+        if not reservations:
+            return []
+        if len({item["effect_id"] for item in reservations}) != len(reservations) or len(
+            {item["sequence"] for item in reservations}
+        ) != len(reservations):
+            raise ValueError("runtime effect reservations must be distinct")
+        automation_id = reservations[0]["automation_id"]
+        generation = reservations[0]["generation"]
         with self.cursor() as cursor:
             cursor.execute(
                 """
@@ -732,132 +824,138 @@ class AutomationPluginGenerationRepositoryMixin(
                 raise ConcurrentUpdateError(
                     "runtime effects cannot apply while coeffects are unavailable"
                 )
-            cursor.execute(
+            # Constants are parameters too, so PyMySQL sends one multi-row INSERT.
+            cursor.executemany(
                 """
                 INSERT INTO automation_project_generation_effects (
                     effect_id, automation_id, generation, effect_kind,
                     effect_key, effect_sequence, reversible, state,
                     evidence_json, evidence_sha256, record_version, applied_at
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, TRUE, 'PLANNED',
-                    %s, %s, 1, NULL
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s
                 )
                 ON DUPLICATE KEY UPDATE effect_id=effect_id
                 """,
-                (
-                    effect_id,
-                    automation_id,
-                    generation,
-                    kind,
-                    effect_key,
-                    sequence,
-                    _json_param(payload, {}),
-                    payload_hash,
-                ),
+                [
+                    (
+                        item["effect_id"],
+                        automation_id,
+                        generation,
+                        item["kind"],
+                        item["effect_key"],
+                        item["sequence"],
+                        True,
+                        "PLANNED",
+                        _json_param(item["payload"], {}),
+                        item["payload_hash"],
+                        1,
+                        None,
+                    )
+                    for item in reservations
+                ],
             )
-            cursor.execute(
-                """
-                SELECT * FROM automation_project_generation_effects
-                WHERE effect_id=%s FOR UPDATE
-                """,
-                (effect_id,),
+            persisted = self._locked_effect_rows(
+                cursor,
+                [item["effect_id"] for item in reservations],
             )
-            persisted = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                self._EFFECT_JSON_FIELDS,
-            )
-        if persisted is None:
-            raise OrchestrationPersistenceError("runtime effect did not persist")
-        if (
-            str(persisted.get("automation_id") or "") != automation_id
-            or int(persisted.get("generation") or -1) != generation
-            or int(persisted.get("effect_sequence") or -1) != sequence
-            or str(persisted.get("effect_kind") or "") != kind
-            or str(persisted.get("effect_key") or "") != effect_key
-            or str(persisted.get("state") or "") not in {"PLANNED", "APPLIED"}
-            or not bool(persisted.get("reversible"))
-            or str(persisted.get("evidence_sha256") or "") != payload_hash
-        ):
-            raise IdempotencyConflict(
-                "runtime effect identity was reused with a different plan"
-            )
-        return persisted
+        results: list[dict[str, Any]] = []
+        for item in reservations:
+            row = persisted.get(item["effect_id"])
+            if row is None:
+                raise OrchestrationPersistenceError("runtime effect did not persist")
+            if (
+                not _effect_row_matches(row, item)
+                or str(row.get("state") or "") not in {"PLANNED", "APPLIED"}
+            ):
+                raise IdempotencyConflict(
+                    "runtime effect identity was reused with a different plan"
+                )
+            results.append(row)
+        return results
 
     def mark_generation_effect_applied_row(
         self,
         effect: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if not isinstance(effect, Mapping):
-            raise ValueError("runtime effect must be a mapping")
-        effect_id = _required_text(effect.get("effect_id"), "effect_id")
-        automation_id = _required_text(effect.get("automation_id"), "automation_id")
-        generation = _positive_int(effect.get("generation"), "generation")
-        sequence = _positive_int(effect.get("sequence"), "effect_sequence")
-        kind = str(getattr(effect.get("kind"), "value", effect.get("kind")) or "")
-        effect_key = _required_text(effect.get("effect_key"), "effect_key")
-        payload = effect.get("payload")
-        if kind not in _EFFECT_KINDS or effect.get("reversible") is not True:
-            raise ValueError("runtime effect identity is invalid")
-        if not isinstance(payload, Mapping):
-            raise ValueError("runtime effect payload must be a mapping")
-        payload_hash = _json_hash(payload)
+        return self.mark_generation_effect_applied_rows((effect,))[0]
+
+    def mark_generation_effect_applied_rows(
+        self,
+        effects: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """ACK several reserved effects of one generation in one statement set."""
+
+        acks = [_effect_ack(effect) for effect in effects]
+        if not acks:
+            return []
+        if len({item["effect_id"] for item in acks}) != len(acks):
+            raise ValueError("runtime effect ACKs must be distinct")
+        effect_ids = [item["effect_id"] for item in acks]
         with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT * FROM automation_project_generation_effects
-                WHERE effect_id=%s FOR UPDATE
-                """,
-                (effect_id,),
-            )
-            persisted = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                self._EFFECT_JSON_FIELDS,
-            )
-            if persisted is None:
-                raise OrchestrationPersistenceError(
-                    "reserved runtime effect does not exist"
+            persisted = self._locked_effect_rows(cursor, effect_ids)
+            planned: list[str] = []
+            for item in acks:
+                row = persisted.get(item["effect_id"])
+                if row is None:
+                    raise OrchestrationPersistenceError(
+                        "reserved runtime effect does not exist"
+                    )
+                if not _effect_row_matches(row, item):
+                    raise IdempotencyConflict(
+                        "runtime effect apply ACK does not match its reserved plan"
+                    )
+                state = str(row.get("state") or "")
+                if state == "APPLIED":
+                    continue
+                if state != "PLANNED":
+                    raise ConcurrentUpdateError(
+                        "runtime effect is not waiting for an apply ACK"
+                    )
+                planned.append(item["effect_id"])
+            if planned:
+                placeholders = ", ".join(["%s"] * len(planned))
+                cursor.execute(
+                    f"""
+                    UPDATE automation_project_generation_effects
+                    SET state='APPLIED', applied_at=NOW(6),
+                        record_version=record_version+1, updated_at=NOW(6)
+                    WHERE effect_id IN ({placeholders}) AND state='PLANNED'
+                    """,
+                    tuple(planned),
                 )
-            if (
-                str(persisted.get("automation_id") or "") != automation_id
-                or int(persisted.get("generation") or 0) != generation
-                or int(persisted.get("effect_sequence") or 0) != sequence
-                or str(persisted.get("effect_kind") or "") != kind
-                or str(persisted.get("effect_key") or "") != effect_key
-                or not bool(persisted.get("reversible"))
-                or str(persisted.get("evidence_sha256") or "") != payload_hash
-            ):
-                raise IdempotencyConflict(
-                    "runtime effect apply ACK does not match its reserved plan"
-                )
-            state = str(persisted.get("state") or "")
-            if state == "APPLIED":
-                return persisted
-            if state != "PLANNED":
-                raise ConcurrentUpdateError(
-                    "runtime effect is not waiting for an apply ACK"
-                )
-            cursor.execute(
-                """
-                UPDATE automation_project_generation_effects
-                SET state='APPLIED', applied_at=NOW(6),
-                    record_version=record_version+1, updated_at=NOW(6)
-                WHERE effect_id=%s AND state='PLANNED'
-                """,
-                (effect_id,),
-            )
-            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                raise ConcurrentUpdateError("runtime effect apply ACK changed")
-            cursor.execute(
-                "SELECT * FROM automation_project_generation_effects WHERE effect_id=%s",
-                (effect_id,),
-            )
-            result = _decode_row(
-                _row_dict(cursor, cursor.fetchone()),
-                self._EFFECT_JSON_FIELDS,
-            )
-        if result is None:
-            raise OrchestrationPersistenceError("runtime effect disappeared")
-        return result
+                if int(getattr(cursor, "rowcount", 0) or 0) != len(planned):
+                    raise ConcurrentUpdateError("runtime effect apply ACK changed")
+                persisted = self._locked_effect_rows(cursor, effect_ids, lock=False)
+        results: list[dict[str, Any]] = []
+        for effect_id in effect_ids:
+            row = persisted.get(effect_id)
+            if row is None:
+                raise OrchestrationPersistenceError("runtime effect disappeared")
+            results.append(row)
+        return results
+
+    def _locked_effect_rows(
+        self,
+        cursor: Any,
+        effect_ids: Sequence[str],
+        *,
+        lock: bool = True,
+    ) -> dict[str, dict[str, Any]]:
+        placeholders = ", ".join(["%s"] * len(effect_ids))
+        cursor.execute(
+            f"""
+            SELECT * FROM automation_project_generation_effects
+            WHERE effect_id IN ({placeholders}){" FOR UPDATE" if lock else ""}
+            """,
+            tuple(effect_ids),
+        )
+        rows: dict[str, dict[str, Any]] = {}
+        for raw in _rows(cursor):
+            row = _decode_row(raw, self._EFFECT_JSON_FIELDS)
+            if row is not None:
+                rows[str(row.get("effect_id") or "")] = row
+        return rows
 
     def mark_generation_prepared_row(
         self,

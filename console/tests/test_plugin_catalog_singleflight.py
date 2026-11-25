@@ -155,3 +155,34 @@ def test_without_snapshot_preference_and_after_window_reads_synchronously(monkey
     assert service._load_automation_plugin_catalog(
         actor, module="automation", summary=True, prefer_stale=True) == result("read-3")
     assert len(calls) == 3
+
+
+def test_catalog_with_a_switching_instance_is_cached_only_briefly(monkeypatch):
+    from console.services import automation_projects
+
+    clock = [1000.0]
+    monkeypatch.setattr(automation_projects.time, "monotonic", lambda: clock[0])
+    states = ["DRAINING", "STABLE"]
+    calls = []
+
+    def read(handler, **scope):
+        calls.append(scope)
+        state = states[min(len(calls), len(states)) - 1]
+        return ([], [{"automation_id": "a", "reconcile_state": state}], [], frozenset(), "", True)
+
+    service = make_service(read)
+    actor = SimpleNamespace(current_admin_user={"id": "one", "role": "super_admin"})
+    load = lambda: service._load_automation_plugin_catalog(actor, module="automation", summary=True)  # noqa: E731
+
+    assert load()[1][0]["reconcile_state"] == "DRAINING"
+    clock[0] += automation_projects.AUTOMATION_CATALOG_TRANSITION_FRESH_SECONDS - 1
+    load()
+    assert len(calls) == 1
+    # A transient "synchronizing" snapshot expires within seconds, not a minute.
+    clock[0] += 2
+    assert load()[1][0]["reconcile_state"] == "STABLE"
+    assert len(calls) == 2
+    # A settled catalog keeps the normal freshness window.
+    clock[0] += automation_projects.AUTOMATION_CATALOG_FRESH_SECONDS - 1
+    load()
+    assert len(calls) == 2

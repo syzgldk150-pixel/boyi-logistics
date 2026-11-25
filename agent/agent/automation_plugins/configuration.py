@@ -222,7 +222,9 @@ class AutomationProjectConfigurationService:
             raise PluginConflictError("expected_config_version must be a non-negative integer")
         if not isinstance(config, Mapping):
             raise PluginConflictError("project config must be an object")
-        entry = self._catalog.require(automation_id)
+        # One transaction for the whole entry: each RDS round trip is ~35 ms.
+        single = getattr(self._catalog, "require_in_one_snapshot", None)
+        entry = single(automation_id) if callable(single) else self._catalog.require(automation_id)
         submitted_config = copy.deepcopy(dict(config))
         code_owned_fields = set(
             code_owned_config_fields(

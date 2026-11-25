@@ -173,7 +173,7 @@ class ManagementFixture:
         self.driver = ProductionRuntimeEffectDriver(
             broker_handler_keys=handler_keys, service_registry=self.service_registry,
             contribution_registry=self.contribution_registry,
-            project_enabled=lambda automation_id: self.catalog.require(automation_id).enabled,
+            project_enabled=lambda automation_id: self.catalog.require_in_one_snapshot(automation_id).enabled,
         )
         self.reconciler = AutomationRuntimeReconciler(
             repository=self.runtime_repository,

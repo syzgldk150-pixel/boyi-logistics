@@ -638,50 +638,105 @@ class AutomationRuntimeReconciler:
             by_sequence[effect.sequence] = effect
         if set(by_sequence) - set(range(1, len(plans) + 1)):
             raise PluginConflictError("persisted runtime effects exceed the deterministic plan")
-        for sequence, plan in enumerate(plans, start=1):
-            effect = by_sequence.get(sequence)
-            if effect is None:
-                effect = self._repository.reserve_generation_effect(
-                    snapshot,
-                    plan=plan,
-                    sequence=sequence,
-                )
-                self._validate_effect(
-                    effect,
-                    snapshot=snapshot,
-                    plan=plan,
-                    sequence=sequence,
-                    expected_state=RuntimeEffectState.PLANNED,
-                )
-            elif effect.state not in {RuntimeEffectState.PLANNED, RuntimeEffectState.APPLIED}:
+        for sequence, effect in by_sequence.items():
+            if effect.state not in {RuntimeEffectState.PLANNED, RuntimeEffectState.APPLIED}:
                 raise PluginConflictError("runtime effect journal is not preparable")
-            else:
-                self._validate_effect(
-                    effect,
-                    snapshot=snapshot,
-                    plan=plan,
-                    sequence=sequence,
-                    expected_state=effect.state,
-                )
-            if effect.state == RuntimeEffectState.PLANNED:
-                applied = self._driver.ensure_applied(
-                    snapshot=snapshot,
-                    plan=plan,
-                    effect=effect,
-                )
-                self._validate_effect(
-                    applied,
-                    snapshot=snapshot,
-                    plan=plan,
-                    sequence=sequence,
-                    expected_state=RuntimeEffectState.APPLIED,
-                )
-                # If this ACK fails, the durable PLANNED owner remains. Startup
-                # reconciliation calls ensure_applied with the same key and can
-                # inspect/reuse the exact infrastructure effect.
-                self._repository.mark_generation_effect_applied(applied)
-        self._repository.mark_generation_prepared(snapshot.automation_id, snapshot.generation)
+            self._validate_effect(
+                effect,
+                snapshot=snapshot,
+                plan=plans[sequence - 1],
+                sequence=sequence,
+                expected_state=effect.state,
+            )
+        missing = tuple(
+            (sequence, plan)
+            for sequence, plan in enumerate(plans, start=1)
+            if sequence not in by_sequence
+        )
+        # Every PLANNED owner is durable before any effect is applied, so a
+        # crash leaves only PLANNED rows that startup re-applies by key.
+        for (sequence, plan), effect in zip(
+            missing,
+            self._reserve_generation_effects(snapshot, missing),
+            strict=True,
+        ):
+            self._validate_effect(
+                effect,
+                snapshot=snapshot,
+                plan=plan,
+                sequence=sequence,
+                expected_state=RuntimeEffectState.PLANNED,
+            )
+            by_sequence[sequence] = effect
+        applied_effects: list[RuntimeEffectRecord] = []
+        for sequence, plan in enumerate(plans, start=1):
+            effect = by_sequence[sequence]
+            if effect.state != RuntimeEffectState.PLANNED:
+                continue
+            applied = self._driver.ensure_applied(
+                snapshot=snapshot,
+                plan=plan,
+                effect=effect,
+            )
+            self._validate_effect(
+                applied,
+                snapshot=snapshot,
+                plan=plan,
+                sequence=sequence,
+                expected_state=RuntimeEffectState.APPLIED,
+            )
+            applied_effects.append(applied)
+        # If the ACK fails, the durable PLANNED owners remain. Startup
+        # reconciliation calls ensure_applied with the same keys and can
+        # inspect/reuse the exact infrastructure effects.
+        self._acknowledge_applied_and_prepare(snapshot, applied_effects)
         return ()
+
+    def _reserve_generation_effects(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+        missing: Sequence[tuple[int, RuntimeEffectPlan]],
+    ) -> tuple[RuntimeEffectRecord, ...]:
+        """Reserve PLANNED owners, in one transaction when the journal allows."""
+
+        if not missing:
+            return ()
+        batch = getattr(self._repository, "reserve_generation_effects", None)
+        if callable(batch):
+            reserved = tuple(batch(snapshot, plans=tuple(missing)))
+            if len(reserved) != len(missing):
+                raise PluginConflictError(
+                    "runtime effect journal reserved a different effect set",
+                    code="RUNTIME_EFFECT_MISMATCH",
+                )
+            return reserved
+        return tuple(
+            self._repository.reserve_generation_effect(
+                snapshot,
+                plan=plan,
+                sequence=sequence,
+            )
+            for sequence, plan in missing
+        )
+
+    def _acknowledge_applied_and_prepare(
+        self,
+        snapshot: RuntimeGenerationSnapshot,
+        applied: Sequence[RuntimeEffectRecord],
+    ) -> None:
+        """ACK applied effects and mark the generation PREPARED together."""
+
+        batch = getattr(
+            self._repository,
+            "mark_generation_effects_applied_and_prepared",
+            None,
+        )
+        if callable(batch):
+            batch(snapshot.automation_id, snapshot.generation, tuple(applied))
+            return
+        for effect in applied:
+            self._repository.mark_generation_effect_applied(effect)
+        self._repository.mark_generation_prepared(snapshot.automation_id, snapshot.generation)
 
     def dispose_generation(self, generation: RuntimeGenerationRecord) -> bool:
         snapshot = generation.snapshot
@@ -785,7 +840,17 @@ class AutomationRuntimeReconciler:
         *,
         expected_committed_generation: int | None,
         request_id: str,
+        dispose_predecessor: bool = True,
     ) -> RuntimeReconcileResult:
+        """Prepare, commit and activate ``snapshot``; then retire the old route.
+
+        With ``dispose_predecessor=False`` the call returns once the new
+        generation is active.  The commit CAS has already moved the predecessor
+        to DRAINING, the same durable state an old generation with live leases
+        keeps; ``drain_predecessors`` (or any later reconcile/startup) finishes
+        it.
+        """
+
         target = self._repository.allocate_target_generation(
             snapshot,
             expected_committed_generation=expected_committed_generation,
@@ -828,7 +893,8 @@ class AutomationRuntimeReconciler:
         draining: list[int] = []
         disposed: list[int] = []
         if (
-            expected_committed_generation is not None
+            dispose_predecessor
+            and expected_committed_generation is not None
             and expected_committed_generation != snapshot.generation
         ):
             old = self._repository.get_generation(
@@ -942,7 +1008,45 @@ class AutomationRuntimeReconciler:
                 "project target disappeared after activation recovery",
                 code="RUNTIME_COMMIT_INCONSISTENT",
             )
+        return self._drain_non_current_generations(automation_id, project)
 
+    def drain_predecessors(self, automation_id: str) -> RuntimeReconcileResult:
+        """Finish a switch whose predecessor disposal was deferred.
+
+        Only a project whose exact target is already the committed, activated
+        route is drained here; any other journal state belongs to the full
+        ``resume_project``/reconcile path and is left untouched.
+        """
+
+        project = self._repository.get_project_runtime(automation_id)
+        if project is None:
+            raise PluginConflictError("project runtime does not exist")
+        idle = RuntimeReconcileResult(
+            automation_id=automation_id,
+            target_generation=project.target_generation,
+            committed_generation=project.committed_generation,
+        )
+        if (
+            project.committed_generation is None
+            or project.target_generation != project.committed_generation
+            or project.reconcile_state
+            not in {RuntimeReconcileState.DRAINING, RuntimeReconcileState.DISPOSING}
+        ):
+            return idle
+        current = self._repository.get_generation(automation_id, project.committed_generation)
+        if (
+            current is None
+            or current.state is not RuntimeGenerationState.COMMITTED
+            or current.activation_phase not in {None, RuntimeActivationPhase.ACTIVE}
+        ):
+            return idle
+        return self._drain_non_current_generations(automation_id, project)
+
+    def _drain_non_current_generations(
+        self,
+        automation_id: str,
+        project: ProjectRuntimeRecord,
+    ) -> RuntimeReconcileResult:
         draining: list[int] = []
         disposed: list[int] = []
         archival_unknown: list[int] = []

@@ -960,6 +960,64 @@ def test_upgrade_commits_new_generation_then_drains_old_lease() -> None:
     assert driver.disposed[-2:] == ["broker:1", "package:1.0.0"]
 
 
+def test_deferred_predecessor_dispose_finishes_only_through_drain_predecessors() -> None:
+    repository = _MemoryGenerationRepository()
+    reconciler, driver = _reconciler(repository)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+
+    switched = reconciler.reconcile(
+        _snapshot(2, "2.0.0"),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+        dispose_predecessor=False,
+    )
+
+    # The new route is committed and active; the predecessor keeps the same
+    # durable DRAINING state an old generation with live leases would keep.
+    assert switched.committed_generation == 2
+    assert switched.disposed_generations == ()
+    assert repository.generations[2].activation_phase is RuntimeActivationPhase.ACTIVE
+    assert repository.generations[1].state == RuntimeGenerationState.DRAINING
+    assert repository.runtime.reconcile_state == RuntimeReconcileState.DRAINING
+    assert "package:1.0.0" not in driver.disposed
+
+    drained = reconciler.drain_predecessors("project-a")
+
+    assert drained.disposed_generations == (1,)
+    assert repository.generations[1].state == RuntimeGenerationState.DISPOSED
+    assert driver.disposed[-2:] == ["broker:1", "package:1.0.0"]
+    # A repeated finalization finds nothing left to dispose (the real
+    # repository's STABLE transition is covered by the MySQL regression).
+    assert reconciler.drain_predecessors("project-a").disposed_generations == ()
+    assert driver.disposed.count("package:1.0.0") == 1
+
+
+def test_drain_predecessors_leaves_an_unfinished_switch_to_full_recovery() -> None:
+    repository = _MemoryGenerationRepository()
+    reconciler, driver = _reconciler(repository)
+    reconciler.reconcile(
+        _snapshot(1, "1.0.0"),
+        expected_committed_generation=None,
+        request_id=str(uuid.uuid4()),
+    )
+    repository.allocate_target_generation(
+        _snapshot(2, "2.0.0"),
+        expected_committed_generation=1,
+        request_id=str(uuid.uuid4()),
+    )
+
+    idle = reconciler.drain_predecessors("project-a")
+
+    assert idle.target_generation == 2 and idle.committed_generation == 1
+    assert idle.draining_generations == idle.disposed_generations == ()
+    assert repository.generations[1].state == RuntimeGenerationState.COMMITTED
+    assert driver.disposed == []
+
+
 def test_postcommit_old_dispose_failure_keeps_committed_b_routable() -> None:
     repository = _MemoryGenerationRepository()
     driver = _FailingDisposeDriver()
@@ -1712,16 +1770,19 @@ def test_crash_after_effect_apply_before_ack_reuses_durable_planned_owner() -> N
             expected_committed_generation=None,
             request_id=str(uuid.uuid4()),
         )
+    # Every PLANNED owner is durable before any effect is applied; the crash
+    # hits the batched ACK, so each applied effect still has its PLANNED owner.
     journal = repository.generations[1].effects
-    assert len(journal) == 1
-    assert journal[0].state == RuntimeEffectState.PLANNED
-    assert driver.materialized == {"package:1.0.0"}
+    assert [effect.effect_key for effect in journal] == ["package:1.0.0", "broker:1"]
+    assert all(effect.state == RuntimeEffectState.PLANNED for effect in journal)
+    assert driver.materialized == {"package:1.0.0", "broker:1"}
 
     recovered = reconciler.reconcile_incomplete()
 
     assert recovered[0].committed_generation == 1
-    assert driver.ensure_calls.count("package:1.0.0") == 2
-    assert driver.applied.count("package:1.0.0") == 1
+    for key in ("package:1.0.0", "broker:1"):
+        assert driver.ensure_calls.count(key) == 2
+        assert driver.applied.count(key) == 1
     assert repository.generations[1].state == RuntimeGenerationState.COMMITTED
     assert all(
         effect.state == RuntimeEffectState.APPLIED
