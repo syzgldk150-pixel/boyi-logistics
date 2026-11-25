@@ -66,12 +66,30 @@
   const bridgeSession = {{ bridge_session | tojson }};
   const endpoint = {{ ('/automations/' ~ automation_id ~ '/settings/bridge') | tojson }};
   if (!(iframe instanceof HTMLIFrameElement)) return;
+  // Answers after which the page must show the saved settings again before another save.
+  const reloadCodes = new Set([
+    "PLUGIN_SETTINGS_VERSION_CHANGED", "PLUGIN_SETTINGS_REQUEST_REUSED", "PLUGIN_SETTINGS_SAVE_UNCONFIRMED",
+  ]);
+  let saving = false;
 
-  function hostFeedback(message, kind) {
+  function hostFeedback(message, kind, action = null) {
     if (!(feedback instanceof HTMLElement)) return;
     feedback.textContent = String(message || "");
+    if (action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost-btn";
+      button.textContent = action.label;
+      button.addEventListener("click", action.run, { once: true });
+      feedback.append(button);
+    }
     feedback.dataset.kind = String(kind || "");
     feedback.hidden = !message;
+  }
+
+  function reloadFrame() {
+    hostFeedback("正在载入最新设置…", "info");
+    iframe.src = iframe.dataset.settingsSrc;
   }
 
   function respond(request, payload) {
@@ -83,9 +101,26 @@
     }, "*");
   }
 
+  function resizeFrame(message) {
+    const height = Number(message.height);
+    if (!Number.isFinite(height)) return;
+    // The page reports its own height so the outer page scrolls, not a frame inside it.
+    iframe.style.minHeight = "0";
+    iframe.style.height = `${Math.round(Math.min(Math.max(height, 240), 6000))}px`;
+  }
+
   window.addEventListener("message", async event => {
     if (event.source !== iframe.contentWindow) return;
     const request = event.data;
+    if (
+      request
+      && typeof request === "object"
+      && request.type === "boyi.settings.resize"
+      && request.bridge_session === bridgeSession
+    ) {
+      resizeFrame(request);
+      return;
+    }
     if (
       !request
       || typeof request !== "object"
@@ -98,7 +133,16 @@
       || typeof request.payload !== "object"
       || Array.isArray(request.payload)
     ) return;
-    hostFeedback(request.operation === "save" ? "正在保存插件设置…" : "正在连接插件设置…", "info");
+    const isSave = request.operation === "save";
+    if (isSave && saving) {
+      respond(request, {
+        ok: false, data: null, code: "PLUGIN_SETTINGS_SAVE_IN_PROGRESS",
+        message: "上一次保存还在进行中，请等它完成。",
+      });
+      return;
+    }
+    if (isSave) saving = true;
+    hostFeedback(isSave ? "正在保存插件设置，通常需要半分钟左右，请不要离开本页…" : "正在连接插件设置…", "info");
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -116,14 +160,26 @@
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || result?.ok !== true) {
-        throw new Error(result?.message || result?.error?.message || "插件设置服务暂时不可用。");
+        const failure = new Error(result?.message || result?.error?.message || "插件设置服务暂时不可用。");
+        failure.code = String(result?.error?.code || "");
+        throw failure;
       }
-      hostFeedback(request.operation === "save" ? "插件设置已保存。" : "", "success");
+      const message = isSave ? (result.message || "插件设置已保存。") : "";
       respond(request, { ok: true, data: result.data, message: result.message || "" });
+      // Older settings pages stop waiting after 15 seconds and would keep the old
+      // version; show them the saved settings so the next save is not refused.
+      if (isSave && request.bridge_client !== 2) reloadFrame();
+      hostFeedback(message, "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "插件设置服务暂时不可用。";
-      hostFeedback(message, "error");
-      respond(request, { ok: false, data: null, message });
+      const code = String(error?.code || "");
+      let action = null;
+      if (reloadCodes.has(code)) action = { label: "载入最新设置", run: reloadFrame };
+      else if (code === "PLUGIN_SETTINGS_BRIDGE_INVALID") action = { label: "刷新页面", run: () => location.reload() };
+      hostFeedback(message, "error", action);
+      respond(request, { ok: false, data: null, code, message });
+    } finally {
+      if (isSave) saving = false;
     }
   });
   // Say the page is loading until the plugin page itself is up (it then asks for its context).

@@ -612,7 +612,8 @@ class AutomationProjectsServiceMixin(AutomationPluginManagementServiceMixin, Aut
             "PUT",
             f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/configuration",
             payload=payload,
-            timeout=25,
+            # The same synchronous generation switch as a plugin settings save (~28 s on RDS).
+            timeout=90,
             console_principal=trusted_context["_console_principal"],
         )
         if not result.get("ok"):

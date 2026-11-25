@@ -1,59 +1,125 @@
 :root {
   color-scheme: light;
   font-family: "Source Han Sans SC", "Microsoft YaHei", system-ui, sans-serif;
-  color: #1d2939;
-  background: #f8fafc;
+  font-size: 13px;
+  color: #14171c;
+  background: transparent;
 }
 * { box-sizing: border-box; }
-body { margin: 0; padding: 22px; }
-.settings-page { max-width: 940px; margin: 0 auto; }
-.settings-intro { margin-bottom: 20px; }
-.settings-intro h1 { margin: 0 0 8px; font-size: 24px; }
-.settings-intro p { margin: 0; color: #667085; line-height: 1.7; }
+body { margin: 0; padding: 2px 2px 6px; line-height: 1.5; }
+.settings-page { max-width: 980px; }
+/* The Console page header already names the instance. */
+.settings-intro { display: none; }
 .settings-section {
-  margin-top: 14px;
-  padding: 18px;
-  border: 1px solid #e4e7ec;
-  border-radius: 14px;
+  margin-top: 12px;
+  padding: 16px 18px 18px;
+  border: 1px solid #e7e9ed;
+  border-radius: 12px;
   background: #fff;
 }
-.settings-section h2 { margin: 0 0 4px; font-size: 17px; }
-.settings-section > p { margin: 0 0 14px; color: #667085; }
-.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.settings-field { display: grid; gap: 7px; color: #344054; font-weight: 600; }
-.settings-field small { color: #667085; font-weight: 400; }
-.settings-field input:not([type="checkbox"]), .settings-field select, .settings-field textarea {
+.settings-section:first-of-type { margin-top: 0; }
+.settings-section h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+.settings-section > p { margin: 0 0 14px; color: #6b7280; }
+.settings-section > h2 + .settings-grid { margin-top: 12px; }
+/* The config box holds the value grid, the switches and the folded advanced part in one column. */
+.settings-config, .settings-config.settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px 16px; }
+.settings-field { display: grid; align-content: start; gap: 6px; }
+.settings-field__title { display: flex; align-items: center; gap: 6px; color: #14171c; font-weight: 500; }
+.settings-field small, .settings-switch small { color: #767d88; font-size: 12px; line-height: 1.5; }
+.settings-required { color: #a3161c; font-size: 11px; font-style: normal; font-weight: 400; }
+.settings-field input, .settings-field select, .settings-field textarea {
   width: 100%;
-  min-height: 42px;
-  padding: 8px 10px;
-  border: 1px solid #d0d5dd;
-  border-radius: 9px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d6d9df;
+  border-radius: 8px;
   background: #fff;
-  color: #101828;
-}
-.settings-check { display: flex; align-items: center; gap: 10px; min-height: 42px; }
-.settings-check input { width: 18px; height: 18px; }
-.settings-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
-.settings-actions button {
-  min-height: 42px;
-  padding: 0 18px;
-  border: 0;
-  border-radius: 9px;
-  background: #111;
-  color: #fff;
+  color: #14171c;
   font: inherit;
-  font-weight: 700;
+}
+.settings-field textarea { min-height: 72px; padding: 8px 10px; resize: vertical; }
+.settings-field select[multiple] { padding: 4px; }
+.settings-field input::placeholder { color: #9aa1ab; }
+.settings-warning { padding: 6px 8px; border-radius: 6px; background: #fbf2e2; color: #8a5a15 !important; }
+.settings-switches { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.settings-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e7e9ed;
+  border-radius: 8px;
   cursor: pointer;
 }
+.settings-switch:hover { border-color: #d6d9df; }
+.settings-switch__text { display: grid; gap: 2px; }
+.settings-switch input {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: #d6d9df;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.settings-switch input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(20, 23, 28, .2);
+  transition: transform .15s ease;
+}
+.settings-switch input:checked { background: #14171c; }
+.settings-switch input:checked::before { transform: translateX(14px); }
+.settings-advanced { border-top: 1px dashed #e7e9ed; padding-top: 12px; }
+.settings-advanced summary { color: #565c66; cursor: pointer; width: fit-content; }
+.settings-advanced[open] summary { margin-bottom: 12px; }
+.settings-advanced .settings-switches { margin-top: 14px; }
+.settings-advanced .settings-grid:empty, .settings-advanced .settings-switches:empty { display: none; }
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px 18px;
+  border: 1px solid #e7e9ed;
+  border-radius: 12px;
+  background: #fff;
+}
+.settings-actions button {
+  min-height: 36px;
+  padding: 0 18px;
+  border: 1px solid #14171c;
+  border-radius: 8px;
+  background: #14171c;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-actions button.settings-secondary { border-color: #d6d9df; background: #fff; color: #14171c; }
+.settings-actions button[hidden] { display: none; }
 .settings-actions button:disabled { opacity: .5; cursor: wait; }
-.settings-feedback { color: #475467; }
-.settings-feedback[data-kind="error"] { color: #b42318; }
-.settings-feedback[data-kind="success"] { color: #067647; }
-.settings-empty { color: #667085; font-size: 14px; }
-:focus-visible { outline: 3px solid #84adff; outline-offset: 2px; }
+.settings-feedback { color: #565c66; }
+.settings-feedback[data-kind="error"] { color: #a3161c; }
+.settings-feedback[data-kind="success"] { color: #2f7d5a; }
+.settings-feedback[data-kind="warn"] { color: #8a5a15; }
+.settings-empty { margin: 0; color: #767d88; }
+:focus-visible { outline: 2px solid #565c66; outline-offset: 2px; }
 @media (max-width: 680px) {
-  body { padding: 14px; }
-  .settings-grid { grid-template-columns: 1fr; }
+  .settings-grid, .settings-switches { grid-template-columns: 1fr; }
   .settings-actions { align-items: stretch; flex-direction: column; }
 }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+}

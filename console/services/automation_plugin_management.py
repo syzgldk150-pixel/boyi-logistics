@@ -18,6 +18,10 @@ _SETTINGS_ASSET_CACHE_SECONDS = 600.0
 _SETTINGS_ASSET_CACHE_MAX_ENTRIES = 256
 # The page render's settings-context is reused once by the frame's first bridge read.
 _SETTINGS_CONTEXT_REUSE_SECONDS = 120.0
+# A settings save commits in about two seconds, then switches the plugin generation
+# synchronously; on the cross-region database the whole call took ~28 s on
+# 2026-11-25, past the old 25 s wait, so the page kept a stale version.
+_PLUGIN_SETTINGS_SAVE_TIMEOUT_SECONDS = 90
 
 _SERVICE_V2_INSTALL_INTENT_FIELDS = frozenset(
     {
@@ -382,7 +386,8 @@ class AutomationPluginManagementServiceMixin:
                 "GET" if operation == "history" else "PUT",
                 f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/{endpoint}",
                 **({"payload": payload} if operation == "restore" else {}),
-                timeout=25, console_principal=trusted_context["_console_principal"],
+                timeout=25 if operation == "history" else _PLUGIN_SETTINGS_SAVE_TIMEOUT_SECONDS,
+                console_principal=trusted_context["_console_principal"],
             )
             if operation == "restore" and result.get("ok"):
                 self._clear_automation_plugin_catalog_cache()
@@ -422,9 +427,34 @@ class AutomationPluginManagementServiceMixin:
                 "PUT",
                 f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/plugin-settings",
                 payload={**payload, "request_id": request_id},
-                timeout=25,
+                timeout=_PLUGIN_SETTINGS_SAVE_TIMEOUT_SECONDS,
                 console_principal=trusted_context["_console_principal"],
             )
+            if not result.get("ok") and result.get("error_code") == "agent_timeout":
+                # The configuration commits before the generation switch; read it
+                # back instead of reporting a save that actually went through as failed.
+                landed = self._plugin_settings_save_landed(
+                    automation_id, payload, expected_version, trusted_context["_console_principal"],
+                )
+                if landed is None:
+                    self._control_plane_error(
+                        handler,
+                        HTTPStatus.GATEWAY_TIMEOUT,
+                        "PLUGIN_SETTINGS_SAVE_UNCONFIRMED",
+                        "保存结果还没有确认。请稍后点“载入最新设置”核对，不要重复保存。",
+                    )
+                    return
+                self._clear_automation_plugin_catalog_cache()
+                self._send_json(
+                    handler,
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "data": {"project_configuration_version": landed, "transition_pending": True},
+                        "message": "插件设置已保存，后台还在切换到新设置，稍后可在自动化页查看运行状态。",
+                    },
+                )
+                return
             if not result.get("ok"):
                 self._automation_project_agent_error(
                     handler,
@@ -544,6 +574,31 @@ class AutomationPluginManagementServiceMixin:
                 "message": "插件设置已连接。",
             },
         )
+
+    def _plugin_settings_save_landed(
+        self,
+        automation_id: str,
+        payload: dict[str, Any],
+        expected_version: int,
+        console_principal: Any,
+    ) -> int | None:
+        """The new configuration version when exactly these settings are now saved."""
+
+        result = self._agent_request(
+            "GET",
+            f"/internal/v1/automation/instances/{quote(automation_id, safe='')}/settings-context",
+            timeout=15,
+            console_principal=console_principal,
+        )
+        data = result.get("data") if result.get("ok") else None
+        if not isinstance(data, dict):
+            return None
+        version = data.get("project_configuration_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version <= expected_version:
+            return None
+        if any(data.get(field) != payload.get(field) for field in ("config", "account_bindings", "resource_bindings")):
+            return None
+        return version
 
     @staticmethod
     def _service_v2_json_tree_is_safe(value: Any, *, depth: int = 0) -> bool:

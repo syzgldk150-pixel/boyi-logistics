@@ -1311,20 +1311,33 @@ class AutomationPluginManagementService:
         role = self._require_console_actor(actor, super_admin=True)
         self._require_mutation_allowed()
         started = time.monotonic()
-        record = self._configuration.save(
-            automation_id,
-            config=config,
-            account_bindings=account_bindings,
-            resource_bindings=resource_bindings,
-            enabled_entrypoints=enabled_entrypoints,
-            schedule=schedule,
-            actor_id=actor.actor_id,
-            actor_role=role,
-            request_id=request_id,
-            expected_project_configuration_version=(
-                expected_project_configuration_version
-            ),
-        )
+        try:
+            record = self._configuration.save(
+                automation_id,
+                config=config,
+                account_bindings=account_bindings,
+                resource_bindings=resource_bindings,
+                enabled_entrypoints=enabled_entrypoints,
+                schedule=schedule,
+                actor_id=actor.actor_id,
+                actor_role=role,
+                request_id=request_id,
+                expected_project_configuration_version=(
+                    expected_project_configuration_version
+                ),
+            )
+        except ConcurrentUpdateError as exc:
+            # Usually an earlier save on the same page went through after
+            # the page stopped waiting; the page must reload before saving.
+            raise PluginConflictError(
+                "设置已经被更新过（可能是上一次保存其实已成功），请载入最新设置，核对后再保存。",
+                code="PLUGIN_SETTINGS_VERSION_CHANGED",
+            ) from exc
+        except IdempotencyConflict as exc:
+            raise PluginConflictError(
+                "同一次保存不能更换设置内容，请载入最新设置后重新保存。",
+                code="PLUGIN_SETTINGS_REQUEST_REUSED",
+            ) from exc
         # Saving desired state revokes prior authority immediately.  Reconcile
         # is attempted synchronously, but an unavailable coeffect remains a
         # visible non-runnable target rather than rolling back or using an old

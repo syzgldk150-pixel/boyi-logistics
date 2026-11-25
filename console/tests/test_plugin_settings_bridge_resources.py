@@ -105,3 +105,64 @@ def test_bridge_reuses_the_page_settings_context_once():
     assert calls == []
     app._handle_automation_plugin_settings_bridge(SimpleNamespace(), "automation.demo")  # a reload reads again
     assert calls == ["/internal/v1/automation/instances/automation.demo/settings-context"]
+
+
+_SAVED = {"config": {"sync_nas": True}, "account_bindings": {"source": "acct-1"}, "resource_bindings": {}}
+
+
+def _save_app(agent_replies):
+    app = LocalDocFlowApp.__new__(LocalDocFlowApp)
+    app._session_secret = "fixture-secret"
+    app._control_plane_write_context = lambda _handler: {
+        "actor_roles": ["super_admin"], "actor": {"actor_id": "1"}, "_console_principal": {},
+    }
+    session = app._automation_plugin_settings_bridge_token("automation.demo", "1")
+    app._read_control_plane_json = lambda _handler: {"bridge_session": session, "operation": "save", "payload": {
+        **_SAVED, "request_id": "8f0e5f55-1d0e-4a59-9a43-3b1f1b8f6e21", "expected_project_configuration_version": 10,
+    }}
+    calls = []
+
+    def agent_request(method, path, **kwargs):
+        calls.append((method, path.rsplit("/", 1)[-1], kwargs.get("timeout")))
+        return agent_replies.pop(0)
+
+    app._agent_request = agent_request
+    sent = {}
+    app._send_json = lambda _handler, status, payload: sent.update(status=status, payload=payload)
+    return app, calls, sent
+
+
+def test_save_waits_for_the_generation_switch_and_reads_back_after_a_timeout():
+    timeout = {"ok": False, "status": None, "error": "智能服务响应超时，请稍后重试。", "error_code": "agent_timeout"}
+    landed = {"ok": True, "data": {**_SAVED, "project_configuration_version": 11}}
+    app, calls, sent = _save_app([timeout, landed])
+
+    app._handle_automation_plugin_settings_bridge(SimpleNamespace(), "automation.demo")
+
+    # The save itself may take ~30 s on the cross-region database.
+    assert calls[0] == ("PUT", "plugin-settings", 90)
+    assert calls[1][:2] == ("GET", "settings-context")
+    assert sent["status"] == HTTPStatus.OK
+    assert sent["payload"]["data"] == {"project_configuration_version": 11, "transition_pending": True}
+
+
+def test_a_timed_out_save_that_did_not_land_is_reported_unconfirmed():
+    timeout = {"ok": False, "status": None, "error": "智能服务响应超时，请稍后重试。", "error_code": "agent_timeout"}
+    other = {"ok": True, "data": {**_SAVED, "config": {"sync_nas": False}, "project_configuration_version": 11}}
+    app, _calls, sent = _save_app([timeout, other])
+
+    app._handle_automation_plugin_settings_bridge(SimpleNamespace(), "automation.demo")
+
+    assert sent["status"] == HTTPStatus.GATEWAY_TIMEOUT
+    assert sent["payload"]["error"]["code"] == "PLUGIN_SETTINGS_SAVE_UNCONFIRMED"
+
+
+def test_a_version_conflict_keeps_its_code_for_the_page():
+    conflict = {"ok": False, "status": 409, "error": "设置已经被更新过", "error_code": "PLUGIN_SETTINGS_VERSION_CHANGED"}
+    app, calls, sent = _save_app([conflict])
+
+    app._handle_automation_plugin_settings_bridge(SimpleNamespace(), "automation.demo")
+
+    assert len(calls) == 1
+    assert sent["status"] == HTTPStatus.CONFLICT
+    assert sent["payload"]["error"] == {"code": "PLUGIN_SETTINGS_VERSION_CHANGED", "message": "设置已经被更新过"}

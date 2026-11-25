@@ -3320,11 +3320,17 @@ body .line-haul-tool-btn {
 }
 .plugin-settings-state--ready { background: var(--success-soft); color: var(--success-ink); }
 .plugin-settings-shell__feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 12px 12px;
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
 }
+.plugin-settings-shell__feedback[hidden] { display: none; }
 .plugin-settings-shell__feedback[data-kind="error"] { background: var(--danger-soft); color: var(--danger-ink); }
 .plugin-settings-shell__feedback[data-kind="success"] { background: var(--success-soft); color: var(--success-ink); }
 .plugin-settings-frame {

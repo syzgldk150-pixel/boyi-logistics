@@ -1460,7 +1460,7 @@ class AutomationPluginHandlerTests(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.OK, captured["status"])
         self.assertEqual("PUT", forwarded["method"])
-        self.assertEqual(25, forwarded["timeout"])
+        self.assertEqual(90, forwarded["timeout"])  # waits out the generation switch
         self.assertEqual(
             "/internal/v1/automation/instances/finance_action_east/configuration",
             forwarded["endpoint"],

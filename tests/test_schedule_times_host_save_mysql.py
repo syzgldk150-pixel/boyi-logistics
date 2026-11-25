@@ -220,6 +220,15 @@ def test_times_only_save_rewrites_rows_on_the_committed_generation(database, tmp
             expected_project_configuration_version=entry.project_config_version, actor=ACTOR,
         )
         host.targets.reconcile_project(project)
+        # A page still holding the old version (its earlier save landed after it
+        # stopped waiting) gets a coded, readable conflict instead of the raw one.
+        with pytest.raises(PluginConflictError) as stale_settings:
+            host.management.save_plugin_settings(
+                project, config={}, account_bindings={}, resource_bindings={}, request_id=str(uuid4()),
+                expected_project_configuration_version=entry.project_config_version, actor=ACTOR,
+            )
+        assert stale_settings.value.code == "PLUGIN_SETTINGS_VERSION_CHANGED"
+        assert "载入最新设置" in str(stale_settings.value)
         latest = host.catalog.require(project)
         rows = _rows(host, project)
         assert [row["cron_expression"] for row in rows] == ["30 9 * * *"]

@@ -3,7 +3,7 @@
   "runtime_model": "service_v2",
   "plugin_id": "sync_yunda_send_waybills_v2",
   "name": "韵达寄件运单同步",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "韵达寄件运单同步：插件独立完成分页、字段适配、核对与输出，宿主只提供平台和存储接口。",
   "host_api": {
     "minimum": "2.0.0",
@@ -149,43 +149,56 @@
     "properties": {
       "target_date": {
         "type": "string",
-        "description": "可选，单个寄件日期，格式 YYYY-MM-DD；默认当天。传 start_date/end_date 时忽略"
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+        "minLength": 10,
+        "maxLength": 10,
+        "description": "留空就每次处理当天；填写后每次都只拉这一天，用完请清空。"
       },
       "start_date": {
         "type": "string",
-        "description": "可选，范围拉取起始寄件日期，格式 YYYY-MM-DD；需与 end_date 配合或单独表示只拉这一天"
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+        "minLength": 10,
+        "maxLength": 10,
+        "description": "补拉一段日期时填写；只填开始日期就只拉这一天。填了会忽略业务日期。补拉完请清空。"
       },
       "end_date": {
         "type": "string",
-        "description": "可选，范围拉取结束寄件日期，格式 YYYY-MM-DD；与 start_date 组成闭区间"
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+        "minLength": 10,
+        "maxLength": 10,
+        "description": "和补拉开始日期一起用，包含这一天。补拉完请清空。"
       },
       "sync_sheet": {
         "type": "boolean",
-        "description": "是否同步普通飞书电子表格副本，默认 true"
+        "description": "同时更新飞书电子表格副本。默认开启"
       },
       "ensure_fields": {
         "type": "boolean",
-        "description": "是否校验并创建缺失字段，默认 true"
+        "description": "写入前检查并创建多维表缺少的字段。默认开启"
       },
       "page_size": {
         "type": "integer",
-        "description": "韵达列表接口每页条数，默认 200"
+        "minimum": 1,
+        "maximum": 200,
+        "description": "韵达列表每页读取多少条，默认 200"
       },
       "max_pages": {
         "type": "integer",
-        "description": "最多拉取页数，默认 50"
+        "minimum": 1,
+        "maximum": 50,
+        "description": "最多读取多少页，默认 50"
       },
       "sql_only": {
         "type": "boolean",
-        "description": "仅同步控制台 waybills SQL 表，不写入或删除飞书多维表或电子表格"
+        "description": "打开后只更新后台运单表，不写入、也不删除飞书多维表和电子表格。默认关闭"
       },
       "sync_sql": {
         "type": "boolean",
-        "description": "是否同步控制台 waybills SQL 表，默认 true"
+        "description": "更新后台“寄件运单查询”用的数据。默认开启"
       },
       "sync_nas": {
         "type": "boolean",
-        "description": "是否把当天寄件数据写入 NAS“寄件数据/韵达寄件/日期.xlsx”，默认 true"
+        "description": "写入 NAS 的“韵达寄件/日期.xlsx”。默认开启"
       }
     },
     "required": []
