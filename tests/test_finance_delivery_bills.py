@@ -15,6 +15,7 @@ from shared.finance.delivery_bills import (
     parse_fee_choice,
     parse_rule_form,
     parse_settings,
+    segment_examples,
     settlement_entries,
     settlement_window,
     summarize_settlement,
@@ -74,8 +75,30 @@ def test_segments_with_whole_kilogram_rounding():
 
 def test_describe_rule_lists_every_segment():
     text = describe_rule({"segments": SEGMENTS, "rounding": "exact"})
-    assert text.startswith("0–50 公斤（不含）：首重 1 公斤 5 元，续重每公斤 1 元；50–200 公斤（不含）")
-    assert "200 公斤起：首重 200 公斤 100 元，续重每公斤 0.3 元；按实际重量" in text
+    assert text.startswith("0–50 公斤：起步价 5 元（含 1 公斤），超出每公斤 1 元；50–200 公斤：")
+    assert text.endswith("200 公斤以上：起步价 100 元（含 200 公斤），超出每公斤 0.3 元；超出部分按实际重量；正好在分界按下一段算")
+
+
+def test_segment_examples_show_each_range_start_and_last_kilogram():
+    # 每段给起点和到下一段前 1 公斤的金额，最后一段只给起点；分界前后的变化一眼可见。
+    examples = segment_examples(rule(segments=SEGMENTS))
+    assert examples == [
+        [{"weight": "0", "amount": "5.00"}, {"weight": "49", "amount": "53.00"}],
+        [{"weight": "50", "amount": "30.00"}, {"weight": "199", "amount": "104.50"}],
+        [{"weight": "200", "amount": "100.00"}],
+    ]
+    # 不足 1 公斤宽的段只给起点。
+    narrow = rule(segments=[seg("0", "0", "5", "1"), seg("0.5", "0.5", "6", "1")])
+    assert segment_examples(narrow) == [[{"weight": "0", "amount": "5.00"}], [{"weight": "0.5", "amount": "6.00"}]]
+
+
+def test_rule_form_errors_point_at_the_field_people_fill():
+    with pytest.raises(FinanceValidationError, match="第 2 段的“到”必须大于这一段的起点 50 公斤"):
+        parse_rule_form({"effective_from": "2026-11-01", "rounding": "exact",
+                         "segments": [seg("0", "1", "5", "1"), seg("50", "1", "5", "1"), seg("40", "1", "5", "1")]})
+    with pytest.raises(FinanceValidationError, match="第 2 段的起步价"):
+        parse_rule_form({"effective_from": "2026-11-01", "rounding": "exact",
+                         "segments": [seg("0", "1", "5", "1"), seg("50", "50", "", "0.5")]})
 
 
 def test_rule_form_rejects_bad_input():

@@ -44,6 +44,7 @@ from shared.finance.delivery_bills import (
     build_bill,
     delivery_fee,
     describe_rule,
+    segment_examples,
     parse_day,
     parse_fee_choice,
     parse_rule_form,
@@ -358,6 +359,10 @@ def create_delivery_bills_router(
         rules = finance().delivery_rules()
         for rule in rules:
             rule["description"] = describe_rule(rule)
+            try:
+                rule["examples"] = segment_examples(rule)
+            except FinanceValidationError:
+                rule["examples"] = None  # a stored rule the engine cannot evaluate shows no examples
         return {"rules": rules}
 
     @router.get("/rules")
@@ -367,7 +372,7 @@ def create_delivery_bills_router(
 
     @router.post("/rules/trial")
     async def trial(request: Request):
-        """试算：按表单内容给一个结算重量算派送费，不保存。"""
+        """试算：按表单内容算每段示例金额，给了结算重量再算这一单的派送费；不保存。"""
         admin_provider(request)
         body = _dict(await request.json())
 
@@ -377,6 +382,9 @@ def create_delivery_bills_router(
             if set(body) - {"rule", "settlement_weight"} or not isinstance(form, dict):
                 raise FinanceValidationError("试算内容无效。")
             parsed = parse_rule_form({"effective_from": _today().isoformat(), **form})
+            result: dict[str, Any] = {"examples": segment_examples(parsed)}
+            if weight is None or not str(weight).strip():
+                return result
             try:
                 number = Decimal(str(weight).strip())
             except Exception:
@@ -384,7 +392,7 @@ def create_delivery_bills_router(
             if not number.is_finite() or number < 0 or number > 100000:
                 raise FinanceValidationError("结算重量必须在 0 到 100000 之间。")
             amount, steps = delivery_fee({"content": parsed["content"]}, number)
-            return {"amount": format(amount, "f"), "steps": steps}
+            return {**result, "amount": format(amount, "f"), "steps": steps}
 
         return await run(lambda: run_in_threadpool(work))
 

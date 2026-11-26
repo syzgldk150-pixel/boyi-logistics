@@ -7,8 +7,9 @@
   到货表日期取该单第一次出现在每日到货表的日期；派送、自提、预约自提全部都算。
 - “融辉结算金额”＝该单所有以“付”开头的结算类型之和（融辉付给网点的派件收入：派送费、折让、
   回单服务费、到付/代收手续费、上楼/卸货/清点等增值收入），不算派到付款与罚款；设置里可加例外。
-- 应付（给司机）＝派送费（按融辉结算重量分公斤段，每段有自己的首重价与续重单价；重量正好等于
-  下一段起点时按下一段算；规则按到货表日期选版本，2026-11-25 用户定）
+- 应付（给司机）＝派送费（按融辉结算重量分公斤段，每段有自己的起步价（含若干公斤）与超出单价；
+  重量正好等于分界时按下一段算；规则按到货表日期选版本，2026-11-25 用户定；页面用语 2026-11-26
+  改为“起步价／起步价含／超出单价”，存储字段仍是 first_price/first_weight/extra_price）
   ＋增值费（业务手册已生效规则，人工选费用、填条件，引擎算金额；需协商等由人填金额）。
 
 计算全部走 ``shared.fee_engine``（与业务手册同一引擎）；金额用 ``Decimal``，存四位、显示两位。
@@ -212,15 +213,15 @@ def _segment_node(segment: Mapping[str, Decimal], rounding: str) -> dict[str, An
     over: dict[str, Any] = {"excess": "settlement_weight", "over": _fmt(segment["first_weight"])}
     of = {"ceil": over, "per": "1"} if rounding == "ceil_kg" else over
     return {"type": "sum", "items": [
-        {"type": "fixed", "label": f"首重（含 {_fmt(segment['first_weight'])} 公斤）", "amount": _fmt(segment["first_price"])},
-        {"type": "rate", "label": f"续重（超过 {_fmt(segment['first_weight'])} 公斤的部分）", "rate": _fmt(segment["extra_price"]),
+        {"type": "fixed", "label": f"起步价（含 {_fmt(segment['first_weight'])} 公斤）", "amount": _fmt(segment["first_price"])},
+        {"type": "rate", "label": f"超出 {_fmt(segment['first_weight'])} 公斤的部分", "rate": _fmt(segment["extra_price"]),
          "unit": "元/kg", "of": of},
     ]}
 
 
 def delivery_rule_content(segments: Sequence[Mapping[str, Decimal]], rounding: str) -> dict[str, Any]:
-    """公斤段表 → ``shared.fee_engine`` 规则内容：按结算重量分档（起点含、终点不含，正好等于下一段起点按下一段），
-    每档＝该段首重价＋超过该段首重部分 × 该段续重单价。"""
+    """公斤段表 → ``shared.fee_engine`` 规则内容：按结算重量分档（起点含、终点不含，正好等于分界按下一段），
+    每档＝该段起步价＋超过“起步价含”重量的部分 × 该段超出单价。"""
     tiers = []
     for index, segment in enumerate(segments):
         tier: dict[str, Any] = {"over": _fmt(segment["from"]), "then": _segment_node(segment, rounding)}
@@ -243,14 +244,15 @@ def parse_segments(value: Any) -> list[dict[str, Decimal]]:
         if not isinstance(item, Mapping) or set(item) != set(SEGMENT_FIELDS):
             raise _invalid(f"第 {index} 段的内容不完整。")
         label = f"第 {index} 段"
-        segment = {"from": _money(item["from"], f"{label}的起点重量"),
-                   "first_weight": _money(item["first_weight"], f"{label}的首重"),
-                   "first_price": _money(item["first_price"], f"{label}的首重价"),
-                   "extra_price": _money(item["extra_price"], f"{label}的续重单价")}
+        # 页面上每段填“到多少公斤”，第 N 段的起点就是第 N−1 段的“到”，错误按页面上填的位置说。
+        segment = {"from": _money(item["from"], f"第 {index - 1} 段的“到”" if index > 1 else "第 1 段的起点"),
+                   "first_weight": _money(item["first_weight"], f"{label}的“起步价含”"),
+                   "first_price": _money(item["first_price"], f"{label}的起步价"),
+                   "extra_price": _money(item["extra_price"], f"{label}的超出单价")}
         if index == 1 and segment["from"] != 0:
             raise _invalid("第 1 段必须从 0 公斤起。")
         if segments and segment["from"] <= segments[-1]["from"]:
-            raise _invalid(f"{label}的起点重量必须大于上一段的起点 {_fmt(segments[-1]['from'])} 公斤。")
+            raise _invalid(f"第 {index - 1} 段的“到”必须大于这一段的起点 {_fmt(segments[-1]['from'])} 公斤。")
         segments.append(segment)
     return segments
 
@@ -262,7 +264,7 @@ def parse_rule_form(form: Mapping[str, Any]) -> dict[str, Any]:
     segments = parse_segments(form.get("segments"))
     rounding = form.get("rounding")
     if rounding not in ROUNDINGS:
-        raise _invalid("续重取整方式无效。")
+        raise _invalid("超出部分零头的算法无效。")
     note = form.get("note")
     if note is not None and (not isinstance(note, str) or len(note.strip()) > 200):
         raise _invalid("备注不能超过 200 个字符。")
@@ -285,11 +287,32 @@ def describe_rule(rule: Mapping[str, Any]) -> str:
     parts = []
     for index, segment in enumerate(segments):
         low = _fmt(Decimal(str(segment["from"])))
-        span = (f"{low}–{_fmt(Decimal(str(segments[index + 1]['from'])))} 公斤（不含）" if index + 1 < len(segments)
-                else f"{low} 公斤起")
-        parts.append(f"{span}：首重 {_fmt(Decimal(str(segment['first_weight'])))} 公斤 "
-                     f"{_fmt(Decimal(str(segment['first_price'])))} 元，续重每公斤 {_fmt(Decimal(str(segment['extra_price'])))} 元")
-    return "；".join(parts) + f"；{ROUNDINGS[rule['rounding']]}"
+        span = (f"{low}–{_fmt(Decimal(str(segments[index + 1]['from'])))} 公斤" if index + 1 < len(segments)
+                else f"{low} 公斤以上")
+        parts.append(f"{span}：起步价 {_fmt(Decimal(str(segment['first_price'])))} 元"
+                     f"（含 {_fmt(Decimal(str(segment['first_weight'])))} 公斤），"
+                     f"超出每公斤 {_fmt(Decimal(str(segment['extra_price'])))} 元")
+    return "；".join(parts) + f"；超出部分{ROUNDINGS[rule['rounding']]}；正好在分界按下一段算"
+
+
+def segment_examples(rule: Mapping[str, Any]) -> list[list[dict[str, str]]]:
+    """每段的示例金额：段起点、到下一段前 1 公斤（最后一段只给起点）。
+
+    设置人不用试算就能看出每段收多少、分界前后怎么变；金额用规则本身（``content``）算，与账单同一引擎。
+    """
+
+    segments = rule["segments"]
+    examples: list[list[dict[str, str]]] = []
+    for index, segment in enumerate(segments):
+        low = Decimal(str(segment["from"]))
+        points = [low]
+        if index + 1 < len(segments):
+            high = Decimal(str(segments[index + 1]["from"])) - 1
+            if high > low:
+                points.append(high)
+        examples.append([{"weight": _fmt(point), "amount": format(delivery_fee(rule, point)[0], "f")}
+                         for point in points])
+    return examples
 
 
 def select_delivery_rule(rules: Iterable[Mapping[str, Any]], day: dt.date) -> Mapping[str, Any] | None:

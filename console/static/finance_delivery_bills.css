@@ -46,7 +46,8 @@
 .db-rule-form h3 { margin: 4px 0 0; }
 .db-trial { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
 .db-trial .ghost-btn { height: var(--control-h); }
-.db-trial__result { font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-trial__result { display: grid; gap: 4px; font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-trial__result b { font-size: var(--fs-body); font-weight: 500; color: var(--text-primary); font-family: var(--font-num); }
 .db-dialog textarea { width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-body); }
 .db-fee-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 12px; }
 .db-fee-pick { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-body); cursor: pointer; }
@@ -72,9 +73,24 @@
   .db-search { width: 140px; }
 }
 
-/* 公斤段表（派送费规则） */
+/* 派送费规则（2026-11-26）：公式一行、每版一张卡、编辑表每段只填“到”，旁边给出算出来的钱 */
+.db-formula { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 0; padding: 10px 14px; border-radius: var(--r-control); background: var(--bg-subtle); font-size: var(--fs-body); color: var(--text-primary); font-family: var(--font-num); }
+.db-formula span { font-size: var(--fs-caption); color: var(--text-tertiary); }
+.db-rule-list { display: grid; gap: 10px; }
+.db-rule-card { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line-subtle); border-radius: var(--r-control); }
+.db-rule-card header { display: flex; align-items: center; gap: 10px; }
+.db-rule-card header b { font-weight: 500; font-family: var(--font-num); }
+.db-rule-card header .pb-link { margin-left: auto; color: var(--status-danger); }
+.db-rule-card .db-sub { margin: 0; }
+.db-rule-retired summary { cursor: pointer; font-size: var(--fs-caption); color: var(--text-secondary); }
+.db-rule-retired .db-rule-card { margin-top: 8px; opacity: 0.75; }
+.db-rule-form__head { display: grid; gap: 2px; }
 .main-content .db-segments tbody td { height: 44px; }
-.db-segments input { width: 100%; min-width: 70px; height: 30px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-body); font-family: var(--font-num); }
-.db-segments input[readonly] { background: var(--bg-subtle); }
-.db-seg-from { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: var(--fs-caption); color: var(--text-secondary); }
-.db-seg-from input { width: 80px; }
+.db-segments input { width: 100%; min-width: 64px; height: 30px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-body); font-family: var(--font-num); }
+.db-segments input::placeholder { color: var(--text-muted); }
+.db-seg-range { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-family: var(--font-num); color: var(--text-primary); }
+.db-seg-range input { width: 84px; }
+.db-seg-example { font-size: var(--fs-caption); color: var(--text-secondary); font-family: var(--font-num); white-space: nowrap; }
+.db-seg-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.db-seg-check { font-size: var(--fs-caption); color: var(--status-danger); }
+.db-seg-check:empty { display: none; }

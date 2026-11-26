@@ -2,13 +2,22 @@
 import datetime as dt
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 
 from console.tests import test_handbook_console as handbook_console
-from shared.finance.delivery_bills import build_bill, parse_rule_form, settlement_entries
+from shared.finance.delivery_bills import (
+    build_bill,
+    delivery_fee,
+    describe_rule,
+    parse_rule_form,
+    segment_examples,
+    settlement_entries,
+)
+from shared.finance.errors import FinanceValidationError
 
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
 ORIGIN = "https://console.test"
@@ -52,6 +61,30 @@ PREPARE = {
     "prefill": {"settlement_weight": "45.5"}, "prefill_note": "", "unavailable": [], "conflict": "", "row_status": "pending",
     "saved": {"fee_kinds": [], "values": {}, "manual": {}, "lines": [], "revision": None, "billing_date": None},
 }
+# 规则与试算的回复用真实的 shared 规则函数生成（数字虚构），页面上的“算出来”与 Agent 同一算法。
+RULE_SEGMENTS = [{"from": "0", "first_weight": "1", "first_price": "5", "extra_price": "1"},
+                 {"from": "50", "first_weight": "50", "first_price": "30", "extra_price": "0.5"}]
+
+
+def _saved_rule():
+    parsed = parse_rule_form({"effective_from": "2026-11-01", "segments": RULE_SEGMENTS, "rounding": "exact"})
+    rule = {"id": 5, "effective_from": "2026-11-01", "status": "active", "segments": RULE_SEGMENTS, "rounding": "exact",
+            "content": parsed["content"], "confirmed_count": 0, "created_by": "超管",
+            "created_at": "2026-11-24 10:00:00", "revision": 1, "note": None}
+    rule["description"], rule["examples"] = describe_rule(rule), segment_examples(rule)
+    del rule["content"]
+    return rule
+
+
+def _trial(body):
+    parsed = parse_rule_form({"effective_from": "2026-11-26", **body["rule"]})
+    result = {"examples": segment_examples(parsed)}
+    if body.get("settlement_weight"):
+        amount, steps = delivery_fee(parsed, Decimal(body["settlement_weight"]))
+        result.update(amount=format(amount, "f"), steps=steps)
+    return result
+
+
 LINE = {"position": 0, "fee_kind": "upstairs", "fee_name": "上楼费", "rule_id": "r-up", "version": "V6.1", "group": "上楼卸货",
         "outcome": "AMOUNT", "outcome_text": "金额", "system_amount": "14.5500", "amount": "14.5500", "counted": True,
         "note": "", "reason": "", "steps": ["10 + 0.1 × 45.5 = 14.55"], "reminders": []}
@@ -100,15 +133,21 @@ def _open(browser, posts):
         if parsed.path == "/finance/delivery-bills":
             return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": _bill()}, ensure_ascii=False))
         if parsed.path == "/finance/delivery-bills/rules":
-            rules = [{"id": 5, "effective_from": "2026-11-01", "description": "0–50 公斤（不含）：首重 1 公斤 5 元，续重每公斤 1 元；50 公斤起：首重 50 公斤 30 元，续重每公斤 0.5 元；按实际重量",
-                      "status": "active", "confirmed_count": 0, "created_by": "超管", "created_at": "2026-11-24 10:00:00",
-                      "revision": 1, "note": None}]
+            rules = [_saved_rule()]
             if route.request.method == "GET":
                 return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"rules": rules}}, ensure_ascii=False))
         if parsed.path.startswith("/finance/delivery-bills/"):
             action = parsed.path.removeprefix("/finance/delivery-bills/")
             body = json.loads(route.request.post_data or "{}")
             posts.append((action, body, route.request.headers.get("x-browser-request-uuid")))
+            if action == "rules/trial":
+                try:
+                    data = _trial(body)
+                except FinanceValidationError as exc:
+                    return route.fulfill(status=400, content_type="application/json",
+                                         body=json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False))
+                return route.fulfill(content_type="application/json",
+                                     body=json.dumps({"ok": True, "data": data}, ensure_ascii=False))
             reply = {"fees/prepare": PREPARE,
                      "fees/compute": {"tracking_number": "R001", "billing_date": "2026-11-03", "lines": [LINE], "total": "14.5500",
                                       "complete": True, "missing": []},
@@ -116,7 +155,7 @@ def _open(browser, posts):
                                    "bill": _bill({"R001": {"status": "open", "value_added_total": "14.5500", "revision": 1, "lines": [LINE]}})},
                      "confirm": {"results": [{"tracking_number": "R001", "ok": True}, {"tracking_number": "R002", "ok": True}],
                                  "succeeded": 2, "failed": 0, "bill": _bill()},
-                     "rules/trial": {"amount": "65.50", "steps": ["派送费：结算重量 120.2，落在 ≥ 50 这一档", "合计 65.50"]}}.get(action)
+                     "rules": {"rule_id": 6, **{"rules": [_saved_rule()]}}}.get(action)
             if reply is None:
                 return route.fulfill(status=404, body="")
             return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": reply}, ensure_ascii=False))
@@ -196,30 +235,47 @@ def test_rule_segments_editor_and_trial(browser):
     context, page, errors = _open(browser, posts)
     with context:
         page.click("[data-db-open-rules]")
-        page.wait_for_selector("text=0–50 公斤")
-        first = "[data-db-segment]:nth-child(1)"
-        assert page.input_value(f"{first} [data-field=from]") == "0"
-        page.fill(f"{first} [data-field=first_weight]", "1")
-        page.fill(f"{first} [data-field=first_price]", "5")
-        page.fill(f"{first} [data-field=extra_price]", "1")
+        # 在用的一版按段列成表，每段旁边是算出来的钱（起点、到下一段前 1 公斤）。
+        card = page.locator("[data-db-rule-card]").first
+        card.wait_for()
+        assert "现在用的" in card.inner_text()
+        assert "0–50 kg" in card.inner_text() and "50 kg 以上" in card.inner_text()
+        assert "0 kg 5.00 → 49 kg 53.00" in card.inner_text() and "50 kg 30.00 元起" in card.inner_text()
+        # 编辑表按在用的一版填好：每段只填“到”，起点自动接上一段，最后一段“以上”。
+        first, second = "[data-db-segment]:nth-child(1)", "[data-db-segment]:nth-child(2)"
+        assert page.input_value(f"{first} [data-field=to]") == "50"
+        assert page.locator(f"{second} [data-field=to]").count() == 0 and "50 kg 以上" in page.inner_text(second)
+        page.wait_for_function("document.querySelector('[data-db-segment] [data-db-seg-example]').textContent.includes('53.00')")
+        # 加一段：原来的最后一段要填“到”，新的一段从它开始。
         page.click("[data-db-segment-add]")
-        second = "[data-db-segment]:nth-child(2)"
-        page.fill(f"{second} [data-field=from]", "50")
-        page.fill(f"{second} [data-field=first_weight]", "50")
-        page.fill(f"{second} [data-field=first_price]", "30")
-        page.fill(f"{second} [data-field=extra_price]", "0.5")
-        assert "至 50 kg（不含）" in page.inner_text(first) and "不设上限" in page.inner_text(second)
-        page.click("[data-db-segment-add]")
-        page.click("[data-db-segment]:nth-child(3) [data-db-segment-remove]")
-        assert page.locator("[data-db-segment]").count() == 2
+        third = "[data-db-segment]:nth-child(3)"
+        page.fill(f"{second} [data-field=to]", "200")
+        assert "200 kg 以上" in page.inner_text(third)
+        assert page.get_attribute(f"{third} [data-field=first_weight]", "placeholder") == "200"
+        page.fill(f"{third} [data-field=first_price]", "100")
+        page.fill(f"{third} [data-field=extra_price]", "0.3")  # “起步价含”空着＝从 200 kg 算
+        page.wait_for_function("document.querySelectorAll('[data-db-seg-example]')[2].textContent.includes('200 kg 100.00 元起')")
+        assert "50 kg 30.00 → 199 kg 104.50" in page.inner_text(second)
+        _action, body, _ = posts[-1]
+        assert body["rule"]["segments"][2] == {"from": "200", "first_weight": "200", "first_price": "100", "extra_price": "0.3"}
+        # “到”不比起点大时，表下直接说哪一段错了。
+        page.fill(f"{second} [data-field=to]", "40")
+        page.wait_for_selector("text=第 2 段的“到”必须大于这一段的起点 50 公斤")
+        page.fill(f"{second} [data-field=to]", "200")
+        page.wait_for_function("!document.querySelector('[data-db-seg-check]').textContent")
+        # 删掉中间一段：后面一段接到上一段的终点。
+        page.click(f"{second} [data-db-segment-remove]")
+        assert page.locator("[data-db-segment]").count() == 2 and "50 kg 以上" in page.inner_text(second)
         page.select_option("[data-db-rule-form] [name=rounding]", "ceil_kg")
         page.fill("[data-db-rule-form] [name=trial_weight]", "120.2")
         page.click("[data-db-rule-trial]")
-        page.wait_for_selector("text=派送费 65.50 元")
+        page.wait_for_selector("text=派送费 121.30 元")  # 第 2 段从 50 起、起步价含空着＝50：100 + 71 × 0.3
         action, body, _ = posts[-1]
         assert action == "rules/trial" and body["rule"]["rounding"] == "ceil_kg" and body["settlement_weight"] == "120.2"
         assert body["rule"]["segments"] == [{"from": "0", "first_weight": "1", "first_price": "5", "extra_price": "1"},
-                                            {"from": "50", "first_weight": "50", "first_price": "30", "extra_price": "0.5"}]
+                                            {"from": "50", "first_weight": "50", "first_price": "100", "extra_price": "0.3"}]
+        assert "怎么算的" in page.inner_text("[data-db-rule-trial-result]")
+        page.wait_for_function("document.querySelectorAll('[data-db-seg-example]')[1].textContent.includes('50 kg 100.00 元起')")
         if SHOTS:
             page.locator("[data-db-rules]").screenshot(path=str(Path(SHOTS) / "delivery_rule_segments.png"))
         assert errors == []

@@ -154,7 +154,7 @@
     els.strip.innerHTML = [
       ["进账单（融辉已结算）", `${summary.settled_count} 单`, `到货表 ${summary.arrival_count} 单`],
       ["融辉结算金额", money(summary.ronghui_total), "融辉付给网点"],
-      ["派送费", money(summary.delivery_total), "按公斤段：首重价＋续重"],
+      ["派送费", money(summary.delivery_total), "按公斤段：起步价＋超出部分"],
       ["增值费", money(summary.value_added_total), "已保存的"],
       ["应付合计", money(summary.payable_total), `已确认 ${summary.confirmed_count} · 待确认 ${summary.pending_count}`],
       ["差额", money(summary.difference_total), "融辉 − 应付"],
@@ -445,86 +445,83 @@
   }
 
   // -- 派送费规则 ----------------------------------------------------------------------------------------
+  // 2026-11-26：每段只填“到多少公斤”，起点自动接上一段（第 1 段从 0 起，最后一段“以上”），不会漏重量或重叠。
+  // 每段“算出来”的钱由 Agent 用同一计费引擎算（rules/trial 不带重量），页面不算钱。
   const ruleForm = $("[data-db-rule-form]");
+  const segmentBody = $("[data-db-segments]");
+  const segCheck = $("[data-db-seg-check]");
+  const kg = (value) => `${weight(value)} kg`;
+  const startText = (value) => (value ? weight(value) : "?");
+  let roundingLabels = {};
+  try { roundingLabels = JSON.parse(els.rules.dataset.roundings || "{}"); } catch (_error) { roundingLabels = {}; }
+  let rulesLoaded = [];
+  let editorTouched = false;
+  let exampleSeq = 0;
+  let exampleTimer = 0;
+  let fillEditor = () => {};  // set below when the edit form exists
+
+  function todayText() { return ymd(new Date()); }
+  // 现在执行的一版：执行日期不晚于今天的最新在用版本（列表已按执行日期倒序）。
+  function currentRule(rules) {
+    const active = rules.filter((rule) => rule.status === "active");
+    return active.find((rule) => rule.effective_from <= todayText()) || active[active.length - 1] || null;
+  }
+  function exampleText(points) {
+    if (!Array.isArray(points) || !points.length) return "—";
+    if (points.length === 1) return `${kg(points[0].weight)} ${money(points[0].amount)} 元起`;
+    return points.map((point) => `${kg(point.weight)} ${money(point.amount)}`).join(" → ");
+  }
+  function rangeText(segments, index) {
+    const low = weight(segments[index].from);
+    return index + 1 < segments.length ? `${low}–${weight(segments[index + 1].from)} kg` : `${low} kg 以上`;
+  }
+  function ruleTable(rule) {
+    const segments = rule.segments || [];
+    const examples = rule.examples || [];
+    return `<table class="pb-table db-mini db-rule-table"><thead><tr><th>重量范围</th><th>起步价</th><th>起步价含</th><th>超出单价</th><th>算出来</th></tr></thead><tbody>
+      ${segments.map((segment, index) => `<tr><td>${esc(rangeText(segments, index))}</td><td class="num">${esc(money(segment.first_price))} 元</td>
+        <td class="num">${esc(kg(segment.first_weight))}</td><td class="num">${esc(weight(segment.extra_price))} 元/kg</td>
+        <td class="db-seg-example">${esc(exampleText(examples[index]))}</td></tr>`).join("")}</tbody></table>`;
+  }
+  function ruleCard(rule, current) {
+    const future = rule.status === "active" && rule.effective_from > todayText();
+    const badge = rule.status !== "active" ? '<span class="db-badge">已作废</span>'
+      : rule === current ? '<span class="db-badge" data-tone="ok">现在用的</span>'
+        : future ? '<span class="db-badge" data-tone="warn">还没到执行日期</span>' : '<span class="db-badge">较早的一版</span>';
+    const rounding = roundingLabels[rule.rounding] || "";
+    const retire = superAdmin && rule.status === "active" && !rule.confirmed_count
+      ? `<button type="button" class="pb-link" data-db-retire="${rule.id}" data-revision="${rule.revision}">作废</button>` : "";
+    return `<article class="db-rule-card" data-db-rule-card>
+      <header><b>${esc(rule.effective_from)} 起执行</b>${badge}${retire}</header>
+      ${ruleTable(rule)}
+      <p class="db-sub">超出部分的零头：${esc(rounding)} · 已确认 ${esc(rule.confirmed_count)} 单 · ${esc(rule.created_by)} ${esc(rule.created_at || "")}${rule.note ? ` · ${esc(rule.note)}` : ""}</p>
+    </article>`;
+  }
   async function loadRules() {
     const box = $("[data-db-rules-list]");
     box.innerHTML = '<p class="db-hint">正在读取…</p>';
     try {
       const data = await request("/finance/delivery-bills/rules");
-      box.innerHTML = data.rules.length ? `<table class="pb-table db-mini"><thead><tr><th>执行日期</th><th>规则</th><th>状态</th><th>已确认单</th><th>设置人</th>${superAdmin ? "<th></th>" : ""}</tr></thead><tbody>
-        ${data.rules.map((rule) => `<tr><td>${esc(rule.effective_from)}</td><td>${esc(rule.description)}${rule.note ? `<small class="db-sub">${esc(rule.note)}</small>` : ""}</td>
-          <td>${rule.status === "active" ? "在用" : "已作废"}</td><td>${rule.confirmed_count}</td><td>${esc(rule.created_by)}<small class="db-sub">${esc(rule.created_at || "")}</small></td>
-          ${superAdmin ? `<td>${rule.status === "active" && !rule.confirmed_count ? `<button type="button" class="pb-link" data-db-retire="${rule.id}" data-revision="${rule.revision}">作废</button>` : ""}</td>` : ""}</tr>`).join("")}</tbody></table>`
-        : '<p class="db-alert">还没有派送费规则，账单里的派送费算不出来，也不能确认。</p>';
+      rulesLoaded = data.rules || [];
+      const current = currentRule(rulesLoaded);
+      const active = rulesLoaded.filter((rule) => rule.status === "active");
+      const retired = rulesLoaded.filter((rule) => rule.status !== "active");
+      box.innerHTML = (active.length ? active.map((rule) => ruleCard(rule, current)).join("")
+        : '<p class="db-alert">还没有在用的派送费规则，账单里的派送费算不出来，也不能确认。</p>')
+        + (retired.length ? `<details class="db-rule-retired"><summary>已作废的版本（${retired.length}）</summary>${retired.map((rule) => ruleCard(rule, current)).join("")}</details>` : "")
+        + (active.length > 1 ? '<p class="db-hint">每单按到货表日期，用执行日期不晚于那天的最新一版；已有确认单用过的版本不能作废，改价请新增一版。</p>' : "");
+      if (!editorTouched) fillEditor(current);
     } catch (error) {
       box.innerHTML = `<p class="db-alert">${esc(error.message)}</p>`;
     }
   }
-  // 公斤段表：第 1 段从 0 起；每段到下一段起点（不含）为止，最后一段不设上限。
-  const segmentBody = $("[data-db-segments]");
-  function segmentRow(segment = {}, index = 0) {
-    const from = index === 0 ? "0" : (segment.from ?? "");
-    return `<tr data-db-segment>
-      <td><span class="db-seg-from"><input data-field="from" inputmode="decimal" value="${esc(from)}" ${index === 0 ? "readonly" : ""} aria-label="第 ${index + 1} 段起点（kg）"><span data-db-seg-to></span></span></td>
-      <td><input data-field="first_weight" inputmode="decimal" value="${esc(segment.first_weight ?? "")}" aria-label="第 ${index + 1} 段首重（kg）"></td>
-      <td><input data-field="first_price" inputmode="decimal" value="${esc(segment.first_price ?? "")}" aria-label="第 ${index + 1} 段首重价"></td>
-      <td><input data-field="extra_price" inputmode="decimal" value="${esc(segment.extra_price ?? "")}" aria-label="第 ${index + 1} 段续重单价"></td>
-      <td>${index === 0 ? "" : '<button type="button" class="pb-link" data-db-segment-remove>删除</button>'}</td></tr>`;
+
+  function ruleError(message) {
+    const node = $("[data-db-rule-error]");
+    if (!node) { if (message) say(message); return; }
+    node.hidden = !message; node.textContent = message || "";
   }
-  function readSegments() {
-    return $$("[data-db-segment]", segmentBody).map((row) => Object.fromEntries(
-      $$("input[data-field]", row).map((input) => [input.dataset.field, input.value.trim()])));
-  }
-  function drawSegments(segments) {
-    const list = segments.length ? segments : [{}];
-    segmentBody.innerHTML = list.map((segment, index) => segmentRow(segment, index)).join("");
-    labelSegments();
-  }
-  function labelSegments() {
-    const rows = $$("[data-db-segment]", segmentBody);
-    rows.forEach((row, index) => {
-      const next = rows[index + 1]?.querySelector('[data-field="from"]').value.trim();
-      row.querySelector("[data-db-seg-to]").textContent = index + 1 < rows.length ? ` 至 ${next || "?"} kg（不含）` : " kg 起，不设上限";
-    });
-  }
-  segmentBody.addEventListener("input", labelSegments);
-  segmentBody.addEventListener("click", (event) => {
-    if (!event.target.closest("[data-db-segment-remove]")) return;
-    const segments = readSegments();
-    segments.splice($$("[data-db-segment]", segmentBody).indexOf(event.target.closest("[data-db-segment]")), 1);
-    drawSegments(segments);
-  });
-  $("[data-db-segment-add]").addEventListener("click", () => drawSegments([...readSegments(), {}]));
-  drawSegments([]);
-  function ruleValues() {
-    const data = Object.fromEntries(new FormData(ruleForm).entries());
-    return { rule: { segments: readSegments(), rounding: data.rounding }, data };
-  }
-  function ruleError(message) { const node = $("[data-db-rule-error]"); node.hidden = !message; node.textContent = message || ""; }
   $("[data-db-open-rules]").addEventListener("click", () => { ruleError(""); els.rules.showModal(); loadRules(); });
-  $("[data-db-rule-trial]").addEventListener("click", async () => {
-    const { rule, data } = ruleValues();
-    const out = $("[data-db-rule-trial-result]");
-    ruleError(""); out.textContent = "计算中…";
-    try {
-      const result = await request("/finance/delivery-bills/rules/trial", { method: "POST", body: { rule, settlement_weight: data.trial_weight?.trim() } });
-      out.textContent = `派送费 ${money(result.amount)} 元（${result.steps.join("；")}）`;
-    } catch (error) { out.textContent = ""; ruleError(error.message); }
-  });
-  ruleForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!superAdmin) return;
-    const { rule, data } = ruleValues();
-    ruleError("");
-    if (!window.confirm(`保存执行日期 ${data.effective_from || "（未填）"} 起的派送费规则？到货表日期在这天及以后、还没确认的单都按新规则计算。`)) return;
-    try {
-      await request("/finance/delivery-bills/rules", { method: "POST", write: true, body: { ...rule, effective_from: data.effective_from, note: data.note?.trim() || null } });
-      ruleForm.reset();
-      drawSegments([]);
-      await loadRules();
-      say("派送费规则已保存，请重新查询账单。");
-    } catch (error) { ruleError(error.message); }
-  });
   $("[data-db-rules-list]").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-db-retire]");
     if (!button || !window.confirm("作废这一版派送费规则？")) return;
@@ -533,6 +530,136 @@
       await loadRules();
     } catch (error) { ruleError(error.message); }
   });
+
+  // 编辑表（只有能操作财务的人有）：每行 {to, first_price, first_weight, extra_price}；最后一行没有“到”。
+  if (ruleForm) {
+  function segmentRow(row, index, count, start) {
+    const last = index + 1 === count;
+    const range = last ? `<span class="db-seg-range">${esc(startText(start))} kg 以上</span>`
+      : `<span class="db-seg-range">${esc(startText(start))} 到 <input data-field="to" inputmode="decimal" value="${esc(row.to ?? "")}" aria-label="第 ${index + 1} 段到多少公斤"> kg</span>`;
+    const cell = (field, label, placeholder = "") => `<td><input data-field="${field}" inputmode="decimal" value="${esc(row[field] ?? "")}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""} aria-label="第 ${index + 1} 段${label}"></td>`;
+    return `<tr data-db-segment>
+      <td>${range}</td>${cell("first_price", "起步价（元）")}${cell("first_weight", "起步价含（公斤）", start ? weight(start) : "")}${cell("extra_price", "超出单价（元/公斤）")}
+      <td class="db-seg-example" data-db-seg-example>—</td>
+      <td>${count > 1 ? '<button type="button" class="pb-link" data-db-segment-remove>删除</button>' : ""}</td></tr>`;
+  }
+  function readRows() {
+    return $$("[data-db-segment]", segmentBody).map((row) => Object.fromEntries(
+      $$("input[data-field]", row).map((input) => [input.dataset.field, input.value.trim()])));
+  }
+  function startsOf(rows) { return rows.map((_row, index) => (index === 0 ? "0" : rows[index - 1].to || "")); }
+  function drawRows(rows) {
+    const list = rows.length ? rows : [{}];
+    const starts = startsOf(list);
+    segmentBody.innerHTML = list.map((row, index) => segmentRow(row, index, list.length, starts[index])).join("");
+    scheduleExamples();
+  }
+  // 表单 → 接口的公斤段：起点＝上一段的“到”；“起步价含”空着＝这一段起点。
+  function readSegments() {
+    const rows = readRows();
+    const starts = startsOf(rows);
+    return rows.map((row, index) => ({
+      from: starts[index], first_weight: row.first_weight || starts[index],
+      first_price: row.first_price || "", extra_price: row.extra_price || "",
+    }));
+  }
+  fillEditor = (rule) => {
+    const segments = rule?.segments || [];
+    drawRows(segments.map((segment, index) => ({
+      to: segments[index + 1]?.from ?? "", first_price: segment.first_price,
+      first_weight: segment.first_weight, extra_price: segment.extra_price,
+    })));
+    if (rule?.rounding) ruleForm.querySelector("[name=rounding]").value = rule.rounding;
+  };
+  // 改“到”时只更新后面各行显示的起点，不重画（保留光标）。
+  function refreshStarts() {
+    const rows = readRows();
+    const starts = startsOf(rows);
+    $$("[data-db-segment]", segmentBody).forEach((row, index) => {
+      const range = row.querySelector(".db-seg-range");
+      const input = range.querySelector("input");
+      range.firstChild.textContent = input ? `${startText(starts[index])} 到 ` : `${startText(starts[index])} kg 以上`;
+      row.querySelector('[data-field="first_weight"]').placeholder = starts[index] ? weight(starts[index]) : "";
+    });
+  }
+  function scheduleExamples() {
+    window.clearTimeout(exampleTimer);
+    exampleTimer = window.setTimeout(drawExamples, 350);
+  }
+  async function drawExamples() {
+    const cells = $$("[data-db-seg-example]", segmentBody);
+    const segments = readSegments();
+    const blank = segments.some((segment) => Object.values(segment).some((value) => !value));
+    const seq = ++exampleSeq;
+    if (blank) {
+      cells.forEach((cell) => { cell.textContent = "—"; });
+      segCheck.textContent = "";
+      return;
+    }
+    try {
+      const result = await request("/finance/delivery-bills/rules/trial", { method: "POST",
+        body: { rule: { segments, rounding: ruleForm.querySelector("[name=rounding]").value } } });
+      if (seq !== exampleSeq) return;
+      cells.forEach((cell, index) => { cell.textContent = exampleText(result.examples?.[index]); });
+      segCheck.textContent = "";
+    } catch (error) {
+      if (seq !== exampleSeq) return;
+      cells.forEach((cell) => { cell.textContent = "—"; });
+      segCheck.textContent = error.message;
+    }
+  }
+  segmentBody.addEventListener("input", (event) => {
+    editorTouched = true;
+    if (event.target.dataset.field === "to") refreshStarts();
+    scheduleExamples();
+  });
+  segmentBody.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-db-segment-remove]");
+    if (!button) return;
+    editorTouched = true;
+    const rows = readRows();
+    rows.splice($$("[data-db-segment]", segmentBody).indexOf(button.closest("[data-db-segment]")), 1);
+    drawRows(rows);
+  });
+  $("[data-db-segment-add]").addEventListener("click", () => {
+    editorTouched = true;
+    drawRows([...readRows(), {}]);
+    $$('[data-db-segment] [data-field="to"]', segmentBody).at(-1)?.focus();
+  });
+  ruleForm.querySelector("[name=rounding]").addEventListener("change", () => { editorTouched = true; scheduleExamples(); });
+  drawRows([]);
+
+  $("[data-db-rule-trial]").addEventListener("click", async () => {
+    const data = Object.fromEntries(new FormData(ruleForm).entries());
+    const out = $("[data-db-rule-trial-result]");
+    ruleError("");
+    if (!data.trial_weight?.trim()) { out.textContent = "请先填结算重量。"; return; }
+    out.textContent = "计算中…";
+    try {
+      const result = await request("/finance/delivery-bills/rules/trial", { method: "POST",
+        body: { rule: { segments: readSegments(), rounding: data.rounding }, settlement_weight: data.trial_weight.trim() } });
+      out.innerHTML = `<b>派送费 ${esc(money(result.amount))} 元</b><details class="db-steps-box"><summary>怎么算的</summary>
+        <ol class="db-steps">${result.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>`;
+    } catch (error) { out.textContent = ""; ruleError(error.message); }
+  });
+  ruleForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!superAdmin) return;
+    const data = Object.fromEntries(new FormData(ruleForm).entries());
+    ruleError("");
+    if (!data.effective_from) { ruleError("请先填执行日期。"); return; }
+    if (!window.confirm(`保存 ${data.effective_from} 起执行的派送费规则？到货表日期在这天及以后、还没确认的单都按这一版算。`)) return;
+    try {
+      await request("/finance/delivery-bills/rules", { method: "POST", write: true,
+        body: { segments: readSegments(), rounding: data.rounding, effective_from: data.effective_from, note: data.note?.trim() || null } });
+      ruleForm.reset();
+      editorTouched = false;
+      $("[data-db-rule-trial-result]").textContent = "";
+      await loadRules();
+      say("派送费规则已保存，请重新查询账单。");
+    } catch (error) { ruleError(error.message); }
+  });
+  }
 
   // -- 设置（超级管理员） ---------------------------------------------------------------------------------
   if (els.settings) {

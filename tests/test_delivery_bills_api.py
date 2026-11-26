@@ -165,8 +165,14 @@ def test_super_admin_only_rules_and_failures_are_explained(setup):
     trial = client.post(f"{BASE}/rules/trial", json={"rule": {"segments": segments, "rounding": "ceil_kg"},
                                                       "settlement_weight": "120.2"}).json()["data"]
     assert trial["amount"] == "65.50"
+    assert trial["examples"][1] == [{"weight": "50", "amount": "30.00"}]
+    # Without a weight the trial only returns each segment's example amounts (the editor's “算出来” column).
+    examples_only = client.post(f"{BASE}/rules/trial", json={"rule": {"segments": segments, "rounding": "exact"}}).json()["data"]
+    assert examples_only == {"examples": [[{"weight": "0", "amount": "5.00"}, {"weight": "49", "amount": "53.00"}],
+                                          [{"weight": "50", "amount": "30.00"}]]}
     rules = client.get(f"{BASE}/rules").json()["data"]["rules"]
-    assert rules[0]["description"] == "0 公斤起：首重 30 公斤 10 元，续重每公斤 0.5 元；按实际重量"
+    assert rules[0]["description"] == "0 公斤以上：起步价 10 元（含 30 公斤），超出每公斤 0.5 元；超出部分按实际重量；正好在分界按下一段算"
+    assert rules[0]["examples"] == [[{"weight": "0", "amount": "10.00"}]]
     expired = client.post(f"{BASE}/revoke", json={"request_id": "x", "snapshot_id": "nope", "tracking_number": "R001",
                                                   "expected_revision": 1})
     assert expired.status_code == 409 and expired.json()["error"]["code"] == "DELIVERY_SNAPSHOT_EXPIRED"
