@@ -12,8 +12,8 @@
   改为“起步价／起步价含／超出单价”，存储字段仍是 first_price/first_weight/extra_price）
   ＋增值费。
 - 2026-11-26 用户改口径：增值费以融辉结算明细为准，取设置里的“增值费结算类型”（默认“付上楼费收入”
-  “付卸货费”，算给司机），不再人工按业务手册选；融辉结算金额里其余计入的类型（付派送费除外，如代收
-  货款手续费、到付款手续费、等通知放货费、围板箱服务费）是“其他收入”，单独一列，不给司机。到货表配送
+  “付卸货费”“付清点费收入”，算给司机），不再人工按业务手册选；融辉结算金额里其余计入的类型（付派送费除外，如代收
+  货款手续费、到付款手续费、等通知放货费、围板箱服务费；以“付派送费”开头的如付派送费折让属于派送费，不算）是“其他收入”，单独一列，不给司机。到货表配送
   方式在“不算派送费的配送方式”里的单（默认“自提”＝开单自提）派送费留空，仍可确认，应付只含增值费。
 
 计算全部走 ``shared.fee_engine``（与业务手册同一引擎）；金额用 ``Decimal``，存四位、显示两位。
@@ -41,7 +41,7 @@ MAX_LOOKAHEAD_DAYS = 31
 MAX_BATCH = 200
 MAX_TYPES = 60
 MAX_METHODS = 10
-DEFAULT_VALUE_ADDED_TYPES = ("付上楼费收入", "付卸货费")
+DEFAULT_VALUE_ADDED_TYPES = ("付上楼费收入", "付卸货费", "付清点费收入")
 DEFAULT_NO_FEE_METHODS = ("自提",)
 SETTINGS_FIELDS = ("lookahead_days", "include_types", "exclude_types", "value_added_types", "no_fee_methods")
 MAX_AMOUNT = Decimal("1000000")
@@ -139,8 +139,8 @@ def parse_settings(payload: Mapping[str, Any]) -> dict[str, Any]:
     if set(include) & set(exclude):
         raise _invalid("同一个结算类型不能既计入又不计入。")
     value_added_types = _type_list(payload.get("value_added_types", list(DEFAULT_VALUE_ADDED_TYPES)), "增值费结算类型")
-    if DELIVERY_FEE_TYPE in value_added_types:
-        raise _invalid(f"“{DELIVERY_FEE_TYPE}”按派送费规则算，不能设为增值费。")
+    if any(kind.startswith(DELIVERY_FEE_TYPE) for kind in value_added_types):
+        raise _invalid(f"以“{DELIVERY_FEE_TYPE}”开头的结算类型属于派送费，不能设为增值费。")
     if set(value_added_types) & set(exclude):
         raise _invalid("增值费结算类型不能同时设为不计入。")
     methods = _type_list(payload.get("no_fee_methods", list(DEFAULT_NO_FEE_METHODS)), "不算派送费的配送方式",
@@ -180,8 +180,12 @@ def settlement_entries(rows: Iterable[Any]) -> dict[str, list[dict[str, Any]]]:
 
 
 def _part(kind: str, value_added_types: Iterable[str]) -> str:
-    """计入的结算类型属于哪一部分：派送费、增值费（给司机）或其他收入。"""
-    if kind == DELIVERY_FEE_TYPE:
+    """计入的结算类型属于哪一部分：派送费、增值费（给司机）或其他收入。
+
+    以“付派送费”开头的（付派送费、付派送费折让等）都属于派送费：折让是融辉对派送费本身的调整
+    （如自提件原派费 39、折让 −19.5、实际 19.5），已算在融辉结算金额里，不是其他收入（2026-11-26 用户定）。
+    """
+    if kind.startswith(DELIVERY_FEE_TYPE):
         return "delivery"
     return "value_added" if kind in set(value_added_types) else "other"
 

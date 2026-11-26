@@ -157,20 +157,21 @@ def test_value_added_and_other_income_split_counted_types():
     grouped = settlement_entries([
         settle("R001", "付派送费", "40"), settle("R001", "付上楼费收入", "35.36"), settle("R001", "付卸货费", "10"),
         settle("R001", "付代收货款手续费", "2.5"), settle("R001", "付等通知放货费", "5"), settle("R001", "派到付款", "-300"),
-        settle("R001", "付异形件加收", "8"),
+        settle("R001", "付异形件加收", "8"), settle("R001", "付派送费折让", "-19.5"),
     ])
     summary = summarize_settlement(grouped["R001"], [], ["付异形件加收"], ["付上楼费收入", "付卸货费"])
-    assert summary["amount"] == Decimal("92.86")
+    assert summary["amount"] == Decimal("73.36")
     assert summary["value_added"] == Decimal("45.36") and summary["other_income"] == Decimal("7.5")
     parts = {item["type"]: item["part"] for item in summary["types"]}
     assert parts == {"付派送费": "delivery", "付上楼费收入": "value_added", "付卸货费": "value_added",
-                     "付代收货款手续费": "other", "付等通知放货费": "other", "派到付款": "", "付异形件加收": ""}
+                     "付代收货款手续费": "other", "付等通知放货费": "other", "派到付款": "", "付异形件加收": "",
+                     "付派送费折让": "delivery"}
 
 
 def test_settings_validation():
     parsed = parse_settings({"lookahead_days": 10, "include_types": ["收工单罚款"], "exclude_types": []})
     assert parsed["lookahead_days"] == 10
-    assert parsed["value_added_types"] == ["付上楼费收入", "付卸货费"] and parsed["no_fee_methods"] == ["自提"]
+    assert parsed["value_added_types"] == ["付上楼费收入", "付卸货费", "付清点费收入"] and parsed["no_fee_methods"] == ["自提"]
     custom = parse_settings({"lookahead_days": 3, "include_types": [], "exclude_types": [],
                              "value_added_types": ["付上楼费收入"], "no_fee_methods": ["自提", "预约自提"]})
     assert custom["value_added_types"] == ["付上楼费收入"] and custom["no_fee_methods"] == ["自提", "预约自提"]
@@ -179,6 +180,7 @@ def test_settings_validation():
                 {"lookahead_days": 5, "include_types": ["a"], "exclude_types": ["a"]},
                 {"lookahead_days": 5, "include_types": [], "exclude_types": [], "other": 1},
                 {"lookahead_days": 5, "include_types": [], "exclude_types": [], "value_added_types": ["付派送费"]},
+                {"lookahead_days": 5, "include_types": [], "exclude_types": [], "value_added_types": ["付派送费折让"]},
                 {"lookahead_days": 5, "include_types": [], "exclude_types": ["付卸货费"], "value_added_types": ["付卸货费"]},
                 {"lookahead_days": 5, "include_types": [], "exclude_types": [], "no_fee_methods": [""]}):
         with pytest.raises(FinanceValidationError):

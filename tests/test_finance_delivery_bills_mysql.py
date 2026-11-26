@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 from uuid import uuid4
 
@@ -21,6 +22,14 @@ D = dt.date
 def require_loopback():
     if os.environ.get("AGENT_DB_HOST") != "127.0.0.1" or os.environ.get("AGENT_DB_PORT") != "33330":
         pytest.fail("delivery bill tests require the isolated loopback MySQL on port 33330")
+
+
+def test_migrations_seed_value_added_types(database):  # noqa: F811 - runs first, before ``repo`` resets settings
+    with database._connection() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT value_added_types_json AS v, no_fee_methods_json AS m FROM finance_delivery_bill_settings")
+        row = cursor.fetchone()
+    loaded = {key: json.loads(value) if isinstance(value, (str, bytes)) else value for key, value in row.items()}
+    assert loaded == {"v": ["付上楼费收入", "付卸货费", "付清点费收入"], "m": ["自提"]}
 
 
 @pytest.fixture

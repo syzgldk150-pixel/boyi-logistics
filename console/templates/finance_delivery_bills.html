@@ -5,7 +5,7 @@
 {% block breadcrumb %}派件账单{% endblock %}
 {% block subtitle %}财务模块 · {{ station }}派件：融辉结算给网点的钱与应付派送款{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/finance_platform_bills.css?v=20261120-grid">
-<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261126-income1">{% endblock %}
+<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261126-income3">{% endblock %}
 
 {% block content %}
 {# 派件账单（2026-11-24）：每日到货表里大祥S站的单 ∩ 融辉结算明细里已有“付派送费”的单。
@@ -62,7 +62,7 @@
     <div data-db-body>
       <div class="pb-empty" data-kind="idle"><b>选择到货表日期后点“查询”</b><span>系统会实时读取融辉结算明细，只列出融辉已结算（有“付派送费”）的单。</span></div>
     </div>
-    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计，不含派到付款；其中增值费＝设置里的增值费结算类型（默认付上楼费收入、付卸货费），其他收入＝除付派送费、增值费以外的部分（代收货款手续费、到付款手续费、等通知放货费、围板箱服务费等，不给司机）。应付＝派送费（按融辉结算重量所在公斤段：起步价＋超出部分 × 超出单价；配送方式为开单自提的单不算）＋增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
+    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计，不含派到付款；其中增值费＝设置里的增值费结算类型（默认付上楼费收入、付卸货费、付清点费收入），其他收入＝除付派送费（含付派送费折让）、增值费以外的部分（代收货款手续费、到付款手续费、等通知放货费、围板箱服务费等，不给司机）。应付＝派送费（按融辉结算重量所在公斤段：起步价＋超出部分 × 超出单价；配送方式为开单自提的单不算）＋增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
     <p class="sr-only" role="status" aria-live="polite" data-db-status></p>
   </section>
 
@@ -140,4 +140,4 @@
 </section>
 {% endblock %}
 
-{% block scripts %}<script src="/static/finance_delivery_bills.js?v=20261126-income1"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance_delivery_bills.js?v=20261126-income3"></script>{% endblock %}

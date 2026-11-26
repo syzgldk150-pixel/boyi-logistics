@@ -176,7 +176,7 @@
       ["进账单（融辉已结算）", `${summary.settled_count} 单`, `到货表 ${summary.arrival_count} 单`],
       ["融辉结算金额", masked(summary.ronghui_total), "融辉付给网点", true],
       ["派送费", money(summary.delivery_total), "按公斤段：起步价＋超出部分"],
-      ["增值费", money(summary.value_added_total), "融辉结算的上楼费、卸货费等"],
+      ["增值费", money(summary.value_added_total), "融辉结算的上楼费、卸货费、清点费"],
       ["其他收入", money(summary.other_income_total), "代收/到付手续费等，不给司机"],
       ["应付合计", money(summary.payable_total), `已确认 ${summary.confirmed_count} · 待确认 ${summary.pending_count}`],
       ["差额", masked(summary.difference_total), "融辉 − 应付", true],
@@ -308,7 +308,7 @@
   const findRow = (code) => bill?.rows.find((row) => row.tracking_number === code);
   function closeOn(dialog) { $$("[data-db-close]", dialog).forEach((button) => button.addEventListener("click", () => dialog.close())); }
   [els.detail, els.rules, els.settings, els.list].filter(Boolean).forEach(closeOn);
-  const PART = { delivery: "派送费", value_added: "增值费（给司机）", other: "其他收入" };
+  const PART = { delivery: "派送费（融辉）", value_added: "增值费（给司机）", other: "其他收入" };
 
   function openDetail(code) {
     const row = findRow(code);
