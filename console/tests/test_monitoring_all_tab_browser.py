@@ -28,7 +28,8 @@ ITEMS = {
         {"id": "y2", "title": "合成问题乙", "occurred_at": "2026-01-02 09:30:00", "content": "合成问题乙"},
     ],
     "ronghui:work_response": [
-        {"id": "r1", "title": "合成工单丙", "occurred_at": "2026-01-02 09:00:00", "content": "合成工单丙"},
+        {"id": "r1", "title": "合成工单丙", "occurred_at": "2026-01-02 09:00:00",
+         "content": "合成长正文" + "虚构网点回复内容，" * 40},
     ],
 }
 
@@ -77,6 +78,14 @@ def test_message_center_merges_everything_without_category_tabs(app, browser):
         rows = page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts()
         assert rows == ["合成问题乙", "合成工单丙", "合成问题甲"]
         assert {category for category, _ in item_requests} == {"ronghui:work_response", "yunda:problems"}
+
+        # A long one-line body collapses to an ellipsis instead of pushing the row past the list edge.
+        widths = page.evaluate("""() => {
+            const list = document.querySelector('[data-monitoring-items]');
+            return [list.clientWidth, Math.max(...[...list.querySelectorAll('li, li *')].map((n) =>
+                n.getBoundingClientRect().right - list.getBoundingClientRect().left))];
+        }""")
+        assert widths[1] <= widths[0] + 1, widths
 
         import os
         if os.environ.get("MONITOR_SHOT"):

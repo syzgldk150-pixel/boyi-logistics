@@ -80,7 +80,7 @@
   .monitor-items-status[data-status="error"] { color: var(--status-danger); }
   .monitor-items-status[data-stale="true"] { color: var(--status-warn); }
   .monitor-items { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line-subtle); }
-  .monitor-item { display: grid; gap: 6px; min-height: 82px; align-content: center; padding: 12px 20px; border-bottom: 1px solid var(--line-row); }
+  .monitor-item { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-height: 82px; align-content: center; padding: 12px 20px; border-bottom: 1px solid var(--line-row); }
   .monitor-item:last-child { border-bottom: 0; }
   .monitor-item-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .monitor-source-tag, .monitor-item-kind { display: inline-flex; align-items: center; flex: 0 0 auto; height: 20px; padding: 0 8px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-tiny); }
