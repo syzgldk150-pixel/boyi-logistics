@@ -57,7 +57,7 @@ _BILL_PAGES = {"/modules/finance/ronghui-bills": "ronghui", "/modules/finance/yu
 _BILL_QUERY = re.compile(r"/finance/platform-bills/(ronghui|yunda)")
 _DELIVERY_GET = {"/finance/delivery-bills": "bill", "/finance/delivery-bills/rules": "rules",
                  "/finance/delivery-bills/settings": "settings"}
-_DELIVERY_POST = re.compile(r"/finance/delivery-bills/(confirm|revoke|fees/prepare|fees/compute|fees/save|rules|rules/trial|settings)")
+_DELIVERY_POST = re.compile(r"/finance/delivery-bills/(confirm|revoke|rules|rules/trial|settings)")
 _DELIVERY_RETIRE = re.compile(r"/finance/delivery-bills/rules/(\d{1,18})/retire")
 
 

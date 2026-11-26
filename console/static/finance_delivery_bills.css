@@ -49,11 +49,7 @@
 .db-trial__result { display: grid; gap: 4px; font-size: var(--fs-caption); color: var(--text-secondary); }
 .db-trial__result b { font-size: var(--fs-body); font-weight: 500; color: var(--text-primary); font-family: var(--font-num); }
 .db-dialog textarea { width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--line-strong, #d6d9df); border-radius: var(--r-control); font: inherit; font-size: var(--fs-body); }
-.db-fee-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 12px; }
-.db-fee-pick { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-body); cursor: pointer; }
-.db-fee-pick input, .db-pick input { appearance: auto; -webkit-appearance: checkbox; width: 15px; height: 15px; margin-top: 2px; }
-.db-manual { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 8px 12px; border-radius: var(--r-control); background: var(--bg-subtle); }
-.db-manual b { flex-basis: 100%; font-size: var(--fs-caption); font-weight: 500; }
+.db-pick input { appearance: auto; -webkit-appearance: checkbox; width: 15px; height: 15px; margin-top: 2px; }
 
 /* Parameter form drawn by handbook_fee_form.js (same classes as 业务手册 → 报价). */
 .db .hb-fee__cells { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
@@ -94,3 +90,8 @@
 .db-seg-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .db-seg-check { font-size: var(--fs-caption); color: var(--status-danger); }
 .db-seg-check:empty { display: none; }
+.db-th-toggle { display: inline-flex; align-items: center; gap: 4px; }
+.db-eye { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-muted); cursor: pointer; }
+.db-eye:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.db-eye[aria-pressed="true"] { color: var(--brand-red); }
+.db-masked { color: var(--text-muted); letter-spacing: 1px; }

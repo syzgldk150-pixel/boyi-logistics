@@ -12,19 +12,12 @@ from shared.finance.delivery_bills import parse_rule_form
 from shared.finance.errors import FinanceError
 
 BASE = "/internal/v1/admin/finance/delivery-bills"
-UPSTAIRS = {"schema": 1, "group": "上楼卸货",
-            "params": [{"key": "floors", "label": "楼层", "type": "number", "integer": True, "min": "1"},
-                       {"key": "settlement_weight", "label": "结算重量", "type": "number", "unit": "kg",
-                        "prefill": "settlement_weight"}],
-            "formula": {"type": "sum", "items": [{"type": "fixed", "amount": "10"},
-                                                 {"type": "rate", "rate": "0.1", "of": "settlement_weight"}]}}
 
 
 class FakeFinance:
     def __init__(self):
         self.items: dict[str, dict] = {}
         self.confirmed_rows: list[dict] = []
-        self.saved: list[tuple] = []
         segments = [{"from": "0", "first_weight": "30", "first_price": "10", "extra_price": "0.5"}]
         content = parse_rule_form({"effective_from": "2026-11-01", "segments": segments, "rounding": "exact"})["content"]
         self.rules = [{"id": 5, "effective_from": "2026-11-01", "status": "active", "content": content,
@@ -33,7 +26,8 @@ class FakeFinance:
                        "confirmed_count": 0}]
 
     def delivery_settings(self):
-        return {"lookahead_days": 10, "include_types": [], "exclude_types": [], "revision": 1}
+        return {"lookahead_days": 10, "include_types": [], "exclude_types": [],
+                "value_added_types": ["付上楼费收入", "付卸货费"], "no_fee_methods": ["自提"], "revision": 1}
 
     def delivery_rules(self):
         return [dict(rule) for rule in self.rules]
@@ -51,29 +45,16 @@ class FakeFinance:
         return {"results": [{"tracking_number": row["tracking_number"], "ok": True} for row in rows],
                 "succeeded": len(rows), "failed": 0}
 
-    def save_delivery_fees(self, code, record, *, request_id, actor):
-        if self.items.get(code, {}).get("status") == "confirmed":
-            raise FinanceError("DELIVERY_BILL_CONFIRMED", "这单已确认。")
-        self.saved.append((code, record, actor))
-        self.items[code] = {"status": "open", "value_added_total": record["total"], "revision": 1,
-                            "lines": record["lines"], "billing_date": record["billing_date"].isoformat()}
-        return {"tracking_number": code, "revision": 1, "value_added_total": record["total"]}
-
     def create_delivery_rule(self, form, *, request_id, actor):
         raise AssertionError("super administrator check must run first")
-
-
-class FakeHandbook:
-    def approved(self):
-        return [{"rule_id": "r-up", "fee_kind": "upstairs", "fee_name": "上楼费", "version_label": "V6.1",
-                 "status": "APPROVED", "effective_from": "2026-01-01", "content": UPSTAIRS}]
 
 
 def settlement_rows():
     def row(code, kind, money, weight="45.5"):
         return {"BILL_CODE": code, "BALANCE_TYPE": kind, "BALANCE_CUR_MONEY": money, "BALANCE_DATE": "2026-11-05 08:00:00",
                 "SETTLEMENT_WEIGHT": weight, "PIECE_NUMBER": "2", "BL_DEL": "否"}
-    return [row("R001", "付派送费", "40.5"), row("R001", "付回单服务费", "3"), row("R002", "付派送费", "18", "20")]
+    return [row("R001", "付派送费", "40.5"), row("R001", "付回单服务费", "3"), row("R001", "付上楼费收入", "12"),
+            row("R002", "付派送费", "18", "20")]
 
 
 @pytest.fixture
@@ -93,17 +74,12 @@ def setup():
                              {"tracking_number": "R003", "arrival_date": "2026-11-05", "goods_name": "床垫", "delivery_method": "派送"}],
                 "known": ["R001", "R002", "R003"], "missing_dates": []}
 
-    async def waybill_reader(tracking, actor):
-        return {"tracking_number": tracking, "billing_date": "2026-11-03", "settlement_weight": "45.5", "pieces": 2,
-                "actual_weight": "44"}
-
     def super_admin(request):
         raise PermissionError("super administrator required")
 
     app = FastAPI()
     app.include_router(create_delivery_bills_router(
-        finance_provider=lambda: finance, fee_rules_provider=FakeHandbook, arrivals_reader=arrivals_reader,
-        settlement_reader=settlement_reader, waybill_reader=waybill_reader,
+        finance_provider=lambda: finance, arrivals_reader=arrivals_reader, settlement_reader=settlement_reader,
         admin_provider=lambda request: SimpleNamespace(actor_id="7", display_name="会计", roles=("admin",)),
         super_admin_provider=super_admin))
     return TestClient(app, raise_server_exceptions=False), finance, state
@@ -120,14 +96,20 @@ def test_query_composes_settled_rows_and_confirms_server_rows_only(setup):
     bill = query(client)
     assert state["reads"][0][0] == "2026-11-01"  # 结算日期从到货表起始日开始，往后多查 N 天（不超过今天）
     assert [row["tracking_number"] for row in bill["rows"]] == ["R001", "R002"]
-    assert bill["summary"]["unsettled_count"] == 1 and bill["rows"][0]["ronghui_amount"] == "43.5000"
+    assert bill["summary"]["unsettled_count"] == 1 and bill["rows"][0]["ronghui_amount"] == "55.5000"
     row = bill["rows"][0]
+    # 增值费取融辉结算的上楼费；回单服务费是其他收入；自提单 R002 不算派送费、照样能确认。
+    assert row["value_added_total"] == "12.0000" and row["other_income"] == "3.0000"
+    assert row["payable_total"] == "29.7500"
+    pickup = bill["rows"][1]
+    assert pickup["no_delivery_fee"] and pickup["delivery_fee"] is None and pickup["can_confirm"]
+    assert pickup["payable_total"] == "0.0000"
     stale = client.post(f"{BASE}/confirm", json={"request_id": "x", "snapshot_id": bill["snapshot_id"],
                                                   "items": [{"tracking_number": "R001", "fingerprint": "tampered"}]}).json()["data"]
     assert stale["failed"] == 1 and stale["results"][0]["error_code"] == "DELIVERY_BILL_CHANGED" and not finance.confirmed_rows
     done = client.post(f"{BASE}/confirm", json={"request_id": "x", "snapshot_id": bill["snapshot_id"],
                                                 "items": [{"tracking_number": "r001", "fingerprint": row["fingerprint"]}]}).json()["data"]
-    assert done["succeeded"] == 1 and finance.confirmed_rows[0]["ronghui_amount"] == "43.5000"
+    assert done["succeeded"] == 1 and finance.confirmed_rows[0]["ronghui_amount"] == "55.5000"
     assert finance.confirmed_rows[0]["delivery_rule_id"] == 5
     assert done["bill"]["rows"][0]["status"] == "confirmed" and done["bill"]["snapshot_id"] == bill["snapshot_id"]
     missing = client.post(f"{BASE}/confirm", json={"request_id": "x", "snapshot_id": bill["snapshot_id"],
@@ -135,26 +117,12 @@ def test_query_composes_settled_rows_and_confirms_server_rows_only(setup):
     assert missing.status_code == 409 and missing.json()["error"]["code"] == "DELIVERY_BILL_NOT_IN_SNAPSHOT"
 
 
-def test_fees_need_prepare_then_compute_and_save(setup):
-    client, finance, _state = setup
+def test_manual_value_added_endpoints_are_gone(setup):
+    client, _finance, _state = setup
     bill = query(client)
-    body = {"snapshot_id": bill["snapshot_id"], "tracking_number": "R001", "fee_kinds": ["upstairs"], "values": {}}
-    early = client.post(f"{BASE}/fees/compute", json=body)
-    assert early.status_code == 409 and early.json()["error"]["code"] == "DELIVERY_FEE_NOT_PREPARED"
-    prep = client.post(f"{BASE}/fees/prepare", json={"snapshot_id": bill["snapshot_id"], "tracking_number": "R001"}).json()["data"]
-    assert prep["billing_date"] == "2026-11-03" and [fee["name"] for fee in prep["fees"]] == ["上楼费"]
-    assert prep["prefill"] == {"settlement_weight": "45.5"}
-    preview = client.post(f"{BASE}/fees/compute", json={**body, "values": prep["prefill"]}).json()["data"]
-    assert not preview["complete"] and "楼层" in preview["missing"][0]
-    incomplete = client.post(f"{BASE}/fees/save", json={**body, "request_id": "x", "values": prep["prefill"]})
-    assert incomplete.status_code == 400 and incomplete.json()["error"]["code"] == "DELIVERY_FEE_INCOMPLETE"
-    saved = client.post(f"{BASE}/fees/save", json={**body, "request_id": "x", "values": {**prep["prefill"], "floors": 3}}).json()["data"]
-    assert saved["value_added_total"] == "14.5500"
-    code, record, actor = finance.saved[0]
-    assert code == "R001" and str(record["billing_date"]) == "2026-11-03" and actor.label == "会计"
-    assert record["lines"][0]["rule_id"] == "r-up"
-    row = saved["bill"]["rows"][0]
-    assert row["value_added_total"] == "14.5500" and row["payable_total"] == "32.3000"
+    for path in ("fees/prepare", "fees/compute", "fees/save"):
+        response = client.post(f"{BASE}/{path}", json={"snapshot_id": bill["snapshot_id"], "tracking_number": "R001"})
+        assert response.status_code in (404, 405)
 
 
 def test_super_admin_only_rules_and_failures_are_explained(setup):

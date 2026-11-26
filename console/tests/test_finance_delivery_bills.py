@@ -43,7 +43,6 @@ def test_permissions():
     assert console_permission("GET", "/modules/finance/delivery-bills") == "finance:view"
     assert console_permission("GET", "/finance/delivery-bills") == "finance:view"
     assert console_permission("POST", "/finance/delivery-bills/confirm") == "finance:operate"
-    assert console_permission("POST", "/finance/delivery-bills/fees/save") == "finance:operate"
     assert console_permission("POST", "/finance/delivery-bills/rules/trial") == "finance:operate"
     for path in ("/finance/delivery-bills/rules", "/finance/delivery-bills/settings", "/finance/delivery-bills/rules/3/retire"):
         assert console_permission("POST", path) == SUPER_ADMIN
@@ -60,12 +59,14 @@ def test_routes_dispatch():
     assert mock._handle_delivery_bills_get.call_args.args[1] == "bill"
     assert finance.handle_get(mock, object(), "/finance/delivery-bills/rules", "", {})
     assert mock._handle_delivery_bills_get.call_args.args[1] == "rules"
-    for action in ("confirm", "revoke", "fees/prepare", "fees/compute", "fees/save", "rules", "rules/trial", "settings"):
+    for action in ("confirm", "revoke", "rules", "rules/trial", "settings"):
         assert finance.handle_post(mock, object(), f"/finance/delivery-bills/{action}", "", {})
         assert mock._handle_delivery_bills_post.call_args.args[1] == action
     assert finance.handle_post(mock, object(), "/finance/delivery-bills/rules/12/retire", "", {})
     assert mock._handle_delivery_bills_post.call_args.args[1:] == ("rules/retire", "12")
     assert not finance.handle_post(mock, object(), "/finance/delivery-bills/other", "", {})
+    # 2026-11-26 起增值费取融辉结算明细，人工增值费接口已删除。
+    assert not finance.handle_post(mock, object(), "/finance/delivery-bills/fees/save", "", {})
 
 
 def test_query_is_forwarded_and_reason_kept(app):
@@ -111,9 +112,13 @@ def test_writes_forward_only_allowed_fields_with_the_browser_request_id(app):
     assert kwargs["payload"] == {"snapshot_id": "s", "items": [{"tracking_number": "R1"}],
                                  "request_id": "11111111-2222-4333-8444-555555555555"}
 
-    app._finance_write_body = lambda handler: ({"snapshot_id": "s", "tracking_number": "R1", "request_id": "x"}, object(), "id")
-    app._handle_delivery_bills_post(Handler(), "fees/prepare")
-    assert calls[-1][2]["payload"] == {"snapshot_id": "s", "tracking_number": "R1"}
+    app._finance_write_body = lambda handler: ({"lookahead_days": 5, "include_types": [], "exclude_types": [],
+                                                "value_added_types": ["付上楼费收入"], "no_fee_methods": ["自提"],
+                                                "expected_revision": 3, "other": 1}, object(), "sid")
+    app._handle_delivery_bills_post(Handler(), "settings")
+    assert calls[-1][2]["payload"] == {"lookahead_days": 5, "include_types": [], "exclude_types": [],
+                                       "value_added_types": ["付上楼费收入"], "no_fee_methods": ["自提"],
+                                       "expected_revision": 3, "request_id": "sid"}
 
     app._finance_write_body = lambda handler: ({"expected_revision": 2}, object(), "rid")
     app._handle_delivery_bills_post(Handler(), "rules/retire", "12")

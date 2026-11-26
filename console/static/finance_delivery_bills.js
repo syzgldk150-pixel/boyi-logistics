@@ -1,7 +1,8 @@
 // 财务 · 派件账单（邵阳大祥S站，2026-11-24）。“查询”经 Console → Agent：每日到货表 ∩ 融辉结算明细（实时）。
 // The Agent composes every amount (融辉结算金额、派送费、增值费、应付) and keeps the bill as a 30-minute snapshot;
-// this page only shows it, lets people pick rows to confirm, edit 增值费 (choose approved 业务手册 fees and fill
-// conditions; the Agent computes) and manage the 派送费 rule. Amounts are exact decimal strings, never floats.
+// this page only shows it, lets people pick rows to confirm and manage the 派送费 rule. Since 2026-11-26 增值费
+// and 其他收入 come from the 融辉 结算明细 (nothing entered by hand); 自提 rows carry no 派送费.
+// Amounts are exact decimal strings, never floats.
 (() => {
   "use strict";
   const main = document.querySelector(".main-content:not([hidden])") || document;
@@ -12,7 +13,6 @@
   const canManage = root.dataset.canManage === "true";
   const superAdmin = root.dataset.superAdmin === "true";
   const maxSpan = Number(root.dataset.maxSpan || 31);
-  const FeeForm = window.FeeForm;
   const $ = (selector, scope = root) => scope.querySelector(selector);
   const $$ = (selector, scope = root) => [...scope.querySelectorAll(selector)];
   const els = {
@@ -21,13 +21,19 @@
     notices: $("[data-db-notices]"), bulk: $("[data-db-bulk]"), picked: $("[data-db-picked]"),
     confirmPicked: $("[data-db-confirm-picked]"), body: $("[data-db-body]"), status: $("[data-db-status]"),
     search: $("[data-db-search]"), exportBtn: $("[data-db-export]"),
-    detail: $("[data-db-detail]"), fees: $("[data-db-fees]"), rules: $("[data-db-rules]"), settings: $("[data-db-settings]"),
+    detail: $("[data-db-detail]"), rules: $("[data-db-rules]"), settings: $("[data-db-settings]"),
     list: $("[data-db-list]"),
   };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const pad = (value) => String(value).padStart(2, "0");
   const ymd = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   const say = (message) => { els.status.textContent = message || ""; };
+  // 融辉结算金额列可隐藏（只遮表格里的逐单数值），选择记在本浏览器。
+  const HIDE_KEY = "boyi.deliveryBills.hideRonghui";
+  let hideRonghui = false;
+  try { hideRonghui = localStorage.getItem(HIDE_KEY) === "1"; } catch (_) { /* storage blocked */ }
+  const EYE_ON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.1M6.6 6.6C3.7 8.4 2 12 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
 
   // -- amounts: server strings (up to 4 decimals) shown with thousands and 2 decimals, half-up ------------
   const NUMERIC = /^-?\d{1,15}(\.\d{1,8})?$/;
@@ -150,15 +156,7 @@
     els.context.innerHTML = `<span><em>网点</em>${esc(bill.station)}</span><span><em>到货表日期</em>${esc(bill.start)} 至 ${esc(bill.end)}</span>
       <span><em>融辉结算日期</em>${esc(bill.settlement_window.start)} 至 ${esc(bill.settlement_window.end)}</span>
       <span><em>融辉读取时间</em>${esc(bill.fetched_at || "—")}</span>`;
-    els.strip.hidden = false;
-    els.strip.innerHTML = [
-      ["进账单（融辉已结算）", `${summary.settled_count} 单`, `到货表 ${summary.arrival_count} 单`],
-      ["融辉结算金额", money(summary.ronghui_total), "融辉付给网点"],
-      ["派送费", money(summary.delivery_total), "按公斤段：起步价＋超出部分"],
-      ["增值费", money(summary.value_added_total), "已保存的"],
-      ["应付合计", money(summary.payable_total), `已确认 ${summary.confirmed_count} · 待确认 ${summary.pending_count}`],
-      ["差额", money(summary.difference_total), "融辉 − 应付"],
-    ].map(([label, value, note]) => `<div class="pb-strip__cell"><span>${esc(label)}</span><b>${esc(value)}</b><small>${esc(note)}</small></div>`).join("");
+    renderStrip();
     const notices = [];
     if (bill.missing_dates.length) notices.push(`<p data-tone="warn">每日到货表缺这些日期的统计：${esc(bill.missing_dates.join("、"))}，这几天的单不会出现在账单里。</p>`);
     if (summary.unsettled_count) notices.push(`<p>到货表里还有 ${summary.unsettled_count} 单融辉未结算派送费，不进账单。<button type="button" class="pb-link" data-db-show="unsettled">查看</button></p>`);
@@ -167,6 +165,38 @@
     els.notices.hidden = !notices.length;
     els.notices.innerHTML = notices.join("");
     renderTable();
+  }
+
+  // 汇总条：融辉结算金额、差额（由融辉金额推出）跟表格列共用一个隐藏开关。
+  function renderStrip() {
+    const summary = bill.summary;
+    const masked = (value) => (hideRonghui ? "****" : money(value));
+    els.strip.hidden = false;
+    els.strip.innerHTML = [
+      ["进账单（融辉已结算）", `${summary.settled_count} 单`, `到货表 ${summary.arrival_count} 单`],
+      ["融辉结算金额", masked(summary.ronghui_total), "融辉付给网点", true],
+      ["派送费", money(summary.delivery_total), "按公斤段：起步价＋超出部分"],
+      ["增值费", money(summary.value_added_total), "融辉结算的上楼费、卸货费等"],
+      ["其他收入", money(summary.other_income_total), "代收/到付手续费等，不给司机"],
+      ["应付合计", money(summary.payable_total), `已确认 ${summary.confirmed_count} · 待确认 ${summary.pending_count}`],
+      ["差额", masked(summary.difference_total), "融辉 − 应付", true],
+    ].map(([label, value, note, toggle]) => `<div class="pb-strip__cell"><span${toggle ? ' class="db-th-toggle"' : ""}>${esc(label)}${toggle ? eyeButton() : ""}</span><b${toggle && hideRonghui ? ' class="db-masked"' : ""}>${esc(value)}</b><small>${esc(note)}</small></div>`).join("");
+  }
+
+  function eyeButton() {
+    const label = hideRonghui ? "显示融辉结算金额" : "隐藏融辉结算金额";
+    return `<button type="button" class="db-eye" data-db-hide-ronghui aria-pressed="${hideRonghui}" title="${label}" aria-label="${label}">${hideRonghui ? EYE_OFF : EYE_ON}</button>`;
+  }
+
+  function toggleRonghui(fromStrip) {
+    hideRonghui = !hideRonghui;
+    try { localStorage.setItem(HIDE_KEY, hideRonghui ? "1" : "0"); } catch (_) { /* storage blocked */ }
+    const scroll = els.body.querySelector(".db-table-wrap")?.scrollTop || 0;
+    renderStrip();
+    renderTable();
+    const wrap = els.body.querySelector(".db-table-wrap");
+    if (wrap) wrap.scrollTop = scroll;
+    (fromStrip ? els.strip : els.body).querySelector("[data-db-hide-ronghui]")?.focus();
   }
 
   function renderTable() {
@@ -183,20 +213,27 @@
     const allPicked = pickable.length > 0 && pickable.every((row) => picked.has(row.tracking_number));
     const head = `<tr>${canManage ? `<th scope="col" class="db-pick"><input type="checkbox" aria-label="全选可确认的单" data-db-pick-all ${allPicked ? "checked" : ""} ${pickable.length ? "" : "disabled"}></th>` : ""}
       <th scope="col">单号 / 到货表日期</th><th scope="col">货物 / 配送方式</th><th scope="col">件数 / 结算重量</th>
-      <th scope="col">融辉结算金额</th><th scope="col">派送费</th><th scope="col">增值费</th><th scope="col">应付合计</th><th scope="col">状态</th></tr>`;
+      <th scope="col"><span class="db-th-toggle">融辉结算金额${eyeButton()}</span></th><th scope="col">派送费</th><th scope="col">增值费</th><th scope="col">其他收入</th><th scope="col">应付合计</th><th scope="col">状态</th></tr>`;
     const body = rows.map((row) => {
       const tip = row.ronghui_types.map((item) => `${item.type} ${money(item.amount)}${item.counted ? "" : "（不计入）"}`).join("\n");
       const status = row.status === "confirmed" ? '<span class="db-badge" data-tone="ok">已确认</span>'
         : row.can_confirm ? '<span class="db-badge">待确认</span>' : '<span class="db-badge" data-tone="warn">需处理</span>';
-      const fees = row.fee_lines.length ? `<small>${row.fee_lines.filter((line) => line.counted).map((line) => esc(line.fee_name)).join("、") || "—"}</small>` : "";
+      const partNames = (part) => row.ronghui_types.filter((item) => item.part === part && Number(item.amount) !== 0).map((item) => item.type);
+      const valueNames = partNames("value_added");
+      const otherNames = partNames("other");
+      const otherTip = row.ronghui_types.filter((item) => item.part === "other").map((item) => `${item.type} ${money(item.amount)}`).join("\n");
+      const fees = valueNames.length ? `<small>${esc(valueNames.join("、"))}</small>` : "";
+      const deliveryCell = row.no_delivery_fee && row.delivery_fee == null
+        ? `<td class="pb-cell--pair num"><span class="pb-null">—</span><small>${esc(row.delivery_method)}不算</small></td>` : amountCell(row.delivery_fee);
       return `<tr class="pb-row--link" data-db-row="${esc(row.tracking_number)}">
         ${canManage ? `<td class="db-pick"><input type="checkbox" aria-label="选择 ${esc(row.tracking_number)}" data-db-pick="${esc(row.tracking_number)}" ${picked.has(row.tracking_number) ? "checked" : ""} ${row.can_confirm ? "" : "disabled"}></td>` : ""}
         <td class="pb-cell--pair"><span class="db-code">${esc(row.tracking_number)}</span><small>${esc(row.arrival_date)}</small></td>
         <td class="pb-cell--pair"><span>${esc(row.goods_name || "—")}</span><small>${esc(row.delivery_method || "—")}</small></td>
         <td class="pb-cell--pair num"><span>${esc(row.pieces ?? "—")} 件</span><small>${esc(weight(row.settlement_weight))} kg</small></td>
-        <td class="num" title="${esc(tip)}">${esc(money(row.ronghui_amount))}</td>
-        ${amountCell(row.delivery_fee)}
+        ${hideRonghui ? '<td class="num db-masked">****</td>' : `<td class="num" title="${esc(tip)}">${esc(money(row.ronghui_amount))}</td>`}
+        ${deliveryCell}
         <td class="pb-cell--pair num"><span>${esc(money(row.value_added_total))}</span>${fees}</td>
+        <td class="pb-cell--pair num" title="${esc(otherTip)}"><span>${esc(money(row.other_income))}</span>${otherNames.length ? `<small>${esc(otherNames.join("、"))}</small>` : ""}</td>
         ${amountCell(row.payable_total)}
         <td>${status}${row.problems.length ? `<small class="db-problem">${esc(row.problems[0])}</small>` : ""}</td></tr>`;
     }).join("");
@@ -231,9 +268,13 @@
   });
   els.body.addEventListener("click", (event) => {
     if (event.target.closest("[data-db-retry]")) { load(); return; }
+    if (event.target.closest("[data-db-hide-ronghui]")) { toggleRonghui(false); return; }
     if (event.target.closest("input, button, a")) return;
     const row = event.target.closest("[data-db-row]");
     if (row) openDetail(row.dataset.dbRow);
+  });
+  els.strip.addEventListener("click", (event) => {
+    if (event.target.closest("[data-db-hide-ronghui]")) toggleRonghui(true);
   });
   els.notices.addEventListener("click", (event) => {
     const button = event.target.closest("[data-db-show]");
@@ -258,7 +299,7 @@
   }
   els.confirmPicked?.addEventListener("click", async () => {
     if (!picked.size || !bill) return;
-    if (!window.confirm(`确认这 ${picked.size} 单的派送费与增值费？确认后金额固定，要改需先撤销确认。`)) return;
+    if (!window.confirm(`确认这 ${picked.size} 单的派送费与增值费？确认后应付金额固定，要改需先撤销确认。`)) return;
     busy = true; updatePicked();
     try { await confirmRows([...picked]); } catch (error) { window.alert(error.message); } finally { busy = false; updatePicked(); }
   });
@@ -266,37 +307,30 @@
   // -- detail ------------------------------------------------------------------------------------------
   const findRow = (code) => bill?.rows.find((row) => row.tracking_number === code);
   function closeOn(dialog) { $$("[data-db-close]", dialog).forEach((button) => button.addEventListener("click", () => dialog.close())); }
-  [els.detail, els.fees, els.rules, els.settings, els.list].filter(Boolean).forEach(closeOn);
-
-  function feeLinesTable(lines) {
-    if (!lines.length) return '<p class="db-hint">没有增值费。</p>';
-    return `<table class="pb-table db-mini"><thead><tr><th>费用</th><th>结果</th><th>金额</th><th>说明</th></tr></thead><tbody>
-      ${lines.map((line) => `<tr><td>${esc(line.fee_name)}<small class="db-sub">${esc(line.version || "")}</small></td>
-        <td>${esc(line.outcome_text || line.outcome)}</td><td class="num">${line.amount == null ? "—" : esc(money(line.amount))}${line.counted ? "" : '<small class="db-sub">不计入</small>'}</td>
-        <td>${esc(line.note || "")}</td></tr>`).join("")}</tbody></table>`;
-  }
+  [els.detail, els.rules, els.settings, els.list].filter(Boolean).forEach(closeOn);
+  const PART = { delivery: "派送费", value_added: "增值费（给司机）", other: "其他收入" };
 
   function openDetail(code) {
     const row = findRow(code);
     if (!row) return;
     $("[data-db-detail-title]", els.detail).textContent = `${row.tracking_number} · ${STATUS[row.status]}`;
-    const types = row.ronghui_types.map((item) => `<tr><td>${esc(item.type)}</td><td class="num">${esc(money(item.amount))}</td><td>${item.count}</td><td>${esc(item.date || "—")}</td><td>${item.counted ? "计入" : "不计入"}</td></tr>`).join("");
+    const types = row.ronghui_types.map((item) => `<tr><td>${esc(item.type)}</td><td class="num">${hideRonghui ? "****" : esc(money(item.amount))}</td><td>${item.count}</td><td>${esc(item.date || "—")}</td><td>${item.counted ? esc(PART[item.part] || "计入") : "不计入"}</td></tr>`).join("");
     $("[data-db-detail-body]", els.detail).innerHTML = `
       ${row.problems.map((item) => `<p class="db-alert">${esc(item)}</p>`).join("")}
       <dl class="db-facts"><div><dt>到货表日期</dt><dd>${esc(row.arrival_date)}</dd></div><div><dt>货物</dt><dd>${esc(row.goods_name || "—")}</dd></div>
         <div><dt>配送方式</dt><dd>${esc(row.delivery_method || "—")}</dd></div><div><dt>件数 / 结算重量</dt><dd>${esc(row.pieces ?? "—")} 件 / ${esc(weight(row.settlement_weight))} kg</dd></div>
         ${row.confirmed_by ? `<div><dt>确认</dt><dd>${esc(row.confirmed_by)} · ${esc(row.confirmed_at || "")}</dd></div>` : ""}</dl>
-      <h3>融辉结算（合计 ${esc(money(row.ronghui_amount))}）</h3>
+      <h3>融辉结算（合计 ${hideRonghui ? "****" : esc(money(row.ronghui_amount))}）</h3>
       <table class="pb-table db-mini"><thead><tr><th>结算类型</th><th>金额</th><th>笔数</th><th>结算日期</th><th>口径</th></tr></thead><tbody>${types}</tbody></table>
       <h3>派送费 ${row.delivery_fee == null ? "—" : esc(money(row.delivery_fee))}</h3>
       ${row.delivery_steps.length ? `<ol class="db-steps">${row.delivery_steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : '<p class="db-hint">没有算出派送费。</p>'}
-      <h3>增值费 ${esc(money(row.value_added_total))}${row.billing_date ? `<small class="db-sub">按开单日期 ${esc(row.billing_date)} 的已生效规则</small>` : ""}</h3>
-      ${feeLinesTable(row.fee_lines)}
+      <h3>增值费 ${esc(money(row.value_added_total))}<small class="db-sub">${row.status === "confirmed" ? "确认时记下的融辉结算金额" : "融辉结算明细里增值费结算类型的合计"}</small></h3>
+      <h3>其他收入 ${esc(money(row.other_income))}<small class="db-sub">不给司机</small></h3>
       <h3>应付合计 ${row.payable_total == null ? "—" : esc(money(row.payable_total))}</h3>`;
     const foot = $("[data-db-detail-foot]", els.detail);
     foot.innerHTML = !canManage ? "" : row.status === "confirmed"
       ? '<button type="button" class="ghost-btn" data-db-revoke>撤销确认</button>'
-      : `<button type="button" class="ghost-btn" data-db-edit-fees>编辑增值费</button><button type="button" class="primary-btn" data-db-confirm-one ${row.can_confirm ? "" : "disabled"}>确认这单</button>`;
+      : `<button type="button" class="primary-btn" data-db-confirm-one ${row.can_confirm ? "" : "disabled"}>确认这单</button>`;
     foot.onclick = async (event) => {
       const button = event.target.closest("button");
       if (!button) return;
@@ -306,125 +340,15 @@
           await confirmRows([row.tracking_number]);
           openDetail(row.tracking_number);
         } else if (button.matches("[data-db-revoke]")) {
-          if (!window.confirm("撤销确认后可以改增值费，再重新确认。继续？")) { button.disabled = false; return; }
+          if (!window.confirm("撤销确认后这单按融辉最新结算重新计算，需要再次确认。继续？")) { button.disabled = false; return; }
           const result = await request("/finance/delivery-bills/revoke", { method: "POST", write: true,
             body: { snapshot_id: bill.snapshot_id, tracking_number: row.tracking_number, expected_revision: row.item_revision } });
           bill = result.bill; render(); openDetail(row.tracking_number);
-        } else if (button.matches("[data-db-edit-fees]")) {
-          els.detail.close(); openFees(row.tracking_number);
         }
       } catch (error) { window.alert(error.message); button.disabled = false; }
     };
     if (!els.detail.open) els.detail.showModal();
   }
-
-  // -- 增值费：选业务手册已生效费用 → 填条件 → Agent 计算 → 保存 ---------------------------------------
-  let feeState = null; // {code, prep, chosen:Set, values, manual, result}
-  async function openFees(code) {
-    const body = $("[data-db-fees-body]", els.fees);
-    const foot = $("[data-db-fees-foot]", els.fees);
-    $("[data-db-fees-title]", els.fees).textContent = `增值费 · ${code}`;
-    body.innerHTML = '<p class="db-hint">正在读取运单的开单日期与重量，并列出这天已生效的业务手册规则…</p>';
-    foot.innerHTML = "";
-    els.fees.showModal();
-    try {
-      const prep = await request("/finance/delivery-bills/fees/prepare", { method: "POST", body: { snapshot_id: bill.snapshot_id, tracking_number: code } });
-      const savedForDate = prep.saved.billing_date === prep.billing_date;
-      feeState = { code, prep, chosen: new Set(prep.saved.fee_kinds || []),
-        values: { ...prep.prefill, ...(savedForDate ? prep.saved.values : {}) }, manual: { ...(prep.saved.manual || {}) }, result: null };
-      drawFees();
-    } catch (error) {
-      body.innerHTML = `<p class="db-alert">${esc(error.message)}</p>`;
-    }
-  }
-  function chosenParams() {
-    const prep = feeState.prep;
-    const keys = new Set(prep.fees.filter((fee) => feeState.chosen.has(fee.fee_kind)).flatMap((fee) => fee.params));
-    return prep.params.filter((param) => keys.has(param.key));
-  }
-  function readFees() {
-    const body = $("[data-db-fees-body]", els.fees);
-    const form = $("[data-db-fee-form]", body);
-    if (form) feeState.values = { ...feeState.values, ...FeeForm.read(form, chosenParams()) };
-    $$("[data-db-manual]", body).forEach((input) => {
-      const kind = input.dataset.dbManual;
-      feeState.manual[kind] = { ...(feeState.manual[kind] || {}), [input.dataset.field]: input.value.trim() };
-    });
-  }
-  function payload() {
-    const kinds = [...feeState.chosen];
-    const values = {};
-    chosenParams().forEach((param) => { if (feeState.values[param.key] !== undefined) values[param.key] = feeState.values[param.key]; });
-    const manual = {};
-    kinds.forEach((kind) => { const item = feeState.manual[kind]; if (item && (item.amount || item.note)) manual[kind] = { amount: item.amount || null, note: item.note || "" }; });
-    return { snapshot_id: bill.snapshot_id, tracking_number: feeState.code, fee_kinds: kinds, values, manual };
-  }
-  function drawFees() {
-    const { prep } = feeState;
-    const body = $("[data-db-fees-body]", els.fees);
-    const foot = $("[data-db-fees-foot]", els.fees);
-    const facts = prep.facts || {};
-    const fees = prep.fees.map((fee) => `<label class="db-fee-pick"><input type="checkbox" data-db-fee="${esc(fee.fee_kind)}" ${feeState.chosen.has(fee.fee_kind) ? "checked" : ""} ${canManage ? "" : "disabled"}>
-      <span>${esc(fee.name)}<small class="db-sub">${esc(fee.version)}${fee.group ? ` · 与同组“${esc(fee.group)}”取大` : ""}</small></span></label>`).join("");
-    const resultLines = feeState.result?.lines || [];
-    const manualInputs = resultLines.filter((line) => ["NEGOTIATE", "MANUAL", "ACTUAL"].includes(line.outcome)).map((line) => {
-      const item = feeState.manual[line.fee_kind] || {};
-      return `<div class="db-manual"><b>${esc(line.fee_name)}：${esc(line.outcome_text)}</b>
-        <label class="pb-field">实际金额（元） <input data-db-manual="${esc(line.fee_kind)}" data-field="amount" inputmode="decimal" value="${esc(item.amount || "")}"></label>
-        <label class="pb-field">说明 <input data-db-manual="${esc(line.fee_kind)}" data-field="note" maxlength="200" value="${esc(item.note || "")}"></label></div>`;
-    }).join("");
-    body.innerHTML = `
-      <dl class="db-facts"><div><dt>开单日期</dt><dd>${esc(prep.billing_date)}</dd></div><div><dt>结算重量</dt><dd>${esc(weight(facts.settlement_weight))} kg</dd></div>
-        <div><dt>件数</dt><dd>${esc(facts.pieces ?? "—")}</dd></div><div><dt>实际重量</dt><dd>${esc(weight(facts.actual_weight))} kg</dd></div></dl>
-      ${prep.saved.revision && prep.saved.billing_date && prep.saved.billing_date !== prep.billing_date ? `<p class="db-alert">上次保存时的开单日期是 ${esc(prep.saved.billing_date)}，与现在读到的不同，请重新核对条件。</p>` : ""}
-      ${prep.conflict ? `<p class="db-alert">${esc(prep.conflict)}</p>` : ""}
-      <h3>选择增值费（只列这天已生效的业务手册规则）</h3>
-      ${prep.fees.length ? `<div class="db-fee-list">${fees}</div>` : '<p class="db-hint">这个开单日期没有已生效的增值费规则。</p>'}
-      ${prep.unavailable.length ? `<p class="db-hint">不能用：${prep.unavailable.map((item) => `${esc(item.name)}（${esc(item.reason)}）`).join("；")}</p>` : ""}
-      ${feeState.chosen.size ? `<h3>填写条件</h3>${prep.prefill_note ? `<p class="db-hint">${esc(prep.prefill_note)}</p>` : ""}<div data-db-fee-form>${FeeForm.render(chosenParams(), feeState.values)}</div>` : ""}
-      ${feeState.result ? `<h3>计算结果：合计 ${esc(money(feeState.result.total))}</h3>${feeLinesTable(resultLines)}
-        ${resultLines.map((line) => line.steps.length ? `<details class="db-steps-box"><summary>${esc(line.fee_name)} 的计算过程</summary><ol class="db-steps">${line.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>` : "").join("")}
-        ${resultLines.flatMap((line) => line.reminders || []).map((item) => `<p class="db-hint" data-tone="warn">提醒：${esc(item)}</p>`).join("")}
-        ${manualInputs}${feeState.result.missing.length ? `<p class="db-alert">${feeState.result.missing.map(esc).join("<br>")}</p>` : ""}` : ""}
-      <p class="db-error" data-db-fee-error role="alert" hidden></p>`;
-    foot.innerHTML = canManage ? `<button type="button" class="ghost-btn" data-db-fee-compute>计算</button><button type="button" class="primary-btn" data-db-fee-save>保存增值费</button>` : "";
-    window.feather?.replace?.();
-  }
-  els.fees.addEventListener("change", (event) => {
-    const box = event.target.closest("[data-db-fee]");
-    if (!box || !feeState) return;
-    readFees();
-    box.checked ? feeState.chosen.add(box.dataset.dbFee) : feeState.chosen.delete(box.dataset.dbFee);
-    feeState.result = null;
-    drawFees();
-  });
-  els.fees.addEventListener("click", async (event) => {
-    if (!feeState) return;
-    const form = $("[data-db-fee-form]", els.fees);
-    if (form && FeeForm.handleClick(event.target.closest("[data-piece-add], [data-piece-remove]") || event.target, chosenParams(), form)) return;
-    const button = event.target.closest("[data-db-fee-compute], [data-db-fee-save]");
-    if (!button) return;
-    readFees();
-    const error = $("[data-db-fee-error]", els.fees);
-    button.disabled = true;
-    try {
-      if (button.matches("[data-db-fee-compute]")) {
-        feeState.result = await request("/finance/delivery-bills/fees/compute", { method: "POST", body: payload() });
-        drawFees();
-      } else {
-        const row = findRow(feeState.code);
-        const result = await request("/finance/delivery-bills/fees/save", { method: "POST", write: true,
-          body: { ...payload(), expected_revision: row?.item_revision ?? null } });
-        bill = result.bill; render();
-        els.fees.close();
-        say(`${feeState.code} 的增值费已保存：${money(result.value_added_total)}`);
-        openDetail(feeState.code);
-      }
-    } catch (failure) {
-      if (error) { error.hidden = false; error.textContent = failure.message; } else window.alert(failure.message);
-      button.disabled = false;
-    }
-  });
 
   // -- lists: 未结算 / 到货表缺单 ------------------------------------------------------------------------
   function showList(kind) {
@@ -675,6 +599,8 @@
         form.lookahead_days.value = data.lookahead_days;
         form.include_types.value = data.include_types.join("\n");
         form.exclude_types.value = data.exclude_types.join("\n");
+        form.value_added_types.value = data.value_added_types.join("\n");
+        form.no_fee_methods.value = data.no_fee_methods.join("\n");
       } catch (failure) { error.hidden = false; error.textContent = failure.message; }
     });
     form.addEventListener("submit", async (event) => {
@@ -684,7 +610,8 @@
       try {
         await request("/finance/delivery-bills/settings", { method: "POST", write: true, body: {
           lookahead_days: /^\d+$/.test(days) ? Number(days) : days, include_types: lines(form.include_types.value),
-          exclude_types: lines(form.exclude_types.value), expected_revision: revision } });
+          exclude_types: lines(form.exclude_types.value), value_added_types: lines(form.value_added_types.value),
+          no_fee_methods: lines(form.no_fee_methods.value), expected_revision: revision } });
         els.settings.close();
         say("设置已保存，请重新查询账单。");
       } catch (failure) { error.hidden = false; error.textContent = failure.message; }
@@ -694,10 +621,10 @@
   // -- export ----------------------------------------------------------------------------------------------
   els.exportBtn.addEventListener("click", () => {
     const rows = visibleRows();
-    const header = ["单号", "到货表日期", "货物", "配送方式", "件数", "结算重量", "融辉结算金额", "派送费", "增值费", "应付合计", "差额", "状态", "确认人"];
+    const header = ["单号", "到货表日期", "货物", "配送方式", "件数", "结算重量", "融辉结算金额", "派送费", "增值费", "其他收入", "应付合计", "差额", "状态", "确认人"];
     const cells = rows.map((row) => [row.tracking_number, row.arrival_date, row.goods_name, row.delivery_method, row.pieces ?? "",
       weight(row.settlement_weight), money(row.ronghui_amount), row.delivery_fee == null ? "" : money(row.delivery_fee),
-      money(row.value_added_total), row.payable_total == null ? "" : money(row.payable_total),
+      money(row.value_added_total), money(row.other_income), row.payable_total == null ? "" : money(row.payable_total),
       row.difference == null ? "" : money(row.difference), STATUS[row.status], row.confirmed_by || ""]);
     const csv = [header, ...cells].map((line) => line.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
     const link = document.createElement("a");

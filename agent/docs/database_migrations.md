@@ -4,10 +4,12 @@ type: 操作规范
 tags: [MySQL, SQL迁移, 部署, schema_migrations]
 related: [code_navigation_index.md, ../deploy/publish_to_ecs.md]
 status: active
-updated: 2026-11-25
+updated: 2026-11-26
 ---
 
 # 数据库迁移
+
+`095_finance_delivery_bill_income_split.sql`（派件账单按融辉结算明细分项，2026-11-26）给 `finance_delivery_bill_settings` 加 `value_added_types_json`（算作增值费的结算类型，默认“付上楼费收入”“付卸货费”）与 `no_fee_methods_json`（不算派送费的配送方式，默认“自提”），先加可空列、填默认值再改为非空；把 `finance_delivery_bill_items` 的确认约束改为派送费与规则可同时为空（开单自提确认），其余条件不变。只加列、改约束，不删数据；回退源码前须确认没有派送费为空的已确认单（旧代码读到会出错）。
 
 `094_finance_delivery_fee_segments.sql`（派件账单派送费改分公斤段，2026-11-25）给 `finance_delivery_fee_rules` 加 `segments_json`（每段起点重量、首重、首重价、续重单价，数字为文本），把已有版本（若有）原样换成从 0 公斤起的一段（原 `content_json` 计算结果不变），然后删去 093 的 `start_price`、`base_weight`、`extra_price` 及其检查约束，重建运行库视图。含 `DROP COLUMN`，只执行一次；回退源码前须先按新段表确认没有依赖，旧代码读不到这三列。
 

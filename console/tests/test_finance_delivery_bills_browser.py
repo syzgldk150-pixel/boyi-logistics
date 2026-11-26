@@ -1,4 +1,5 @@
-"""财务“派件账单”页面在 Chromium 里对合成的 Agent 回复（数据虚构）：汇总、勾选确认、增值费编辑、派送费规则。"""
+"""财务“派件账单”页面在 Chromium 里对合成的 Agent 回复（数据虚构）：汇总、勾选确认、增值费与其他收入、
+自提不算派送费、隐藏融辉金额、设置、派送费规则。"""
 import datetime as dt
 import json
 import os
@@ -22,6 +23,8 @@ from shared.finance.errors import FinanceValidationError
 CONSOLE_DIR = Path(__file__).resolve().parents[1]
 ORIGIN = "https://console.test"
 SHOTS = os.environ.get("HANDBOOK_SCREENSHOT_DIR")
+SETTINGS = {"include_types": [], "exclude_types": [], "value_added_types": ["付上楼费收入", "付卸货费"],
+            "no_fee_methods": ["自提"]}
 
 
 def _bill(items=None):
@@ -31,6 +34,10 @@ def _bill(items=None):
         {"BILL_CODE": "R001", "BALANCE_TYPE": "付派送费", "BALANCE_CUR_MONEY": "40.5", "BALANCE_DATE": "2026-11-05",
          "SETTLEMENT_WEIGHT": "45.5", "PIECE_NUMBER": "2", "BL_DEL": "否"},
         {"BILL_CODE": "R001", "BALANCE_TYPE": "派到付款", "BALANCE_CUR_MONEY": "-300", "BALANCE_DATE": "2026-11-05",
+         "SETTLEMENT_WEIGHT": "45.5", "PIECE_NUMBER": "2", "BL_DEL": "否"},
+        {"BILL_CODE": "R001", "BALANCE_TYPE": "付上楼费收入", "BALANCE_CUR_MONEY": "12", "BALANCE_DATE": "2026-11-06",
+         "SETTLEMENT_WEIGHT": "45.5", "PIECE_NUMBER": "2", "BL_DEL": "否"},
+        {"BILL_CODE": "R001", "BALANCE_TYPE": "付代收货款手续费", "BALANCE_CUR_MONEY": "2", "BALANCE_DATE": "2026-11-06",
          "SETTLEMENT_WEIGHT": "45.5", "PIECE_NUMBER": "2", "BL_DEL": "否"},
         {"BILL_CODE": "R002", "BALANCE_TYPE": "付派送费", "BALANCE_CUR_MONEY": "1234.5", "BALANCE_DATE": "2026-11-05",
          "SETTLEMENT_WEIGHT": "20", "PIECE_NUMBER": "1", "BL_DEL": "否"},
@@ -42,25 +49,14 @@ def _bill(items=None):
                 {"tracking_number": "R003", "arrival_date": "2026-11-05", "goods_name": "床垫", "delivery_method": "派送"}]
     bill = build_bill(start=dt.date(2026, 11, 1), end=dt.date(2026, 11, 24), arrivals=arrivals,
                       settlements=settlement_entries(rows), known_arrivals=["R001", "R002", "R003"],
-                      missing_dates=["2026-11-20"], settings={"include_types": [], "exclude_types": []},
+                      missing_dates=["2026-11-20"], settings=SETTINGS,
                       rules=[{"id": 5, "effective_from": "2026-11-01", "status": "active", "content": content}],
                       items=items or {})
     return {**bill, "snapshot_id": "snap-1", "station": "邵阳大祥S站", "start": "2026-11-01", "end": "2026-11-24",
             "settlement_window": {"start": "2026-11-01", "end": "2026-11-24"}, "fetched_at": "2026-11-24 12:00:00",
-            "settings": {"lookahead_days": 10, "include_types": [], "exclude_types": []}}
+            "settings": {"lookahead_days": 10, **SETTINGS}}
 
 
-PREPARE = {
-    "tracking_number": "R001", "billing_date": "2026-11-03",
-    "facts": {"settlement_weight": "45.5", "pieces": 2, "actual_weight": "44"},
-    "fees": [{"fee_kind": "upstairs", "name": "上楼费", "version": "V6.1（执行日期 2026-01-01）", "group": "上楼卸货",
-              "params": ["floors", "settlement_weight"], "reminders": []}],
-    "params": [{"key": "floors", "label": "楼层", "type": "number", "required": True, "integer": True, "decimals": 0},
-               {"key": "settlement_weight", "label": "结算重量", "type": "number", "unit": "kg", "required": True,
-                "integer": False, "decimals": 4, "prefill": "settlement_weight"}],
-    "prefill": {"settlement_weight": "45.5"}, "prefill_note": "", "unavailable": [], "conflict": "", "row_status": "pending",
-    "saved": {"fee_kinds": [], "values": {}, "manual": {}, "lines": [], "revision": None, "billing_date": None},
-}
 # 规则与试算的回复用真实的 shared 规则函数生成（数字虚构），页面上的“算出来”与 Agent 同一算法。
 RULE_SEGMENTS = [{"from": "0", "first_weight": "1", "first_price": "5", "extra_price": "1"},
                  {"from": "50", "first_weight": "50", "first_price": "30", "extra_price": "0.5"}]
@@ -83,11 +79,6 @@ def _trial(body):
         amount, steps = delivery_fee(parsed, Decimal(body["settlement_weight"]))
         result.update(amount=format(amount, "f"), steps=steps)
     return result
-
-
-LINE = {"position": 0, "fee_kind": "upstairs", "fee_name": "上楼费", "rule_id": "r-up", "version": "V6.1", "group": "上楼卸货",
-        "outcome": "AMOUNT", "outcome_text": "金额", "system_amount": "14.5500", "amount": "14.5500", "counted": True,
-        "note": "", "reason": "", "steps": ["10 + 0.1 × 45.5 = 14.55"], "reminders": []}
 
 
 @pytest.fixture(scope="module")
@@ -136,6 +127,9 @@ def _open(browser, posts):
             rules = [_saved_rule()]
             if route.request.method == "GET":
                 return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": {"rules": rules}}, ensure_ascii=False))
+        if parsed.path == "/finance/delivery-bills/settings" and route.request.method == "GET":
+            data = {"lookahead_days": 10, **SETTINGS, "revision": 4}
+            return route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "data": data}, ensure_ascii=False))
         if parsed.path.startswith("/finance/delivery-bills/"):
             action = parsed.path.removeprefix("/finance/delivery-bills/")
             body = json.loads(route.request.post_data or "{}")
@@ -148,11 +142,7 @@ def _open(browser, posts):
                                          body=json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False))
                 return route.fulfill(content_type="application/json",
                                      body=json.dumps({"ok": True, "data": data}, ensure_ascii=False))
-            reply = {"fees/prepare": PREPARE,
-                     "fees/compute": {"tracking_number": "R001", "billing_date": "2026-11-03", "lines": [LINE], "total": "14.5500",
-                                      "complete": True, "missing": []},
-                     "fees/save": {"tracking_number": "R001", "revision": 1, "value_added_total": "14.5500",
-                                   "bill": _bill({"R001": {"status": "open", "value_added_total": "14.5500", "revision": 1, "lines": [LINE]}})},
+            reply = {"settings": {"revision": 5},
                      "confirm": {"results": [{"tracking_number": "R001", "ok": True}, {"tracking_number": "R002", "ok": True}],
                                  "succeeded": 2, "failed": 0, "bill": _bill()},
                      "rules": {"rule_id": 6, **{"rules": [_saved_rule()]}}}.get(action)
@@ -173,9 +163,14 @@ def test_bill_summary_rows_and_notices(browser):
         page.click("[data-db-query]")
         page.wait_for_selector(".db-table")
         strip = page.inner_text("[data-db-strip]")
-        assert "2 单" in strip and "到货表 3 单" in strip and "1,275.00" in strip and "27.75" in strip
+        assert "2 单" in strip and "到货表 3 单" in strip and "1,289.00" in strip and "29.75" in strip
+        assert "其他收入" in strip and "1,259.25" in strip
         table = page.inner_text(".db-table")
         assert "R001" in table and "R002" in table and "R003" not in table and "17.75" in table and "1,234.50" in table
+        assert "其他收入" in page.inner_text(".db-table thead")
+        r001 = page.inner_text("[data-db-row=R001]")
+        assert "12.00" in r001 and "付上楼费收入" in r001 and "付代收货款手续费" in r001
+        assert "自提不算" in page.inner_text("[data-db-row=R002]")
         notices = page.inner_text("[data-db-notices]")
         assert "2026-11-20" in notices and "1 单融辉未结算" in notices and "1 单派送费" in notices
         page.click("[data-db-show=missing]")
@@ -205,28 +200,56 @@ def test_pick_and_confirm_sends_snapshot_and_fingerprints(browser):
         assert errors == []
 
 
-def test_value_added_fees_are_chosen_filled_computed_and_saved(browser):
+def test_detail_shows_settled_value_added_and_no_manual_editing(browser):
     posts = []
     context, page, errors = _open(browser, posts)
     with context:
         page.click("[data-db-query]")
         page.wait_for_selector(".db-table")
         page.click("[data-db-row=R001] td:nth-child(3)")
-        page.click("[data-db-edit-fees]")
-        page.wait_for_selector("[data-db-fee=upstairs]")
-        assert "2026-11-03" in page.inner_text("[data-db-fees-body]")
-        page.check("[data-db-fee=upstairs]")
-        page.fill("[data-param=floors]", "3")
-        page.click("[data-db-fee-compute]")
-        page.wait_for_selector("text=计算结果：合计 14.55")
-        action, body, _ = posts[-1]
-        assert action == "fees/compute" and body["values"] == {"floors": 3, "settlement_weight": "45.5"}
-        page.click("[data-db-fee-save]")
         page.wait_for_selector("[data-db-detail][open]")
+        detail = page.inner_text("[data-db-detail-body]")
+        assert "增值费 12.00" in detail and "其他收入 2.00" in detail and "增值费（给司机）" in detail
+        assert page.locator("[data-db-edit-fees]").count() == 0 and page.locator("[data-db-fees]").count() == 0
+        page.click("[data-db-detail] [data-db-close]")
+        page.click("[data-db-row=R002] td:nth-child(3)")
+        assert "不算派送费" in page.inner_text("[data-db-detail-body]")
+        assert page.is_enabled("[data-db-confirm-one]")
+        assert errors == []
+
+
+def test_hide_ronghui_amounts_toggle_persists(browser):
+    posts = []
+    context, page, errors = _open(browser, posts)
+    with context:
+        page.click("[data-db-query]")
+        page.wait_for_selector(".db-table")
+        page.click(".db-table [data-db-hide-ronghui]")
+        strip = page.inner_text("[data-db-strip]")
+        assert "1,289.00" not in strip and "1,259.25" not in strip and "****" in strip
+        assert "1,234.50" not in page.inner_text(".db-table") and "29.75" in strip
+        page.reload()
+        page.click("[data-db-query]")
+        page.wait_for_selector(".db-table")
+        assert "1,234.50" not in page.inner_text(".db-table")
+        page.click("[data-db-strip] [data-db-hide-ronghui]")
+        assert "1,234.50" in page.inner_text(".db-table") and "1,289.00" in page.inner_text("[data-db-strip]")
+        assert errors == []
+
+
+def test_settings_send_value_added_types_and_no_fee_methods(browser):
+    posts = []
+    context, page, errors = _open(browser, posts)
+    with context:
+        page.click("[data-db-open-settings]")
+        page.wait_for_function("document.querySelector('[name=value_added_types]').value.includes('付卸货费')")
+        page.fill("[name=no_fee_methods]", "自提\n预约自提")
+        page.click("[data-db-settings-form] button[type=submit]")
+        page.wait_for_function("!document.querySelector('[data-db-settings]').open")
         action, body, request_id = posts[-1]
-        assert action == "fees/save" and body["fee_kinds"] == ["upstairs"] and body["expected_revision"] is None
+        assert action == "settings" and body["no_fee_methods"] == ["自提", "预约自提"]
+        assert body["value_added_types"] == ["付上楼费收入", "付卸货费"] and body["expected_revision"] == 4
         assert body["request_id"] == request_id
-        assert "14.55" in page.inner_text("[data-db-detail-body]")
         assert errors == []
 
 

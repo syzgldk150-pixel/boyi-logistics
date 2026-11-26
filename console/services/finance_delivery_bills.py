@@ -1,11 +1,11 @@
 """财务“派件账单”（邵阳大祥S站）：页面与转发。
 
 账单由 Agent 组成：每日到货表里大祥S站的单 ∩ 融辉结算明细（大祥S站账号实时读取）里已有
-“付派送费”的单；派送费按“每票起步价＋超重加价”规则计算，增值费由人选业务手册已生效规则、
-填条件后由引擎算金额。Console 不计算、不写库，只转发白名单字段：查询经签名
+“付派送费”的单；派送费按公斤段规则计算（配送方式为自提等的单不算），增值费与其他收入取融辉
+结算明细（2026-11-26 起，不再人工选）。Console 不计算、不写库，只转发白名单字段：查询经签名
 ``GET /internal/v1/admin/finance/delivery-bills``，写操作先按财务写入要求核对真实后台账号、
 同源请求与 ``X-Browser-Request-UUID``，再带同一请求标识转发。权限由 ``shared.identity_routes``
-决定（财务可见才能查看，可操作才能确认与改增值费，派送费规则与设置只允许超级管理员）。
+决定（财务可见才能查看，可操作才能确认，派送费规则与设置只允许超级管理员）。
 """
 
 from __future__ import annotations
@@ -25,13 +25,10 @@ _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _POSTS = {
     "confirm": ("/confirm", ("snapshot_id", "items"), 60, True),
     "revoke": ("/revoke", ("snapshot_id", "tracking_number", "expected_revision"), 30, True),
-    "fees/prepare": ("/fees/prepare", ("snapshot_id", "tracking_number"), 75, False),
-    "fees/compute": ("/fees/compute", ("snapshot_id", "tracking_number", "fee_kinds", "values", "manual"), 20, False),
-    "fees/save": ("/fees/save", ("snapshot_id", "tracking_number", "fee_kinds", "values", "manual", "expected_revision"),
-                  30, True),
     "rules": ("/rules", ("effective_from", "segments", "rounding", "note"), 20, True),
     "rules/trial": ("/rules/trial", ("rule", "settlement_weight"), 20, False),
-    "settings": ("/settings", ("lookahead_days", "include_types", "exclude_types", "expected_revision"), 20, True),
+    "settings": ("/settings", ("lookahead_days", "include_types", "exclude_types", "value_added_types",
+                               "no_fee_methods", "expected_revision"), 20, True),
 }
 _STATUSES = (400, 403, 404, 409, 422, 502, 503)
 

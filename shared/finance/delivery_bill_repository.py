@@ -1,8 +1,10 @@
-"""派件账单的存储（迁移 093）：派送费规则版本、每单增值费与确认、单行设置。
+"""派件账单的存储（迁移 093–095）：派送费规则版本、每单确认、单行设置。
 
 账单行本身由 Agent 用每日到货表与融辉结算明细即时组成（``shared.finance.delivery_bills``），
 这里只保存人做过的事。每次写入都在 ``FinanceRepository._write`` 的一个事务里，按请求标识幂等；
 确认时锁住该单的记录、核对版本，并在库里重新选一次派送费规则，与查询时看到的不一致就拒绝。
+2026-11-26 起增值费取融辉结算明细（Agent 组账单时算好，确认时随行记下），不再人工保存；不算派送费的
+配送方式（开单自提）确认时派送费与规则都为空。迁移 093 的增值费人工选择列与明细表保留旧数据，不再写入。
 本期不记账；确认记录保留金额、规则版本与计算过程，供下一期按司机结算、进总账。
 """
 
@@ -65,13 +67,16 @@ class DeliveryBillsMixin:
 
     def delivery_settings(self) -> dict[str, Any]:
         def read(cursor: Any) -> dict[str, Any]:
-            cursor.execute("SELECT lookahead_days, include_types_json, exclude_types_json, revision, updated_by, updated_at"
+            cursor.execute("SELECT lookahead_days, include_types_json, exclude_types_json, value_added_types_json,"
+                           " no_fee_methods_json, revision, updated_by, updated_at"
                            " FROM finance_delivery_bill_settings WHERE id=1")
             row = fetchone(cursor)
             if row is None:
                 raise FinanceError("DELIVERY_SETTINGS_MISSING", "派件账单设置缺失，请检查迁移 093 是否已执行。", http_status=503)
             return {"lookahead_days": int(row["lookahead_days"]), "include_types": _load(row["include_types_json"]) or [],
-                    "exclude_types": _load(row["exclude_types_json"]) or [], "revision": int(row["revision"]),
+                    "exclude_types": _load(row["exclude_types_json"]) or [],
+                    "value_added_types": _load(row["value_added_types_json"]) or [],
+                    "no_fee_methods": _load(row["no_fee_methods_json"]) or [], "revision": int(row["revision"]),
                     "updated_by": row["updated_by"], "updated_at": _iso(row["updated_at"])}
 
         return self._read(read)
@@ -148,9 +153,11 @@ class DeliveryBillsMixin:
             if int(row["revision"]) != revision:
                 raise FinanceError("DELIVERY_SETTINGS_CHANGED", "设置已被别人修改，请刷新后重试。")
             cursor.execute("UPDATE finance_delivery_bill_settings SET lookahead_days=%s, include_types_json=%s,"
-                           " exclude_types_json=%s, revision=revision+1, updated_by=%s WHERE id=1",
+                           " exclude_types_json=%s, value_added_types_json=%s, no_fee_methods_json=%s,"
+                           " revision=revision+1, updated_by=%s WHERE id=1",
                            (settings["lookahead_days"], json_text(settings["include_types"]),
-                            json_text(settings["exclude_types"]), actor.label))
+                            json_text(settings["exclude_types"]), json_text(settings["value_added_types"]),
+                            json_text(settings["no_fee_methods"]), actor.label))
             return {**settings, "revision": revision + 1}
 
         return self._write(request_id=request_id, action="delivery_settings_save", target_type="delivery_bill_settings",
@@ -214,48 +221,6 @@ class DeliveryBillsMixin:
         if current != expected:
             raise FinanceError("DELIVERY_BILL_CHANGED", "这单已被别人修改，请重新查询后再操作。")
 
-    def save_delivery_fees(self, tracking_number: str, record: Mapping[str, Any], *, request_id: Any,
-                           actor: FinanceActor) -> dict[str, Any]:
-        """保存一单的增值费（整组替换）。``record`` 由 Agent 在服务端算好：所选费用、条件、人工金额、明细与合计。"""
-        lines: list[Mapping[str, Any]] = record["lines"]
-        total = Decimal(str(record["total"]))
-        expected = record.get("expected_revision")
-
-        def work(cursor: Any) -> dict[str, Any]:
-            row = self._lock_item(cursor, tracking_number)
-            self._check_revision(row, expected)
-            if row is not None and row["status"] == "confirmed":
-                raise FinanceError("DELIVERY_BILL_CONFIRMED", "这单已确认，要改增值费请先撤销确认。")
-            values = (record["billing_date"], json_text(record["fee_kinds"]), json_text(record["values"]),
-                      json_text(record["manual"]), json_text(record["result"]), total, actor.label)
-            if row is None:
-                cursor.execute("INSERT INTO finance_delivery_bill_items (tracking_number, arrival_date, billing_date,"
-                               " fee_kinds_json, values_json, manual_json, fee_result_json, value_added_total,"
-                               " fees_updated_by, fees_updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,"
-                               " CURRENT_TIMESTAMP(6))", (tracking_number, record["arrival_date"], *values))
-                revision = 1
-            else:
-                cursor.execute("UPDATE finance_delivery_bill_items SET billing_date=%s, fee_kinds_json=%s, values_json=%s,"
-                               " manual_json=%s, fee_result_json=%s, value_added_total=%s, fees_updated_by=%s,"
-                               " fees_updated_at=CURRENT_TIMESTAMP(6), revision=revision+1 WHERE tracking_number=%s",
-                               (*values, tracking_number))
-                revision = int(row["revision"]) + 1
-            cursor.execute("DELETE FROM finance_delivery_bill_fee_lines WHERE tracking_number=%s", (tracking_number,))
-            if lines:
-                cursor.executemany(
-                    "INSERT INTO finance_delivery_bill_fee_lines (tracking_number, position, fee_kind, fee_name, rule_id,"
-                    " version_label, outcome, system_amount, amount, counted, note) VALUES (%s, %s, %s, %s, %s, %s, %s,"
-                    " %s, %s, %s, %s)",
-                    [(tracking_number, line["position"], line["fee_kind"], line["fee_name"][:40], line.get("rule_id") or None,
-                      str(line.get("version") or "")[:160], line["outcome"], line.get("system_amount"), line.get("amount"),
-                      1 if line["counted"] else 0, str(line.get("note") or "")[:400]) for line in lines])
-            return {"tracking_number": tracking_number, "revision": revision, "value_added_total": format(total, "f")}
-
-        payload = {"tracking_number": tracking_number, "fee_kinds": record["fee_kinds"], "values": record["values"],
-                   "manual": record["manual"], "expected_revision": expected}
-        return self._write(request_id=request_id, action="delivery_fees_save", target_type="delivery_bill",
-                           target_id=tracking_number, payload=payload, actor=actor, work=work)
-
     def confirm_delivery_bill(self, row: Mapping[str, Any], *, request_id: Any, actor: FinanceActor) -> dict[str, Any]:
         """确认一单：``row`` 是 Agent 本次查询快照里的账单行（服务端组成，不来自浏览器）。"""
         tracking_number = row["tracking_number"]
@@ -269,31 +234,37 @@ class DeliveryBillsMixin:
             self._check_revision(item, row.get("item_revision"))
             if item is not None and item["status"] == "confirmed":
                 raise FinanceError("DELIVERY_BILL_CONFIRMED", "这单已确认。")
-            cursor.execute("SELECT id FROM finance_delivery_fee_rules WHERE status='active' AND effective_from<=%s"
-                           " ORDER BY effective_from DESC LIMIT 1 FOR SHARE", (arrival,))
-            rule = fetchone(cursor)
-            if rule is None or int(rule["id"]) != int(row["delivery_rule_id"]):
-                raise FinanceError("DELIVERY_RULE_CHANGED", "派送费规则已变化，请重新查询后再确认。")
-            fee = Decimal(row["delivery_fee"])
-            value_added = Decimal(str(item["value_added_total"])) if item is not None else Decimal("0")
-            payable = fee + value_added
+            if row.get("no_delivery_fee"):
+                if row.get("delivery_fee") is not None or row.get("delivery_rule_id") is not None:
+                    raise FinanceError("DELIVERY_BILL_CHANGED", "这单的派送费口径已变化，请重新查询后再确认。")
+                fee, rule_id = None, None
+            else:
+                cursor.execute("SELECT id FROM finance_delivery_fee_rules WHERE status='active' AND effective_from<=%s"
+                               " ORDER BY effective_from DESC LIMIT 1 FOR SHARE", (arrival,))
+                rule = fetchone(cursor)
+                if rule is None or row.get("delivery_rule_id") is None or int(rule["id"]) != int(row["delivery_rule_id"]):
+                    raise FinanceError("DELIVERY_RULE_CHANGED", "派送费规则已变化，请重新查询后再确认。")
+                fee, rule_id = Decimal(row["delivery_fee"]), int(row["delivery_rule_id"])
+            value_added = Decimal(row["value_added_total"])
+            payable = (fee or Decimal("0")) + value_added
             if Decimal(row["payable_total"]) != payable:
-                raise FinanceError("DELIVERY_BILL_CHANGED", "这单的增值费已变化，请重新查询后再确认。")
+                raise FinanceError("DELIVERY_BILL_CHANGED", "这单的应付金额已变化，请重新查询后再确认。")
             confirm = (Decimal(row["ronghui_amount"]), json_text(row["ronghui_types"]),
                        None if row["settlement_weight"] is None else Decimal(row["settlement_weight"]), row.get("pieces"),
-                       fee, int(row["delivery_rule_id"]), json_text(row["delivery_steps"]), payable, actor.label)
+                       fee, rule_id, json_text(row["delivery_steps"]), value_added, payable, actor.label)
             if item is None:
                 cursor.execute("INSERT INTO finance_delivery_bill_items (tracking_number, arrival_date, status,"
                                " ronghui_amount, ronghui_detail_json, settlement_weight, pieces, delivery_fee, delivery_rule_id,"
-                               " delivery_steps_json, payable_total, confirmed_by, confirmed_at) VALUES (%s, %s, 'confirmed',"
-                               " %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP(6))",
+                               " delivery_steps_json, value_added_total, payable_total, confirmed_by, confirmed_at)"
+                               " VALUES (%s, %s, 'confirmed', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP(6))",
                                (tracking_number, arrival, *confirm))
                 revision = 1
             else:
                 cursor.execute("UPDATE finance_delivery_bill_items SET status='confirmed', arrival_date=%s, ronghui_amount=%s,"
                                " ronghui_detail_json=%s, settlement_weight=%s, pieces=%s, delivery_fee=%s, delivery_rule_id=%s,"
-                               " delivery_steps_json=%s, payable_total=%s, confirmed_by=%s, confirmed_at=CURRENT_TIMESTAMP(6),"
-                               " revision=revision+1 WHERE tracking_number=%s", (arrival, *confirm, tracking_number))
+                               " delivery_steps_json=%s, value_added_total=%s, payable_total=%s, confirmed_by=%s,"
+                               " confirmed_at=CURRENT_TIMESTAMP(6), revision=revision+1 WHERE tracking_number=%s",
+                               (arrival, *confirm, tracking_number))
                 revision = int(item["revision"]) + 1
             return {"tracking_number": tracking_number, "revision": revision, "payable_total": format(payable, "f")}
 
@@ -331,7 +302,8 @@ class DeliveryBillsMixin:
             self._check_revision(item, revision)
             cursor.execute("UPDATE finance_delivery_bill_items SET status='open', ronghui_amount=NULL, ronghui_detail_json=NULL,"
                            " settlement_weight=NULL, pieces=NULL, delivery_fee=NULL, delivery_rule_id=NULL,"
-                           " delivery_steps_json=NULL, payable_total=NULL, confirmed_by=NULL, confirmed_at=NULL,"
+                           " delivery_steps_json=NULL, value_added_total=0, payable_total=NULL, confirmed_by=NULL,"
+                           " confirmed_at=NULL,"
                            " revision=revision+1 WHERE tracking_number=%s", (tracking_number,))
             return {"tracking_number": tracking_number, "revision": revision + 1}
 

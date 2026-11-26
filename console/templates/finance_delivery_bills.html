@@ -5,11 +5,12 @@
 {% block breadcrumb %}派件账单{% endblock %}
 {% block subtitle %}财务模块 · {{ station }}派件：融辉结算给网点的钱与应付派送款{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/finance_platform_bills.css?v=20261120-grid">
-<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261126-seg2">{% endblock %}
+<link rel="stylesheet" href="/static/finance_delivery_bills.css?v=20261126-income1">{% endblock %}
 
 {% block content %}
 {# 派件账单（2026-11-24）：每日到货表里大祥S站的单 ∩ 融辉结算明细里已有“付派送费”的单。
-   每次查询都实时读融辉，Agent 组好账单后在本次查询内（30 分钟）确认、改增值费；页面不计算金额。 #}
+   每次查询都实时读融辉，Agent 组好账单后在本次查询内（30 分钟）确认；页面不计算金额。
+   2026-11-26：增值费、其他收入取融辉结算明细；配送方式为自提等的单不算派送费。 #}
 <section class="pb db" data-delivery-bills data-can-manage="{{ 'true' if can_manage else 'false' }}"
   data-super-admin="{{ 'true' if is_super_admin else 'false' }}" data-max-span="{{ max_span_days }}">
   <nav class="pb-modules" aria-label="财务模块">
@@ -61,7 +62,7 @@
     <div data-db-body>
       <div class="pb-empty" data-kind="idle"><b>选择到货表日期后点“查询”</b><span>系统会实时读取融辉结算明细，只列出融辉已结算（有“付派送费”）的单。</span></div>
     </div>
-    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计（派送费、折让、回单服务费、手续费、增值收入），不含派到付款；应付＝派送费（按融辉结算重量所在公斤段：起步价＋超出部分 × 超出单价）＋已保存的增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
+    <p class="pb-note">融辉结算金额＝该单以“付”开头的结算类型合计，不含派到付款；其中增值费＝设置里的增值费结算类型（默认付上楼费收入、付卸货费），其他收入＝除付派送费、增值费以外的部分（代收货款手续费、到付款手续费、等通知放货费、围板箱服务费等，不给司机）。应付＝派送费（按融辉结算重量所在公斤段：起步价＋超出部分 × 超出单价；配送方式为开单自提的单不算）＋增值费。确认只在本次查询内有效（30 分钟），之后请重新查询。</p>
     <p class="sr-only" role="status" aria-live="polite" data-db-status></p>
   </section>
 
@@ -70,13 +71,6 @@
       <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
     <div class="db-dialog__body" data-db-detail-body></div>
     <footer class="db-dialog__foot" data-db-detail-foot></footer>
-  </dialog>
-
-  <dialog class="db-dialog db-dialog--wide" data-db-fees aria-labelledby="db-fees-title">
-    <header class="db-dialog__head"><h2 id="db-fees-title" data-db-fees-title>增值费</h2>
-      <button type="button" class="ghost-btn" data-db-close aria-label="关闭">关闭</button></header>
-    <div class="db-dialog__body" data-db-fees-body></div>
-    <footer class="db-dialog__foot" data-db-fees-foot></footer>
   </dialog>
 
   <dialog class="db-dialog db-dialog--wide" data-db-rules data-roundings='{{ roundings|tojson }}' aria-labelledby="db-rules-title">
@@ -128,6 +122,10 @@
       <label class="pb-field">额外计入融辉结算金额的结算类型（每行一个） <textarea name="include_types" rows="3"></textarea></label>
       <label class="pb-field">不计入的结算类型（每行一个） <textarea name="exclude_types" rows="3"></textarea></label>
       <p class="db-hint">默认计入以“付”开头的全部结算类型（融辉付给网点的派件收入）；派到付款、罚款等不以“付”开头的不计入。</p>
+      <label class="pb-field">算作增值费（给司机）的结算类型（每行一个） <textarea name="value_added_types" rows="3"></textarea></label>
+      <p class="db-hint">计入融辉结算金额的类型里，除“付派送费”和这里列出的，其余都算“其他收入”（不给司机）。</p>
+      <label class="pb-field">不算派送费的配送方式（每行一个，按到货表“配送方式”原文） <textarea name="no_fee_methods" rows="2"></textarea></label>
+      <p class="db-hint">默认“自提”（开单自提）：派送费留空，应付只含增值费；“预约自提”要一起不算就加一行。</p>
       <p class="db-error" data-db-settings-error role="alert" hidden></p>
       <div class="db-actions"><button type="submit" class="primary-btn">保存设置</button></div>
     </form>
@@ -142,5 +140,4 @@
 </section>
 {% endblock %}
 
-{% block scripts %}<script src="/static/handbook_fee_form.js?v=20261119-quote1"></script>
-<script src="/static/finance_delivery_bills.js?v=20261126-seg2"></script>{% endblock %}
+{% block scripts %}<script src="/static/finance_delivery_bills.js?v=20261126-income1"></script>{% endblock %}

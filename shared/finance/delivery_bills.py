@@ -10,7 +10,11 @@
 - 应付（给司机）＝派送费（按融辉结算重量分公斤段，每段有自己的起步价（含若干公斤）与超出单价；
   重量正好等于分界时按下一段算；规则按到货表日期选版本，2026-11-25 用户定；页面用语 2026-11-26
   改为“起步价／起步价含／超出单价”，存储字段仍是 first_price/first_weight/extra_price）
-  ＋增值费（业务手册已生效规则，人工选费用、填条件，引擎算金额；需协商等由人填金额）。
+  ＋增值费。
+- 2026-11-26 用户改口径：增值费以融辉结算明细为准，取设置里的“增值费结算类型”（默认“付上楼费收入”
+  “付卸货费”，算给司机），不再人工按业务手册选；融辉结算金额里其余计入的类型（付派送费除外，如代收
+  货款手续费、到付款手续费、等通知放货费、围板箱服务费）是“其他收入”，单独一列，不给司机。到货表配送
+  方式在“不算派送费的配送方式”里的单（默认“自提”＝开单自提）派送费留空，仍可确认，应付只含增值费。
 
 计算全部走 ``shared.fee_engine``（与业务手册同一引擎）；金额用 ``Decimal``，存四位、显示两位。
 """
@@ -22,7 +26,7 @@ import hashlib
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
-from shared.fee_engine import NO_AMOUNT, QuoteRule, calculate, parse_rule, quote
+from shared.fee_engine import calculate, parse_rule
 from shared.finance.db import json_text
 from shared.finance.errors import FinanceValidationError
 from shared.finance.money import ZERO, InvalidAmountError, MissingAmountError, quantize_storage, to_decimal
@@ -36,13 +40,15 @@ MAX_SPAN_DAYS = 31
 MAX_LOOKAHEAD_DAYS = 31
 MAX_BATCH = 200
 MAX_TYPES = 60
-MAX_FEES = 20
+MAX_METHODS = 10
+DEFAULT_VALUE_ADDED_TYPES = ("付上楼费收入", "付卸货费")
+DEFAULT_NO_FEE_METHODS = ("自提",)
+SETTINGS_FIELDS = ("lookahead_days", "include_types", "exclude_types", "value_added_types", "no_fee_methods")
 MAX_AMOUNT = Decimal("1000000")
 ROUNDINGS = {"exact": "按实际重量", "ceil_kg": "不足 1 公斤按 1 公斤"}
 RULE_FIELDS = ("effective_from", "segments", "rounding", "note")
 SEGMENT_FIELDS = ("from", "first_weight", "first_price", "extra_price")
 MAX_SEGMENTS = 20
-_MANUAL_OUTCOMES = ("NEGOTIATE", "MANUAL", "ACTUAL")
 
 
 def _invalid(message: str, code: str = "DELIVERY_BILL_INVALID") -> FinanceValidationError:
@@ -111,19 +117,19 @@ def type_counted(kind: str, include: Iterable[str], exclude: Iterable[str]) -> b
     return kind in set(include) or kind.startswith(COUNTED_PREFIX)
 
 
-def _type_list(value: Any, label: str) -> list[str]:
-    if not isinstance(value, list) or len(value) > MAX_TYPES:
+def _type_list(value: Any, label: str, *, limit: int = MAX_TYPES, what: str = "结算类型") -> list[str]:
+    if not isinstance(value, list) or len(value) > limit:
         raise _invalid(f"{label}格式无效。")
     items = []
     for item in value:
         if not isinstance(item, str) or not 0 < len(item.strip()) <= 60:
-            raise _invalid(f"{label}里有无效的结算类型。")
+            raise _invalid(f"{label}里有无效的{what}。")
         items.append(item.strip())
     return list(dict.fromkeys(items))
 
 
 def parse_settings(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, Mapping) or set(payload) - {"lookahead_days", "include_types", "exclude_types"}:
+    if not isinstance(payload, Mapping) or set(payload) - set(SETTINGS_FIELDS):
         raise _invalid("设置内容无效。")
     days = payload.get("lookahead_days")
     if isinstance(days, bool) or not isinstance(days, int) or not 0 <= days <= MAX_LOOKAHEAD_DAYS:
@@ -132,7 +138,15 @@ def parse_settings(payload: Mapping[str, Any]) -> dict[str, Any]:
     exclude = _type_list(payload.get("exclude_types", []), "不计入的结算类型")
     if set(include) & set(exclude):
         raise _invalid("同一个结算类型不能既计入又不计入。")
-    return {"lookahead_days": days, "include_types": include, "exclude_types": exclude}
+    value_added_types = _type_list(payload.get("value_added_types", list(DEFAULT_VALUE_ADDED_TYPES)), "增值费结算类型")
+    if DELIVERY_FEE_TYPE in value_added_types:
+        raise _invalid(f"“{DELIVERY_FEE_TYPE}”按派送费规则算，不能设为增值费。")
+    if set(value_added_types) & set(exclude):
+        raise _invalid("增值费结算类型不能同时设为不计入。")
+    methods = _type_list(payload.get("no_fee_methods", list(DEFAULT_NO_FEE_METHODS)), "不算派送费的配送方式",
+                         limit=MAX_METHODS, what="配送方式")
+    return {"lookahead_days": days, "include_types": include, "exclude_types": exclude,
+            "value_added_types": value_added_types, "no_fee_methods": methods}
 
 
 # -- 融辉结算明细 ----------------------------------------------------------------------------
@@ -165,21 +179,34 @@ def settlement_entries(rows: Iterable[Any]) -> dict[str, list[dict[str, Any]]]:
     return grouped
 
 
+def _part(kind: str, value_added_types: Iterable[str]) -> str:
+    """计入的结算类型属于哪一部分：派送费、增值费（给司机）或其他收入。"""
+    if kind == DELIVERY_FEE_TYPE:
+        return "delivery"
+    return "value_added" if kind in set(value_added_types) else "other"
+
+
 def summarize_settlement(entries: Sequence[Mapping[str, Any]], include: Iterable[str],
-                         exclude: Iterable[str]) -> dict[str, Any]:
-    """一单的融辉结算：计入的合计、按结算类型的分项、是否已结算派送费、结算重量与件数。"""
-    include, exclude = list(include), list(exclude)
+                         exclude: Iterable[str], value_added_types: Iterable[str] = DEFAULT_VALUE_ADDED_TYPES) -> dict[str, Any]:
+    """一单的融辉结算：计入的合计及其中的增值费、其他收入，按结算类型的分项、是否已结算派送费、结算重量与件数。"""
+    include, exclude, value_added_types = list(include), list(exclude), list(value_added_types)
     types: dict[str, dict[str, Any]] = {}
     for entry in entries:
+        counted = type_counted(entry["type"], include, exclude)
         item = types.setdefault(entry["type"], {"type": entry["type"], "amount": ZERO, "count": 0, "date": "",
-                                                "counted": type_counted(entry["type"], include, exclude)})
+                                                "counted": counted,
+                                                "part": _part(entry["type"], value_added_types) if counted else ""})
         item["amount"] += entry["amount"]
         item["count"] += 1
         item["date"] = max(item["date"], entry["date"])
-    total = sum((item["amount"] for item in types.values() if item["counted"]), ZERO)
+    counted_items = [item for item in types.values() if item["counted"]]
+    total = sum((item["amount"] for item in counted_items), ZERO)
+    value_added_total = sum((item["amount"] for item in counted_items if item["part"] == "value_added"), ZERO)
+    other_total = sum((item["amount"] for item in counted_items if item["part"] == "other"), ZERO)
     fee_rows = [entry for entry in entries if entry["type"] == DELIVERY_FEE_TYPE]
     problems: list[str] = []
     weight = pieces = None
+    weight_missing = False
     if len(fee_rows) > 1:
         problems.append("融辉对这单有多笔“付派送费”，请到融辉核对。")
     if fee_rows:
@@ -188,15 +215,16 @@ def summarize_settlement(entries: Sequence[Mapping[str, Any]], include: Iterable
         except (MissingAmountError, InvalidAmountError):
             weight = None
         if weight is None or weight < 0:
-            problems.append("融辉结算明细缺少结算重量，不能算派送费。")
+            weight_missing = True
             weight = None
         try:
             pieces = int(str(fee_rows[0]["pieces"]).strip())
         except (TypeError, ValueError):
             pieces = None
     return {
-        "amount": total, "settled": bool(fee_rows), "settled_on": min((e["date"] for e in fee_rows), default=""),
-        "settlement_weight": weight, "pieces": pieces, "problems": problems,
+        "amount": total, "value_added": value_added_total, "other_income": other_total,
+        "settled": bool(fee_rows), "settled_on": min((e["date"] for e in fee_rows), default=""),
+        "settlement_weight": weight, "weight_missing": weight_missing, "pieces": pieces, "problems": problems,
         "types": sorted(({**item, "amount": item["amount"]} for item in types.values()),
                         key=lambda item: (not item["counted"], item["type"] != DELIVERY_FEE_TYPE, item["type"])),
     }
@@ -332,100 +360,17 @@ def delivery_fee(rule: Mapping[str, Any], weight: Decimal) -> tuple[Decimal, lis
     return outcome.amount, list(outcome.steps)
 
 
-# -- 增值费（业务手册规则，人工选择与填写） ---------------------------------------------------
-
-def parse_fee_choice(payload: Mapping[str, Any]) -> tuple[list[str], dict[str, Any], dict[str, dict[str, Any]]]:
-    kinds = payload.get("fee_kinds", [])
-    values = payload.get("values", {})
-    manual = payload.get("manual", {})
-    if not isinstance(kinds, list) or len(kinds) > MAX_FEES or not all(isinstance(k, str) and 0 < len(k) <= 64 for k in kinds):
-        raise _invalid(f"增值费最多选 {MAX_FEES} 项。")
-    if not isinstance(values, Mapping) or len(values) > 60:
-        raise _invalid("增值费条件格式无效。")
-    if not isinstance(manual, Mapping) or len(manual) > MAX_FEES:
-        raise _invalid("人工金额格式无效。")
-    cleaned: dict[str, dict[str, Any]] = {}
-    for kind, item in manual.items():
-        if not isinstance(item, Mapping) or set(item) - {"amount", "note"}:
-            raise _invalid("人工金额格式无效。")
-        note = item.get("note")
-        if note is not None and (not isinstance(note, str) or len(note.strip()) > 200):
-            raise _invalid("人工金额说明不能超过 200 个字符。")
-        amount = item.get("amount")
-        cleaned[str(kind)] = {"amount": None if amount in (None, "") else _money(amount, "人工金额"),
-                              "note": (note or "").strip()}
-    return list(dict.fromkeys(kinds)), dict(values), cleaned
-
-
-def value_added(catalog: Sequence[QuoteRule], kinds: Sequence[str], values: Mapping[str, Any],
-                manual: Mapping[str, Mapping[str, Any]], *, strict: bool) -> dict[str, Any]:
-    """所选增值费的明细与合计。``strict`` 时（保存）缺条件或缺人工金额即拒绝；试算时只标出来。
-
-    同组费用不能同时收取、取大，与 ``shared.fee_engine.quote`` 一致；``quote`` 在组内有费用没有金额
-    时整组不计，这里在人填了金额后按同一取大规则计入。
-    """
-    by_kind = {item.fee_kind: item for item in catalog}
-    unknown = [kind for kind in kinds if kind not in by_kind]
-    if unknown:
-        raise _invalid("选择的增值费在这单的开单日期没有已生效规则，请刷新后重选。", "DELIVERY_FEE_UNKNOWN")
-    if not kinds:
-        return {"lines": [], "total": "0.0000", "complete": True, "missing": []}
-    chosen = [by_kind[kind] for kind in kinds]
-    try:
-        result = quote(chosen, values)
-    except FeeRuleError as exc:
-        raise _invalid(exc.message, exc.code) from None
-    lines, problems = [], []
-    for position, (item, rule) in enumerate(zip(result.items, chosen)):
-        outcome, system = item.result.outcome, item.result.amount
-        entered = manual.get(item.fee_kind) or {}
-        amount, note = system, item.note
-        if outcome == "MISSING":
-            problems.append(f"{item.name}：{item.result.reason}")
-            amount = None
-        elif outcome in _MANUAL_OUTCOMES:
-            amount = entered.get("amount")
-            if amount is None:
-                problems.append(f"{item.name}的结果是“{NO_AMOUNT[outcome]}”，请填写实际金额。")
-            note = entered.get("note") or note
-        elif outcome == "NOT_PROVIDED":
-            amount = None
-        lines.append({"position": position, "fee_kind": item.fee_kind, "fee_name": item.name, "rule_id": rule.rule_id,
-                      "version": item.version, "group": rule.rule.group, "outcome": outcome,
-                      "outcome_text": item.result.as_dict()["outcome_text"], "system_amount": _text(system),
-                      "amount": amount, "counted": amount is not None, "note": note, "reason": item.result.reason,
-                      "steps": list(item.result.steps), "reminders": list(item.result.reminders)})
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for line in lines:
-        if line["group"] and line["amount"] is not None:
-            groups.setdefault(line["group"], []).append(line)
-    for group, members in groups.items():
-        if len(members) < 2:
-            continue
-        best = max(members, key=lambda line: (line["amount"], -line["position"]))
-        for line in members:
-            if line is not best:
-                line["counted"] = False
-                line["note"] = f"与“{best['fee_name']}”不可同时收取（“{group}”组取大），按{best['fee_name']}收取。"
-    if strict and problems:
-        raise _invalid("；".join(problems), "DELIVERY_FEE_INCOMPLETE")
-    total = sum((line["amount"] for line in lines if line["counted"]), ZERO)
-    for line in lines:
-        line["amount"] = _text(line["amount"])
-    return {"lines": lines, "total": _text(total), "complete": not problems, "missing": problems}
-
-
 # -- 组账单 ----------------------------------------------------------------------------------
 
 def fingerprint(row: Mapping[str, Any]) -> str:
-    keys = ("tracking_number", "arrival_date", "ronghui_amount", "settlement_weight", "pieces", "delivery_rule_id",
-            "delivery_fee", "value_added_total", "item_revision", "status")
+    keys = ("tracking_number", "arrival_date", "delivery_method", "ronghui_amount", "settlement_weight", "pieces",
+            "delivery_rule_id", "delivery_fee", "value_added_total", "other_income", "item_revision", "status")
     return hashlib.sha256(json_text({key: row.get(key) for key in keys}).encode("utf-8")).hexdigest()
 
 
 def _type_view(types: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [{"type": item["type"], "amount": _text(item["amount"]), "count": item["count"], "date": item["date"],
-             "counted": item["counted"]} for item in types]
+             "counted": item["counted"], "part": item.get("part", "")} for item in types]
 
 
 def build_bill(*, start: dt.date, end: dt.date, arrivals: Sequence[Mapping[str, Any]],
@@ -435,57 +380,69 @@ def build_bill(*, start: dt.date, end: dt.date, arrivals: Sequence[Mapping[str, 
     """账单行与汇总。``arrivals`` 是日期范围内第一次出现在每日到货表的大祥S站单（已去重）；
     ``known_arrivals`` 是融辉已结算单号里在每日到货表任何日期出现过的；``items`` 是已保存的记录。"""
     include, exclude = settings["include_types"], settings["exclude_types"]
+    value_added_types, no_fee_methods = settings["value_added_types"], set(settings["no_fee_methods"])
     rows, unsettled = [], []
-    totals = {key: ZERO for key in ("ronghui", "delivery", "value_added", "payable")}
+    totals = {key: ZERO for key in ("ronghui", "delivery", "value_added", "other_income", "payable")}
     counts = {"confirmed": 0, "pending": 0, "blocked": 0}
     for arrival in sorted(arrivals, key=lambda item: (str(item["arrival_date"]), item["tracking_number"])):
         code = arrival["tracking_number"]
         day = parse_day(arrival["arrival_date"], "到货表日期")
-        summary = summarize_settlement(settlements.get(code, ()), include, exclude)
+        summary = summarize_settlement(settlements.get(code, ()), include, exclude, value_added_types)
+        method = arrival.get("delivery_method") or ""
         base = {"tracking_number": code, "arrival_date": day.isoformat(), "goods_name": arrival.get("goods_name") or "",
-                "delivery_method": arrival.get("delivery_method") or "", "package_type": arrival.get("package_type") or ""}
+                "delivery_method": method, "package_type": arrival.get("package_type") or ""}
         if not summary["settled"]:
             unsettled.append({**base, "types": _type_view(summary["types"])})
             continue
         item = items.get(code) or {}
         problems = list(summary["problems"])
         confirmed = item.get("status") == "confirmed"
+        no_fee = method in no_fee_methods
         if confirmed:
-            fee, rule_id = Decimal(str(item["delivery_fee"])), item["delivery_rule_id"]
+            fee = None if item.get("delivery_fee") is None else Decimal(str(item["delivery_fee"]))
+            rule_id = item.get("delivery_rule_id")
             steps = list(item.get("delivery_steps") or [])
+            value_total = Decimal(str(item.get("value_added_total") or "0"))
             payable = Decimal(str(item["payable_total"]))
             if Decimal(str(item["ronghui_amount"])) != summary["amount"]:
                 problems.append(f"融辉结算金额与确认时（{_text(Decimal(str(item['ronghui_amount'])))}）不同，请核对。")
+            ready = True
         else:
-            rule = select_delivery_rule(rules, day)
             fee = rule_id = None
             steps: list[str] = []
-            if rule is None:
-                problems.append("到货表日期没有适用的派送费规则，请先设置派送费规则。")
-            elif summary["settlement_weight"] is not None:
-                fee, steps = delivery_fee(rule, summary["settlement_weight"])
-                rule_id = rule["id"]
-            payable = None
-        value_total = Decimal(str(item.get("value_added_total") or "0"))
-        if payable is None and fee is not None:
-            payable = fee + value_total
-        row = {**base, "status": "confirmed" if confirmed else "pending",
+            value_total = summary["value_added"]
+            if no_fee:
+                steps = [f"到货表配送方式为“{method}”，不算派送费。"]
+                ready = True
+            else:
+                rule = select_delivery_rule(rules, day)
+                if summary["weight_missing"]:
+                    problems.append("融辉结算明细缺少结算重量，不能算派送费。")
+                if rule is None:
+                    problems.append("到货表日期没有适用的派送费规则，请先设置派送费规则。")
+                elif summary["settlement_weight"] is not None:
+                    fee, steps = delivery_fee(rule, summary["settlement_weight"])
+                    rule_id = rule["id"]
+                ready = fee is not None
+            payable = (fee or ZERO) + value_total if ready else None
+        row = {**base, "status": "confirmed" if confirmed else "pending", "no_delivery_fee": no_fee,
                "ronghui_amount": _text(summary["amount"]), "ronghui_types": _type_view(summary["types"]),
                "settled_on": summary["settled_on"],
                "settlement_weight": _text(summary["settlement_weight"]), "pieces": summary["pieces"],
                "delivery_rule_id": rule_id, "delivery_fee": _text(fee), "delivery_steps": steps,
-               "value_added_total": _text(value_total), "fee_lines": list(item.get("lines") or []),
-               "billing_date": item.get("billing_date"), "payable_total": _text(payable),
+               "value_added_total": _text(value_total), "other_income": _text(summary["other_income"]),
+               "payable_total": _text(payable),
                "difference": _text(summary["amount"] - payable) if payable is not None else None,
                "item_revision": item.get("revision"), "confirmed_by": item.get("confirmed_by"),
                "confirmed_at": item.get("confirmed_at"), "problems": problems,
-               "can_confirm": not confirmed and fee is not None and not summary["problems"]}
+               "can_confirm": not confirmed and ready and not summary["problems"]}
         row["fingerprint"] = fingerprint(row)
         rows.append(row)
         totals["ronghui"] += summary["amount"]
         if fee is not None:
             totals["delivery"] += fee
         totals["value_added"] += value_total
+        totals["other_income"] += summary["other_income"]
         if payable is not None:
             totals["payable"] += payable
         counts["confirmed" if confirmed else "pending"] += 1
@@ -495,7 +452,7 @@ def build_bill(*, start: dt.date, end: dt.date, arrivals: Sequence[Mapping[str, 
     known = set(known_arrivals) | arrival_codes
     missing_in_arrival = []
     for code, entries in sorted(settlements.items()):
-        summary = summarize_settlement(entries, include, exclude)
+        summary = summarize_settlement(entries, include, exclude, value_added_types)
         if code in known or not summary["settled"]:
             continue
         if start.isoformat() <= summary["settled_on"] <= end.isoformat():
@@ -508,6 +465,6 @@ def build_bill(*, start: dt.date, end: dt.date, arrivals: Sequence[Mapping[str, 
                     "confirmed_count": counts["confirmed"], "pending_count": counts["pending"],
                     "blocked_count": counts["blocked"], "ronghui_total": _text(totals["ronghui"]),
                     "delivery_total": _text(totals["delivery"]), "value_added_total": _text(totals["value_added"]),
-                    "payable_total": _text(totals["payable"]),
+                    "other_income_total": _text(totals["other_income"]), "payable_total": _text(totals["payable"]),
                     "difference_total": _text(totals["ronghui"] - totals["payable"])},
     }

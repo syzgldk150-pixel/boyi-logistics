@@ -1130,10 +1130,8 @@ app.include_router(
 app.include_router(
     create_delivery_bills_router(
         finance_provider=lambda: delivery_bill_finance,
-        fee_rules_provider=lambda: fee_rule_repository,
         arrivals_reader=lambda start, end, through: _station_arrivals(start, end, through),
         settlement_reader=lambda start, end, actor: delivery_settlement_reader(start, end, actor),
-        waybill_reader=lambda tracking, actor: fee_quote_waybill_reader(tracking, actor),
         admin_provider=lambda request: _require_console_admin_request(request),
         super_admin_provider=lambda request: _require_console_super_admin_request(request),
     )

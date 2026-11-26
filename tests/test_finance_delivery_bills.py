@@ -6,13 +6,11 @@ from decimal import Decimal
 
 import pytest
 
-from shared.fee_engine import QuoteRule, parse_rule
 from shared.finance.delivery_bills import (
     build_bill,
     date_chunks,
     delivery_fee,
     describe_rule,
-    parse_fee_choice,
     parse_rule_form,
     parse_settings,
     segment_examples,
@@ -20,11 +18,12 @@ from shared.finance.delivery_bills import (
     settlement_window,
     summarize_settlement,
     type_counted,
-    value_added,
 )
 from shared.finance.errors import FinanceValidationError
 
 D = dt.date
+SETTINGS = {"include_types": [], "exclude_types": [], "value_added_types": ["付上楼费收入", "付卸货费"],
+            "no_fee_methods": ["自提"]}
 
 
 def seg(start, first_weight, first_price, extra_price):
@@ -132,6 +131,7 @@ def test_settlement_rows_group_by_waybill_and_skip_unrelated():
     assert set(grouped) == {"R001"}
     summary = summarize_settlement(grouped["R001"], [], [])
     assert summary["amount"] == Decimal("43.5")
+    assert summary["value_added"] == Decimal("0") and summary["other_income"] == Decimal("3")
     assert summary["settled"] and summary["settled_on"] == "2026-11-05"
     assert summary["settlement_weight"] == Decimal("45.5") and summary["pieces"] == 3
     assert [item["type"] for item in summary["types"]] == ["付派送费", "付到付款手续费", "派到付款"]
@@ -152,12 +152,35 @@ def test_settlement_window_and_chunks():
     assert date_chunks(D(2026, 11, 1), D(2026, 12, 10)) == [(D(2026, 11, 1), D(2026, 12, 1)), (D(2026, 12, 2), D(2026, 12, 10))]
 
 
+def test_value_added_and_other_income_split_counted_types():
+    # 2026-11-26：增值费＝设置里的增值费结算类型；其余计入的（付派送费除外）是其他收入；不计入的两边都不算。
+    grouped = settlement_entries([
+        settle("R001", "付派送费", "40"), settle("R001", "付上楼费收入", "35.36"), settle("R001", "付卸货费", "10"),
+        settle("R001", "付代收货款手续费", "2.5"), settle("R001", "付等通知放货费", "5"), settle("R001", "派到付款", "-300"),
+        settle("R001", "付异形件加收", "8"),
+    ])
+    summary = summarize_settlement(grouped["R001"], [], ["付异形件加收"], ["付上楼费收入", "付卸货费"])
+    assert summary["amount"] == Decimal("92.86")
+    assert summary["value_added"] == Decimal("45.36") and summary["other_income"] == Decimal("7.5")
+    parts = {item["type"]: item["part"] for item in summary["types"]}
+    assert parts == {"付派送费": "delivery", "付上楼费收入": "value_added", "付卸货费": "value_added",
+                     "付代收货款手续费": "other", "付等通知放货费": "other", "派到付款": "", "付异形件加收": ""}
+
+
 def test_settings_validation():
-    assert parse_settings({"lookahead_days": 10, "include_types": ["收工单罚款"], "exclude_types": []})["lookahead_days"] == 10
+    parsed = parse_settings({"lookahead_days": 10, "include_types": ["收工单罚款"], "exclude_types": []})
+    assert parsed["lookahead_days"] == 10
+    assert parsed["value_added_types"] == ["付上楼费收入", "付卸货费"] and parsed["no_fee_methods"] == ["自提"]
+    custom = parse_settings({"lookahead_days": 3, "include_types": [], "exclude_types": [],
+                             "value_added_types": ["付上楼费收入"], "no_fee_methods": ["自提", "预约自提"]})
+    assert custom["value_added_types"] == ["付上楼费收入"] and custom["no_fee_methods"] == ["自提", "预约自提"]
     for bad in ({"lookahead_days": 40, "include_types": [], "exclude_types": []},
                 {"lookahead_days": True, "include_types": [], "exclude_types": []},
                 {"lookahead_days": 5, "include_types": ["a"], "exclude_types": ["a"]},
-                {"lookahead_days": 5, "include_types": [], "exclude_types": [], "other": 1}):
+                {"lookahead_days": 5, "include_types": [], "exclude_types": [], "other": 1},
+                {"lookahead_days": 5, "include_types": [], "exclude_types": [], "value_added_types": ["付派送费"]},
+                {"lookahead_days": 5, "include_types": [], "exclude_types": ["付卸货费"], "value_added_types": ["付卸货费"]},
+                {"lookahead_days": 5, "include_types": [], "exclude_types": [], "no_fee_methods": [""]}):
         with pytest.raises(FinanceValidationError):
             parse_settings(bad)
 
@@ -172,27 +195,50 @@ def arrivals():
 
 def test_build_bill_only_settled_waybills_with_totals():
     settlements = settlement_entries([
-        settle("R001", "付派送费", "40.5"), settle("R001", "付上楼费收入", "12"),
+        settle("R001", "付派送费", "40.5"), settle("R001", "付上楼费收入", "12"), settle("R001", "付代收货款手续费", "2"),
         settle("R002", "付回单服务费", "3"),  # 只有回单服务费：派送费没结算，不进账单
-        settle("R003", "付派送费", "18", weight="20", pieces="1"),
+        settle("R003", "付派送费", "18", weight="20", pieces="1"), settle("R003", "付卸货费", "15"),
         settle("R009", "付派送费", "25", date="2026-11-05"),  # 到货表里没有
     ])
-    items = {"R003": {"status": "open", "value_added_total": "15.0000", "revision": 2, "lines": [{"fee_name": "上楼费"}]}}
+    # 迁移 093 时期人工保存的增值费（open 行）不再计入，增值费只看融辉结算明细。
+    items = {"R003": {"status": "open", "value_added_total": "99.0000", "revision": 2, "lines": [{"fee_name": "上楼费"}]}}
     bill = build_bill(start=D(2026, 11, 1), end=D(2026, 11, 30), arrivals=arrivals(), settlements=settlements,
                       known_arrivals=["R001", "R002", "R003"], missing_dates=["2026-11-20"],
-                      settings={"include_types": [], "exclude_types": []}, rules=[rule()], items=items)
+                      settings=SETTINGS, rules=[rule()], items=items)
     rows = {row["tracking_number"]: row for row in bill["rows"]}
     assert set(rows) == {"R001", "R003"}
-    assert rows["R001"]["ronghui_amount"] == "52.5000" and rows["R001"]["delivery_fee"] == "17.7500"
-    assert rows["R001"]["payable_total"] == "17.7500" and rows["R001"]["can_confirm"]
+    assert rows["R001"]["ronghui_amount"] == "54.5000" and rows["R001"]["delivery_fee"] == "17.7500"
+    assert rows["R001"]["value_added_total"] == "12.0000" and rows["R001"]["other_income"] == "2.0000"
+    assert rows["R001"]["payable_total"] == "29.7500" and rows["R001"]["can_confirm"]
     assert rows["R003"]["delivery_fee"] == "10.0000" and rows["R003"]["payable_total"] == "25.0000"
-    assert rows["R003"]["item_revision"] == 2
+    assert rows["R003"]["item_revision"] == 2 and not rows["R003"]["no_delivery_fee"]
     assert [row["tracking_number"] for row in bill["unsettled"]] == ["R002"]
     assert bill["missing_in_arrival"] == [{"tracking_number": "R009", "settled_on": "2026-11-05", "ronghui_amount": "25.0000"}]
     summary = bill["summary"]
     assert (summary["arrival_count"], summary["settled_count"], summary["unsettled_count"]) == (3, 2, 1)
-    assert summary["ronghui_total"] == "70.5000" and summary["payable_total"] == "42.7500"
-    assert summary["difference_total"] == "27.7500" and summary["value_added_total"] == "15.0000"
+    assert summary["ronghui_total"] == "87.5000" and summary["payable_total"] == "54.7500"
+    assert summary["difference_total"] == "32.7500" and summary["value_added_total"] == "27.0000"
+    assert summary["other_income_total"] == "2.0000"
+
+
+def test_self_pickup_has_no_delivery_fee_and_still_confirms():
+    settlements = settlement_entries([
+        settle("R002", "付派送费", "6", weight=""), settle("R002", "付上楼费收入", "20"),
+    ])
+    bill = build_bill(start=D(2026, 11, 1), end=D(2026, 11, 30), arrivals=arrivals(), settlements=settlements,
+                      known_arrivals=[], missing_dates=[], settings=SETTINGS, rules=[], items={})
+    row = bill["rows"][0]
+    assert row["tracking_number"] == "R002" and row["no_delivery_fee"]
+    # 自提不需要派送费规则，也不需要结算重量。
+    assert row["delivery_fee"] is None and row["delivery_rule_id"] is None and row["problems"] == []
+    assert row["payable_total"] == "20.0000" and row["can_confirm"]
+    assert "不算派送费" in row["delivery_steps"][0]
+    # 预约自提按设置决定。
+    other = build_bill(start=D(2026, 11, 1), end=D(2026, 11, 30),
+                       arrivals=[{**arrivals()[1], "delivery_method": "预约自提"}], settlements=settlements,
+                       known_arrivals=[], missing_dates=[], settings=SETTINGS, rules=[rule()], items={})["rows"][0]
+    assert not other["no_delivery_fee"] and not other["can_confirm"]
+    assert "缺少结算重量" in other["problems"][0]
 
 
 def test_build_bill_without_rule_blocks_confirmation_and_keeps_confirmed_amounts():
@@ -201,7 +247,7 @@ def test_build_bill_without_rule_blocks_confirmation_and_keeps_confirmed_amounts
                           "delivery_rule_id": 7, "delivery_steps": ["旧规则"], "payable_total": "9.0000",
                           "ronghui_amount": "28.0000", "lines": []}}
     bill = build_bill(start=D(2026, 11, 1), end=D(2026, 11, 30), arrivals=arrivals(), settlements=settlements,
-                      known_arrivals=[], missing_dates=[], settings={"include_types": [], "exclude_types": []},
+                      known_arrivals=[], missing_dates=[], settings=SETTINGS,
                       rules=[rule(effective="2026-12-01")], items=confirmed)
     rows = {row["tracking_number"]: row for row in bill["rows"]}
     assert not rows["R001"]["can_confirm"] and rows["R001"]["delivery_fee"] is None
@@ -216,7 +262,7 @@ def test_latest_rule_on_or_before_arrival_date_applies():
     rules = [rule(effective="2026-10-01", start="8", rule_id=1), rule(effective="2026-11-04", start="12", rule_id=2),
              rule(effective="2026-11-10", start="99", rule_id=3)]
     bill = build_bill(start=D(2026, 11, 1), end=D(2026, 11, 30), arrivals=arrivals()[:1], settlements=settlements,
-                      known_arrivals=[], missing_dates=[], settings={"include_types": [], "exclude_types": []},
+                      known_arrivals=[], missing_dates=[], settings=SETTINGS,
                       rules=rules, items={})
     row = bill["rows"][0]
     assert row["delivery_rule_id"] == 2 and row["delivery_fee"] == "12.0000"
@@ -225,44 +271,10 @@ def test_latest_rule_on_or_before_arrival_date_applies():
 def test_fingerprint_changes_with_saved_state():
     settlements = settlement_entries([settle("R001", "付派送费", "40")])
     kwargs = dict(start=D(2026, 11, 1), end=D(2026, 11, 30), arrivals=arrivals()[:1], settlements=settlements,
-                  known_arrivals=[], missing_dates=[], settings={"include_types": [], "exclude_types": []}, rules=[rule()])
+                  known_arrivals=[], missing_dates=[], settings=SETTINGS, rules=[rule()])
     first = build_bill(**kwargs, items={})["rows"][0]["fingerprint"]
     second = build_bill(**kwargs, items={"R001": {"status": "open", "value_added_total": "5", "revision": 1}})["rows"][0]
+    third = build_bill(**{**kwargs, "settlements": settlement_entries([settle("R001", "付派送费", "40"),
+                                                                        settle("R001", "付卸货费", "5")])}, items={})
+    assert third["rows"][0]["fingerprint"] not in {first, second["fingerprint"]}
     assert first != second["fingerprint"]
-
-
-def fee(kind, name, content, group=None):
-    if group:
-        content = {**content, "group": group}
-    return QuoteRule(kind, name, "V1（执行日期 2026-01-01）", parse_rule(content), f"id-{kind}")
-
-
-FIXED = {"schema": 1, "params": [], "formula": {"type": "fixed", "amount": "15"}}
-NEGOTIATE = {"schema": 1, "params": [], "formula": {"type": "none", "outcome": "NEGOTIATE", "reason": "按实际协商"}}
-PER_FLOOR = {"schema": 1, "params": [{"key": "floors", "label": "楼层", "type": "number", "integer": True, "min": "1"}],
-             "formula": {"type": "rate", "rate": "5", "of": "floors"}}
-
-
-def test_value_added_amounts_groups_and_manual_amounts():
-    catalog = [fee("a", "卸货费", FIXED, "上楼卸货"), fee("b", "上楼费", NEGOTIATE, "上楼卸货"), fee("c", "夜送", PER_FLOOR)]
-    preview = value_added(catalog, ["a", "b", "c"], {}, {}, strict=False)
-    assert not preview["complete"] and len(preview["missing"]) == 2
-    with pytest.raises(FinanceValidationError):
-        value_added(catalog, ["a", "b", "c"], {}, {}, strict=True)
-    kinds, values, manual = parse_fee_choice({"fee_kinds": ["a", "b", "c"], "values": {"floors": 3},
-                                              "manual": {"b": {"amount": "20", "note": "司机说明"}}})
-    result = value_added(catalog, kinds, values, manual, strict=True)
-    lines = {line["fee_kind"]: line for line in result["lines"]}
-    assert lines["b"]["counted"] and lines["b"]["amount"] == "20.0000" and lines["b"]["note"] == "司机说明"
-    assert not lines["a"]["counted"] and "取大" in lines["a"]["note"]
-    assert lines["c"]["amount"] == "15.0000" and lines["c"]["rule_id"] == "id-c"
-    assert result["total"] == "35.0000"
-
-
-def test_value_added_rejects_unknown_fee_and_bad_manual_amount():
-    catalog = [fee("a", "卸货费", FIXED)]
-    with pytest.raises(FinanceValidationError):
-        value_added(catalog, ["zzz"], {}, {}, strict=False)
-    with pytest.raises(FinanceValidationError):
-        parse_fee_choice({"fee_kinds": ["a"], "manual": {"a": {"amount": "-3"}}})
-    assert value_added(catalog, [], {}, {}, strict=True)["total"] == "0.0000"

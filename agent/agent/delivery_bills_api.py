@@ -12,8 +12,9 @@ which also records the account use), the 派送费 rule versions and what people
 (``shared.finance`` repository). The result is kept in this process for 30 minutes as a
 snapshot: confirming, saving 增值费 and revoking name the snapshot and act on rows the
 server composed, never on amounts sent by the browser; after each write the snapshot is
-rebuilt from the same platform data and fresh database state. 增值费 use the approved
-业务手册 rules chosen by the waybill's 开单日期, read live once per waybill (``waybill_reader``).
+rebuilt from the same platform data and fresh database state. Since 2026-11-26 增值费 and
+其他收入 come straight from the 融辉 结算明细 (the 结算类型 lists are in the settings) and
+配送方式 such as 自提 carry no 派送费; nothing is entered by hand any more.
 Rules and arithmetic live in ``shared.finance.delivery_bills``.
 """
 from __future__ import annotations
@@ -35,7 +36,6 @@ from starlette.concurrency import run_in_threadpool
 from agent.api_contracts import EnvelopedRoute
 from agent.tms_runtime.direct_business import DirectBusinessError
 from shared.contracts import api_failure, api_success
-from shared.fee_engine import shared_params
 from shared.finance.delivery_bills import (
     MAX_BATCH,
     SETTLEMENT_ACCOUNT_ID,
@@ -45,16 +45,13 @@ from shared.finance.delivery_bills import (
     delivery_fee,
     describe_rule,
     segment_examples,
-    parse_day,
-    parse_fee_choice,
     parse_rule_form,
     settlement_entries,
     settlement_window,
-    value_added,
 )
 from shared.finance.errors import FinanceError, FinanceValidationError
 from shared.finance.models import FinanceActor
-from shared.handbook_fee_rules import FeeRuleError, quote_catalog
+from shared.handbook_fee_rules import FeeRuleError
 from shared.redaction import redact_text
 
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
@@ -69,7 +66,6 @@ class _Snapshot:
         self.created = time.monotonic()
         self.inputs = inputs
         self.bill: dict[str, Any] = {}
-        self.billing: dict[str, dict[str, Any]] = {}
         self.lock = threading.Lock()
 
     def row(self, code: str) -> dict[str, Any]:
@@ -127,10 +123,8 @@ def _code(value: Any) -> str:
 def create_delivery_bills_router(
     *,
     finance_provider: Callable[[], Any],
-    fee_rules_provider: Callable[[], Any],
     arrivals_reader: Callable[[dt.date, dt.date, dt.date], dict[str, Any]],
     settlement_reader: Callable[[dt.date, dt.date, Any], Awaitable[dict[str, Any]]],
-    waybill_reader: Callable[[str, Any], Awaitable[dict[str, Any]]],
     admin_provider: Callable[[Request], Any],
     super_admin_provider: Callable[[Request], Any],
 ) -> APIRouter:
@@ -142,12 +136,6 @@ def create_delivery_bills_router(
         if repository is None:
             raise FinanceError("FINANCE_UNAVAILABLE", "财务服务当前不可用。", http_status=503)
         return repository
-
-    def handbook_rules() -> list[dict[str, Any]]:
-        repository = fee_rules_provider()
-        if repository is None:
-            raise FinanceError("FEE_RULES_UNAVAILABLE", "业务手册计算规则当前不可用。", http_status=503)
-        return repository.approved()
 
     async def run(call, *args):
         try:
@@ -253,102 +241,6 @@ def create_delivery_bills_router(
                 snapshot.row(code)
                 result = finance().revoke_delivery_bill(code, {"expected_revision": body.get("expected_revision")},
                                                         request_id=body.get("request_id"), actor=_finance_actor(actor))
-                return {**result, "bill": rebuild(snapshot)}
-
-        return await run(lambda: run_in_threadpool(work))
-
-    # -- 增值费 ----------------------------------------------------------------------------
-
-    def catalog_for(billing_date: dt.date):
-        return quote_catalog(handbook_rules(), business_date=billing_date)
-
-    @router.post("/fees/prepare")
-    async def prepare(request: Request):
-        """Read the waybill live once (开单日期, weights) and list the approved 业务手册 fees for that date."""
-        actor = admin_provider(request)
-        body = _dict(await request.json())
-
-        async def work() -> dict[str, Any]:
-            if set(body) - {"snapshot_id", "tracking_number"}:
-                raise FinanceValidationError("请求内容无效。")
-            snapshot = snapshots.get(body.get("snapshot_id"))
-            code = _code(body.get("tracking_number"))
-            row = snapshot.row(code)
-            facts = await waybill_reader(code, actor)
-            billing_date = parse_day(facts.get("billing_date"), "开单日期")
-            from agent.agent_actions.fee_actions import WaybillFacts, prefill
-
-            waybill = WaybillFacts(code, billing_date, Decimal(str(facts["settlement_weight"])), int(facts["pieces"]),
-                                   None if facts.get("actual_weight") in (None, "") else Decimal(str(facts["actual_weight"])),
-                                   False, "")
-            snapshot.billing[code] = {"billing_date": billing_date, "facts": facts}
-            rules, unavailable = await run_in_threadpool(catalog_for, billing_date)
-            try:
-                params = shared_params(rules)
-                conflict = ""
-            except FeeRuleError as exc:
-                params, conflict = (), exc.message
-            values, note = prefill(params, waybill)
-            saved = (await run_in_threadpool(finance().delivery_items, [code])).get(code) or {}
-            return {"tracking_number": code, "billing_date": billing_date.isoformat(), "facts": facts,
-                    "fees": [{"fee_kind": item.fee_kind, "name": item.name, "version": item.version,
-                              "group": item.rule.group, "params": [param.key for param in item.rule.params],
-                              "reminders": list(item.rule.reminders)} for item in rules],
-                    "params": [param.as_dict() for param in params], "prefill": values, "prefill_note": note,
-                    "unavailable": unavailable, "conflict": conflict, "row_status": row["status"],
-                    "saved": {"fee_kinds": saved.get("fee_kinds") or [], "values": saved.get("values") or {},
-                              "manual": saved.get("manual") or {}, "lines": saved.get("lines") or [],
-                              "revision": saved.get("revision"), "billing_date": saved.get("billing_date")}}
-
-        return await run(work)
-
-    def chosen(body: dict[str, Any], *, strict: bool) -> tuple[_Snapshot, str, dt.date, dict[str, Any]]:
-        snapshot = snapshots.get(body.get("snapshot_id"))
-        code = _code(body.get("tracking_number"))
-        snapshot.row(code)
-        prepared = snapshot.billing.get(code)
-        if prepared is None:
-            raise FinanceError("DELIVERY_FEE_NOT_PREPARED", "请先打开这单的增值费，系统读取开单日期后再计算。")
-        kinds, values, manual = parse_fee_choice(body)
-        rules, _unavailable = catalog_for(prepared["billing_date"])
-        result = value_added(rules, kinds, values, manual, strict=strict)
-        record = {"fee_kinds": kinds, "values": values,
-                  "manual": {kind: {"amount": None if item["amount"] is None else format(item["amount"], "f"),
-                                    "note": item["note"]} for kind, item in manual.items()},
-                  "result": result, "lines": result["lines"], "total": result["total"]}
-        return snapshot, code, prepared["billing_date"], record
-
-    @router.post("/fees/compute")
-    async def compute(request: Request):
-        admin_provider(request)
-        body = _dict(await request.json())
-
-        def work() -> dict[str, Any]:
-            if set(body) - {"snapshot_id", "tracking_number", "fee_kinds", "values", "manual"}:
-                raise FinanceValidationError("请求内容无效。")
-            _snapshot, code, billing_date, record = chosen(body, strict=False)
-            return {"tracking_number": code, "billing_date": billing_date.isoformat(), **record["result"]}
-
-        return await run(lambda: run_in_threadpool(work))
-
-    @router.post("/fees/save")
-    async def save(request: Request):
-        actor = admin_provider(request)
-        body = _dict(await request.json())
-
-        def work() -> dict[str, Any]:
-            if set(body) - {"request_id", "snapshot_id", "tracking_number", "fee_kinds", "values", "manual",
-                            "expected_revision"}:
-                raise FinanceValidationError("请求内容无效。")
-            snapshot, code, billing_date, record = chosen(body, strict=True)
-            expected = body.get("expected_revision")
-            if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
-                raise FinanceValidationError("缺少版本号，请刷新页面后重试。")
-            with snapshot.lock:
-                row = snapshot.row(code)
-                result = finance().save_delivery_fees(code, {
-                    **record, "arrival_date": dt.date.fromisoformat(row["arrival_date"]), "billing_date": billing_date,
-                    "expected_revision": expected}, request_id=body.get("request_id"), actor=_finance_actor(actor))
                 return {**result, "bill": rebuild(snapshot)}
 
         return await run(lambda: run_in_threadpool(work))
