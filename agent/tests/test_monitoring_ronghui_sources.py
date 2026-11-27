@@ -37,7 +37,7 @@ def work_order(**kwargs):
 
 SITE = {"default": ("邵阳操作场", "739010002", "分拨中心"), "price_default": ("邵阳大祥站", "7390101", "一级网点"),
         "daxiang_s": ("邵阳大祥S站", "7390102", "一级网点"), "self_pickup_problem_upload": ("邵阳自提部", "7390103", "一级网点")}
-ONE = (("price_default", "大祥站账号"),)
+ONE = (("price_default", "大祥站账号", "price_default"),)
 
 
 def complaint(**kwargs):
@@ -196,7 +196,7 @@ class RonghuiSourcesTests(unittest.TestCase):
 
     def test_center_account_keeps_only_operations_yard_records(self):
         """用户 2026-11-27：操作场账号每一类都只保留责任方/发起方是邵阳操作场的记录。"""
-        center = (("default", "操作场账号"),)
+        center = (("default", "操作场账号", "ronghui_default"),)
         parties = [("邵阳操作场", "虚构发起站"), ("邵阳大祥站", "邵阳操作场"), ("邵阳隆回站", "虚构发起站")]
         self.route(work={"2": [work_order(WORK_ORDER_CODE=f"W-{index}", RESPONSIBLE_PARTY=party, REGISTER_SITE=sponsor)
                                for index, (party, sponsor) in enumerate(parties)]}, profile="default")
@@ -361,6 +361,9 @@ class RonghuiSourcesTests(unittest.TestCase):
         self.assertEqual(["P-open"], [item["id"] for item in result["items"]])
         self.assertEqual("未回复", result["items"][0]["status_label"])
         self.assertIn("通知网点：邵阳大祥站", result["items"][0]["content"])
+        self.assertEqual({"platform": "ronghui", "account_id": "price_default", "external_id": "P-open",
+                          "source_direction": "received", "waybill_no": "SYNTHETIC-WAYBILL", "status": ""},
+                         result["items"][0]["reply"])
         params = self.problems.call_args.args[1]
         self.assertEqual({"direction": "received", "date_from": "2026-10-13", "date_to": "2026-10-15", "page": 1,
                           "page_size": source.FETCH_PAGE_SIZE, "LOGIN_SITE_CODE": "7390101"}, params["filters"])

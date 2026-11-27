@@ -114,3 +114,123 @@ def test_message_center_merges_everything_without_category_tabs(app, browser):
         page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 1")
         assert page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts() == ["合成工单丙"]
         assert not errors
+
+
+REPLY_SNAPSHOT = {
+    "ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+    "systems": [{"system": "yunda", "label": "韵达", "status": "ok", "categories": [
+        {"category_id": "yunda:problems", "title": "问题件 · 未完结", "count": 1, "items_supported": True}]}],
+}
+REPLY_ITEM = {
+    "id": "Y-PROB-1", "title": "合成催件", "occurred_at": "2026-01-02 08:00:00", "content": "合成问题正文",
+    "status_label": "处理中", "waybill_no": "SYNTHETIC-1",
+    "reply": {"platform": "yunda", "account_id": "yunda_default", "external_id": "Y-PROB-1",
+              "source_direction": "query", "waybill_no": "SYNTHETIC-1", "status": "处理中"},
+}
+
+
+def test_problem_items_are_replied_in_place(app, browser):
+    """用户 2026-11-27：问题件在消息中心直接回复，不跳转；失败保留内容可重试，成功后标为已回复。"""
+    replies, errors = [], []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+        page.on("pageerror", lambda error: errors.append(str(error)))
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(REPLY_SNAPSHOT))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "items": [REPLY_ITEM], "total": 1, "has_more": False, "updated_at": "2026-01-02 10:00:00"}))
+            elif parsed.path == "/customer-service/problems/reply":
+                replies.append((route.request.headers.get("x-browser-request-uuid"), json.loads(route.request.post_data)))
+                if len(replies) == 1:
+                    route.fulfill(status=502, content_type="application/json",
+                                  body=json.dumps({"ok": False, "message": "合成：原平台未确认"}))
+                else:
+                    route.fulfill(content_type="application/json", body=json.dumps({"ok": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.locator(".monitor-reply-toggle").wait_for()
+        page.click(".monitor-reply-toggle")
+        assert page.locator(".monitor-reply select option").all_inner_texts() == ["处理中", "已处理", "已完结"]
+        assert page.input_value(".monitor-reply select") == "已处理"
+        page.fill(".monitor-reply textarea", "已联系收件人，明天派送")
+        page.click(".monitor-reply button[type=submit]")
+        page.wait_for_function("document.querySelector('.monitor-reply-note')?.dataset.tone === 'error'")
+        assert "原平台未确认" in page.inner_text(".monitor-reply-note")
+        assert page.input_value(".monitor-reply textarea") == "已联系收件人，明天派送"  # kept for a retry
+
+        page.click(".monitor-reply button[type=submit]")
+        page.locator(".monitor-reply-done").wait_for()
+        assert page.inner_text(".monitor-reply-done") == "已回复：已联系收件人，明天派送"
+        assert page.locator(".monitor-reply-toggle").count() == 0
+        assert page.inner_text(".monitor-item-status") == "已回复"
+        (first_uuid, first), (second_uuid, second) = replies
+        # The server answered the first try with a failure, so the retry is a new request.
+        assert first_uuid and second_uuid and first_uuid != second_uuid
+        assert second == {
+            "platform": "yunda", "account_id": "yunda_default",
+            "item": {"platform": "yunda", "account_id": "yunda_default", "external_id": "Y-PROB-1",
+                     "source_direction": "query", "waybill_no": "SYNTHETIC-1", "status": "处理中"},
+            "payload": {"reply_text": "已联系收件人，明天派送", "prob_status": "已处理", "old_prob_status": "处理中"},
+        }
+        assert not errors
+
+
+def test_a_reply_lost_in_the_network_is_retried_with_the_same_request(app, browser):
+    replies = []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(REPLY_SNAPSHOT))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "items": [REPLY_ITEM], "total": 1, "has_more": False, "updated_at": "2026-01-02 10:00:00"}))
+            elif parsed.path == "/customer-service/problems/reply":
+                replies.append(route.request.headers.get("x-browser-request-uuid"))
+                if len(replies) == 1:
+                    route.abort("connectionreset")
+                else:
+                    route.fulfill(content_type="application/json", body=json.dumps({"ok": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.locator(".monitor-reply-toggle").wait_for()
+        page.click(".monitor-reply-toggle")
+        page.fill(".monitor-reply textarea", "合成回复")
+        page.click(".monitor-reply button[type=submit]")
+        page.wait_for_function("document.querySelector('.monitor-reply-note')?.dataset.tone === 'error'")
+        assert "不确定是否已提交" in page.inner_text(".monitor-reply-note")
+        page.click(".monitor-reply button[type=submit]")
+        page.locator(".monitor-reply-done").wait_for()
+        assert replies[0] and replies[0] == replies[1]

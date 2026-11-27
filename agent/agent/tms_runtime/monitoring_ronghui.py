@@ -45,12 +45,13 @@ ORIGIN = "https://tms.ronghuiwl.com"
 HOME = f"{ORIGIN}/module/index?mv=index"
 WORK_MENU = "工单接收方查询-工单裁定申诉"
 CENTER_SITE = "邵阳操作场"
-# (session profile, 显示名)：四个博益融辉账号，顺序即合并时的优先顺序。
-ACCOUNTS: tuple[tuple[str, str], ...] = (
-    ("default", "操作场账号"),
-    ("price_default", "大祥站账号"),
-    ("daxiang_s", "大祥S站账号"),
-    ("self_pickup_problem_upload", "自提部账号"),
+# (session profile, 显示名, 业务账号 ID)：四个博益融辉账号，顺序即合并时的优先顺序。账号 ID 供消息中心
+# 直接回复问题件时交给客服回复接口（Console 再按业务账号核对平台）。
+ACCOUNTS: tuple[tuple[str, str, str], ...] = (
+    ("default", "操作场账号", "ronghui_default"),
+    ("price_default", "大祥站账号", "price_default"),
+    ("daxiang_s", "大祥S站账号", "ronghui_daxiang_s"),
+    ("self_pickup_problem_upload", "自提部账号", "ronghui_self_pickup_problem"),
 )
 
 
@@ -144,6 +145,7 @@ class Account:
     profile: str
     label: str
     session: Any
+    account_id: str = ""
     site: str = ""
     site_code: str = ""
     site_type: str = ""
@@ -234,10 +236,10 @@ def _account_context(account: Account, menu: str):
     return account.contexts[menu]
 
 
-def _open_account(profile: str, label: str, open_session: Callable[[str], Any]) -> Account:
+def _open_account(profile: str, label: str, account_id: str, open_session: Callable[[str], Any]) -> Account:
     session = open_session(profile)
     info = _read_user_info_cookie(session) or {}
-    account = Account(profile, label, session, site=_text(info.get("loginSiteName")),
+    account = Account(profile, label, session, account_id=account_id, site=_text(info.get("loginSiteName")),
                       site_code=_text(info.get("loginSiteCode")), site_type=_text(info.get("loginSiteType")))
     if not account.site or not account.site_code:
         raise TMSAuthStateError("AUTH_REQUIRED", "融辉账号登录信息里没有网点，请到业务账号重新登录。")
@@ -432,6 +434,10 @@ def _problem_items(account: Account, source: Source) -> list[dict[str, Any]]:
             "occurred_at": latest_activity(times), "status_label": "未回复",
             "waybill_no": _text(row.get("waybill_no")), "source_label": _source_label(account, source.title),
             "open_url": HOME,
+            # 消息中心直接回复（用户 2026-11-27）：只带客服回复接口需要的标识，回复由业务账号提交并核对。
+            "reply": {"platform": "ronghui", "account_id": account.account_id, "external_id": _text(row.get("external_id")),
+                      "source_direction": "received", "waybill_no": _text(row.get("waybill_no")),
+                      "status": _text(row.get("status"))},
         })
     return items
 
@@ -569,11 +575,11 @@ def _account_items(account: Account, category_ids: Iterable[str]) -> dict[str, A
 
 
 def _gather(open_session: Callable[[str], Any], category_ids: list[str],
-            accounts: tuple[tuple[str, str], ...]) -> tuple[dict[str, list], dict[str, list[tuple[str, Exception]]]]:
+            accounts: tuple[tuple[str, str, str], ...]) -> tuple[dict[str, list], dict[str, list[tuple[str, Exception]]]]:
     def run(entry):
-        profile, label = entry
+        profile, label, account_id = entry
         try:
-            account = _open_account(profile, label, open_session)
+            account = _open_account(profile, label, account_id, open_session)
         except Exception as exc:
             return label, {category_id: exc for category_id in category_ids}
         try:
@@ -633,7 +639,7 @@ def _outcome(category_id: str, items: list, failures: list, accounts_total: int)
 
 
 def collect_categories(open_session: Callable[[str], Any], *,
-                       accounts: tuple[tuple[str, str], ...] = ACCOUNTS) -> list[dict[str, Any]]:
+                       accounts: tuple[tuple[str, str, str], ...] = ACCOUNTS) -> list[dict[str, Any]]:
     category_ids = list(SOURCES)
     merged, failures = _gather(open_session, category_ids, accounts)
     categories = []
@@ -650,7 +656,7 @@ def collect_categories(open_session: Callable[[str], Any], *,
 
 
 def collect_items(open_session: Callable[[str], Any], category_id: str, page: int, page_size: int = 20, *,
-                  accounts: tuple[tuple[str, str], ...] = ACCOUNTS) -> dict[str, Any]:
+                  accounts: tuple[tuple[str, str, str], ...] = ACCOUNTS) -> dict[str, Any]:
     if category_id not in SOURCES:
         raise RonghuiMonitoringError("不支持的融辉消息分类。")
     if not 1 <= page <= 10000 or not 1 <= page_size <= 20:

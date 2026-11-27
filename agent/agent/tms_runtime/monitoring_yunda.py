@@ -31,6 +31,8 @@ ARBITRATION_PAGE = f"{ARBITRATION_ORIGIN}/kyzc/arbitrament/arbitramentSearch"
 ARBITRATION_LIST = f"{ARBITRATION_PAGE}/list"
 TRANSFER_ROOT = "https://kyinms.yunda56.com/ky_inms/public/index.php/business/replaceLogistics/ReplaceLogisticsConfirm"
 TRANSFER_PAGE = f"{TRANSFER_ROOT}/index.html?page=tab"
+# 首页韵达来源固定读取的业务账号（session profile ``yunda``）；消息中心直接回复问题件时交给客服回复接口。
+YUNDA_ACCOUNT_ID = "yunda_default"
 TRANSFER_LIST = f"{TRANSFER_ROOT}/list.html"
 
 _SOURCES = {
@@ -350,6 +352,10 @@ def _problem_item(row: dict) -> dict[str, Any]:
         "status_label": _text(row.get("prob_status")),
         "waybill_no": _text(row.get("ship_no")), "source_label": "韵达问题件查询",
         "open_url": PROBLEM_PAGE, "deadline": _text(row.get("over_time")),
+        # 消息中心直接回复（用户 2026-11-27）：问题件查询“发布给我的”即客服回复的 query 方向。
+        "reply": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID, "external_id": _text(row["prob_main_id"]),
+                  "source_direction": "query", "waybill_no": _text(row.get("ship_no")),
+                  "status": _text(row.get("prob_status"))},
     }
 
 

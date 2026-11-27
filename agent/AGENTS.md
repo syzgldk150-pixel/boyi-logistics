@@ -246,7 +246,7 @@ docs/
 ## 项目本地控制台
 
 - 本地入口：`http://127.0.0.1:8765/`
-- 实时消息监控大盘：首页 `/`，Console `/monitoring/summary` 与 `/monitoring/stream` 读取 Agent `/internal/v1/admin/monitoring/snapshot`，`/monitoring/items` 与 `/monitoring/detail-link` 代理同名内部入口。正文每页 20 条，来源/profile 由服务器固定为融辉四个博益账号（操作场、大祥、大祥S、自提部）与韵达 `yunda`，沿用超级管理员权限；分类口径不同不重复相加，未知数量为 `null`，不标已读、不接单或回复。正文只作 55 秒进程内缓存，60 秒刷新；融辉处理历史没有未读标识，不推断为新回复。详见 [消息监控说明](../docs/monitoring_messages.md)。
+- 实时消息监控大盘：首页 `/`，Console `/monitoring/summary` 与 `/monitoring/stream` 读取 Agent `/internal/v1/admin/monitoring/snapshot`，`/monitoring/items` 与 `/monitoring/detail-link` 代理同名内部入口。正文每页 20 条，来源/profile 由服务器固定为融辉四个博益账号（操作场、大祥、大祥S、自提部）与韵达 `yunda`，沿用超级管理员权限；分类口径不同不重复相加，未知数量为 `null`，刷新与查看不标已读、不接单或回复（问题件只在用户点“回复”时经客服回复接口提交）。正文只作 55 秒进程内缓存，60 秒刷新；融辉处理历史没有未读标识，不推断为新回复。详见 [消息监控说明](../docs/monitoring_messages.md)。
 - OCR 工作区：`http://127.0.0.1:8765/ocr`
 - 韵达/融辉录入的旧同源兼容 URL 不创建第三方活动 iframe；`/ocr?mode=yunda`、`/ocr?mode=ronghui` 仍回到博益本地录单壳，`/ocr/yunda/*` 与 `/ocr/ronghui/live/*` 固定返回 `410 ACTIVE_ORIGINAL_PAGE_DISABLED`。活动原页只能由已验证 Console principal 经 `/original-pages/{provider}/launch` 取得一次性 ticket，再到 `https://www.boyi.homes/original/{provider}/` 独立 origin 兑换受审、路径限定 capability，不能改回同源预填代理。
 - 统一回单管理：Console `/receipts/sync` 经普通 receipts-query 接口读取并保存本地结果，审核经 receipts-audit 直接业务动作并独立读后核验；两者不创建 Command/Run/Step，不要求事项中心审批。管理员签名、精确账号和稳定请求 UUID 保留；缺字段、多候选、登录失效或写后状态不一致明确失败。活动原页前缀仍为 410，本地照片、证据和结果页面保留。未缓存的韵达照片经 `agent/tms_runtime/receipts_query.py` 的 `receipt-attachment-image` 只读接口用韵达账号登录态读取，只接受韵达 INMS 图片地址。韵达审核只支持寄件回单：按原页 `mailing/audit.html`（`Id/Audit_Status/Audit_Reason`，1 通过、2 不通过）用默认韵达账号提交，并以列表 `Audit_Status` 回读核验；已是目标状态不重复提交，无需审核或到件回单明确失败。

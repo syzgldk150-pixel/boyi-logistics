@@ -67,6 +67,11 @@
   let pendingItems = [];
   let latestAllKey = '';
   let allEntries = [];   // [{item, category}] read so far in the merged list
+  // Inline replies to problem items (用户 2026-11-27): drafts survive re-renders; while one is open the
+  // merged list is not redrawn (the next render waits), and a sent reply hides its form until the item leaves.
+  const replyDrafts = new Map();   // itemKey -> {text, status, uuid, sending, error}
+  const repliedItems = new Map();  // itemKey -> reply text
+  let deferredRender = null;
   let allPages = new Map(); // categoryKey -> {category, page, hasMore}
 
   function pageHidden() {
@@ -406,7 +411,151 @@
       details.append(summary, element('p', 'monitor-item-content', content));
       row.append(details);
     }
+    if (item.reply && typeof item.reply === 'object') appendReply(row, aside, item, category);
     return row;
+  }
+
+  const YUNDA_REPLY_STATUSES = ['处理中', '已处理', '已完结'];
+
+  function replyKey(item) {
+    const reply = item.reply || {};
+    return [reply.platform, reply.account_id, reply.source_direction, reply.external_id].join(':');
+  }
+
+  function replyOpen() {
+    return [...replyDrafts.values()].some((draft) => draft.open);
+  }
+
+  function flushDeferredRender() {
+    if (replyOpen() || !deferredRender) return;
+    const run = deferredRender;
+    deferredRender = null;
+    run();
+  }
+
+  function appendReply(row, aside, item, category) {
+    const key = replyKey(item);
+    if (repliedItems.has(key)) {
+      aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode('已回复'));
+      row.append(element('p', 'monitor-reply-done', `已回复：${repliedItems.get(key)}`));
+      return;
+    }
+    const toggle = element('button', 'monitor-reply-toggle', '回复');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-label', `回复问题件：${item.title || item.waybill_no || ''}`);
+    aside.insertBefore(toggle, aside.querySelector('.monitor-item-link'));
+    const draft = replyDrafts.get(key);
+    if (draft?.open) row.append(replyForm(item, key, draft));
+    toggle.addEventListener('click', () => {
+      const current = replyDrafts.get(key);
+      if (current?.open) { closeReply(key, row); return; }
+      const fresh = current || { text: '', status: '已处理', uuid: '', sending: false, error: '' };
+      fresh.open = true;
+      replyDrafts.set(key, fresh);
+      row.querySelector('.monitor-reply')?.remove();
+      row.append(replyForm(item, key, fresh));
+      row.querySelector('.monitor-reply textarea')?.focus();
+    });
+  }
+
+  function closeReply(key, row) {
+    const draft = replyDrafts.get(key);
+    if (draft?.sending) return;
+    replyDrafts.delete(key);
+    row?.querySelector('.monitor-reply')?.remove();
+    flushDeferredRender();
+  }
+
+  function replyForm(item, key, draft) {
+    const reply = item.reply;
+    const yunda = reply.platform === 'yunda';
+    const form = element('form', 'monitor-reply');
+    const text = element('textarea');
+    text.rows = 3;
+    text.maxLength = 500;
+    text.placeholder = '回复内容，提交后会写入原平台并核对';
+    text.setAttribute('aria-label', '回复内容');
+    text.value = draft.text;
+    text.addEventListener('input', () => { draft.text = text.value; });
+    const actions = element('div', 'monitor-reply-actions');
+    if (yunda) {
+      const select = element('select');
+      select.setAttribute('aria-label', '处理状态');
+      YUNDA_REPLY_STATUSES.forEach((value) => {
+        const option = element('option', '', value);
+        option.value = value;
+        option.selected = value === draft.status;
+        select.append(option);
+      });
+      select.addEventListener('change', () => { draft.status = select.value; });
+      actions.append(select);
+    }
+    const note = element('span', 'monitor-reply-note', draft.error || (yunda ? '' : '融辉回复后即为已回复'));
+    if (draft.error) note.dataset.tone = 'error';
+    const cancel = element('button', 'monitor-action-btn', '取消');
+    cancel.type = 'button';
+    const submit = element('button', 'monitor-action-btn is-primary', draft.sending ? '提交中…' : '提交回复');
+    submit.type = 'submit';
+    submit.disabled = draft.sending;
+    cancel.disabled = draft.sending;
+    cancel.addEventListener('click', () => closeReply(key, form.closest('li')));
+    actions.append(note, cancel, submit);
+    form.append(text, actions);
+    form.addEventListener('submit', (event) => { event.preventDefault(); sendReply(item, key, draft, form); });
+    return form;
+  }
+
+  async function sendReply(item, key, draft, form) {
+    const replyText = draft.text.trim();
+    if (!replyText || draft.sending) {
+      if (!replyText) { draft.error = '回复内容不能为空'; form.replaceWith(replyForm(item, key, draft)); }
+      return;
+    }
+    const reply = item.reply;
+    const yunda = reply.platform === 'yunda';
+    // A retry after an unknown network result keeps the request id, so the server reads back the same
+    // request instead of replying twice; a reply the server answered (even with a failure) gets a new id.
+    draft.uuid = draft.uuid || (window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now()));
+    draft.sending = true;
+    draft.error = '';
+    let current = replyForm(item, key, draft);
+    form.replaceWith(current);
+    try {
+      const response = await pageFetch('/customer-service/problems/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Browser-Request-UUID': draft.uuid },
+        body: JSON.stringify({
+          platform: reply.platform, account_id: reply.account_id,
+          item: { platform: reply.platform, account_id: reply.account_id, external_id: reply.external_id,
+            source_direction: reply.source_direction, waybill_no: reply.waybill_no, status: reply.status },
+          payload: yunda ? { reply_text: replyText, prob_status: draft.status, old_prob_status: reply.status || '' }
+            : { reply_text: replyText, REVERSION: replyText }
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        draft.uuid = '';
+        throw new Error(data.message || data.error?.message || `回复失败（${response.status}）`);
+      }
+      repliedItems.set(key, replyText);
+      replyDrafts.delete(key);
+      const row = current.closest('li');
+      current.remove();
+      if (row) {
+        row.querySelector('.monitor-reply-toggle')?.remove();
+        row.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode('已回复'));
+        row.append(element('p', 'monitor-reply-done', `已回复：${replyText}`));
+      }
+      flushDeferredRender();
+    } catch (error) {
+      draft.sending = false;
+      draft.error = draft.uuid
+        ? '网络中断，不确定是否已提交；请先到原平台核对，再点“提交回复”（会按同一请求核对，不会重复回复）'
+        : `${error.message || '回复失败'}；内容已保留，可重试`;
+      const next = replyForm(item, key, draft);
+      current.replaceWith(next);
+      current = next;
+    }
   }
 
   async function fetchItems(force = false) {
@@ -487,6 +636,7 @@
   }
 
   function renderAll(failed) {
+    if (replyOpen()) { deferredRender = () => renderAll(failed); return; }
     const expanded = new Set(Array.from(els.items.querySelectorAll('details[open]')).map((node) => node.dataset.itemId));
     const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category));
     if (pendingState.available && !cardFilter) {

@@ -100,6 +100,7 @@ Console 保留 `ThreadingHTTPServer`；`app.py` 只保留服务组合、HTTP 生
   - 页面和正文列表交互在 `templates/portal.html`、`static/monitoring.js`，代理与路由在 `services/monitoring_finance.py`、`routes/monitoring.py`
   - Agent 聚合入口在 `../agent/agent/tms_runtime/monitoring.py`，平台协议分别在同目录 `monitoring_ronghui.py`、`monitoring_yunda.py`
   - Console 只代理分类汇总、SSE、每页 20 条正文和服务端详情链接，沿用超级管理员权限；只提交来源、分类与页码，不保存第三方凭据或正文到数据库。未知数量显示“—”，不同分类口径不重复相加，旧内容必须标明更新时间与过期状态；刷新和查看正文不标已读、不处理工单。账号范围与登录初始化见 [消息监控说明](../docs/monitoring_messages.md)
+  - 问题件（融辉、韵达）可在消息中心点“回复”就地回复（用户 2026-11-27）：条目带的 `reply` 标识（平台、业务账号、编号、方向、单号、状态）原样交给客服页同一个 `/customer-service/problems/reply`，由业务账号提交并核对原平台，权限与客服页一致；回复框在 `static/monitoring.js`（`appendReply`/`sendReply`），样式在 `templates/portal.html`。
   - 首页不再展示应签统计，也不请求或定时刷新 `/monitoring/daily-sign`；应签明细直接在现有飞书表查看。首页仅保留消息与工单统计、来源分类和正文刷新，后端原有应签接口与每日应签插件不受此页面调整影响。
 - 改后台登录、管理员账号、会话 Cookie：
   - `app.py`
