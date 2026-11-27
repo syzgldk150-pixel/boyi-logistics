@@ -24,6 +24,12 @@
   const LEAVES = new Set(["fixed", "rate", "amount", "none"]);
   const SAVE_DELAY = 1000;
 
+  function defaultText(param) {
+    if (param.type === "bool") return param.default ? "是" : "否";
+    if (param.type === "choice") return ((param.options || []).find((option) => option.value === param.default) || {}).label || String(param.default);
+    return String(param.default);
+  }
+
   function init() {
     const page = document.querySelector("[data-handbook]");
     const root = document.querySelector("[data-fee-rules]");
@@ -413,7 +419,7 @@
       const list = params();
       const rows = list.map((param) => `<tr><td title="${escapeHtml(param.key)}">${escapeHtml(param.label || param.key)}</td><td>${PARAM_TYPE[param.type] || escapeHtml(param.type)}</td>
         <td>${escapeHtml(param.unit || "")}</td><td>${param.type === "choice" ? escapeHtml((param.options || []).map((item) => item.label).join(" / ")) : param.type === "pieces" ? escapeHtml((param.fields || []).map((item) => item.label).join("、")) : escapeHtml([param.min != null ? `≥${param.min}` : "", param.max != null ? `≤${param.max}` : ""].filter(Boolean).join(" "))}</td>
-        <td>${param.required === false ? "选填" : param.default != null ? `默认 ${escapeHtml(String(param.default))}` : "必填"}</td></tr>`).join("");
+        <td>${param.required === false ? "选填" : param.default != null ? `默认 ${escapeHtml(defaultText(param))}` : "必填"}</td></tr>`).join("");
       return `<div class="fs-sub"><h4>要填的参数 <span class="hb-meta">${list.length} 个</span></h4>
         ${list.length ? `<div class="hb-table-wrap"><table class="hb-table"><thead><tr><th>名称</th><th>类型</th><th>单位</th><th>范围 / 选项</th><th>必填</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="hb-meta">还没有参数。</p>'}
         ${editable ? '<p class="hb-meta">参数的增删改在下方“高级：结构 JSON”中进行。</p>' : ""}</div>`;

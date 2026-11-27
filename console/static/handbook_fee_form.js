@@ -28,6 +28,9 @@
     const label = `${esc(param.label)}${param.unit ? `（${esc(param.unit)}）` : ""}${param.required === false ? " · 选填" : ""}`;
     const hint = [param.hint, range(param)].filter(Boolean).join("；");
     const hintHtml = hint ? `<small class="hb-meta">${esc(hint)}</small>` : "";
+    if ((param.type === "choice" || param.type === "bool") && value == null && param.default != null) {
+      value = param.default; // 没填时预选规则默认值（如 有电梯=是、货物类型=普货），与计算口径一致
+    }
     if (param.type === "choice") {
       return `<label class="hb-cell"><span>${label}</span><select data-param="${esc(param.key)}"><option value="">请选择</option>
         ${param.options.map((option) => `<option value="${esc(option.value)}" ${value === option.value ? "selected" : ""}>${esc(option.label)}</option>`).join("")}</select>${hintHtml}</label>`;

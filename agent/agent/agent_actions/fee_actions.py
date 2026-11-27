@@ -33,7 +33,7 @@ from shared.fee_engine import OUTCOME_TEXT
 STATE_TTL_SECONDS = 900
 _DIGITS = re.compile(r"(\d{1,3})\s*(?:楼|层|f\b)", re.IGNORECASE)
 _CHINESE = re.compile(r"([一二两三四五六七八九十]{1,3})\s*(?:楼|层)")
-_NO_ELEVATOR = re.compile(r"(?:没有|没|无|不带|不是|未配|未装)\s*(?:电梯|电梯房)|步梯|爬楼梯|楼梯房")
+_NO_ELEVATOR = re.compile(r"(?:没有|没|无|不带|不是|未配|未装)\s*(?:电梯|电梯房)|步梯|楼梯")  # 走楼梯、楼梯上5楼、楼梯房
 _ELEVATOR = re.compile(r"(?:有|带|配)\s*电梯|电梯房|坐电梯|乘电梯")
 _UPSTAIRS_WORDS = re.compile(r"上楼|送楼上|搬上楼|送上楼")
 _CHINESE_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -431,6 +431,11 @@ def render_quote(state: QuoteState, rules: Sequence[Any], unavailable: Sequence[
     shown = [f"{param.label} {_value_text(param, state.values[param.key])}" for param in params if param.key in state.values]
     if shown:
         lines.append("按：" + " · ".join(shown))
+    # Yes/no and choices the person did not mention take the rule's default (有电梯、普货): say so.
+    defaulted = [f"{param.label} {_value_text(param, param.default)}" for param in params
+                 if param.key not in state.values and param.default is not None and param.type in {"bool", "choice"}]
+    if defaulted:
+        lines.append("没说明的按规则默认：" + " · ".join(defaulted))
     for item in result.items:
         outcome = item.result
         if outcome.outcome == "AMOUNT":

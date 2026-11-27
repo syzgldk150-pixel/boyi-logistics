@@ -42,7 +42,7 @@ RULE_CONTENT = {
     "schema": 1,
     "params": [{"key": "weight", "label": "结算重量", "type": "number", "unit": "kg", "min": "0.01"},
                {"key": "floor", "label": "送到几楼", "type": "number", "integer": True, "min": "1"},
-               {"key": "elevator", "label": "有电梯", "type": "bool"}],
+               {"key": "elevator", "label": "有电梯", "type": "bool", "default": True}],
     "formula": {"type": "when", "cases": [{"if": {"left": "elevator", "op": "eq", "value": True}, "then": {
         "type": "sum", "label": "有电梯", "source": SOURCE, "items": [{"type": "fixed", "amount": "5"}, {"type": "rate", "rate": "0.06", "of": "weight"}]}}],
         "else": {"type": "tiers", "label": "楼层加收", "by": "floor", "tiers": [
@@ -273,6 +273,8 @@ def test_editor_sees_workflow_and_no_approval(browser):
         page.check("[data-quote-fee='upstairs']")
         page.fill("[data-quote-form] [data-param='weight']", "200")
         page.fill("[data-quote-form] [data-param='floor']", "5")
+        # 2026-11-27: an unset yes/no shows the rule's default (有电梯 = 是) instead of “请选择”.
+        assert page.input_value("[data-quote-form] [data-param='elevator']") == "true"
         page.select_option("[data-quote-form] [data-param='elevator']", "false")
         page.click("[data-quote-run]")
         page.wait_for_selector(".hb-quote__item")

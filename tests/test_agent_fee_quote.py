@@ -275,3 +275,31 @@ def test_the_model_sees_plain_json_schema():
     tools = {tool["function"]["name"]: tool["function"]["parameters"] for tool in BusinessTurn.model_tools()}
     assert "x-ground" not in json.dumps(tools)
     assert set(tools["biz_fee_quote"]["properties"]) == {"tracking_number", "fees", "conditions"}
+
+
+# -- rule defaults (2026-11-27): 没说明就按普货、有电梯；说“无电梯 / 楼梯上几楼”才按步梯 ----------------
+
+def _with_defaults():
+    rule = approved("upstairs")
+    rule["content"] = deepcopy(rule["content"])
+    for param in rule["content"]["params"]:
+        if param["key"] == "elevator":
+            param["default"] = True
+        elif param["key"] == "goods_type":
+            param["default"] = "general"
+    return rule
+
+
+def test_unmentioned_lift_and_goods_take_the_rule_default_and_the_reply_says_so():
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=(_with_defaults(),))
+    text, decision = ask(turn, f"{CODE} 上楼费 2楼", CODE)
+    assert decision.decision == "EXECUTE" and "· 上楼费：" in text
+    assert "没说明的按规则默认：有电梯 是 · 货物类型 普货" in text
+
+
+@pytest.mark.parametrize("said", ["无电梯 上5楼", "楼梯上5楼", "走楼梯 5楼"])
+def test_stairs_said_plainly_override_the_lift_default(said):
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=(_with_defaults(),))
+    text, decision = ask(turn, f"{CODE} 上楼费 {said}", CODE)
+    assert decision.decision == "EXECUTE" and "· 上楼费：37.60 元" in text and "有电梯 否" in text
+    assert "没说明的按规则默认：货物类型 普货" in text
