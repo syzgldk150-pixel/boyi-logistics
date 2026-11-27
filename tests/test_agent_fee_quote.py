@@ -226,3 +226,52 @@ def test_platform_failure_and_other_platforms_are_reported_plainly():
     yunda = "4312345678901"
     text, decision = ask(_turn(Platform()), f"{yunda} 上楼费 5楼 无电梯", yunda)
     assert decision.decision in {"REJECT", "CLARIFY"} and "元" not in text
+
+
+# -- the model's understanding (2026-11-27): fees wanted and conditions in standard wording ---------------
+
+def ask_understood(turn, text, tracking=None, **understood):
+    arguments = {"tracking_number": tracking} if tracking else {}
+    arguments.update(understood)
+    return turn.execute("biz_fee_quote", arguments, message=text)
+
+
+def test_the_models_understanding_names_the_fee_and_conditions_code_cannot_read():
+    platform = Platform(rows=[row(actual_weight=80, settlement_weight=80)])
+    text, decision = ask(_turn(platform, rules=ALL), f"{CODE} 普货 电梯能用", CODE)
+    assert decision.decision == "CLARIFY"
+    text, decision = ask_understood(_turn(platform, rules=ALL), f"{CODE} 普货 电梯能用", CODE,
+                                    fees=["上楼费"], conditions=["有电梯", "普货"])
+    assert decision.decision == "EXECUTE" and "· 上楼费：" in text and "· 卸货费" not in text
+
+
+def test_a_number_the_person_did_not_say_is_not_taken_from_the_model():
+    text, decision = ask_understood(_turn(Platform(), rules=ALL), f"{CODE} 无电梯 搬上二楼", CODE,
+                                    fees=["上楼费"], conditions=["3楼", "无电梯"])
+    assert decision.decision == "CLARIFY" and "“3楼”里的数字不在你的原话里" in text
+    text, decision = ask_understood(_turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=ALL),
+                                    f"{CODE} 无电梯 搬上二楼 普货", CODE, fees=["上楼费"], conditions=["2楼", "无电梯", "普货"])
+    assert decision.decision == "EXECUTE" and "· 上楼费：" in text
+
+
+def test_the_persons_own_words_win_over_the_models_restatement():
+    platform = Platform(rows=[row(actual_weight=80, settlement_weight=80)])
+    plain, _ = ask(_turn(platform, rules=ALL), f"{CODE} 上楼费 5楼 无电梯 普货", CODE)
+    understood, _ = ask_understood(_turn(platform, rules=ALL), f"{CODE} 上楼费 5楼 无电梯 普货", CODE,
+                                   fees=["上楼费"], conditions=["5楼", "有电梯", "普货"])
+    assert understood == plain and "· 上楼费：37.60 元" in plain
+
+
+def test_a_follow_up_keeps_the_fees_already_chosen():
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=ALL)
+    ask(turn, f"{CODE} 上楼费 5楼 无电梯 普货", CODE)
+    text, _ = ask_understood(turn, "那3楼呢", fees=["卸货费"], conditions=["3楼"])
+    assert "· 上楼费：33.60 元" in text and "· 卸货费" not in text
+
+
+def test_the_model_sees_plain_json_schema():
+    from agent.agent_actions.business_actions import BusinessTurn
+
+    tools = {tool["function"]["name"]: tool["function"]["parameters"] for tool in BusinessTurn.model_tools()}
+    assert "x-ground" not in json.dumps(tools)
+    assert set(tools["biz_fee_quote"]["properties"]) == {"tracking_number", "fees", "conditions"}

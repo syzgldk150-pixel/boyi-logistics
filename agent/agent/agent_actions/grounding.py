@@ -6,7 +6,12 @@ The model may only *copy* values out of what the person said. Code verifies it:
 * a number must appear in the message as written digits;
 * a waybill number must appear in the message and pass the local format check;
 * an enum value must be one of the declared options;
-* anything else (booleans, objects, arrays) is never accepted from the model.
+* a list of short strings is accepted only when its schema says how it is checked
+  (``x-ground``): ``"standard_terms"`` — the model's restatement of the person's words in the
+  standard wording code parses (“2楼”, “有电梯”); every number in it must appear in the message
+  (digits or Chinese numerals). ``"action_checked"`` — names the action itself matches against
+  a closed list it owns (fee names against the approved rules), unknown ones are dropped there;
+* anything else (booleans, objects, other arrays) is never accepted from the model.
 
 A failed check never becomes a guess: it raises :class:`GroundingError`, whose
 ``question`` is put to the person (the action does not run).
@@ -50,8 +55,36 @@ def normalize(text: Any) -> str:
     return _SPACE.sub("", unicodedata.normalize("NFKC", str(text or ""))).lower()
 
 
+_CHINESE_NUMBER = re.compile(r"[一二两三四五六七八九十百]+")
+_CHINESE_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _chinese_value(text: str) -> int | None:
+    """A plain Chinese numeral up to 九百九十九 (二, 十二, 二十, 一百二十); None otherwise."""
+    total, current = 0, 0
+    for char in text:
+        if char in _CHINESE_DIGITS:
+            current = _CHINESE_DIGITS[char]
+        elif char == "十":
+            total += (current or 1) * 10
+            current = 0
+        elif char == "百":
+            total += (current or 1) * 100
+            current = 0
+        else:
+            return None
+    return total + current or None
+
+
 def numbers_in(message: str) -> frozenset[Decimal]:
     return frozenset(Decimal(item) for item in _NUMBER.findall(unicodedata.normalize("NFKC", message)))
+
+
+def numbers_said(message: str) -> frozenset[Decimal]:
+    """Numbers in the message written as digits or as Chinese numerals (上二楼 → 2)."""
+    text = unicodedata.normalize("NFKC", message)
+    chinese = (_chinese_value(item) for item in _CHINESE_NUMBER.findall(text))
+    return numbers_in(text) | frozenset(Decimal(value) for value in chinese if value)
 
 
 def ground_text(field: str, value: Any, message: str, *, schema: Mapping[str, Any] | None = None) -> str:
@@ -89,6 +122,26 @@ def ground_tracking_number(field: str, value: Any, message: str) -> str:
     return text
 
 
+_MAX_TERMS = 12
+_MAX_TERM_LENGTH = 20
+
+
+def ground_terms(field: str, value: Any, message: str, *, schema: Mapping[str, Any]) -> list[str]:
+    """A list of short strings checked as its ``x-ground`` says (see the module doc)."""
+    mode = schema.get("x-ground")
+    if mode not in {"standard_terms", "action_checked"} or not isinstance(value, list):
+        raise GroundingError(f"{label(field, schema)}不能由 AI 填写，本次没有执行。", field=field, code="ARGUMENT_FORBIDDEN")
+    terms = [unicodedata.normalize("NFKC", item).strip() for item in value if isinstance(item, str) and item.strip()]
+    if len(terms) != len(value) or len(terms) > _MAX_TERMS or any(len(term) > _MAX_TERM_LENGTH for term in terms):
+        raise GroundingError("没有读懂要用的条件，请再说一遍。", field=field, code="ARGUMENT_INVALID")
+    if mode == "standard_terms":
+        said = numbers_said(message)
+        for term in terms:
+            if any(number not in said for number in numbers_in(term)):
+                raise GroundingError(f"“{term}”里的数字不在你的原话里，请直接说一下。", field=field)
+    return list(dict.fromkeys(terms))
+
+
 def ground_inputs(schema: Mapping[str, Any], arguments: Mapping[str, Any], message: str) -> dict[str, Any]:
     """Validate a whole argument object against a closed JSON object schema."""
     if not isinstance(arguments, Mapping):
@@ -118,10 +171,12 @@ def ground_inputs(schema: Mapping[str, Any], arguments: Mapping[str, Any], messa
             grounded[field] = ground_text(field, value, message, schema=spec)
         elif kind in {"number", "integer"}:
             grounded[field] = ground_number(field, value, message, schema=spec)
+        elif kind == "array" and "x-ground" in spec:
+            grounded[field] = ground_terms(field, value, message, schema=spec)
         else:
             raise GroundingError(f"{label(field, spec)}不能由 AI 填写，本次没有执行。", field=field, code="ARGUMENT_FORBIDDEN")
     return grounded
 
 
 __all__ = ["FIELD_LABELS", "GroundingError", "ground_inputs", "ground_number", "ground_text",
-           "ground_tracking_number", "label", "normalize", "numbers_in"]
+           "ground_terms", "ground_tracking_number", "label", "normalize", "numbers_in", "numbers_said"]

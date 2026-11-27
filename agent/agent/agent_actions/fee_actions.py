@@ -1,7 +1,9 @@
 """Fees in conversation by the rules approved in 业务手册 → 计算规则 (报价 P3, 2026-11-20).
 
-Replaces the upstairs-only action (C3). The model only picks the action and copies the
-waybill number. Code does the rest:
+Replaces the upstairs-only action (C3). The model picks the action, copies the waybill
+number and restates what it understood: the fees wanted and the conditions in standard wording
+(“有电梯、上2楼” → fees 上楼费, conditions 2楼 / 有电梯; numbers checked against the message by
+``grounding``). Code does the rest, and its own reading of the person's words wins:
 
 * reads the Ronghui waybill live (``query_waybill_detail``): billing date (``REGISTER_DATE``,
   picks the rule versions), settlement weight, piece count, actual weight, the upstairs flag

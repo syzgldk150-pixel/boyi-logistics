@@ -11,7 +11,9 @@ Console pages use), always live against the platform:
 
 * ``fee_quote``       — any fees approved in 业务手册 → 计算规则 for one Ronghui
   waybill or a described delivery (see ``fee_actions``); fees and parameters come
-  from the waybill and the person's words and are asked when missing.
+  from the waybill and the person's words, read by code; the model's restatement
+  (``fees``, ``conditions`` in standard wording, numbers checked against the message)
+  fills only what code did not read; what is still missing is asked.
 
 Dates are closed options resolved by code in China time; result lists are
 rendered by code, capped, and numbered so a follow-up can say "第 2 条".
@@ -72,13 +74,27 @@ SPECS: dict[str, tuple[ActionSpec, str]] = {
     "fee_quote": (ActionSpec(
         action_id="fee.quote", title="按计算规则算费用", effect="read", capability="business.query",
         input_schema={"type": "object", "additionalProperties": False, "properties": {
-            "tracking_number": {"type": "string", "maxLength": 40}}}),
+            "tracking_number": {"type": "string", "maxLength": 40},
+            "fees": {"type": "array", "title": "费用", "x-ground": "action_checked", "maxItems": 12,
+                     "items": {"type": "string", "maxLength": 20}},
+            "conditions": {"type": "array", "title": "条件", "x-ground": "standard_terms", "maxItems": 12,
+                           "items": {"type": "string", "maxLength": 20}}}}),
         "按后台“业务手册 → 计算规则”里已生效的规则，计算一票融辉运单或一趟送货的费用（上楼费、卸货费、开箱清点、码放、夜送等）。"
         "tracking_number 只填用户原话里的完整单号，没有单号就不填；用户在补充楼层、电梯、件数或要加算的费用时不填单号，沿用上一次。"
-        "算哪些费用和各项参数由系统从用户原话里读取，不要填写。"),
+        "fees 填这句话想算的费用，用标准费用名（例如“有电梯、上2楼”是要算“上楼费”；“卸车”是“卸货费”），"
+        "只是补充楼层、电梯等条件或问“那3楼呢”时不填。"
+        "conditions 把这句话里说到的条件改写成标准说法，一项一个，例如“2楼”“有电梯”“无电梯”“普货”“3件”“每件80公斤”“48级台阶”；"
+        "数字必须是用户原话里的，没说到的条件不要补，不确定就不填。系统会核对并按运单补全，缺的会再问。"),
 }
 
 Invoke = Callable[[str, dict[str, Any], Mapping[str, Any], str], Mapping[str, Any]]
+
+
+def _model_schema(schema: Any) -> Any:
+    """The schema the model sees: plain JSON Schema, without our own ``x-`` checking marks."""
+    if isinstance(schema, Mapping):
+        return {key: _model_schema(value) for key, value in schema.items() if not str(key).startswith("x-")}
+    return schema
 
 
 def resolve_period(period: str, today: date) -> tuple[str, str]:
@@ -159,7 +175,7 @@ class BusinessTurn:
     @staticmethod
     def model_tools() -> list[dict[str, Any]]:
         return [{"type": "function", "function": {"name": PREFIX + name, "description": description,
-                                                  "parameters": spec.input_schema}}
+                                                  "parameters": _model_schema(spec.input_schema)}}
                 for name, (spec, description) in SPECS.items()]
 
     @staticmethod
@@ -298,7 +314,12 @@ class BusinessTurn:
             store.remember(key, state)
             return (f"{when.isoformat()} 没有已审核生效的收费规则，不能给出金额。规则在后台“业务手册 → 计算规则”审核生效后才会使用。",
                     "EXECUTE")
+        # The model's understanding (fees it took the person to want, conditions restated in standard
+        # wording) only fills what the person's own words, read by code, leave open.
+        ai_fees, ai_terms = list(arguments.get("fees") or ()), list(arguments.get("conditions") or ())
         named = fee_actions.match_fees(message, rules, none_chosen=not state.fee_kinds)
+        if not named and not state.fee_kinds and (ai_fees or ai_terms):
+            named = fee_actions.match_fees(" ".join([*ai_fees, *ai_terms]), rules, none_chosen=True)
         if named:
             adding = bool(fee_actions._ADD.search(message)) and state.fee_kinds
             state.fee_kinds = list(dict.fromkeys([*(state.fee_kinds if adding else []), *named]))
@@ -316,7 +337,8 @@ class BusinessTurn:
         for name, value in filled.items():
             state.values.setdefault(name, value)
         state.piece_note = state.piece_note or piece_note
-        state.values.update(fee_actions.parse_values(params, message, asked=state.asked))
+        restated = fee_actions.parse_values(params, " ".join(ai_terms)) if ai_terms else {}
+        state.values.update({**restated, **fee_actions.parse_values(params, message, asked=state.asked)})
         # “送到几楼 或 台阶数” only matters on the branch that uses it (有电梯 does not): ask it up front
         # only alongside other missing values, so one list still covers everything; otherwise the
         # calculation below says whether it is needed.
