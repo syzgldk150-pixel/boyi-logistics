@@ -947,10 +947,12 @@ def _upload_ronghui_attachment(session: Any, params: dict[str, Any]) -> dict[str
         raise CustomerServiceProblemError("FILE_NOT_FOUND", f"上传文件不存在：{path}")
     page_context = _resolve_ronghui_page_context(session, RONGHUI_PUBLISH_MENU_TEXT)
     mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    # 投诉方“申诉详情”“理赔资料补充”的图片格按原页走 sysFileUploadId=IMG，其余页面走 ALL。
+    upload_url = RONGHUI_UPLOAD_URL.replace("=ALL", "=IMG") if _clean_text(payload.get("purpose")) == "complaint_image" else RONGHUI_UPLOAD_URL
     try:
         with path.open("rb") as handle:
             response = session.post(
-                RONGHUI_UPLOAD_URL,
+                upload_url,
                 files={"file": (path.name, handle, mime_type)},
                 headers=_ronghui_headers(page_context),
                 timeout=60,

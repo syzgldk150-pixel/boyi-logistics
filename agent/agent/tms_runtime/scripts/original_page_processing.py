@@ -205,6 +205,196 @@ def _site_search(session: Any, item: dict[str, Any], payload: dict[str, Any]) ->
     return {"ok": True, "sites": _sites(session, base._resolve_ronghui_page_context(session, PROBLEM_MENU), key)}
 
 
+# ---------------------------------------------------------------------------------------------
+# 融辉投诉、申诉、代取件
+# ---------------------------------------------------------------------------------------------
+
+AGAINST_MENU, FILED_MENU, APPEAL_MENU, PICKUP_MENU = "被投诉方查询", "投诉方登记", "申诉登记", "网点代取件业务"
+WINDOW_DAYS, PAGE_SIZE, MAX_PAGES = 31, 200, 10
+
+
+def _all_rows(session: Any, context: dict[str, str], call_id: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for page in range(MAX_PAGES):
+        batch = _find(session, context, call_id, {**data, "pageIndex": page, "pageSize": PAGE_SIZE}, paged=True)
+        rows.extend(batch)
+        if len(batch) < PAGE_SIZE:
+            return rows
+    raise ProcessingError("TOO_MANY_ROWS", "原系统记录过多，无法确认这条记录，请到原系统处理。")
+
+
+def _window(days: int = WINDOW_DAYS) -> str:
+    from agent.tms_runtime.monitoring_ronghui import _window_range
+
+    return _window_range(days)
+
+
+def _site_scope(user_info: dict[str, Any]) -> dict[str, Any]:
+    return {} if _text(user_info.get("loginSiteType")) == "总部" else {"LOGIN_SITE_CODE": _text(user_info.get("loginSiteCode"))}
+
+
+def _complaint_row(session: Any, context: dict[str, str], call_id: str, user_info: dict[str, Any], exception_id: str) -> dict[str, Any]:
+    window = _window()
+    data = {"searchDateType": "EXCEPTION_DATE", "EXCEPTION_DATE": window, "SEARCH_DATE_RANGE": window,
+            "CURRENT_LOGIN_SITE": _text(user_info.get("loginSiteCode")), **_site_scope(user_info)}
+    matches = [row for row in _all_rows(session, context, call_id, data) if _text(row.get("EXCEPTION_ID")) == exception_id]
+    if len(matches) != 1:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "原系统找不到这条投诉，请刷新后重试。")
+    return matches[0]
+
+
+def _paths(session: Any, context: dict[str, str], exception_id: str, upload_type: str) -> list[dict[str, Any]]:
+    return _find(session, context, "FIND_EXCEPTION_PATH", {"EXCEPTION_ID": exception_id, "FILE_UPLOAD_TYPE": upload_type})
+
+
+def _complaint_against_reply(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, complaint_reply_guid, complaint_reply_tables, validate_complaint_reply
+
+    exception_id = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    context = base._resolve_ronghui_page_context(session, AGAINST_MENU)
+    row = _complaint_row(session, context, "FIND_TAB_EXCEPTION_SIDE", user_info, exception_id)
+    try:
+        fields = validate_complaint_reply(payload)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    dialog = _subpage_context(session, context, "投诉回复-新增")
+    guids = _find(session, dialog, "FIND_GUID", {})
+    guid = complaint_reply_guid(_text(guids[0].get("GUID")) if guids else "")
+    if not guid:
+        raise ProcessingError("INVALID_RESPONSE", "原系统没有返回记录编号。")
+    result = _save(session, dialog, complaint_reply_tables(row, fields, user_info, guid, dt.datetime.now(base.SHANGHAI_TZ)), "融辉投诉回复")
+    records = _find(session, context, "FIND_TAB_PROCESS_RECORD", {"EXCEPTION_ID": exception_id, "pageIndex": 0, "pageSize": 50}, paged=True)
+    if not any(_text(record.get("GUID")) == guid for record in records):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "投诉回复已提交，但处理记录里读不到这条回复，请到原系统核对，不要重复回复。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id}
+
+
+def _fresh_complaint(session: Any, context: dict[str, str], exception_id: str) -> dict[str, Any] | None:
+    rows = _find(session, context, "FIND_TAB_EXCEPTION_REGISTER", {"EXCEPTION_ID": exception_id})
+    return rows[0] if rows else None
+
+
+def _complaint_filed_cancel(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, complaint_cancel_block, complaint_cancel_check
+
+    exception_id = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    context = base._resolve_ronghui_page_context(session, FILED_MENU)
+    row = _complaint_row(session, context, "FIND_TAB_EXCEPTION_REGISTER_CS", user_info, exception_id)
+    try:
+        blocked = complaint_cancel_block(row, user_info)
+        if blocked:
+            raise ActionRuleError(blocked)
+        complaint_cancel_check(_fresh_complaint(session, context, exception_id))
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    result = _save(session, context, [("TAB_EXCEPTION_DEL", [row])], "融辉取消投诉")
+    if _fresh_complaint(session, context, exception_id) is not None:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "取消投诉已提交，但原系统仍能读到这条投诉，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id}
+
+
+def _save_paths(session: Any, context: dict[str, str], rows: list[dict[str, Any]]) -> None:
+    for row in rows:  # 原页逐个附件单独保存
+        _save(session, context, [("TAB_EXCEPTION_PATH_ADD", [row])], "融辉附件")
+
+
+def _complaint_filed_appeal(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, complaint_appeal_update, exception_path_row, validate_complaint_appeal
+
+    exception_id = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    context = base._resolve_ronghui_page_context(session, FILED_MENU)
+    row = _complaint_row(session, context, "FIND_TAB_EXCEPTION_REGISTER_CS", user_info, exception_id)
+    submitted = bool(_paths(session, context, exception_id, "被投诉方附件"))
+    try:
+        fields = validate_complaint_appeal(row, payload, dt.datetime.now(base.SHANGHAI_TZ), submitted)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    server_now = _server_now(session, context)
+    result = _save(session, context, [("TAB_EXCEPTION_UPT", [complaint_appeal_update(row, fields, user_info, server_now)])], "融辉提交申诉")
+    _save_paths(session, context, [exception_path_row(exception_id, file["file_name"], file["file_path"], "被投诉方附件", user_info, server_now)
+                                   for _label, file in fields["files"]])
+    fresh = _fresh_complaint(session, context, exception_id) or {}
+    if _text(fresh.get("APPEAL_CONTENT")) != fields["content"]:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "申诉已提交，但读回的申诉说明不一致，请到原系统核对。")
+    if len(_paths(session, context, exception_id, "被投诉方附件")) < len(fields["files"]):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "申诉已保存，但附件没有全部读回，请到原系统核对附件。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id}
+
+
+def _complaint_filed_claim(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import CLAIM_SLOTS, ActionRuleError, complaint_claim_update, exception_path_row, validate_complaint_claim
+
+    exception_id = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    context = base._resolve_ronghui_page_context(session, FILED_MENU)
+    row = _complaint_row(session, context, "FIND_TAB_EXCEPTION_REGISTER_CS", user_info, exception_id)
+    submitted = any(_paths(session, context, exception_id, label) for _key, label in CLAIM_SLOTS)
+    try:
+        fields = validate_complaint_claim(row, payload, submitted)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    server_now = _server_now(session, context)
+    result = _save(session, context, [("TAB_EXCEPTION_UPT", [complaint_claim_update(row, user_info, server_now)])], "融辉提交材料")
+    _save_paths(session, context, [exception_path_row(exception_id, file["file_name"], file["file_path"], label, user_info, server_now)
+                                   for label, file in fields["files"]])
+    missing = [label for label, _file in fields["files"] if not _paths(session, context, exception_id, label)]
+    if missing:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", f"材料已提交，但{('、'.join(missing))}没有读回，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id}
+
+
+def _appeal_rows(session: Any, context: dict[str, str], user_info: dict[str, Any], identifier: str) -> list[dict[str, Any]]:
+    rows = _all_rows(session, context, "FIND_TAB_EXCEPTION_APPEAL", _site_scope(user_info))
+    return [row for row in rows if f"{_text(row.get('EXCEPTION_ID'))}:{_text(row.get('CREATE_DATE'))}" == identifier]
+
+
+def _appeal_delete(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import appeal_delete_block
+
+    identifier = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    context = base._resolve_ronghui_page_context(session, APPEAL_MENU)
+    rows = _appeal_rows(session, context, user_info, identifier)
+    if len(rows) != 1:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "原系统找不到这条申诉，请刷新后重试。")
+    blocked = appeal_delete_block(rows[0])
+    if blocked:
+        raise ProcessingError("REPLY_RULE_REJECTED", blocked)
+    result = _save(session, context, [("TAB_EXCEPTION_APPEAL_DEL", [rows[0]])], "融辉删除申诉")
+    if _appeal_rows(session, context, user_info, identifier):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "删除已提交，但原系统仍能读到这条申诉，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": identifier}
+
+
+def _pickup_row(session: Any, context: dict[str, str], user_info: dict[str, Any], order_id: str) -> dict[str, Any]:
+    window = _window()
+    data = {"searchDateType": "CREATE_DATE", "CREATE_DATE": window, "SEARCH_DATE_RANGE": window, **_site_scope(user_info)}
+    matches = [row for row in _all_rows(session, context, "FIND_TAB_UNITE_ORDERS_DQJ", data)
+               if _text(row.get("TX_LOGISTIC_ID")) == order_id]
+    if len(matches) != 1:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "原系统找不到这张代取件订单，请刷新后重试。")
+    return matches[0]
+
+
+def _pickup_revoke(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import pickup_revoke_block, pickup_revoke_row, pickup_status
+
+    order_id = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    context = base._resolve_ronghui_page_context(session, PICKUP_MENU)
+    row = _pickup_row(session, context, user_info, order_id)
+    blocked = pickup_revoke_block(row)
+    if blocked:
+        raise ProcessingError("REPLY_RULE_REJECTED", blocked)
+    result = _save(session, context, [("TAB_UNITE_ORDERS_UPT", [pickup_revoke_row(row, user_info, _server_now(session, context))])], "融辉撤销代取件")
+    if pickup_status(_pickup_row(session, context, user_info, order_id)) != "3":
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "撤销已提交，但读回的订单状态不是已取消，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": order_id}
+
+
 # (platform, kind, operation) -> handler(session, item, payload)
 Handler = Callable[[Any, dict[str, Any], dict[str, Any]], dict[str, Any]]
 PROCESS: dict[tuple[str, str, str], Handler] = {
@@ -212,6 +402,12 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "problem", "forward"): _problem_forward,
     **{("ronghui", "work_order", operation): (lambda op: lambda s, i, p: _work_order_process(s, op, i, p))(operation)
        for operation in ("respond", "finish", "urge", "appeal")},
+    ("ronghui", "complaint_against", "reply"): _complaint_against_reply,
+    ("ronghui", "complaint_filed", "cancel"): _complaint_filed_cancel,
+    ("ronghui", "complaint_filed", "appeal"): _complaint_filed_appeal,
+    ("ronghui", "complaint_filed", "claim"): _complaint_filed_claim,
+    ("ronghui", "appeal", "delete"): _appeal_delete,
+    ("ronghui", "pickup", "revoke"): _pickup_revoke,
 }
 LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "problem", "contact"): _problem_contact,

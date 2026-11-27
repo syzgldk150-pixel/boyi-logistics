@@ -128,6 +128,7 @@
       else body[field.name] = String(values[field.name] ?? field.value ?? '');
     }
     if (spec.attachments) body.attachments = values.attachments || [];
+    (spec.attachment_slots || []).forEach((slot) => { body[slot.key] = values[slot.key] || []; });
     return body;
   }
 
@@ -158,6 +159,17 @@
       window.OriginalPageAttachments.render(files, { platform: context.platform, accountId: context.account_id, purpose: spec.attachments.purpose }, values.attachments);
       form.append(files);
     }
+    // 原页固定的图片格（如“面单附件图片”“货物附件图片”“价值正面图片”），每格一张。
+    (spec.attachment_slots || []).forEach((slot) => {
+      if (!window.OriginalPageAttachments) return;
+      const row = el('div', 'action-row');
+      row.append(el('span', 'action-label', slot.label));
+      const files = el('div', 'action-files');
+      values[slot.key] = [];
+      window.OriginalPageAttachments.render(files, { platform: context.platform, accountId: context.account_id, purpose: slot.purpose }, values[slot.key]);
+      row.append(files);
+      form.append(row);
+    });
     const foot = el('div', 'action-dialog-foot');
     const message = el('span', 'action-message');
     const save = el('button', 'action-save', '保存');
@@ -206,9 +218,26 @@
       const button = el('button', 'action-button', spec.label);
       button.type = 'button';
       button.dataset.operation = spec.operation;
-      button.addEventListener('click', () => {
+      let requestId = uuid();
+      button.addEventListener('click', async () => {
         if (spec.blocked) { note.textContent = spec.blocked; return; }
         note.textContent = '';
+        if (!(spec.fields || []).length && !spec.attachments && !(spec.attachment_slots || []).length) {
+          // 原页直接确认的操作（取消投诉、删除、撤销）：确认后提交，结果写在按钮旁。
+          if (spec.confirm && !window.confirm(spec.confirm)) return;
+          button.disabled = true;
+          note.textContent = `${spec.label}中…`;
+          try {
+            const data = await request('process', { ...context, kind: spec.kind, operation: spec.operation, payload: {} }, requestId);
+            note.textContent = `已${spec.label}`;
+            onDone?.(spec, data);
+          } catch (error) {
+            if (!error.network) requestId = uuid();
+            note.textContent = error.message;
+            button.disabled = false;
+          }
+          return;
+        }
         open(spec, context, (done, data) => {
           note.textContent = `${done.label}已保存`;
           onDone?.(done, data);

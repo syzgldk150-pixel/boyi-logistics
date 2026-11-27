@@ -100,3 +100,45 @@ class ProblemTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ComplaintTests(unittest.TestCase):
+    def test_cancel_refuses_when_audited_and_reads_back_removal(self):
+        row = {"EXCEPTION_ID": "E1", "EXCEPTION_MAN_CODE": "E1", "CATEGORY": "延误"}
+        fresh = [{"STATUS": "待审核"}, []]
+        saved = []
+
+        def find(session, context, call_id, data, paged=False):
+            if call_id == "FIND_TAB_EXCEPTION_REGISTER":
+                value = fresh.pop(0)
+                return [value] if isinstance(value, dict) else value
+            raise AssertionError(call_id)
+
+        with patch.object(base, "_read_user_info_cookie", return_value=USER), \
+                patch.object(base, "_resolve_ronghui_page_context", return_value={"page_id": "P", "url": "u"}), \
+                patch.object(processing, "_complaint_row", return_value=row), patch.object(processing, "_find", side_effect=find), \
+                patch.object(processing, "_save", side_effect=lambda s, c, tables, label: saved.append(tables) or {"success": True}):
+            result = processing.run("ronghui", "process", object(), {"kind": "complaint_filed", "operation": "cancel",
+                                                                      "item": {"external_id": "E1"}, "payload": {}})
+        self.assertTrue(result["verified"])
+        self.assertEqual([("TAB_EXCEPTION_DEL", [row])], saved[0])
+        with patch.object(base, "_read_user_info_cookie", return_value=USER), \
+                patch.object(base, "_resolve_ronghui_page_context", return_value={"page_id": "P", "url": "u"}), \
+                patch.object(processing, "_complaint_row", return_value=row), \
+                patch.object(processing, "_find", return_value=[{"STATUS": "审核通过"}]), patch.object(processing, "_save") as save:
+            with self.assertRaises(base.CustomerServiceProblemError) as ctx:
+                processing.run("ronghui", "process", object(), {"kind": "complaint_filed", "operation": "cancel",
+                                                                 "item": {"external_id": "E1"}, "payload": {}})
+        self.assertIn("投诉已审核", str(ctx.exception))
+        save.assert_not_called()
+
+    def test_pickup_revoke_reads_back_cancelled(self):
+        rows = [{"TX_LOGISTIC_ID": "T1", "STATUS": "待揽收"}, {"TX_LOGISTIC_ID": "T1", "STATUS": "已取消"}]
+        with patch.object(base, "_read_user_info_cookie", return_value=USER), \
+                patch.object(base, "_resolve_ronghui_page_context", return_value={"page_id": "P", "url": "u"}), \
+                patch.object(processing, "_pickup_row", side_effect=rows), patch.object(processing, "_server_now", return_value="T"), \
+                patch.object(processing, "_save", return_value={"success": True}) as save:
+            result = processing.run("ronghui", "process", object(), {"kind": "pickup", "operation": "revoke",
+                                                                      "item": {"external_id": "T1"}, "payload": {}})
+        self.assertTrue(result["verified"])
+        self.assertEqual("TAB_UNITE_ORDERS_UPT", save.call_args[0][2][0][0])

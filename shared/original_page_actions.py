@@ -285,6 +285,228 @@ def contact_text(site: Mapping[str, Any] | None) -> str:
     return f"登记网点：{_text(site.get('SITE_NAME'))}\r\n负责人：{_text(site.get('PRINCIPAL'))}\r\n联系电话：{_text(site.get('PHONE'))}"
 
 
+# ---------------------------------------------------------------------------------------------
+# 融辉投诉：被投诉方“回复”（子页“投诉回复-新增”）；投诉方“取消投诉”“提交申诉”“提交材料”
+# ---------------------------------------------------------------------------------------------
+
+COMPLAINT_REPLY_MAX = 500
+CLAIM_SLOTS = (("claim_waybill", "面单附件图片"), ("claim_goods", "货物附件图片"), ("claim_value", "价值正面图片"))
+APPEAL_SLOTS = (("appeal_file1", "附件1"), ("appeal_file2", "附件2"), ("appeal_file3", "附件3"))
+NO_APPEAL_ARBITRATION = ("待理赔", "已理赔")
+
+
+def _slots(slots: Sequence[tuple[str, str]]) -> list[dict[str, str]]:
+    return [{"key": key, "label": label, "purpose": "complaint_image"} for key, label in slots]
+
+
+def complaint_against_specs(row: Mapping[str, Any], user_info: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """被投诉方查询的“回复”：打开“新增投诉回复”（回复网点/回复人为当前登录，回复内容必填 ≤500，附件 ≤10 个 20MB）。"""
+    user_info = user_info or {}
+    return [_spec("complaint_against", "reply", "回复", "新增投诉回复", [
+        _field("BILL_CODE", "运单号", value=row.get("BILL_CODE")),
+        _field("REPLY_SITE", "回复网点", value=user_info.get("loginSiteName")),
+        _field("REPLY_MAN", "回复人", value=user_info.get("loginEmpName")),
+        _field("REPLY_CONTENT", "回复内容", "textarea", required=True, max_length=COMPLAINT_REPLY_MAX),
+    ], attachments_purpose="complaint_reply")]
+
+
+def complaint_reply_guid(server_guid: str) -> str:
+    """``getGuid``: btoa(FIND_GUID) without + - / =, first 32 characters, upper case."""
+    import base64
+
+    encoded = base64.b64encode(_text(server_guid).encode("latin-1")).decode("ascii")
+    return re.sub(r"[+\-/=]", "", encoded)[:32].upper()
+
+
+def validate_complaint_reply(payload: Mapping[str, Any]) -> dict[str, Any]:
+    content = _text(payload.get("REPLY_CONTENT"))
+    if not content:
+        raise ActionRuleError("回复内容不能为空")
+    if len(content) > COMPLAINT_REPLY_MAX:
+        raise ActionRuleError("回复内容不能超过500个字")
+    try:
+        files = attachments(payload.get("attachments"), "ronghui", "complaint_reply")
+    except AttachmentError as exc:
+        raise ActionRuleError(str(exc)) from None
+    return {"content": content, "attachments": files}
+
+
+def complaint_reply_tables(row: Mapping[str, Any], fields: Mapping[str, Any], user_info: Mapping[str, Any], guid: str,
+                           now: dt.datetime) -> list[tuple[str, list[dict[str, Any]]]]:
+    record = {"PROCESS_TYPE": "投诉回复", "BILL_CODE": _text(row.get("BILL_CODE")), "EXCEPTION_ID": _text(row.get("EXCEPTION_ID")),
+              "REPLY_SITE": _text(user_info.get("loginSiteName")), "REPLY_SITE_CODE": _text(user_info.get("loginSiteCode")),
+              "REPLY_MAN": _text(user_info.get("loginEmpName")), "REPLY_MAN_CODE": _text(user_info.get("loginEmpCode")),
+              "REPLY_CONTENT": fields["content"], "GUID": guid}
+    tables = [("TAB_PROCESS_RECORD_ADD", [record])]
+    if fields["attachments"]:
+        tables.append(("TAB_PROCESS_RECORD_PATH_ADD", ronghui_attachment_rows(
+            fields["attachments"], user_info, now, "被投诉方回复附件", PROCESS_RECORD_ID=guid)))
+    return tables
+
+
+def complaint_cancel_block(row: Mapping[str, Any], user_info: Mapping[str, Any]) -> str:
+    """``deleteMethod`` on the list row: only the complainant (or the APP complaint's site), never 违禁品."""
+    app_own_site = _text(row.get("EXCEPTION_TYPE_DATA_FROM")) == "APP" and _text(user_info.get("loginSiteCode")) == _text(row.get("EXCEPTION_SITE_CODE"))
+    if not app_own_site and _text(row.get("EXCEPTION_MAN_CODE")) != _text(user_info.get("loginEmpCode")):
+        return "仅支持投诉人取消投诉"
+    if _text(row.get("CATEGORY")) == "违禁品":
+        return "投诉类型为【违禁品】,不可修改"
+    return ""
+
+
+def complaint_cancel_check(current: Mapping[str, Any] | None) -> None:
+    """The fresh ``FIND_TAB_EXCEPTION_REGISTER`` row: refused once either status left 待审核."""
+    if current and ((_text(current.get("STATUS")) and _text(current.get("STATUS")) != "待审核")
+                    or (_text(current.get("ARBITRATE_STATUS")) and _text(current.get("ARBITRATE_STATUS")) != "待审核")):
+        raise ActionRuleError("投诉已审核，不支持取消")
+
+
+def complaint_appeal_block(row: Mapping[str, Any], submitted: bool = False) -> str:
+    """“申诉详情”页签：只在投诉或仲裁审核驳回后开放；复审驳回或已传过申诉附件时按钮置灰。"""
+    status, arbitration = row.get("STATUS"), row.get("ARBITRATE_STATUS")
+    if status is not None and _text(status) != "审核驳回" and arbitration is not None and _text(arbitration) != "审核驳回":
+        return "投诉审核驳回时投诉网点可进行操作申诉！"
+    if _text(row.get("AUDIT_STATUS")) == "2" or submitted:
+        return "该投诉已提交申诉。"
+    return ""
+
+
+def complaint_claim_block(row: Mapping[str, Any], submitted: bool = False) -> str:
+    """“理赔资料补充”页签：处理类型不为空且不是 2 时不开放（原页如此判断）；已传过材料时按钮置灰。"""
+    appeal_type = row.get("APPEAL_TYPE")
+    if appeal_type is not None and _text(appeal_type) != "2":
+        return "仲裁才有理赔的资料补充；普通投诉没有理赔！"
+    if submitted:
+        return "该投诉已提交材料。"
+    return ""
+
+
+def complaint_filed_specs(row: Mapping[str, Any], user_info: Mapping[str, Any]) -> list[dict[str, Any]]:
+    appeal = _spec("complaint_filed", "appeal", "提交申诉", "申诉详情", [
+        _field("BILL_CODE", "运单号", value=row.get("BILL_CODE")),
+        _field("APPEAL_CONTENT", "申诉说明", "textarea", required=True),
+    ], blocked=complaint_appeal_block(row))
+    appeal["attachment_slots"] = _slots(APPEAL_SLOTS)
+    claim = _spec("complaint_filed", "claim", "提交材料", "理赔资料补充",
+                  [_field("BILL_CODE", "运单号", value=row.get("BILL_CODE"))], blocked=complaint_claim_block(row))
+    claim["attachment_slots"] = _slots(CLAIM_SLOTS)
+    return [
+        _spec("complaint_filed", "cancel", "取消投诉", "取消投诉", [], blocked=complaint_cancel_block(row, user_info),
+              confirm="确定取消投诉？"),
+        appeal, claim,
+    ]
+
+
+def _slot_files(payload: Mapping[str, Any], slots: Sequence[tuple[str, str]]) -> list[tuple[str, dict[str, Any]]]:
+    result = []
+    for key, label in slots:
+        try:
+            files = attachments(payload.get(key), "ronghui", "complaint_image")
+        except AttachmentError as exc:
+            raise ActionRuleError(f"{label}：{exc}") from None
+        if files:
+            result.append((label, files[0]))
+    return result
+
+
+def _within_appeal_period(exception_date: Any, days: int, now: dt.datetime) -> bool:
+    """``commentTimeHandle``: only a millisecond timestamp can fail it (a date string gives NaN and passes)."""
+    try:
+        stamp = float(exception_date)
+    except (TypeError, ValueError):
+        return True
+    return int((now.timestamp() - stamp / 1000) // 86400) <= days
+
+
+def validate_complaint_appeal(row: Mapping[str, Any], payload: Mapping[str, Any], now: dt.datetime,
+                              submitted: bool = False) -> dict[str, Any]:
+    blocked = complaint_appeal_block(row, submitted)
+    if blocked:
+        raise ActionRuleError(blocked)
+    content = _text(payload.get("APPEAL_CONTENT"))
+    if not content:
+        raise ActionRuleError("申诉说明不能为空")
+    arbitration = _text(row.get("ARBITRATE_STATUS"))
+    if arbitration in NO_APPEAL_ARBITRATION:
+        raise ActionRuleError(f"“{arbitration}”仲裁状态下不能提交申诉！")
+    appeal_type = _text(row.get("APPEAL_TYPE"))
+    days = {"普通投诉处理": 7, "仲裁处理": 3}.get(appeal_type)
+    if days is not None and not _within_appeal_period(row.get("EXCEPTION_DATE"), days, now):
+        raise ActionRuleError("超过投诉申诉期不允许进行申诉登记！")
+    return {"content": content, "files": _slot_files(payload, APPEAL_SLOTS)}
+
+
+def complaint_appeal_update(row: Mapping[str, Any], fields: Mapping[str, Any], user_info: Mapping[str, Any], server_now: str) -> dict[str, Any]:
+    data = {"EXCEPTION_ID": _text(row.get("EXCEPTION_ID")), "APPEAL_CONTENT": fields["content"], "APPEAL_DATE": server_now,
+            "APPEAL_SITE": _text(user_info.get("loginSiteName")), "APPEAL_SITE_CODE": _text(user_info.get("loginSiteCode")),
+            "APPEAL_TYPE": _text(row.get("APPEAL_TYPE")), "APPEAL_STATUS": "已申诉"}
+    for key, source in (("APPEAL_MAN", "loginUserName"), ("APPEAL_MAN_CODE", "loginUserId")):
+        if _text(user_info.get(source)):
+            data[key] = _text(user_info.get(source))
+    data["ARBITRATE_STATUS" if data["APPEAL_TYPE"] == "仲裁处理" else "STATUS"] = "待审核"
+    return data
+
+
+def validate_complaint_claim(row: Mapping[str, Any], payload: Mapping[str, Any], submitted: bool = False) -> dict[str, Any]:
+    blocked = complaint_claim_block(row, submitted)
+    if blocked:
+        raise ActionRuleError(blocked)
+    return {"files": _slot_files(payload, CLAIM_SLOTS)}
+
+
+def complaint_claim_update(row: Mapping[str, Any], user_info: Mapping[str, Any], server_now: str) -> dict[str, Any]:
+    data = {"EXCEPTION_ID": _text(row.get("EXCEPTION_ID")), "CLAIM_DATE": server_now,
+            "CLAIM_SITE": _text(user_info.get("loginSiteName")), "CLAIM_SITE_CODE": _text(user_info.get("loginSiteCode"))}
+    for key, source in (("CLAIM_MAN", "loginUserName"), ("CLAIM_MAN_CODE", "loginUserId")):
+        if _text(user_info.get(source)):
+            data[key] = _text(user_info.get(source))
+    return data
+
+
+def exception_path_row(exception_id: str, file_name: str, file_path: str, upload_type: str, user_info: Mapping[str, Any],
+                       server_now: str) -> dict[str, Any]:
+    """``saveExceptionPath``: one ``TAB_EXCEPTION_PATH_ADD`` row per file, saved after the main update."""
+    return {"EXCEPTION_ID": exception_id, "FILE_NAME": file_name, "UPLOAD_SITE": _text(user_info.get("loginSiteName")),
+            "UPLOAD_SITE_CODE": _text(user_info.get("loginSiteCode")), "UPLOAD_MAN": _text(user_info.get("loginEmpName")),
+            "UPLOAD_MAN_CODE": _text(user_info.get("loginEmpCode")), "UPLOAD_DATE": server_now, "FILE_PATH": file_path,
+            "FILE_UPLOAD_TYPE": upload_type}
+
+
+# ---------------------------------------------------------------------------------------------
+# 融辉申诉登记“删除”、网点代取件“撤销”
+# ---------------------------------------------------------------------------------------------
+
+def appeal_delete_block(row: Mapping[str, Any]) -> str:
+    return "" if _text(row.get("COMPLAINT_STATUS")) == "待审核" else "非待审核状态不可删除！"
+
+
+def appeal_specs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [_spec("appeal", "delete", "删除", "删除", [], blocked=appeal_delete_block(row), confirm="确定删除记录？")]
+
+
+PICKUP_STATUS_CODES = {"待分配": "0", "待接单": "4", "待揽收": "1", "已揽收": "2", "已取消": "3", "撤销待审核": "5"}
+
+
+def pickup_status(row: Mapping[str, Any]) -> str:
+    status = _text(row.get("STATUS"))
+    return PICKUP_STATUS_CODES.get(status, status)
+
+
+def pickup_revoke_block(row: Mapping[str, Any]) -> str:
+    return {"2": "订单已揽收录单不支持撤销，请及时联系接单网点处理!", "3": "已取消订单不支持重复撤销!",
+            "5": "撤销待审核订单不支持撤销!"}.get(pickup_status(row), "")
+
+
+def pickup_specs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [_spec("pickup", "revoke", "撤销", "撤销", [], blocked=pickup_revoke_block(row),
+                  confirm="撤销后订单将取消，确认要撤销吗？")]
+
+
+def pickup_revoke_row(row: Mapping[str, Any], user_info: Mapping[str, Any], server_now: str) -> dict[str, Any]:
+    return {"TX_LOGISTIC_ID": _text(row.get("TX_LOGISTIC_ID")), "STATUS": 3, "REVOKE_DATE": server_now,
+            "REVOKE_MAN": _text(user_info.get("loginEmpName")), "REVOKE_MAN_CODE": _text(user_info.get("loginEmpCode"))}
+
+
 SITE_KEY = re.compile(r"^[\w一-龥()（）\-]{1,30}$")
 
 
@@ -296,6 +518,11 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "APPEAL_SLOTS", "CLAIM_SLOTS", "appeal_delete_block", "appeal_specs", "complaint_against_specs", "complaint_appeal_block",
+    "complaint_appeal_update", "complaint_cancel_block", "complaint_cancel_check", "complaint_claim_block", "complaint_claim_update",
+    "complaint_filed_specs", "complaint_reply_guid", "complaint_reply_tables", "exception_path_row", "pickup_revoke_block",
+    "pickup_revoke_row", "pickup_specs", "pickup_status", "validate_complaint_appeal", "validate_complaint_claim",
+    "validate_complaint_reply",
     "ActionRuleError", "DATE_FORMAT", "WORK_OPERATIONS", "WORK_SUBPAGE_APPEAL", "WORK_SUBPAGE_FOLLOW", "contact_text",
     "problem_forward_row", "problem_forward_spec", "problem_needs_seen", "problem_seen_row", "site_search_key",
     "validate_problem_forward", "validate_work_order", "work_order_block", "work_order_detail_guid", "work_order_saved",

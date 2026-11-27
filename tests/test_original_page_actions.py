@@ -87,3 +87,58 @@ def test_problem_forward_and_seen():
     assert problem_forward_row(row, site) == {"BILL_CODE": "B1", "SEND_SITE_CODE": "Y", "SEND_SITE": "合成网点",
                                               "REGISTER_DATE": "2026-11-27 08:00:00"}
     assert contact_text({"SITE_NAME": "甲", "PRINCIPAL": "乙", "PHONE": "1"}) == "登记网点：甲\r\n负责人：乙\r\n联系电话：1"
+
+
+def test_complaint_rules_follow_the_original_pages():
+    from shared.original_page_actions import (
+        complaint_appeal_block, complaint_appeal_update, complaint_cancel_block, complaint_cancel_check, complaint_claim_block,
+        complaint_filed_specs, complaint_reply_guid, complaint_reply_tables, validate_complaint_appeal, validate_complaint_reply,
+    )
+
+    own = {"EXCEPTION_ID": "E1", "BILL_CODE": "B1", "EXCEPTION_MAN_CODE": "E1", "CATEGORY": "延误", "STATUS": "待审核",
+           "ARBITRATE_STATUS": None, "APPEAL_TYPE": "差错处理"}
+    assert complaint_cancel_block(own, USER) == ""
+    assert complaint_cancel_block({**own, "EXCEPTION_MAN_CODE": "X"}, USER) == "仅支持投诉人取消投诉"
+    assert complaint_cancel_block({**own, "EXCEPTION_MAN_CODE": "X", "EXCEPTION_TYPE_DATA_FROM": "APP", "EXCEPTION_SITE_CODE": "S1"}, USER) == ""
+    assert complaint_cancel_block({**own, "CATEGORY": "违禁品"}, USER) == "投诉类型为【违禁品】,不可修改"
+    with pytest.raises(ActionRuleError, match="投诉已审核"):
+        complaint_cancel_check({"STATUS": "审核通过"})
+    complaint_cancel_check({"STATUS": "待审核", "ARBITRATE_STATUS": ""})
+    # 原页条件是“投诉状态和仲裁状态都有值且都不是审核驳回”才拦，仲裁状态为空时放行。
+    assert complaint_appeal_block(own) == ""
+    assert complaint_appeal_block({**own, "ARBITRATE_STATUS": "待审核"}) == "投诉审核驳回时投诉网点可进行操作申诉！"
+    assert complaint_appeal_block({**own, "STATUS": "审核驳回"}) == ""
+    assert complaint_appeal_block({**own, "STATUS": "审核驳回", "AUDIT_STATUS": 2}) == "该投诉已提交申诉。"
+    assert complaint_claim_block(own) == "仲裁才有理赔的资料补充；普通投诉没有理赔！"
+    assert [spec["operation"] for spec in complaint_filed_specs(own, USER)] == ["cancel", "appeal", "claim"]
+    rejected = {**own, "STATUS": "审核驳回", "APPEAL_TYPE": "仲裁处理", "ARBITRATE_STATUS": "待理赔"}
+    with pytest.raises(ActionRuleError, match="待理赔"):
+        validate_complaint_appeal(rejected, {"APPEAL_CONTENT": "x"}, dt.datetime(2026, 11, 27))
+    rejected["ARBITRATE_STATUS"] = "审核驳回"
+    fields = validate_complaint_appeal(rejected, {"APPEAL_CONTENT": "责任不在我方", "appeal_file1": [
+        {"platform": "ronghui", "file_name": "a.jpg", "file_path": "/unauth/download/a"}]}, dt.datetime(2026, 11, 27))
+    update = complaint_appeal_update(rejected, fields, {**USER, "loginUserName": "合成用户"}, "T")
+    assert update["ARBITRATE_STATUS"] == "待审核" and "STATUS" not in update and update["APPEAL_STATUS"] == "已申诉"
+    assert update["APPEAL_MAN"] == "合成用户" and "APPEAL_MAN_CODE" not in update
+    with pytest.raises(ActionRuleError, match="回复内容不能为空"):
+        validate_complaint_reply({})
+    guid = complaint_reply_guid("abc-123")
+    assert guid == guid.upper() and not set(guid) & set("+-/=")
+    tables = complaint_reply_tables(own, validate_complaint_reply({"REPLY_CONTENT": "已核实", "attachments": [
+        {"platform": "ronghui", "file_name": "a.png", "file_ext": ".png", "file_path": "/unauth/download/a"}]}), USER, guid,
+        dt.datetime(2026, 11, 27))
+    assert tables[0][1][0]["PROCESS_TYPE"] == "投诉回复" and tables[0][1][0]["GUID"] == guid
+    assert tables[1][1][0]["PROCESS_RECORD_ID"] == guid and tables[1][1][0]["FILE_UPLOAD_TYPE"] == "被投诉方回复附件"
+
+
+def test_appeal_delete_and_pickup_revoke_rules():
+    from shared.original_page_actions import appeal_delete_block, pickup_revoke_block, pickup_revoke_row
+
+    assert appeal_delete_block({"COMPLAINT_STATUS": "待审核"}) == ""
+    assert appeal_delete_block({"COMPLAINT_STATUS": "已审核"}) == "非待审核状态不可删除！"
+    assert pickup_revoke_block({"STATUS": "已揽收"}).startswith("订单已揽收录单不支持撤销")
+    assert pickup_revoke_block({"STATUS": 3}) == "已取消订单不支持重复撤销!"
+    assert pickup_revoke_block({"STATUS": "5"}) == "撤销待审核订单不支持撤销!"
+    assert pickup_revoke_block({"STATUS": "待揽收"}) == ""
+    assert pickup_revoke_row({"TX_LOGISTIC_ID": "T1"}, USER, "T") == {"TX_LOGISTIC_ID": "T1", "STATUS": 3, "REVOKE_DATE": "T",
+                                                                     "REVOKE_MAN": "合成员工", "REVOKE_MAN_CODE": "E1"}

@@ -999,6 +999,8 @@ class CustomerServiceMixin:
             ).strip(),
             "file_path": str(target),
         }
+        if purpose:
+            arguments["purpose"] = purpose
         result = call_business(self, "customer-service-upload-attachment", arguments,
             trusted_context=trusted_context, request_id=browser_request_uuid, write=True)
         if result.get("ok"):

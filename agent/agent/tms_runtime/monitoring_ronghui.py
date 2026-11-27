@@ -40,7 +40,9 @@ from agent.tms_runtime.scripts.customer_service_problem import (
     _ronghui_query,
 )
 from agent.tms_runtime.session_validators import looks_like_ronghui_login
-from shared.original_page_actions import problem_forward_spec, work_order_specs
+from shared.original_page_actions import (
+    appeal_specs, complaint_against_specs, complaint_filed_specs, pickup_specs, problem_forward_spec, work_order_specs,
+)
 from shared.problem_reply_rules import ronghui_reply_form
 
 ORIGIN = "https://tms.ronghuiwl.com"
@@ -152,6 +154,7 @@ class Account:
     site_code: str = ""
     site_type: str = ""
     employee: str = ""
+    employee_code: str = ""
     contexts: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -244,7 +247,7 @@ def _open_account(profile: str, label: str, account_id: str, open_session: Calla
     info = _read_user_info_cookie(session) or {}
     account = Account(profile, label, session, account_id=account_id, site=_text(info.get("loginSiteName")),
                       site_code=_text(info.get("loginSiteCode")), site_type=_text(info.get("loginSiteType")),
-                      employee=_text(info.get("loginEmpName")))
+                      employee=_text(info.get("loginEmpName")), employee_code=_text(info.get("loginEmpCode")))
     if not account.site or not account.site_code:
         raise TMSAuthStateError("AUTH_REQUIRED", "融辉账号登录信息里没有网点，请到业务账号重新登录。")
     return account
@@ -458,6 +461,17 @@ def _problem_items(account: Account, source: Source) -> list[dict[str, Any]]:
 
 # -- 投诉、申诉、代取件 ------------------------------------------------------------------------
 
+def _user(account: Account) -> dict[str, str]:
+    return {"loginEmpName": account.employee, "loginEmpCode": account.employee_code, "loginSiteName": account.site,
+            "loginSiteCode": account.site_code}
+
+
+def _actions(account: Account, identifier: str, row: dict[str, Any], specs: list[dict[str, Any]]) -> dict[str, Any]:
+    """原页工具栏按钮（用户 2026-11-27 要求在博益直接处理）：提交时 Agent 在原平台按编号重新读取再检查。"""
+    return {"platform": "ronghui", "account_id": account.account_id,
+            "item": {"external_id": identifier, "BILL_CODE": _text(row.get("BILL_CODE"))}, "specs": specs}
+
+
 def _complaint_items(account: Account, source: Source) -> list[dict[str, Any]]:
     context = _account_context(account, source.menu)
     window = _window_range(COMPLAINT_LOOKBACK_DAYS)
@@ -491,6 +505,8 @@ def _complaint_items(account: Account, source: Source) -> list[dict[str, Any]]:
             "occurred_at": latest_activity(times), "status_label": label or "未完结",
             "waybill_no": _text(row.get("BILL_CODE")), "source_label": _source_label(account, source.title),
             "open_url": HOME,
+            "actions": _actions(account, identifier, row, complaint_against_specs(row, _user(account))
+                                if source.call_id == "FIND_TAB_EXCEPTION_SIDE" else complaint_filed_specs(row, _user(account))),
         })
     return items
 
@@ -523,7 +539,7 @@ def _appeal_items(account: Account, source: Source) -> list[dict[str, Any]]:
             "content": "\n".join(filter(None, lines)) or "原系统正文为空",
             "occurred_at": latest_activity(times), "status_label": status,
             "waybill_no": _text(row.get("BILL_CODE")), "source_label": _source_label(account, source.title),
-            "open_url": HOME,
+            "open_url": HOME, "actions": _actions(account, identifier, row, appeal_specs(row)),
         })
     return items
 
@@ -560,6 +576,8 @@ def _pickup_items(account: Account, source: Source) -> list[dict[str, Any]]:
             "occurred_at": latest_activity(times), "status_label": PICKUP_STATUS_TEXT[code],
             "waybill_no": _text(row.get("BILL_CODE")), "source_label": _source_label(account, source.title),
             "open_url": HOME,
+            **({"actions": _actions(account, _text(row.get("TX_LOGISTIC_ID")), row, pickup_specs(row))}
+               if _text(row.get("TX_LOGISTIC_ID")) else {}),
         })
     return items
 
