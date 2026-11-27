@@ -97,10 +97,15 @@ def test_message_center_merges_everything_without_category_tabs(app, browser):
         assert ("yunda:problems", "2") in item_requests and ("ronghui:work_response", "2") not in item_requests
         assert page.locator("[data-monitoring-more]").is_hidden()
 
-        # A metric card narrows the list; the chip brings everything back.
-        page.click('[data-monitoring-metric="ronghui-work"]')
+        # A metric card narrows the merged list to all of its categories; the chip brings everything back.
+        page.click('[data-monitoring-metric="work"]')
         page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 1")
-        assert "收到工单 · 待响应" in page.inner_text("[data-monitoring-clear-filter]")
+        assert "工单" in page.inner_text("[data-monitoring-clear-filter]")
+        assert page.get_attribute('[data-monitoring-metric="work"]', "aria-pressed") == "true"
+        page.click('[data-monitoring-metric="problems"]')
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 2")
+        assert page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts() == ["合成问题乙", "合成问题甲"]
+        assert page.locator("[data-monitoring-more]").is_visible()  # its page 2 is read on demand
         page.click("[data-monitoring-clear-filter]")
         page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 3")
 

@@ -118,7 +118,7 @@ def test_cache_is_scoped_to_server_profile_category_and_page():
     broker = Mock()
     with (patch.object(monitoring, "get_session_broker", return_value=broker) as resolve,
           patch.object(monitoring_yunda, "collect_items", side_effect=[item_page(total=1), item_page(total=2, page=2)]) as collect,
-          patch.object(monitoring_ronghui, "collect_items", return_value=item_page(total=3))):
+          patch.object(monitoring_ronghui, "collect_items", return_value=item_page(total=3)) as ronghui_collect):
         first = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
         cached = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems")
         second = monitoring.build_monitoring_items(system="yunda", category_id="yunda:problems", page=2)
@@ -128,10 +128,12 @@ def test_cache_is_scoped_to_server_profile_category_and_page():
     assert second["total"] == 2
     assert ronghui["total"] == 3
     assert collect.call_count == 2
-    assert [call.args[0] for call in resolve.call_args_list] == ["yunda", "yunda", "default"]
+    # 融辉 opens its four accounts itself (2026-11-27): it gets the session opener, not one session.
+    assert [call.args[0] for call in resolve.call_args_list] == ["yunda", "yunda"]
+    assert ronghui_collect.call_args.args[0] is monitoring._open_session
     assert set(monitoring._ITEM_CACHE) == {
         foreign_key, ("yunda", "yunda", "yunda:problems", 1),
-        ("yunda", "yunda", "yunda:problems", 2), ("ronghui", "default", "ronghui:announcements", 1),
+        ("yunda", "yunda", "yunda:problems", 2), ("ronghui", "ronghui-accounts", "ronghui:announcements", 1),
     }
 
 
@@ -190,3 +192,15 @@ def test_concurrent_reads_of_same_page_share_one_collection():
     assert second_result["cached"] is True
     collect.assert_called_once()
     assert monitoring._ITEM_LOCKS == {}
+
+
+def test_ronghui_partial_category_surfaces_the_failed_account_on_the_platform():
+    partial = {"system": "ronghui", "category_id": "ronghui:problems", "title": "问题件 · 未回复", "count": 2,
+               "status": "partial", "message": "以下账号未计入：大祥S站账号：融辉登录态已失效，请重新登录。",
+               "include_in_total": True, "is_exception": True}
+    ok = {**partial, "category_id": "ronghui:appeals", "title": "申诉 · 未完结", "count": 0, "status": "ok", "message": "只显示最近3天"}
+    with patch.object(monitoring_ronghui, "collect_categories", return_value=[partial, ok]) as collect:
+        payload = monitoring._source_snapshot("ronghui", updated_at="2026-11-27 12:00:00")
+    assert collect.call_args.args[0] is monitoring._open_session
+    assert payload["status"] == "partial" and payload["status_label"] == "部分来源不可用"
+    assert "大祥S站账号" in payload["message"] and payload["total_count"] == 2

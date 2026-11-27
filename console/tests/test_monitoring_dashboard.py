@@ -327,7 +327,7 @@ class MonitoringConsoleTests(unittest.TestCase):
         script = (CONSOLE_DIR / "static" / "monitoring.js").read_text(encoding="utf-8")
         requests = []
         summary_requests = []
-        ronghui_metric = "document.querySelector('[data-monitoring-metric=\"ronghui-work\"] [data-monitoring-metric-value]').textContent"
+        ronghui_metric = "document.querySelector('[data-monitoring-metric=\"work\"] [data-monitoring-metric-value]').textContent"
 
         def respond(route):
             url = route.request.url
@@ -346,6 +346,13 @@ class MonitoringConsoleTests(unittest.TestCase):
                             {"category_id": "ronghui:work_processing", "title": "收到工单 · 待处理", "count": 2,
                              "items_supported": False, "is_exception": True},
                         ],
+                    }, {
+                        "system": "yunda", "label": "韵达", "status": "ok", "categories": [
+                            {"category_id": "yunda:work_orders", "title": "收到的待处理工单", "count": 0,
+                             "items_supported": False, "is_exception": True},
+                            {"category_id": "yunda:work_order_replies", "title": "工单催单待回复", "count": 1,
+                             "items_supported": False, "is_exception": True},
+                        ],
                     }],
                 })
             else:
@@ -360,9 +367,11 @@ class MonitoringConsoleTests(unittest.TestCase):
                 page.add_init_script("window.EventSource = undefined;")
                 page.goto("https://console.test/")
                 page.wait_for_function(f"{ronghui_metric} === '3'")
-                self.assertEqual("待响应 1 · 待处理 2", page.locator('[data-monitoring-metric="ronghui-work"] [data-monitoring-metric-note]').text_content())
-                self.assertEqual("—", page.locator('[data-monitoring-metric="yunda-work"] [data-monitoring-metric-value]').text_content())
-                self.assertEqual(5, page.locator(".monitor-metric").count())
+                # 2026-11-27: one 工单 card for both platforms; 韵达催单 is listed but never summed.
+                self.assertEqual("融辉 3 · 韵达 0 · 催单 1", page.locator('[data-monitoring-metric="work"] [data-monitoring-metric-note]').text_content())
+                self.assertEqual("—", page.locator('[data-monitoring-metric="problems"] [data-monitoring-metric-value]').text_content())
+                self.assertEqual(["工单", "问题件", "投诉·仲裁", "调拨件", "待确认", "公告"],
+                                 page.locator(".monitor-metric > span").all_inner_texts())
                 self.assertTrue(page.locator("[data-overview-pending-metric]").is_hidden())
                 self.assertEqual(0, page.locator("[data-monitoring-daily-sign]").count())
 

@@ -307,11 +307,15 @@ def _source_snapshot(system: str, *, updated_at: str) -> dict[str, Any]:
     adapter = monitoring_yunda if system == "yunda" else monitoring_ronghui
     label = "韵达" if system == "yunda" else "融辉 TMS"
     try:
-        session = get_session_broker("yunda" if system == "yunda" else "default").build_requests_session(validate=False)
-        try:
-            categories = adapter.collect_categories(session)
-        finally:
-            session.close()
+        if system == "ronghui":
+            # 融辉按四个博益账号分别读取（用户 2026-11-27），适配器自己打开并关闭各账号会话。
+            categories = adapter.collect_categories(_open_session)
+        else:
+            session = _open_session("yunda")
+            try:
+                categories = adapter.collect_categories(session)
+            finally:
+                session.close()
     except Exception as exc:
         return {
             **_system_payload(system=system, label=label, updated_at=updated_at,
@@ -321,17 +325,24 @@ def _source_snapshot(system: str, *, updated_at: str) -> dict[str, Any]:
             "total_count": None, "exception_count": None,
         }
     failures = [item for item in categories if item.get("count") is None]
+    partial = [item for item in categories if item.get("status") == "partial"]
     included = [item for item in categories if item.get("include_in_total")]
     total = sum(item["count"] for item in included) if included and all(item.get("count") is not None for item in included) else None
     exceptions = [item for item in included if item.get("is_exception")]
     exception_count = sum(item["count"] for item in exceptions) if included and all(item.get("count") is not None for item in exceptions) else None
+    problems = [f"{item.get('title')}：{item.get('message')}" for item in failures + partial if item.get("message")]
     return {
-        "system": system, "label": label, "status": "partial" if failures else "ok",
-        "status_label": "部分来源不可用" if failures else "已连接",
-        "message": "各分类口径不同，数量分别展示，不重复合计。" if system == "yunda" else "",
+        "system": system, "label": label, "status": "partial" if failures or partial else "ok",
+        "status_label": "部分来源不可用" if failures or partial else "已连接",
+        "message": "；".join(dict.fromkeys(problems)) if problems else (
+            "各分类口径不同，数量分别展示，不重复合计。" if system == "yunda" else ""),
         "total_count": total, "exception_count": exception_count,
         "updated_at": updated_at, "categories": categories,
     }
+
+
+def _open_session(profile: str):
+    return get_session_broker(profile).build_requests_session(validate=False)
 
 
 def _collect_yunda_snapshot(*, force: bool, updated_at: str) -> dict[str, Any]:
@@ -574,9 +585,9 @@ def build_monitoring_items(*, system: str, category_id: str, page: int = 1, forc
 
     if system not in {"ronghui", "yunda"} or not category_id.startswith(system + ":") or not 1 <= page <= 10000:
         return {"ok": False, "error_code": "INVALID_MONITORING_QUERY", "message": "消息来源或页码无效。", "items": [], "total": None}
-    profile = "yunda" if system == "yunda" else "default"
+    profile = "yunda" if system == "yunda" else "ronghui-accounts"
     adapter = monitoring_yunda if system == "yunda" else monitoring_ronghui
-    allowed = monitoring_yunda.ITEM_CATEGORY_IDS if system == "yunda" else monitoring_ronghui.SOURCES
+    allowed = monitoring_yunda.ITEM_CATEGORY_IDS if system == "yunda" else monitoring_ronghui.ITEM_CATEGORY_IDS
     if category_id not in allowed:
         return {"ok": False, "error_code": "INVALID_MONITORING_CATEGORY", "message": "该分类仅支持打开原系统。", "items": [], "total": None}
     key = (system, profile, category_id, page)
@@ -598,11 +609,14 @@ def build_monitoring_items(*, system: str, category_id: str, page: int = 1, forc
                 if cached and cached[0] >= now:
                     return _with_cache_meta(cached[1], cached=True, stale=False, refreshing=False)
             try:
-                session = get_session_broker(profile).build_requests_session(validate=False)
-                try:
-                    result = adapter.collect_items(session, category_id, page, 20)
-                finally:
-                    session.close()
+                if system == "ronghui":
+                    result = adapter.collect_items(_open_session, category_id, page, 20)
+                else:
+                    session = _open_session(profile)
+                    try:
+                        result = adapter.collect_items(session, category_id, page, 20)
+                    finally:
+                        session.close()
                 if result.get("status") not in {"ok", "partial"}:
                     with _CACHE_LOCK:
                         _ITEM_CACHE.pop(key, None)

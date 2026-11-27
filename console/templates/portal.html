@@ -29,9 +29,10 @@
   .monitoring-refresh.is-loading { color: var(--text-muted); cursor: wait; }
 
   /* KPI strip */
-  .monitor-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); min-height: 56px; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); overflow: hidden; }
+  .monitor-metrics { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); min-height: 56px; border: 1px solid var(--line-default); border-radius: var(--r-card); background: var(--bg-surface); overflow: hidden; }
   .monitor-metric { display: grid; grid-template-columns: auto minmax(0, 1fr); align-content: center; column-gap: 8px; min-width: 0; min-height: 56px; padding: 8px 16px; border: 0; border-right: 1px solid var(--line-subtle); background: transparent; text-align: left; cursor: pointer; }
   .monitor-metric:last-child { border-right: 0; }
+  .monitor-metric[hidden] { display: none; }
   .monitor-metric:hover { background: var(--bg-subtle); }
   .monitor-metric.is-active { background: var(--bg-subtle); box-shadow: inset 0 -2px 0 var(--brand-red); }
   .monitor-metric span { grid-column: 1 / -1; color: var(--text-muted); font-size: var(--fs-caption); font-weight: 400 !important; }
@@ -113,7 +114,7 @@
   .monitor-center-more { display: flex; align-items: center; justify-content: center; min-height: 44px; border-top: 1px solid var(--line-subtle); color: var(--brand-red); font-size: var(--fs-body); }
   .monitor-center-more:hover { text-decoration: underline; text-underline-offset: 2px; }
   @media (max-width: 1023px) {
-    .monitor-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .monitor-metrics { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .monitor-metric { border-bottom: 1px solid var(--line-subtle); }
     .monitor-tabs-row { flex-direction: column; align-items: flex-start; }
   }
@@ -136,7 +137,7 @@
     .monitor-action-btn, .monitor-category, .monitor-source-switch button { min-height: 44px; }
   }
   @media (max-width: 639px) {
-    .monitor-metrics { grid-template-columns: 1fr; }
+    .monitor-metrics { grid-auto-flow: row; grid-template-columns: 1fr; }
   }
   @media (prefers-reduced-motion: reduce) {
     .monitor-dashboard * { scroll-behavior: auto !important; transition: none !important; }
@@ -161,30 +162,35 @@
   </div>
 
   <div class="monitor-metrics">
-    <button class="monitor-metric" type="button" data-monitoring-metric="ronghui-work">
-      <span>融辉收到工单</span>
+    <button class="monitor-metric" type="button" data-monitoring-metric="work">
+      <span>工单</span>
       <strong data-monitoring-metric-value>加载中</strong>
-      <small data-monitoring-metric-note>待响应与待处理</small>
+      <small data-monitoring-metric-note>融辉与韵达收到的待处理工单</small>
     </button>
-    <button class="monitor-metric" type="button" data-monitoring-metric="yunda-work">
-      <span>韵达收到工单</span>
+    <button class="monitor-metric" type="button" data-monitoring-metric="problems">
+      <span>问题件</span>
       <strong data-monitoring-metric-value>加载中</strong>
-      <small data-monitoring-metric-note>待处理工单</small>
+      <small data-monitoring-metric-note>融辉未回复与韵达未完结问题件</small>
     </button>
-    <button class="monitor-metric" type="button" data-monitoring-metric="yunda-problems">
-      <span>韵达问题件</span>
+    <button class="monitor-metric" type="button" data-monitoring-metric="complaints">
+      <span>投诉·仲裁</span>
       <strong data-monitoring-metric-value>加载中</strong>
-      <small data-monitoring-metric-note>发布给我的未完结问题件</small>
+      <small data-monitoring-metric-note>融辉投诉、申诉与韵达仲裁</small>
     </button>
-    <button class="monitor-metric" type="button" data-monitoring-metric="yunda-arbitration">
-      <span>韵达仲裁与调拨件</span>
+    <button class="monitor-metric" type="button" data-monitoring-metric="transfers">
+      <span>调拨件</span>
       <strong data-monitoring-metric-value>加载中</strong>
-      <small data-monitoring-metric-note>未结束仲裁与待接单调拨件</small>
+      <small data-monitoring-metric-note>融辉代取件与韵达调拨件</small>
     </button>
     <button class="monitor-metric monitor-metric--pending" type="button" data-overview-pending data-overview-pending-metric hidden>
       <span>待确认</span>
       <strong data-overview-pending-total>—</strong>
       <small data-overview-pending-note>客服问题件</small>
+    </button>
+    <button class="monitor-metric" type="button" data-monitoring-metric="announcements">
+      <span>公告</span>
+      <strong data-monitoring-metric-value>加载中</strong>
+      <small data-monitoring-metric-note>融辉未读公告</small>
     </button>
   </div>
 
@@ -222,6 +228,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/monitoring.js?v=20261119-no-category-tabs"></script>
+<script src="/static/monitoring.js?v=20261127-six-cards"></script>
 <script src="/static/overview_pending.js?v=20261118-all-tab"></script>
 {% endblock %}

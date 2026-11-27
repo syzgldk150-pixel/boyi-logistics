@@ -15,14 +15,26 @@
     pendingMore: root.querySelector('[data-overview-pending-more]'),
     pendingMetric: root.querySelector('[data-overview-pending-metric]')
   };
-  // Each card reads its own categories; only disjoint scopes are summed.
+  // Cards by kind across both platforms (用户 2026-11-27): 工单 / 问题件 / 投诉·仲裁 / 调拨件 / 待确认 / 公告.
+  // Each card sums only its own disjoint categories; a note lists the parts (韵达催单 is shown, never summed).
   const metricDefs = {
-    'ronghui-work': { sum: ['ronghui:work_response', 'ronghui:work_processing'], tone: 'warning',
-      note: [['ronghui:work_response', '待响应'], ['ronghui:work_processing', '待处理']] },
-    'yunda-work': { sum: ['yunda:work_orders'], tone: 'warning', note: [['yunda:work_order_replies', '催单待回复']] },
-    'yunda-problems': { sum: ['yunda:problems'], tone: 'warning', note: [] },
-    'yunda-arbitration': { sum: ['yunda:arbitrations', 'yunda:transfers'], tone: 'warning',
-      note: [['yunda:arbitrations', '仲裁'], ['yunda:transfers', '调拨件待接单']] }
+    'work': { label: '工单', tone: 'warning',
+      sum: ['ronghui:work_response', 'ronghui:work_processing', 'yunda:work_orders'],
+      note: [[['ronghui:work_response', 'ronghui:work_processing'], '融辉'], [['yunda:work_orders'], '韵达'],
+        [['yunda:work_order_replies'], '催单']],
+      hint: '融辉四个账号收到的待响应、待处理工单与韵达收到的工单；韵达催单待回复只列出，不计入合计' },
+    'problems': { label: '问题件', tone: 'warning', sum: ['ronghui:problems', 'yunda:problems'],
+      note: [[['ronghui:problems'], '融辉'], [['yunda:problems'], '韵达']],
+      hint: '融辉收到且我方未回复的问题件与韵达发布给我的未完结问题件' },
+    'complaints': { label: '投诉·仲裁', tone: 'warning',
+      sum: ['ronghui:complaints_against', 'ronghui:complaints_filed', 'ronghui:appeals', 'yunda:arbitrations'],
+      note: [[['ronghui:complaints_against', 'ronghui:complaints_filed'], '投诉'], [['ronghui:appeals'], '申诉'],
+        [['yunda:arbitrations'], '仲裁']],
+      hint: '融辉被投诉方与投诉方未完结投诉、融辉未完结申诉、韵达未结束仲裁' },
+    'transfers': { label: '调拨件', tone: 'warning', sum: ['ronghui:pickups', 'yunda:transfers'],
+      note: [[['ronghui:pickups'], '代取件'], [['yunda:transfers'], '调拨件']],
+      hint: '融辉未揽收的代取件与韵达待接单的调拨件' },
+    'announcements': { label: '公告', tone: 'info', sum: ['ronghui:announcements'], note: [] }
   };
   const monitoringRequestTimeoutMs = 8000;
   const monitoringItemsTimeoutMs = 75000;
@@ -51,6 +63,7 @@
   // its own categories; a removable chip then shows that filter. “加载更多” reads the next page of every
   // category that has more.
   let allActive = true;
+  let cardFilter = '';   // a metric card's key: the merged list shows only that card's categories
   let pendingItems = [];
   let latestAllKey = '';
   let allEntries = [];   // [{item, category}] read so far in the merged list
@@ -197,16 +210,19 @@
     els.metrics.forEach((node) => {
       const def = metricDefs[node.dataset.monitoringMetric];
       if (!def) return;
-      const counts = def.sum.map((id) => byId.get(id)?.count);
-      const known = counts.every((value) => typeof value === 'number');
-      const total = known ? counts.reduce((sum, value) => sum + value, 0) : null;
+      const sumOf = (ids) => {
+        const counts = ids.map((id) => byId.get(id)?.count);
+        return counts.every((value) => typeof value === 'number') ? counts.reduce((sum, value) => sum + value, 0) : null;
+      };
+      const total = sumOf(def.sum);
       setText(node.querySelector('[data-monitoring-metric-value]'), fmt(total));
       node.dataset.tone = def.tone && total > 0 ? def.tone : 'neutral';
       if (def.note.length) {
         setText(node.querySelector('[data-monitoring-metric-note]'),
-          def.note.map(([id, label]) => `${label} ${fmt(byId.get(id)?.count)}`).join(' · '));
+          def.note.map(([ids, label]) => `${label} ${fmt(sumOf(ids))}`).join(' · '));
       }
-      const active = !pendingActive && !allActive && def.sum.includes(activeCategory?.category_id);
+      if (def.hint) node.title = def.hint;
+      const active = !pendingActive && allActive && cardFilter === node.dataset.monitoringMetric;
       node.classList.toggle('is-active', active);
       node.setAttribute('aria-pressed', String(active));
     });
@@ -218,6 +234,7 @@
     if (pendingActive || allActive || categoryKey(item) !== categoryKey(activeCategory)) { clearItems(); currentPage = 1; }
     pendingActive = false;
     allActive = false;
+    cardFilter = '';
     if (els.pendingMore) els.pendingMore.hidden = true;
     activeCategory = item;
     if (els.more) els.more.hidden = true;
@@ -253,7 +270,7 @@
     if (window.feather) window.feather.replace();
     if (pendingActive) return;
     if (allActive || !activeCategory) {
-      const allKey = JSON.stringify([snapshot.updated_at, activeSource]);
+      const allKey = JSON.stringify([snapshot.updated_at, activeSource, cardFilter]);
       if (allKey !== latestAllKey) { latestAllKey = allKey; fetchAll(); }
       return;
     }
@@ -280,7 +297,14 @@
     const shown = visible.filter((item) => item.count !== 0);
     const nodes = [];
     const total = allTabCount(shown);
-    if (allActive) {
+    if (allActive && cardFilter) {
+      const chip = element('button', 'monitor-filter-chip');
+      chip.type = 'button';
+      chip.dataset.monitoringClearFilter = '';
+      chip.title = '显示全部消息';
+      chip.append(element('span', '', metricDefs[cardFilter]?.label || '分类'), element('span', 'monitor-filter-chip-x', '×'));
+      nodes.push(chip);
+    } else if (allActive) {
       nodes.push(element('span', 'monitor-total', total === null ? '待办数量待确认' : `共 ${fmt(total)} 条待办`));
     } else {
       // A metric card narrowed the list; the chip says to what and clears it.
@@ -305,6 +329,7 @@
   function selectPending() {
     if (!pendingState.available) return;
     clearItems();
+    cardFilter = '';
     pendingActive = true;
     allActive = false;
     activeCategory = null;
@@ -464,7 +489,7 @@
   function renderAll(failed) {
     const expanded = new Set(Array.from(els.items.querySelectorAll('details[open]')).map((node) => node.dataset.itemId));
     const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category));
-    if (pendingState.available) {
+    if (pendingState.available && !cardFilter) {
       const holder = document.createElement('ul');
       root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: holder, status: null, platform: activeSource } }));
       rows.push(...Array.from(holder.children));
@@ -492,8 +517,10 @@
     const seq = ++itemsRequestSeq;
     const controller = new AbortController();
     itemsRequest = { key: 'all', controller };
+    const cardIds = cardFilter ? metricDefs[cardFilter]?.sum || [] : null;
     const categories = allCategories(latestSnapshot)
-      .filter((item) => (activeSource === 'all' || item.system === activeSource) && item.items_supported && item.count !== 0);
+      .filter((item) => (activeSource === 'all' || item.system === activeSource) && item.items_supported && item.count !== 0
+        && (!cardIds || cardIds.includes(item.category_id)));
     setText(els.detailSubtitle, activeSource === 'all' ? '韵达 · 融辉 全部待办，按时间排序' : `${shortSource('', activeSource)} 全部待办，按时间排序`);
     setOpenUrl('');
     els.pagination.hidden = true;
@@ -544,8 +571,25 @@
     setItemsBusy(false);
   }
 
+  function selectCard(key) {
+    if (!metricDefs[key]) return;
+    clearItems();
+    allEntries = [];
+    allPages = new Map();
+    allActive = true;
+    pendingActive = false;
+    activeCategory = null;
+    cardFilter = cardFilter === key ? '' : key;  // clicking the active card again shows everything
+    if (els.pendingMore) els.pendingMore.hidden = true;
+    renderTabs(latestSnapshot, allCategories(latestSnapshot));
+    renderMetrics(allCategories(latestSnapshot));
+    latestAllKey = JSON.stringify([latestSnapshot?.updated_at, activeSource, cardFilter]);
+    fetchAll();
+  }
+
   function selectAll() {
-    if (allActive) return;
+    if (allActive && !cardFilter) return;
+    cardFilter = '';
     clearItems();
     allEntries = [];
     allPages = new Map();
@@ -555,7 +599,7 @@
     if (els.pendingMore) els.pendingMore.hidden = true;
     renderTabs(latestSnapshot, allCategories(latestSnapshot));
     renderMetrics(allCategories(latestSnapshot));
-    latestAllKey = JSON.stringify([latestSnapshot?.updated_at, activeSource]);
+    latestAllKey = JSON.stringify([latestSnapshot?.updated_at, activeSource, cardFilter]);
     fetchAll();
   }
 
@@ -640,11 +684,7 @@
     if (pendingActive) root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: els.items, status: els.itemsStatus } }));
   }
   root.addEventListener('overview:pending', onPendingState);
-  els.metrics.forEach((node) => node.addEventListener('click', () => {
-    const ids = metricDefs[node.dataset.monitoringMetric]?.sum || [];
-    const candidates = allCategories(latestSnapshot).filter((item) => ids.includes(item.category_id) && item.items_supported);
-    selectCategory(candidates.find((item) => item.count > 0) || candidates[0]);
-  }));
+  els.metrics.forEach((node) => node.addEventListener('click', () => selectCard(node.dataset.monitoringMetric)));
   els.refresh?.addEventListener('click', () => {
     if (refreshCooldown) return;
     refreshCooldown = true;

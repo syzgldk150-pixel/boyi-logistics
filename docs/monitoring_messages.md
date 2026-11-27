@@ -14,8 +14,12 @@ updated: 2026-11-27
 | 来源 | 已核验读取边界 | 首页展示 |
 | --- | --- | --- |
 | 融辉公告 | 公告查询上下文；`FIND_TAB_NOTICE_NOT_SEE` | 未读公告的 `GUID/TITLE/CONTENT/CONTENT1/CONTENT2/NOTICE_DATETIME` |
-| 融辉收到工单 | “工单接收方查询-工单裁定申诉”；`FIND_TAB_WORK_ORDER`，`ZRF=1`、`IS_DEL1=1`，分别查询 `WORK_STATE=2/3`，每页 50 条读完全部页 | 只保留责任方 `RESPONSIBLE_PARTY` 为邵阳大祥站、邵阳大祥S站、邵阳操作场、邵阳自提部的待责任方响应、待责任方处理工单（用户 2026-11-18 确认）；“已完结”不显示，缺责任方字段或出现其他状态明确失败；`WORK_ORDER_CODE/WORK_NAME/WORK_CONTENT/WORK_STATE/REGISTER_DATE` 及响应、完结期限 |
+| 融辉收到工单 | “工单接收方查询-工单裁定申诉”；`FIND_TAB_WORK_ORDER`，`ZRF=1`、`IS_DEL1=1`，分别查询 `WORK_STATE=2/3`，每页 50 条读完全部页 | 四个账号各自读取后按工单编号去重；操作场账号只保留责任方 `RESPONSIBLE_PARTY` 或发起方 `REGISTER_SITE` 为邵阳操作场的，其他三个账号按原页本网点结果（用户 2026-11-27 确认，取代 2026-11-18 的“操作场一个账号按四个责任方筛选”）；“已完结”不显示 |
 | 融辉处理记录 | 按工单编号读取 `FIND_TAB_WORK_ORDER_DETAILS`，按 `HANDLE_DATE` 倒序分页 | `HANDLE_CONTENT/HANDLE_STATE/HANDLE_DATE`，最多最新 20 条；原系统未提供回复未读标识，不能称为“新回复数” |
+| 融辉收到问题件 | 复用客服问题件查询“收到问题件查询”（`_ronghui_query`，`direction=received`，带本账号 `LOGIN_SITE_CODE`），按登记时间查最近 3 天、每页 200 读完 | 我方还没回复的（`_has_problem_reply` 为否）；操作场账号只留发布网点 `REGISTER_SITE` 或通知网点 `SEND_SITE` 为邵阳操作场的 |
+| 融辉被投诉方 / 投诉方 | “被投诉方查询” `FIND_TAB_EXCEPTION_SIDE`（必须带 `CURRENT_LOGIN_SITE`，否则原页报 SQL 错误）/“投诉方登记” `FIND_TAB_EXCEPTION_REGISTER_CS`；按投诉时间 `EXCEPTION_DATE` 查最近 31 天（不带日期原页报错），非总部账号带 `LOGIN_SITE_CODE` | 投诉状态 `STATUS`=待审核，或仲裁状态 `ARBITRATE_STATUS`=待审核/待复审 算未完结（用户 2026-11-27 确认；待理赔、已理赔、取消、驳回不显示）；编号 `EXCEPTION_ID`；操作场账号只留被投诉网点 `EXCEPTIONSITE_SIDE` 或投诉网点 `EXCEPTION_SITE/REGISTER_SITE` 为邵阳操作场的 |
+| 融辉申诉 | “申诉登记” `FIND_TAB_EXCEPTION_APPEAL`（原页不按日期过滤，返回全部） | 申诉状态 `COMPLAINT_STATUS`=待审核/待处理；申诉没有自己的编号（`ROW_ID` 只是查询行号），以 `EXCEPTION_ID` + 登记时间 `CREATE_DATE` 标识；操作场账号只留 `APPEAL_SITE/CREATE_SITE` 为邵阳操作场的 |
+| 融辉代取件 | “网点代取件业务” `FIND_TAB_UNITE_ORDERS_DQJ`（只有大祥、大祥S账号有此页，其他账号跳过不算失败），按下单时间 `CREATE_DATE` 查最近 31 天 | 订单状态 `STATUS` 0 待分配 / 4 待接单 / 1 待揽收（2 已揽收、3 已取消不显示，未知状态明确失败）；编号 `TX_LOGISTIC_ID` |
 | 韵达问题件 | 问题件查询 `kyproblem.yunda56.com/ky_problem/public/index.php/query/list.html`，`issuer_site=1`（发布给我的），`time=1`（发布时间）与 `time=2`（处理时间）各查一次后合并，`prob_status` 分别为 0 未处理、1 处理中（3 超时未完结不计入，用户确认 2026-11-27） | `prob_main_id/ship_no/prob_type_nm/prob_text/prob_status/site_id/created_time/reply_text/reply_time/over_time`；返回已完结记录明确失败 |
 | 韵达仲裁 | 快运仲裁系统 `kyzc.yunda56.com:8090`，先打开 `/kyzc/arbitrament/arbitramentSearch` 经统一登录换取本系统会话，再 `GET .../arbitramentSearch/list`，`searchDate` 分别为 `k.declare_date`（申报时间）与 `g.assignment_update_time`（最新处理时间）后合并，`belongCate=arbitrament`，`disposeState` 传除“结算审核通过、结算审核不通过、中心不受理”外的全部状态代码，`limit/offset` 分页 | `declId/waybillCode/declType/declCategory/disposeState/declareDept/costTypeName/money/createDate/appealDate/assignmentUpdateTime`；返回终态记录明确失败 |
 | 韵达调拨件 | 网点运营系统“调拨件确认” `kyinms.yunda56.com/.../replaceLogistics/ReplaceLogisticsConfirm/list.html`，`Replace_Status=0`（待接单，用户确认只显示该状态），`page/rows` 分页 | `Replace_Id/Logistics_Id/Replace_Status/Replace_Status_Code/Apply_Site_Name/Replace_Site_Name/Sender_Address/Create_Time`；`Replace_Status_Code` 非 0 明确失败 |
@@ -33,14 +37,14 @@ updated: 2026-11-27
 
 ## 首页展示
 
-- 顶部四张卡片只读取对应分类计数，不使用跨口径总数：融辉收到工单（待响应与待处理两个互斥状态相加并分列）、韵达收到工单（另列催单待回复，不相加）、韵达问题件、韵达仲裁与调拨件（两个互斥来源相加并分列）。任一参与分类未知时显示“—”；点击卡片切换到对应分类正文。韵达仲裁原页固定在 8090 端口，“打开原系统”只对 `kyzc.yunda56.com:8090` 放行该端口。
+- 顶部六张卡片按类别合并两个平台（用户 2026-11-27 确认），每张只读取自己的分类计数、只把互斥分类相加，任一参与分类未知时显示“—”，卡片下方分列各部分：工单（融辉待响应+待处理+韵达收到工单，另列韵达催单待回复、不相加）、问题件（融辉未回复+韵达未完结）、投诉·仲裁（融辉被投诉方+投诉方+申诉+韵达仲裁）、调拨件（融辉代取件+韵达调拨件待接单）、待确认（客服问题件）、公告（融辉未读公告）。点卡片只看该卡片全部分类的合并列表（可清除的筛选标签，再点一次同一卡片恢复全部），悬停显示完整口径。
 - 消息中心不设分类页签（2026-11-19 用户确认分类只为筛选、主要按平台看）：只有“全部 / 韵达 / 融辉”来源切换，列表合并所有有待办的分类与待确认问题件，按时间倒序，每行标明来源与分类；每类先读第一页，“加载更多”只读取还有下一页的分类的下一页。点顶部卡片可临时只看该卡片的分类，以可清除的筛选标签显示。后台读取的 8 个来源不变。
 
 ## 接口与账号边界
 
 - Console 保留 `/monitoring/summary`、`/monitoring/stream`、`/monitoring/detail-link`，新增 `GET /monitoring/items?system=&category_id=&page=&force=`，经签名内部接口 `/internal/v1/admin/monitoring/*` 调用 Agent。汇总对应内部 `snapshot`，正文对应内部 `items`。
 - 首页和所有消息接口沿用真实 MySQL 超级管理员权限，不新增普通客服身份权限。Agent 继续实时核验内部服务身份、请求签名及管理员权限。
-- 本次范围固定为现有融辉 `default` 与韵达 `yunda` SessionBroker profile。客户端仅提交来源、分类、页码和刷新意图；账号、profile、目标地址由服务器确定。正文固定每页 20 条，页码范围 1–10000。
+- 账号范围由服务器固定：融辉四个博益账号——操作场 `default`、大祥 `price_default`、大祥S `daxiang_s`、自提部 `self_pickup_problem_upload`（`monitoring_ronghui.ACCOUNTS`，用户 2026-11-27 确认），韵达 `yunda`。融辉四个账号并行读取、各用自己的会话，网点名称取自账号登录信息 `userInfo` 的 `loginSiteName`，登录名为邵阳操作场（分拨中心，可看到下属网点数据）的账号在每一类只保留责任方/发起方是邵阳操作场的记录；同一记录被几个账号读到只算一次。某个账号登录失效或读取失败时，该类只计其他账号，分类状态为 `partial`“部分账号读取失败”并写明哪个账号未计入，平台提示条同步显示；四个账号都失败才为 `null`。客户端仅提交来源、分类、页码和刷新意图；账号、profile、目标地址由服务器确定。正文固定每页 20 条，页码范围 1–10000。
 - 正文响应包含 `system/category_id/title/items/total/page/page_size/has_more/status/status_label/message/updated_at` 及缓存元数据；每条包含标识、正文、时间、来源、状态和安全原系统链接。详情链接只接受 `system/category_id`，忽略浏览器提供的 URL、菜单资源或账号。
 - 采集器只调用已核验的只读 HTTP 接口；加载首页、刷新和查看正文不标记已读、不接单、不回复、不处理工单。正文按文本渲染，原始 HTML 不执行。点击“打开原系统”后，原系统自身操作行为由其页面决定。
 
