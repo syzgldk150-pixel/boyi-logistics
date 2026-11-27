@@ -676,6 +676,14 @@ def _ronghui_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
             account_label=_clean_text(params.get("account_label")),
             source_direction=RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction),
         )
+        if RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction) == "received":
+            # The reply form the original page would show for each row (shared/problem_reply_rules.py).
+            from shared.problem_reply_rules import ronghui_reply_form
+
+            login_site = _first_text(_read_user_info_cookie(session), "loginSiteName")
+            today = dt.datetime.now(SHANGHAI_TZ).date()
+            for row in rows:
+                row["reply_form"] = ronghui_reply_form(row.get("raw") or {}, login_site, today)
     declared_total = _extract_declared_total(payload)
     return {
         "ok": True,
@@ -776,40 +784,77 @@ def _ronghui_detail(session_or_params: Any, params: dict[str, Any] | None = None
     return {"ok": True, "item": _safe_json(item), "details": details}
 
 
+def _ronghui_problem_row(session: Any, item: dict[str, Any], external_id: str, waybill_no: str) -> dict[str, Any]:
+    """The “收到问题件查询” row of this problem (by waybill and registration day, matched by GUID)."""
+    day = _clean_text(item.get("registered_at"))[:10]
+    today = dt.datetime.now(SHANGHAI_TZ).date()
+    start = day if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else (today - dt.timedelta(days=30)).isoformat()
+    result = _ronghui_query(session, {"filters": {"direction": "received", "q": waybill_no, "date_from": start,
+                                                  "date_to": day or today.isoformat(), "page_size": 50},
+                                      "raw_source": True})
+    matches = [row["raw_fields"] for row in result["rows"] if _first_text(row["raw_fields"], "GUID") == external_id]
+    if len(matches) != 1:
+        raise CustomerServiceProblemError("PROBLEM_NOT_FOUND", "原系统收到问题件中找不到这条问题件，请刷新后重试。")
+    return matches[0]
+
+
+def _ronghui_full_problem_row(session: Any, page_context: dict[str, str], row: dict[str, Any], external_id: str) -> dict[str, Any]:
+    """The whole row as the original page re-reads it before saving (``FIND_TAB_PROBLEM_BY_BILL_CODE1``)."""
+    response = session.post(
+        f"{RONGHUI_ORIGIN}/dataQuery/findPageByCallId", params={"id": "FIND_TAB_PROBLEM_BY_BILL_CODE1"},
+        data={"BILL_CODE": row.get("BILL_CODE"), "TYPE": row.get("TYPE"), "REGISTER_DATE": row.get("REGISTER_DATE")},
+        headers=_ronghui_headers(page_context, content_type="application/x-www-form-urlencoded; charset=UTF-8"),
+        timeout=RONGHUI_QUERY_TIMEOUT_SECONDS,
+    )
+    payload = _response_json(response, label="融辉问题件读取")
+    _raise_if_source_failed(payload, label="融辉问题件读取")
+    matches = [candidate for candidate in _extract_rows(payload)
+               if _first_text(candidate, "GUID") == external_id
+               and _clean_text(candidate.get("REGISTER_DATE")) == _clean_text(row.get("REGISTER_DATE"))]
+    if len(matches) != 1:
+        raise CustomerServiceProblemError("PROBLEM_NOT_FOUND", "原系统读不到这条问题件的完整信息，请刷新后重试。")
+    return matches[0]
+
+
 def _ronghui_reply(session: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Reply as “收到问题件查询” 保存 does: same checks, the whole row written back, then read back."""
+    from shared.problem_reply_rules import (
+        ReplyRuleError, build_ronghui_reply_row, ronghui_bill_status_block, validate_ronghui_reply,
+    )
+
     item = _safe_business_item(params)
     payload = _safe_payload(params)
     external_id = _require_external_id(item, platform="ronghui")
-    raw_item = item.get("raw") if isinstance(item.get("raw"), dict) else {}
-    waybill_no = _first_text(item, "waybill_no", "BILL_CODE") or _first_text(raw_item, "BILL_CODE", "bill_code")
-    reply_text = _clean_text(payload.get("reply_text") or payload.get("REVERSION") or payload.get("reversion"))
-    if not waybill_no or not reply_text:
-        raise CustomerServiceProblemError("MISSING_REQUIRED_FIELDS", "融辉回复必须包含单号和回复内容。")
+    waybill_no = _first_text(item, "waybill_no", "BILL_CODE")
+    if not waybill_no:
+        raise CustomerServiceProblemError("MISSING_REQUIRED_FIELDS", "融辉回复必须包含单号。")
+    user_info = _read_user_info_cookie(session)
+    login_site = _first_text(user_info, "loginSiteName")
+    if not login_site or not _first_text(user_info, "loginEmpName"):
+        raise CustomerServiceProblemError("LOGIN_INFO_MISSING", "融辉账号登录信息不完整，请到业务账号重新登录。")
+    row = _ronghui_problem_row(session, item, external_id, waybill_no)
+    today = dt.datetime.now(SHANGHAI_TZ).date()
+    try:
+        fields = validate_ronghui_reply(row, login_site, payload, today)
+    except ReplyRuleError as exc:
+        raise CustomerServiceProblemError("REPLY_RULE_REJECTED", str(exc)) from None
     page_context = _resolve_ronghui_page_context(session, RONGHUI_QUERY_MENU_BY_DIRECTION["received"])
-    row = dict(raw_item)
-    row.update(
-        {
-            "GUID": external_id,
-            "BILL_CODE": waybill_no,
-            "REVERSION": reply_text,
-        }
-    )
-    deal_result = _clean_text(payload.get("deal_result") or payload.get("DEAL_RESULT"))
-    if deal_result:
-        row["DEAL_RESULT"] = deal_result
-    transfer_code = _clean_text(payload.get("transfer_code") or item.get("TRANSFER_CODE") or raw_item.get("TRANSFER_CODE"))
-    if transfer_code:
-        row["TRANSFER_CODE"] = transfer_code
-    # Ronghui has no processing status; prob_status (Yunda-only) must not leak into REVERSION_STATUS.
-    status_text = _clean_text(payload.get("REVERSION_STATUS"))
-    if status_text:
-        row["REVERSION_STATUS"] = status_text
-    bl_checkok = _clean_text(payload.get("bl_checkok") or payload.get("BL_CHECKOK"))
-    if bl_checkok:
-        row["BL_CHECKOK"] = bl_checkok
-    result = _save_ronghui_tables(session, page_context, build_ronghui_save_tables_envelope("TAB_PROBLEM_UPT", row))
+    headers = _ronghui_headers(page_context, content_type="application/x-www-form-urlencoded; charset=UTF-8")
+    statuses = _response_json(session.post(RONGHUI_FIND_ALL_URL, params={"id": "FIND_BILL_STATUS_ON_PROBLEM"},
+                                            data={"BILL_CODE": waybill_no}, headers=headers, timeout=60),
+                              label="融辉运单状态")
+    _raise_if_source_failed(statuses, label="融辉运单状态")
+    blocked = ronghui_bill_status_block(row, statuses if isinstance(statuses, list) else _extract_rows(statuses))
+    if blocked:
+        raise CustomerServiceProblemError("REPLY_RULE_REJECTED", blocked)
+    full_row = _ronghui_full_problem_row(session, page_context, row, external_id)
+    saved = build_ronghui_reply_row(full_row, fields, user_info, dt.datetime.now(SHANGHAI_TZ))
+    result = _save_ronghui_tables(session, page_context, build_ronghui_save_tables_envelope("TAB_PROBLEM_UPT", saved))
     _raise_if_source_failed(result, label="融辉回复", code="SOURCE_REPLY_FAILED")
-    return {"ok": True, "result": _safe_json(result), "external_id": external_id}
+    after = _ronghui_full_problem_row(session, page_context, row, external_id)
+    if _clean_text(after.get("REVERSION")) != fields["REVERSION"] or _clean_text(after.get("BL_CHECKOK")) != "1":
+        raise CustomerServiceProblemError("WRITE_OUTCOME_UNKNOWN", "融辉回复已提交，但读回的回复内容或处理状态不一致，请到原系统核对，不要重复回复。")
+    return {"ok": True, "result": _safe_json(result), "external_id": external_id, "verified": True}
 
 
 def _ronghui_mark_read(session: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -1142,6 +1187,11 @@ def _yunda_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
             account_label=_clean_text(params.get("account_label")),
             source_direction=source_direction,
         )
+        if source_direction == "query":
+            from shared.problem_reply_rules import yunda_reply_form
+
+            for row in rows:
+                row["reply_form"] = yunda_reply_form(row.get("raw") or {})
     return {"ok": True, "rows": rows, "stats": {"total": _extract_total(data, raw_rows), "returned": len(rows)}}
 
 
@@ -1171,30 +1221,48 @@ def _yunda_mark_read(session: Any, params: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "external_id": external_id, "result": _safe_json(data)}
 
 
+def _yunda_problem_detail(session: Any, external_id: str) -> dict[str, Any]:
+    detail = _yunda_post_json(session, YUNDA_QUERY_DETAIL_URL, {"prob_main_id": external_id},
+                              referer=f"{YUNDA_PUBLIC_ROOT}/query/index.html", label="详情")
+    if not isinstance(detail, dict) or _clean_text(detail.get("prob_main_id")) != external_id:
+        raise CustomerServiceProblemError("PROBLEM_NOT_FOUND", "韵达问题件详情读取失败，请刷新后重试。")
+    return detail
+
+
+def _yunda_reply_texts(detail: dict[str, Any]) -> list[str]:
+    replies = detail.get("reply") if isinstance(detail.get("reply"), list) else []
+    return [_clean_text(entry.get("reply_text")) for entry in replies if isinstance(entry, dict)]
+
+
 def _yunda_reply(session: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Reply as ``query/reply.html`` 保存 does, after reading the detail; then read the reply back."""
+    from shared.problem_reply_rules import ReplyRuleError, validate_yunda_reply
+
     item = _safe_business_item(params)
     payload = _safe_payload(params)
     external_id = _require_external_id(item, platform="yunda")
-    prob_status = _clean_text(payload.get("prob_status"))
-    reply_text = _clean_text(payload.get("reply_text"))
-    if not prob_status or not reply_text:
-        raise CustomerServiceProblemError("MISSING_REQUIRED_FIELDS", "韵达回复必须包含处理状态和回复内容。")
-    data = {
-        "prob_status": prob_status,
-        "reply_text": reply_text,
-        "prob_main_id": external_id,
-        "old_prob_status": _clean_text(payload.get("old_prob_status") or item.get("status")),
-        "file_arr": payload.get("file_arr") if isinstance(payload.get("file_arr"), list) else [],
-    }
+    detail = _yunda_problem_detail(session, external_id)
+    try:
+        data = validate_yunda_reply(detail, payload)
+    except ReplyRuleError as exc:
+        raise CustomerServiceProblemError("REPLY_RULE_REJECTED", str(exc)) from None
+    before = _yunda_reply_texts(detail).count(data["reply_text"])
+    data["file_arr"] = payload.get("file_arr") if isinstance(payload.get("file_arr"), list) else []
     result = _yunda_post_json(
         session,
         YUNDA_QUERY_REPLY_URL,
         data,
         referer=f"{YUNDA_PUBLIC_ROOT}/query/reply.html?prob_main_id={external_id}",
         label="回复",
+        preserve_empty=True,
     )
-    _raise_if_source_failed(result, label="韵达回复", code="SOURCE_REPLY_FAILED")
-    return {"ok": True, "external_id": external_id, "result": _safe_json(result)}
+    if not isinstance(result, dict) or result.get("info") not in (True, 1, "1"):
+        message = _clean_text(result.get("msg") if isinstance(result, dict) else "") or "保存失败"
+        raise CustomerServiceProblemError("SOURCE_REPLY_FAILED", f"韵达回复失败：{message}")
+    after = _yunda_reply_texts(_yunda_problem_detail(session, external_id)).count(data["reply_text"])
+    if after <= before:
+        raise CustomerServiceProblemError("WRITE_OUTCOME_UNKNOWN", "韵达回复已提交，但读回详情里没有这条回复，请到原系统核对，不要重复回复。")
+    return {"ok": True, "external_id": external_id, "result": _safe_json(result), "verified": True}
 
 
 def _yunda_publish(session: Any, params: dict[str, Any]) -> dict[str, Any]:

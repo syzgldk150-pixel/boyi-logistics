@@ -40,6 +40,7 @@ from agent.tms_runtime.scripts.customer_service_problem import (
     _ronghui_query,
 )
 from agent.tms_runtime.session_validators import looks_like_ronghui_login
+from shared.problem_reply_rules import ronghui_reply_form
 
 ORIGIN = "https://tms.ronghuiwl.com"
 HOME = f"{ORIGIN}/module/index?mv=index"
@@ -437,7 +438,8 @@ def _problem_items(account: Account, source: Source) -> list[dict[str, Any]]:
             # 消息中心直接回复（用户 2026-11-27）：只带客服回复接口需要的标识，回复由业务账号提交并核对。
             "reply": {"platform": "ronghui", "account_id": account.account_id, "external_id": _text(row.get("external_id")),
                       "source_direction": "received", "waybill_no": _text(row.get("waybill_no")),
-                      "status": _text(row.get("status"))},
+                      "status": _text(row.get("status")), "registered_at": _text(row.get("registered_at")),
+                      "form": ronghui_reply_form(raw, account.site, monitoring_window.today())},
         })
     return items
 

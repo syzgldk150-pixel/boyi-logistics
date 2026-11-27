@@ -415,8 +415,6 @@
     return row;
   }
 
-  const YUNDA_REPLY_STATUSES = ['处理中', '已处理', '已完结'];
-
   function replyKey(item) {
     const reply = item.reply || {};
     return [reply.platform, reply.account_id, reply.source_direction, reply.external_id].join(':');
@@ -449,7 +447,7 @@
     toggle.addEventListener('click', () => {
       const current = replyDrafts.get(key);
       if (current?.open) { closeReply(key, row); return; }
-      const fresh = current || { text: '', status: '已处理', uuid: '', sending: false, error: '' };
+      const fresh = current || { values: window.ProblemReplyForm.freshDraft(item.reply.form), uuid: '', sending: false, error: '' };
       fresh.open = true;
       replyDrafts.set(key, fresh);
       row.querySelector('.monitor-reply')?.remove();
@@ -467,52 +465,34 @@
   }
 
   function replyForm(item, key, draft) {
-    const reply = item.reply;
-    const yunda = reply.platform === 'yunda';
+    // Fields are the original page's reply form (console/static/problem_reply_form.js, 2026-11-27).
     const form = element('form', 'monitor-reply');
-    const text = element('textarea');
-    text.rows = 3;
-    text.maxLength = 500;
-    text.placeholder = '回复内容，提交后会写入原平台并核对';
-    text.setAttribute('aria-label', '回复内容');
-    text.value = draft.text;
-    text.addEventListener('input', () => { draft.text = text.value; });
+    const fields = element('div', 'monitor-reply-fields');
+    const usable = window.ProblemReplyForm.render(fields, item.reply.form, draft.values);
     const actions = element('div', 'monitor-reply-actions');
-    if (yunda) {
-      const select = element('select');
-      select.setAttribute('aria-label', '处理状态');
-      YUNDA_REPLY_STATUSES.forEach((value) => {
-        const option = element('option', '', value);
-        option.value = value;
-        option.selected = value === draft.status;
-        select.append(option);
-      });
-      select.addEventListener('change', () => { draft.status = select.value; });
-      actions.append(select);
-    }
-    const note = element('span', 'monitor-reply-note', draft.error || (yunda ? '' : '融辉回复后即为已回复'));
+    const note = element('span', 'monitor-reply-note', draft.error || '提交后写入原平台并读回核对');
     if (draft.error) note.dataset.tone = 'error';
-    const cancel = element('button', 'monitor-action-btn', '取消');
+    const cancel = element('button', 'monitor-action-btn', usable ? '取消' : '关闭');
     cancel.type = 'button';
-    const submit = element('button', 'monitor-action-btn is-primary', draft.sending ? '提交中…' : '提交回复');
-    submit.type = 'submit';
-    submit.disabled = draft.sending;
     cancel.disabled = draft.sending;
     cancel.addEventListener('click', () => closeReply(key, form.closest('li')));
-    actions.append(note, cancel, submit);
-    form.append(text, actions);
-    form.addEventListener('submit', (event) => { event.preventDefault(); sendReply(item, key, draft, form); });
+    actions.append(note, cancel);
+    if (usable) {
+      const submit = element('button', 'monitor-action-btn is-primary', draft.sending ? '提交中…' : '提交回复');
+      submit.type = 'submit';
+      submit.disabled = draft.sending;
+      actions.append(submit);
+    }
+    form.append(fields, actions);
+    form.addEventListener('submit', (event) => { event.preventDefault(); if (usable) sendReply(item, key, draft, form); });
     return form;
   }
 
   async function sendReply(item, key, draft, form) {
-    const replyText = draft.text.trim();
-    if (!replyText || draft.sending) {
-      if (!replyText) { draft.error = '回复内容不能为空'; form.replaceWith(replyForm(item, key, draft)); }
-      return;
-    }
+    if (draft.sending) return;
     const reply = item.reply;
-    const yunda = reply.platform === 'yunda';
+    const payload = window.ProblemReplyForm.payload(form.querySelector('.monitor-reply-fields'), reply.form, draft.values);
+    const replyText = payload.reply_text || '已提交提货/司机信息';
     // A retry after an unknown network result keeps the request id, so the server reads back the same
     // request instead of replying twice; a reply the server answered (even with a failure) gets a new id.
     draft.uuid = draft.uuid || (window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now()));
@@ -527,9 +507,9 @@
         body: JSON.stringify({
           platform: reply.platform, account_id: reply.account_id,
           item: { platform: reply.platform, account_id: reply.account_id, external_id: reply.external_id,
-            source_direction: reply.source_direction, waybill_no: reply.waybill_no, status: reply.status },
-          payload: yunda ? { reply_text: replyText, prob_status: draft.status, old_prob_status: reply.status || '' }
-            : { reply_text: replyText, REVERSION: replyText }
+            source_direction: reply.source_direction, waybill_no: reply.waybill_no, status: reply.status,
+            registered_at: reply.registered_at || '' },
+          payload
         })
       });
       const data = await response.json().catch(() => ({}));

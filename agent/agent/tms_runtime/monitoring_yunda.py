@@ -19,6 +19,7 @@ import requests
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime import monitoring_window
 from agent.tms_runtime.monitoring_window import RECENT_NOTE, is_recent, latest_activity
+from shared.problem_reply_rules import yunda_reply_form
 
 
 CSSP_ORIGIN = "https://cssp.yunda56.com"
@@ -355,7 +356,8 @@ def _problem_item(row: dict) -> dict[str, Any]:
         # 消息中心直接回复（用户 2026-11-27）：问题件查询“发布给我的”即客服回复的 query 方向。
         "reply": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID, "external_id": _text(row["prob_main_id"]),
                   "source_direction": "query", "waybill_no": _text(row.get("ship_no")),
-                  "status": _text(row.get("prob_status"))},
+                  "status": _text(row.get("prob_status")), "registered_at": _text(row.get("created_time")),
+                  "form": yunda_reply_form(row)},
     }
 
 

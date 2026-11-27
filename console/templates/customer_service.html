@@ -214,19 +214,9 @@
       </div>
       <form class="customer-service-reply-form customer-service-problem-reply" data-cs-reply-form>
         <div class="customer-service-problem-reply-fields">
-          <label class="customer-service-field customer-service-field--status">
-            <span>处理状态</span>
-            <select name="prob_status" data-cs-reply-status>
-              <option value="处理中">处理中</option>
-              <option value="已处理" selected>已处理</option>
-              <option value="已完结">已完结</option>
-            </select>
-          </label>
-          <label class="customer-service-field customer-service-field--reply">
-            <span>回复内容</span>
-            <span class="customer-service-ai-hint" data-cs-ai-hint hidden></span>
-            <textarea name="reply_text" rows="3" data-cs-reply-text placeholder="填写给原系统的问题件回复"></textarea>
-          </label>
+          <span class="customer-service-ai-hint" data-cs-ai-hint hidden></span>
+          {# 原页同款回复表单（2026-11-27），按问题件的 reply_form 由 problem_reply_form.js 渲染 #}
+          <div data-cs-reply-fields></div>
         </div>
         <div class="customer-service-drawer-actions customer-service-problem-actions">
           <button class="primary-btn" type="submit" data-cs-reply-submit>
@@ -336,5 +326,6 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/customer_service.js?v=20261113-range"></script>
+<script src="/static/problem_reply_form.js?v=20261127-original-form"></script>
+<script src="/static/customer_service.js?v=20261127-original-form"></script>
 {% endblock %}

@@ -3905,3 +3905,28 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
   .main-content > :not(.top-header):not(script):not(style):not(template):not(dialog) + :not(script):not(style):not(template):not(dialog) { margin-top: var(--card-gap); }
   .top-header { margin-bottom: 8px !important; }
 }
+
+/* 问题件回复表单（原页同款字段，console/static/problem_reply_form.js，2026-11-27） */
+.reply-form-field { display: grid; gap: 4px; min-width: 0; font-size: var(--fs-body); }
+.reply-form-field > span, .reply-form-choice legend { color: var(--text-muted); font-size: var(--fs-caption); }
+.reply-form-field select, .reply-form-field textarea, .reply-form-driver input { min-height: 30px; padding: 4px 8px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: var(--fs-body); }
+.reply-form-field select { appearance: auto; }
+.reply-form-field textarea { width: 100%; min-height: 64px; resize: vertical; }
+.reply-form-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin: 0; padding: 0; border: 0; }
+.reply-form-choice legend { width: 100%; margin-bottom: 4px; padding: 0; }
+.reply-form-radio { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; cursor: pointer; }
+.reply-form-radio input { appearance: auto; margin: 0; }
+.reply-form-drivers { display: grid; gap: 6px; }
+.reply-form-driver { display: grid; grid-template-columns: 48px repeat(5, minmax(0, 1fr)) auto; align-items: center; gap: 6px; }
+.reply-form-driver-no { color: var(--text-muted); font-size: var(--fs-caption); }
+.reply-form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 200px)); gap: 12px; }
+.reply-form-link { justify-self: start; min-height: 28px; padding: 0 4px; border: 0; background: none; color: var(--brand-red); font-size: var(--fs-caption); cursor: pointer; }
+.reply-form-note { margin: 0; color: var(--text-muted); font-size: var(--fs-caption); }
+.reply-form-note.is-blocked { color: var(--brand-red); }
+.monitor-reply-fields, [data-cs-reply-fields] { display: grid; gap: 10px; }
+@media (max-width: 767px) {
+  .reply-form-driver { grid-template-columns: 1fr 1fr; }
+  .reply-form-driver-no { grid-column: 1 / -1; }
+  .reply-form-row { grid-template-columns: 1fr; }
+  .reply-form-radio, .reply-form-link { min-height: 44px; }
+}

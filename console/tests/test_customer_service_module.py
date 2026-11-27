@@ -340,7 +340,8 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertIn("customer-service-problem-section--reading", template)
         self.assertIn("customer-service-problem-attachment-block", template)
         self.assertIn("<h4>附件</h4>", template)
-        self.assertIn('rows="3"', template)
+        self.assertIn("data-cs-reply-fields", template)
+        self.assertIn("text.rows = 3", (CONSOLE_DIR / "static" / "problem_reply_form.js").read_text(encoding="utf-8"))
         self.assertIn("renderProblemMetaGroups", script)
         self.assertIn('title: "站点"', script)
         self.assertIn('title: "人员与货物"', script)
@@ -348,15 +349,18 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertIn(".customer-service-problem-meta-group", css)
         self.assertIn(".customer-service-problem-reply-fields", css)
 
-    def test_customer_service_reply_form_uses_explicit_default_status(self):
+    def test_customer_service_reply_form_is_the_original_page_form(self):
+        """2026-11-27: the reply form is rendered from the row's reply_form (shared/problem_reply_rules.py)."""
         template = (CONSOLE_DIR / "templates" / "customer_service.html").read_text(encoding="utf-8")
         script = (CONSOLE_DIR / "static" / "customer_service.js").read_text(encoding="utf-8")
+        form = (CONSOLE_DIR / "static" / "problem_reply_form.js").read_text(encoding="utf-8")
 
-        self.assertNotIn("保持原状态", template)
-        self.assertIn('<option value="已处理" selected>已处理</option>', template)
-        self.assertIn('const DEFAULT_REPLY_STATUS = "已处理";', script)
-        self.assertIn("replyStatusNode.value = DEFAULT_REPLY_STATUS", script)
-        self.assertNotIn('prob_status: status || row.status || "处理中"', script)
+        self.assertIn('src="/static/problem_reply_form.js', template)
+        self.assertNotIn("<option", template[template.index("data-cs-reply-form"):template.index("data-cs-reply-submit")])
+        self.assertIn("window.ProblemReplyForm.render(container, row.reply_form", script)
+        self.assertIn("window.ProblemReplyForm.payload(container, row.reply_form", script)
+        self.assertNotIn("已完结", form)  # 韵达原页只有 处理中 / 已处理
+        self.assertNotIn("innerHTML", form)
 
     def test_customer_service_reply_submit_is_observable_and_refreshes(self):
         template = (CONSOLE_DIR / "templates" / "customer_service.html").read_text(encoding="utf-8")

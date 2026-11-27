@@ -364,8 +364,9 @@ class GovernedTmsAdapterTests(unittest.TestCase):
                 {"external_id": "problem-1", "result": {"success": True}},
             ),
             "reply": (
+                # 2026-11-27: a reply counts once the problem was read back after saving (verified).
                 "third_party_reply_confirmed",
-                {"external_id": "problem-1", "result": {"ok": True}},
+                {"external_id": "problem-1", "result": {"info": 1}, "verified": True},
             ),
             "publish": (
                 "third_party_problem_publish_confirmed",
@@ -409,6 +410,12 @@ class GovernedTmsAdapterTests(unittest.TestCase):
             {"platform": "yunda", "account_id": "yunda-a", "external_id": "problem-1"},
         )
         self.assertEqual(failure["error_code"], "POSTCONDITION_UNVERIFIED")
+        save_only = adapter.validate_customer_write_response(
+            "reply",
+            {"ok": True, "data": {"ok": True, "external_id": "problem-1", "result": {"success": True}}},
+            {"platform": "ronghui", "account_id": "ronghui-a", "external_id": "problem-1"},
+        )
+        self.assertEqual(save_only["error_code"], "POSTCONDITION_UNVERIFIED")
 
         local_path_only = adapter.validate_customer_write_response(
             "upload_attachment",

@@ -532,85 +532,155 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
         self.assertEqual("RH-GUID-1", envelope[0]["data"][0]["GUID"])
         self.assertEqual([], envelope[0]["idFields"])
 
-    def test_ronghui_reply_preserves_source_row_and_submits_explicit_status(self):
+    # -- replies as the original pages do them (2026-11-27, shared/problem_reply_rules.py) ---------------
+
+    RH_USER = {"loginSiteName": "邵阳大祥站", "loginEmpName": "合成员工", "loginEmpCode": "E001", "loginSiteCode": "S001"}
+    RH_ROW = {"GUID": "RH-GUID-1", "BILL_CODE": "R0001", "TYPE": "催查/加急件", "REGISTER_DATE": "2026-11-26 10:00:00",
+              "SEND_SITE": "邵阳大祥站", "REGISTER_SITE": "登记网点", "REVERSION": None, "BL_CHECKOK": None,
+              "IS_SELF_PICK": "0", "PIECE_NUMBER": "3", "DATA_FROM": "K13"}
+
+    class _StatusSession:
+        def __init__(self, statuses):
+            self.statuses, self.calls = statuses, []
+
+        def post(self, url, params=None, data=None, headers=None, timeout=None):
+            self.calls.append((params or {}).get("id"))
+            statuses = self.statuses
+
+            class Response:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return statuses
+            return Response()
+
+    def _ronghui_reply(self, payload, *, row=None, statuses=None, after=None, save=None):
+        row = dict(self.RH_ROW, **(row or {}))
+        full = {key: value for key, value in row.items() if key not in {"IS_SELF_PICK", "PIECE_NUMBER"}}
+        full.update(VERSION="7", ROW_ID=1)
         captured = {}
 
         def fake_save(session, page_context, envelope):
             captured["envelope"] = envelope
-            return {"success": True, "message": "ok"}
+            return save or {"success": True, "message": "ok"}
 
-        with patch.object(
-            customer_service_problem,
-            "_resolve_ronghui_page_context",
-            return_value={"menu_text": "收到问题件查询", "authentication_key": "auth", "page_id": "page", "url": "u"},
-        ), patch.object(customer_service_problem, "_save_ronghui_tables", side_effect=fake_save):
-            result = customer_service_problem._ronghui_reply(
-                object(),
-                {
-                    "item": {
-                        "external_id": "RH-GUID-1",
-                        "waybill_no": "R0001",
-                        "status": "未回复",
-                        "raw": {
-                            "GUID": "RH-GUID-1",
-                            "BILL_CODE": "R0001",
-                            "REGISTER_SITE": "登记网点",
-                            "SEND_SITE": "被通知网点",
-                        },
-                    },
-                    "payload": {"reply_text": "已联系处理", "prob_status": "已处理"},
-                },
-            )
+        reads = [full, dict(full, **(after if after is not None else {"REVERSION": payload.get("reply_text", ""), "BL_CHECKOK": 1}))]
+        session = self._StatusSession([{"BILL_STATUS": "运输中", "DEAL_RESULT": None}] if statuses is None else statuses)
+        with patch.object(customer_service_problem, "_read_user_info_cookie", return_value=self.RH_USER), \
+                patch.object(customer_service_problem, "_ronghui_problem_row", return_value=row), \
+                patch.object(customer_service_problem, "_resolve_ronghui_page_context",
+                             return_value={"menu_text": "收到问题件查询", "authentication_key": "auth", "page_id": "page", "url": "u"}), \
+                patch.object(customer_service_problem, "_ronghui_full_problem_row", side_effect=reads), \
+                patch.object(customer_service_problem, "_save_ronghui_tables", side_effect=fake_save):
+            result = customer_service_problem._ronghui_reply(session, {
+                "item": {"external_id": "RH-GUID-1", "waybill_no": "R0001", "registered_at": "2026-11-26 10:00:00"},
+                "payload": payload})
+        return result, captured, session
 
+    def test_ronghui_reply_writes_the_whole_row_back_like_the_original_page(self):
+        result, captured, session = self._ronghui_reply({"reply_text": "已联系处理"})
+        envelope = captured["envelope"][0]
+        row = envelope["data"][0]
+        self.assertTrue(result["ok"] and result["verified"])
+        self.assertEqual("TAB_PROBLEM_UPT", envelope["operationKey"])
+        # The whole row read back (VERSION, ROW_ID kept) with the original page's reply fields.
+        self.assertEqual(("RH-GUID-1", "R0001", "登记网点", "7"), (row["GUID"], row["BILL_CODE"], row["REGISTER_SITE"], row["VERSION"]))
+        self.assertEqual(("已联系处理", 1, 1), (row["REVERSION"], row["BL_CHECKOK"], row["BL_SEE"]))
+        self.assertEqual(("合成员工", "E001", "邵阳大祥站"), (row["REVERSION_MAN"], row["REVERSION_MAN_CODE"], row["REVERSION_SITE"]))
+        self.assertRegex(row["REVERSION_DATE"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        self.assertEqual([], row["clearFields"])
+        self.assertNotIn("DEAL_RESULT", {key for key, value in row.items() if value is not None} - set(self.RH_ROW))
+        self.assertEqual(["FIND_BILL_STATUS_ON_PROBLEM"], session.calls)
+
+    def test_ronghui_reply_follows_the_original_checks(self):
+        cases = [
+            ({"reply_text": "x"}, {"SEND_SITE": "别的网点"}, None, "只有通知网点"),
+            ({"reply_text": "x"}, {"REVERSION": "旧回复", "BL_CHECKOK": "1"}, None, "处理完毕"),
+            ({"reply_text": ""}, {}, None, "请填写回复内容"),
+            ({"reply_text": "x"}, {"TYPE": "退件"}, None, "退件处理意见"),
+            ({"reply_text": "x"}, {"IS_SELF_PICK": "1"}, None, "提货方式"),
+            ({"reply_text": "x"}, {}, [{"BILL_STATUS": "已签收"}], "已签收"),
+            ({"reply_text": "x"}, {}, [], "问题件不存在"),
+        ]
+        for payload, row, statuses, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+                    self._ronghui_reply(payload, row=row, statuses=statuses)
+                self.assertEqual("REPLY_RULE_REJECTED", ctx.exception.code)
+                self.assertIn(message, str(ctx.exception))
+        # A signed waybill only blocks problems from 协商再投接口/APP/K13.
+        result, _, _ = self._ronghui_reply({"reply_text": "x"}, row={"DATA_FROM": "手工"}, statuses=[{"BILL_STATUS": "已签收"}])
+        self.assertTrue(result["verified"])
+
+    def test_ronghui_self_pickup_reply_carries_drivers_and_pickup_time(self):
+        from shared.problem_reply_rules import pickup_days
+        import datetime as dt
+
+        day = pickup_days(dt.datetime.now(customer_service_problem.SHANGHAI_TZ).date())[1]
+        drivers = [{"name": "合成司机", "phone": "13800000000", "idCard": "", "plate": "湘E12345", "count": "2"}]
+        payload = {"reply_text": "", "pick_type": "安排司机提货", "pickup_day": day, "pickup_hour": "09:00-10:00", "drivers": drivers}
+        _, captured, _ = self._ronghui_reply(payload, row={"IS_SELF_PICK": "1"})
         row = captured["envelope"][0]["data"][0]
-        self.assertTrue(result["ok"])
-        self.assertEqual("TAB_PROBLEM_UPT", captured["envelope"][0]["operationKey"])
-        self.assertEqual("RH-GUID-1", row["GUID"])
-        self.assertEqual("R0001", row["BILL_CODE"])
-        self.assertEqual("登记网点", row["REGISTER_SITE"])
-        self.assertEqual("被通知网点", row["SEND_SITE"])
-        self.assertEqual("已联系处理", row["REVERSION"])
-        self.assertNotIn("REVERSION_STATUS", row)
+        self.assertEqual(("安排司机提货", day, "09:00-10:00"), (row["PICK_TYPE"], row["PICKUP_TIME_DAY"], row["PICKUP_TIME_HOUR"]))
+        self.assertEqual("合成司机", row["DRIVER_DATA"][0]["name"])
+        too_many = dict(payload, drivers=[dict(drivers[0], count="4")])
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            self._ronghui_reply(too_many, row={"IS_SELF_PICK": "1"})
+        self.assertIn("总件数不能大于开单件数", str(ctx.exception))
 
-    def test_ronghui_reply_surfaces_source_failure(self):
-        with patch.object(
-            customer_service_problem,
-            "_resolve_ronghui_page_context",
-            return_value={"menu_text": "收到问题件查询", "authentication_key": "auth", "page_id": "page", "url": "u"},
-        ), patch.object(
-            customer_service_problem,
-            "_save_ronghui_tables",
-            return_value={"success": False, "message": "保存失败"},
-        ):
-            with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
-                customer_service_problem._ronghui_reply(
-                    object(),
-                    {
-                        "item": {"external_id": "RH-GUID-1", "waybill_no": "R0001"},
-                        "payload": {"reply_text": "已联系处理", "prob_status": "已处理"},
-                    },
-                )
-
+    def test_ronghui_reply_read_back_mismatch_and_source_failure(self):
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            self._ronghui_reply({"reply_text": "已联系处理"}, after={"REVERSION": None})
+        self.assertEqual("WRITE_OUTCOME_UNKNOWN", ctx.exception.code)
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            self._ronghui_reply({"reply_text": "已联系处理"}, save={"success": False, "message": "保存失败"})
         self.assertEqual("SOURCE_REPLY_FAILED", ctx.exception.code)
         self.assertIn("保存失败", str(ctx.exception))
 
-    def test_yunda_reply_surfaces_source_failure(self):
-        with patch.object(
-            customer_service_problem,
-            "_yunda_post_json",
-            return_value={"success": False, "message": "回复失败"},
-        ):
-            with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
-                customer_service_problem._yunda_reply(
-                    object(),
-                    {
-                        "item": {"external_id": "YD-1", "status": "未处理"},
-                        "payload": {"reply_text": "已联系处理", "prob_status": "已处理"},
-                    },
-                )
+    def _yunda_reply(self, payload, *, detail=None, result=None, replied=True):
+        detail = {"prob_main_id": "YD-1", "reply_auth": 1, "review_auth": 0, "prob_status": 1, "prob_type_id": "100",
+                  "reply": [], **(detail or {})}
+        after = dict(detail, reply=[{"reply_text": payload.get("reply_text")}] if replied else [])
+        posts = []
 
+        def fake_post(session, url, data, **kwargs):
+            posts.append((url, dict(data)))
+            if url == customer_service_problem.YUNDA_QUERY_DETAIL_URL:
+                return detail if len([p for p in posts if p[0] == url]) == 1 else after
+            return result or {"info": 1, "msg": "保存成功"}
+
+        with patch.object(customer_service_problem, "_yunda_post_json", side_effect=fake_post):
+            out = customer_service_problem._yunda_reply(object(), {"item": {"external_id": "YD-1"}, "payload": payload})
+        return out, posts
+
+    def test_yunda_reply_posts_what_the_reply_page_posts(self):
+        out, posts = self._yunda_reply({"reply_text": "已联系处理", "prob_status": "已处理"})
+        reply = [data for url, data in posts if url == customer_service_problem.YUNDA_QUERY_REPLY_URL][0]
+        self.assertTrue(out["verified"])
+        self.assertEqual({"prob_status": "2", "review_entry_status": "", "reply_text": "已联系处理", "prob_main_id": "YD-1",
+                          "old_prob_status": "2", "file_arr": []}, reply)
+
+    def test_yunda_reply_checks_rights_review_and_read_back(self):
+        for detail, payload, message in (
+            ({"reply_auth": 2}, {"reply_text": "x"}, "不允许回复"),
+            ({"prob_status": 2}, {"reply_text": "x"}, "不允许回复"),
+            ({}, {"reply_text": ""}, "回复正文不能为空"),
+            ({}, {"reply_text": "x", "prob_status": "已完结"}, "处理中或已处理"),
+            ({"prob_type_id": "572", "review_auth": 1}, {"reply_text": "x"}, "预约进仓"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+                    self._yunda_reply(payload, detail=detail)
+                self.assertIn(message, str(ctx.exception))
+        out, posts = self._yunda_reply({"reply_text": "x", "review_entry_status": "1"}, detail={"prob_type_id": "572", "review_auth": 1})
+        self.assertEqual("1", [d for u, d in posts if u == customer_service_problem.YUNDA_QUERY_REPLY_URL][0]["review_entry_status"])
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            self._yunda_reply({"reply_text": "x"}, result={"info": 0, "msg": "回复失败"})
         self.assertEqual("SOURCE_REPLY_FAILED", ctx.exception.code)
-        self.assertIn("回复失败", str(ctx.exception))
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            self._yunda_reply({"reply_text": "x"}, replied=False)
+        self.assertEqual("WRITE_OUTCOME_UNKNOWN", ctx.exception.code)
 
     def test_resolve_ronghui_page_context_uses_post_menu_tree_and_children_wrapper(self):
         menu_payload = {

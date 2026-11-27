@@ -361,9 +361,14 @@ class RonghuiSourcesTests(unittest.TestCase):
         self.assertEqual(["P-open"], [item["id"] for item in result["items"]])
         self.assertEqual("未回复", result["items"][0]["status_label"])
         self.assertIn("通知网点：邵阳大祥站", result["items"][0]["content"])
+        reply = dict(result["items"][0]["reply"])
+        form = reply.pop("form")
         self.assertEqual({"platform": "ronghui", "account_id": "price_default", "external_id": "P-open",
-                          "source_direction": "received", "waybill_no": "SYNTHETIC-WAYBILL", "status": ""},
-                         result["items"][0]["reply"])
+                          "source_direction": "received", "waybill_no": "SYNTHETIC-WAYBILL", "status": "",
+                          "registered_at": "2026-10-14 08:00:00"}, reply)
+        # The reply form the original page would show, from shared/problem_reply_rules.py (通知网点 = this account).
+        self.assertEqual(("ronghui", "", False, []), (form["platform"], form["blocked"], form["self_pick"], form["return_opinions"]))
+        self.assertEqual(["2026-10-15", "2026-10-16"], form["pickup_days"])
         params = self.problems.call_args.args[1]
         self.assertEqual({"direction": "received", "date_from": "2026-10-13", "date_to": "2026-10-15", "page": 1,
                           "page_size": source.FETCH_PAGE_SIZE, "LOGIN_SITE_CODE": "7390101"}, params["filters"])

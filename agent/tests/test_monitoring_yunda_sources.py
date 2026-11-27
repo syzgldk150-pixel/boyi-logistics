@@ -82,8 +82,13 @@ class WindowedSourceTests(FixedToday):
         self.assertIn("本网点尚未回复", item["content"])
         self.assertEqual("处理中", item["status_label"])
         # 2026-11-27：消息中心可直接回复，条目只带客服回复接口需要的标识。
+        reply = dict(item["reply"])
+        form = reply.pop("form")
         self.assertEqual({"platform": "yunda", "account_id": "yunda_default", "external_id": item["id"],
-                          "source_direction": "query", "waybill_no": item["waybill_no"], "status": "处理中"}, item["reply"])
+                          "source_direction": "query", "waybill_no": item["waybill_no"], "status": "处理中",
+                          "registered_at": "2026-11-18 09:00:00"}, reply)
+        self.assertEqual(([{"value": "1", "label": "处理中"}, {"value": "2", "label": "已处理"}], "2", False),
+                         (form["statuses"], form["default_status"], form["review_entry"]))
         self.assertEqual(4, current.post.call_count)
         queries = set()
         for call in current.post.call_args_list:

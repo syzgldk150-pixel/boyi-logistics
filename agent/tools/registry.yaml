@@ -1082,10 +1082,28 @@ tools:
         source_direction: {type: string, maxLength: 32}
         waybill_no: {type: string, minLength: 1, maxLength: 100}
         status: {type: string, maxLength: 100}
-        reply_text: {type: string, minLength: 1, maxLength: 4000}
-        prob_status: {type: string, minLength: 1, maxLength: 100}
+        registered_at: {type: string, maxLength: 32}
+        reply_text: {type: string, maxLength: 4000}
+        prob_status: {type: string, maxLength: 100}
         old_prob_status: {type: string, maxLength: 100}
-      required: [platform, account_id, external_id, waybill_no, reply_text, prob_status]
+        review_entry_status: {type: string, enum: ["", "1", "2"]}
+        pick_type: {type: string, maxLength: 20}
+        pickup_day: {type: string, maxLength: 10}
+        pickup_hour: {type: string, maxLength: 20}
+        return_opinion: {type: string, maxLength: 20}
+        drivers:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name: {type: string, maxLength: 50}
+              phone: {type: string, maxLength: 20}
+              idCard: {type: string, maxLength: 20}
+              plate: {type: string, maxLength: 12}
+              count: {type: string, maxLength: 6}
+      required: [platform, account_id, external_id, waybill_no]
     output_schema:
       type: object
       additionalProperties: false

@@ -125,7 +125,11 @@ REPLY_ITEM = {
     "id": "Y-PROB-1", "title": "合成催件", "occurred_at": "2026-01-02 08:00:00", "content": "合成问题正文",
     "status_label": "处理中", "waybill_no": "SYNTHETIC-1",
     "reply": {"platform": "yunda", "account_id": "yunda_default", "external_id": "Y-PROB-1",
-              "source_direction": "query", "waybill_no": "SYNTHETIC-1", "status": "处理中"},
+              "source_direction": "query", "waybill_no": "SYNTHETIC-1", "status": "处理中",
+              "registered_at": "2026-01-02 08:00:00",
+              # The original reply page's form (shared/problem_reply_rules.yunda_reply_form).
+              "form": {"platform": "yunda", "blocked": "", "reply_max": 600, "default_status": "2", "review_entry": False,
+                       "statuses": [{"value": "1", "label": "处理中"}, {"value": "2", "label": "已处理"}]}},
 }
 
 
@@ -167,8 +171,8 @@ def test_problem_items_are_replied_in_place(app, browser):
         page.goto(f"{ORIGIN}/")
         page.locator(".monitor-reply-toggle").wait_for()
         page.click(".monitor-reply-toggle")
-        assert page.locator(".monitor-reply select option").all_inner_texts() == ["处理中", "已处理", "已完结"]
-        assert page.input_value(".monitor-reply select") == "已处理"
+        assert page.locator(".monitor-reply select option").all_inner_texts() == ["处理中", "已处理"]
+        assert page.input_value(".monitor-reply select") == "2"
         page.fill(".monitor-reply textarea", "已联系收件人，明天派送")
         page.click(".monitor-reply button[type=submit]")
         page.wait_for_function("document.querySelector('.monitor-reply-note')?.dataset.tone === 'error'")
@@ -186,8 +190,9 @@ def test_problem_items_are_replied_in_place(app, browser):
         assert second == {
             "platform": "yunda", "account_id": "yunda_default",
             "item": {"platform": "yunda", "account_id": "yunda_default", "external_id": "Y-PROB-1",
-                     "source_direction": "query", "waybill_no": "SYNTHETIC-1", "status": "处理中"},
-            "payload": {"reply_text": "已联系收件人，明天派送", "prob_status": "已处理", "old_prob_status": "处理中"},
+                     "source_direction": "query", "waybill_no": "SYNTHETIC-1", "status": "处理中",
+                     "registered_at": "2026-01-02 08:00:00"},
+            "payload": {"reply_text": "已联系收件人，明天派送", "prob_status": "2"},
         }
         assert not errors
 
@@ -234,3 +239,71 @@ def test_a_reply_lost_in_the_network_is_retried_with_the_same_request(app, brows
         page.click(".monitor-reply button[type=submit]")
         page.locator(".monitor-reply-done").wait_for()
         assert replies[0] and replies[0] == replies[1]
+
+
+RONGHUI_SELF_PICK_ITEM = {
+    "id": "RH-1", "title": "开单为自提件", "occurred_at": "2026-01-02 08:00:00", "content": "合成问题正文",
+    "status_label": "未回复", "waybill_no": "R-SYNTH-1",
+    "reply": {"platform": "ronghui", "account_id": "price_default", "external_id": "RH-1", "source_direction": "received",
+              "waybill_no": "R-SYNTH-1", "status": "", "registered_at": "2026-01-02 08:00:00",
+              "form": {"platform": "ronghui", "blocked": "", "reply_max": 500, "return_opinions": [], "self_pick": True,
+                       "pick_types": ["安排司机提货", "收件人自行提货", "其他"], "driver_pick_types": ["安排司机提货", "收件人自行提货"],
+                       "pickup_days": ["2026-01-02", "2026-01-03"], "pickup_hours": ["09:00-10:00", "10:00-11:00"],
+                       "max_drivers": 5, "piece_number": 3}},
+}
+
+
+def test_ronghui_self_pickup_reply_sends_the_original_form_fields(app, browser):
+    replies = []
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "systems": [{"system": "ronghui", "label": "融辉", "status": "ok",
+                "categories": [{"category_id": "ronghui:problems", "title": "问题件 · 未回复", "count": 1, "items_supported": True}]}]}
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "items": [RONGHUI_SELF_PICK_ITEM], "total": 1, "has_more": False}))
+            elif parsed.path == "/customer-service/problems/reply":
+                replies.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.click(".monitor-reply-toggle")
+        assert page.locator(".monitor-reply .reply-form-driver").count() == 0  # drivers only after a pickup type
+        page.get_by_label("安排司机提货").check()
+        page.fill("[aria-label='司机1司机姓名']", "合成司机")
+        page.fill("[aria-label='司机1手机号']", "13800000000")
+        page.fill("[aria-label='司机1车牌号']", "湘E12345")
+        page.fill("[aria-label='司机1件数']", "2")
+        page.get_by_text("＋ 添加司机").click()  # adding and removing a row keeps what was typed
+        assert page.locator(".monitor-reply .reply-form-driver").count() == 2
+        page.locator(".reply-form-driver").nth(1).get_by_text("删除").click()
+        assert page.locator(".monitor-reply .reply-form-driver").count() == 1
+        assert page.input_value("[aria-label='司机1司机姓名']") == "合成司机"
+        page.locator(".monitor-reply select").nth(0).select_option("2026-01-03")
+        page.locator(".monitor-reply select").nth(1).select_option("10:00-11:00")
+        page.fill(".monitor-reply textarea", "已安排司机提货")
+        page.click(".monitor-reply button[type=submit]")
+        page.locator(".monitor-reply-done").wait_for()
+        assert replies[0]["item"]["registered_at"] == "2026-01-02 08:00:00"
+        assert replies[0]["payload"] == {
+            "reply_text": "已安排司机提货", "pick_type": "安排司机提货", "pickup_day": "2026-01-03", "pickup_hour": "10:00-11:00",
+            "drivers": [{"name": "合成司机", "phone": "13800000000", "idCard": "", "plate": "湘E12345", "count": "2"}],
+        }

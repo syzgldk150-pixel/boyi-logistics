@@ -123,7 +123,7 @@ def build_customer_action_params(action: str, params: dict[str, Any]) -> dict[st
         return result
 
     if action in {"detail", "mark_read", "reply"}:
-        item = _selected(params, ("external_id", "source_direction", "waybill_no", "status"))
+        item = _selected(params, ("external_id", "source_direction", "waybill_no", "status", "registered_at"))
         result["item"] = item
         if action == "detail":
             return result
@@ -133,7 +133,8 @@ def build_customer_action_params(action: str, params: dict[str, Any]) -> dict[st
             # update_fields from callers.
             result["payload"] = {}
             return result
-        result["payload"] = _selected(params, ("reply_text", "prob_status", "old_prob_status"))
+        # 原页回复表单的全部字段（2026-11-27 按原页重做，规则在 shared/problem_reply_rules.py）。
+        result["payload"] = _selected(params, ('reply_text', 'prob_status', 'old_prob_status', 'review_entry_status', 'pick_type', 'pickup_day', 'pickup_hour', 'return_opinion', 'drivers'))
         return result
 
     if action == "publish":
@@ -516,7 +517,10 @@ def validate_customer_write_response(
         return response
     payload = _business_payload(response)
     source_result = payload.get("result")
-    if not _source_confirmed(source_result):
+    # Replies are confirmed by reading the problem back after saving (verified), not by the save
+    # response alone: 韵达's reply endpoint answers with ``info`` rather than ``success``.
+    confirmed = payload.get("verified") is True if action == "reply" else _source_confirmed(source_result)
+    if not confirmed:
         return _write_failure(f"customer-service {action} source response did not confirm success")
 
     conditions = {

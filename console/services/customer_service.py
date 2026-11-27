@@ -304,17 +304,31 @@ class CustomerServiceMixin:
                 item.get("external_id") or body.get("external_id") or ""
             ).strip()
         elif action == "reply":
+            # The original page's reply form (2026-11-27, rules in shared/problem_reply_rules.py); the
+            # Agent re-reads the problem and checks every field before writing.
+            drivers = payload.get("drivers") if isinstance(payload.get("drivers"), list) else []
             arguments.update(
                 {
                     "external_id": str(item.get("external_id") or "").strip(),
                     "source_direction": str(item.get("source_direction") or "").strip(),
                     "waybill_no": str(item.get("waybill_no") or "").strip(),
                     "status": str(item.get("status") or "").strip(),
+                    "registered_at": str(item.get("registered_at") or "").strip()[:32],
                     "reply_text": str(payload.get("reply_text") or "").strip(),
                     "prob_status": str(payload.get("prob_status") or "").strip(),
                     "old_prob_status": str(payload.get("old_prob_status") or "").strip(),
+                    "review_entry_status": str(payload.get("review_entry_status") or "").strip(),
+                    "pick_type": str(payload.get("pick_type") or "").strip(),
+                    "pickup_day": str(payload.get("pickup_day") or "").strip(),
+                    "pickup_hour": str(payload.get("pickup_hour") or "").strip(),
+                    "return_opinion": str(payload.get("return_opinion") or "").strip(),
+                    "drivers": [
+                        {key: str(driver.get(key) or "").strip() for key in ("name", "phone", "idCard", "plate", "count")}
+                        for driver in drivers[:5] if isinstance(driver, dict)
+                    ],
                 }
             )
+            arguments = {key: value for key, value in arguments.items() if value not in ("", [])}
         elif action == "publish":
             if arguments["platform"] == "yunda":
                 site_ids = payload.get("site_id")

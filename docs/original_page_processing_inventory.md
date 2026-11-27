@@ -28,7 +28,7 @@ updated: 2026-11-27
 
 保存前校验：选“收件人自行提货/安排司机提货”时司机信息须填完整，司机件数合计不得大于开单件数；已回复过的不能再选“处理中”（“问题件只能回复一次”）；回复内容与司机信息至少一项；按 `FIND_BILL_STATUS_ON_PROBLEM` 查运单：来源为协商再投接口/APP/K13 的问题件，若该运单已有“退回/弃货”的问题件则不允许再处理，运单已签收只允许“再派”，已退件/已弃货不允许处理。已回复后再改处理结果时原页会清空回复、提货、司机、退回意见字段再写。
 
-**与博益现状的差异**：客服页和消息中心的融辉回复（`customer_service_problem._ronghui_reply`）只写 `GUID/BILL_CODE/REVERSION`，没有处理结果、回复人/时间/网点、已查看、提货与司机信息，也没有上述校验，需按本节重做。
+**已按本节重做（2026-11-27）**：原先客服页和消息中心的融辉回复只写 `GUID/BILL_CODE/REVERSION`；现按原页读回整行写回，规则在 `shared/problem_reply_rules.py`。原页“处理结果”控件已注释，保存实际写 `BL_CHECKOK=1` 且不改 `DEAL_RESULT`；`FIND_BILL_STATUS_ON_PROBLEM` 只返回 `BILL_STATUS/DEAL_RESULT`，原页“已有退回/弃货问题件”的判断实际不生效，只有本问题件来源为协商再投接口/APP/K13 时按运单已签收/已退件/已弃货拦截。打开时标“已查看”与“确认转发”尚未做。
 
 ### 收到工单（“工单接收方查询-工单裁定申诉”）
 
@@ -80,7 +80,7 @@ updated: 2026-11-27
 
 保存：`POST /ky_problem/public/index.php/query/replyInfo.html`，字段 `prob_status`（**数值** 1 处理中 / 2 已处理，原页没有“已完结”）、`reply_text`（必填，最多 600 字）、`prob_main_id`、`old_prob_status`（原页固定传 2）、`review_entry_status`（预约进仓类问题件需选 1 同意 / 2 不同意）、`file_arr`（附件最多 3 个，先 `issue/uploadImg.html` 上传，文件名不能含符号）。另有常用回复语（`getReplyOften`/`saveReplyOften`）；双击一行会调用 `query/Read.html` 标已读。
 
-**与博益现状的差异**：客服页和消息中心的韵达回复把处理状态按文字（处理中/已处理/已完结）提交、`old_prob_status` 传当前状态文字、不支持预约进仓确认和附件，需按本节修正。
+**已按本节重做（2026-11-27）**：原先按文字（处理中/已处理/已完结）提交、`old_prob_status` 传当前状态文字；现按原页提交数值状态、固定 `old_prob_status=2`、支持预约进仓确认，回复前读详情（`reply_auth` 为 2 或状态 2/4 时原页不显示回复按钮），回复后读回详情核对。附件（最多 3 个）与常用回复语尚未做。
 
 ### 收到工单与催单（快运工单系统 CSSP）
 

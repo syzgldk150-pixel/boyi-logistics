@@ -15,7 +15,6 @@
         return fallback;
       }
     };
-    const DEFAULT_REPLY_STATUS = "已处理";
     const ATTACHMENT_ORIGINS = {
       ronghui: "https://tms.ronghuiwl.com",
       yunda: "https://kyproblem.yunda56.com",
@@ -1274,13 +1273,7 @@
       state.selected = row;
       state.selectedDetails = [];
       if (problemModal && !problemModal.open) problemModal.showModal();
-      const replyTextNode = $("[data-cs-reply-text]");
-      const replyStatusNode = $("[data-cs-reply-status]");
-      if (replyTextNode) replyTextNode.value = "";
-      if (replyStatusNode) replyStatusNode.value = DEFAULT_REPLY_STATUS;
-      // Ronghui problems have no processing status on the source site; only Yunda asks for one.
-      const replyStatusField = replyStatusNode?.closest(".customer-service-field--status");
-      if (replyStatusField) replyStatusField.hidden = row.platform !== "yunda";
+      renderReplyForm(row);
       state.replying = false;
       setReplySubmitting(false);
       resetAi();
@@ -1319,18 +1312,26 @@
       }
     }
 
+    // The original page's reply form (console/static/problem_reply_form.js, 2026-11-27): rendered from
+    // the row's reply_form; the Agent checks every field again and its message is shown as is.
+    function renderReplyForm(row) {
+      const container = $("[data-cs-reply-fields]");
+      if (!container) return;
+      state.replyDraft = window.ProblemReplyForm.freshDraft(row.reply_form);
+      const usable = window.ProblemReplyForm.render(container, row.reply_form, state.replyDraft, { textAttr: "data-cs-reply-text" });
+      const submit = $("[data-cs-reply-submit]");
+      if (submit) submit.hidden = !usable;
+    }
+
     async function submitReply(event) {
       event.preventDefault();
       if (state.replying) return;
       const row = state.selected;
-      if (!row) return;
-      const replyText = $("[data-cs-reply-text]")?.value.trim() || "";
+      if (!row || !row.reply_form || row.reply_form.blocked) return;
+      const container = $("[data-cs-reply-fields]");
+      const payload = window.ProblemReplyForm.payload(container, row.reply_form, state.replyDraft);
+      const replyText = payload.reply_text;
       const isYunda = row.platform === "yunda";
-      const status = isYunda ? $("[data-cs-reply-status]")?.value || DEFAULT_REPLY_STATUS : "";
-      if (!replyText) {
-        setStatus("回复内容不能为空", "warning");
-        return;
-      }
       state.replying = true;
       setReplySubmitting(true);
       setStatus("回复提交中...");
@@ -1342,20 +1343,18 @@
             account_id: row.account_id,
             item: row,
             ai_suggestion_id: state.ai.suggestionId,
-            payload: isYunda
-              ? { reply_text: replyText, prob_status: status, old_prob_status: row.status || "" }
-              : { reply_text: replyText, REVERSION: replyText },
+            payload,
           },
           { command: true },
         );
         assertActionSucceeded(data, "回复失败");
-        row.status = isYunda ? status : "已回复";
+        row.status = isYunda ? (payload.prob_status === "1" ? "处理中" : "已处理") : "已回复";
+        if (row.reply_form) row.reply_form = { ...row.reply_form, blocked: isYunda ? "" : "这条问题件已回复并处理完毕，原页不能再回复。" };
         row.reply_text = replyText;
         row.reply_content = replyText;
         row.REVERSION = replyText;
         renderProblemModal(row, state.selectedDetails || []);
-        const replyTextNode = $("[data-cs-reply-text]");
-        if (replyTextNode) replyTextNode.value = "";
+        renderReplyForm(row);
         const aiCase = data.ai_case || {};
         setStatus(aiCase.recorded ? "回复已提交，并已存入案例库，正在刷新..." : `回复已提交，正在刷新...${aiCase.message ? `（${aiCase.message}）` : ""}`, "success");
         await runQuery();
