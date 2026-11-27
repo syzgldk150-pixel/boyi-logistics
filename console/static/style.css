@@ -4000,3 +4000,4 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
 .action-dialog input[type="radio"], .action-dialog input[type="checkbox"], .action-switch input, .reply-form-often input, .action-select {
   appearance: auto; -webkit-appearance: auto; width: auto; min-height: 0; margin: 0;
 }
+.action-row[hidden] { display: none; }

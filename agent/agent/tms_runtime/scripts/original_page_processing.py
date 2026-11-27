@@ -274,6 +274,79 @@ def _complaint_against_reply(session: Any, item: dict[str, Any], payload: dict[s
     return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id}
 
 
+def _appeal_dialog(session: Any) -> tuple[dict[str, str], dict[str, str]]:
+    from shared.original_page_actions import APPEAL_FORM_SUBPAGE
+
+    parent = base._resolve_ronghui_page_context(session, AGAINST_MENU)
+    return parent, _subpage_context(session, parent, APPEAL_FORM_SUBPAGE)
+
+
+def _appeal_type_rows(session: Any, dialog: dict[str, str], user_info: dict[str, Any], process_type: str) -> list[dict[str, Any]]:
+    from shared.original_page_actions import appeal_side
+
+    return _find(session, dialog, "FIND_APPEAL_TYPE_COMBOBOX", {"PROCESS_TYPE": process_type,
+                                                               "APPEAL_SIDE": appeal_side(_text(user_info.get("loginSiteType")))})
+
+
+def _appeal_form_lookup(operation: str) -> Handler:
+    def handler(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        user_info = _user_info(session)
+        _parent, dialog = _appeal_dialog(session)
+        if operation == "process_types":
+            rows = _find(session, dialog, "GET_EXCEPTION_TYPE_DISTINCT1", {})
+            return {"ok": True, "options": [{"value": _text(row.get("TYPE_NAME")), "label": _text(row.get("TYPE_NAME"))}
+                                            for row in rows if _text(row.get("TYPE_NAME"))]}
+        rows = _appeal_type_rows(session, dialog, user_info, _text(payload.get("PROCESS_TYPE")))
+        return {"ok": True, "options": [{"value": _text(row.get("APPEAL_TYPE")), "label": _text(row.get("APPEAL_TYPE")),
+                                         "meta": {"TIP": _text(row.get("TIP"))}} for row in rows if _text(row.get("APPEAL_TYPE"))]}
+    return handler
+
+
+def _complaint_against_appeal(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, appeal_form_exception_id, appeal_form_tables, validate_appeal_form
+
+    exception_id = _text(item.get("external_id"))
+    user_info = _user_info(session)
+    parent, dialog = _appeal_dialog(session)
+    row = _complaint_row(session, parent, "FIND_TAB_EXCEPTION_SIDE", user_info, exception_id)
+    bill_code = _text(row.get("BILL_CODE"))
+    bills = _find(session, dialog, "FIND_BILL_INFO_ON_EXCEPTION_REG", {"BILL_CODE": bill_code})
+    process, kind = _text(payload.get("PROCESS_TYPE")), _text(payload.get("APPEAL_TYPE"))
+    types = [entry for entry in _appeal_type_rows(session, dialog, user_info, process) if _text(entry.get("APPEAL_TYPE")) == kind] if process else []
+    terms = _find(session, dialog, "GET_TAB_APPEAL_TYPE", {"APPEAL_TYPE": kind, "PROCESS_TYPE": process}) if kind else []
+    site_code = _text(user_info.get("loginSiteCode"))
+    duplicate = bool(kind) and bool(_find(session, dialog, "FIND_EXCEPTION_APPEAL_VALIDATE", {
+        "BILL_CODE": bill_code, "APPEAL_TYPE": kind, "PROCESS_TYPE": process, "APPEAL_SITE_CODE": site_code}))
+    stakeholder_rows = _find(session, dialog, "FIND_TAB_APPEAL_TYPE", {"APPEAL_TYPE": kind}) if kind else []
+    stakeholder = bool(stakeholder_rows) and _text(stakeholder_rows[0].get("BL_STAKEHOLDER")) == "1"
+    trajectory = [_text(entry.get("SITE_CODE")) for entry in _find(session, dialog, "FIND_TRAJECTORY_SITECODE1", {"BILL_CODE": bill_code})] if stakeholder else []
+    try:
+        term = int(_text(terms[0].get("APPEAL_TERM"))) if terms and _text(terms[0].get("APPEAL_TERM")) else None
+    except ValueError:
+        term = None
+    try:
+        fields = validate_appeal_form(row, payload, bill=bills[0] if bills else None, appeal_type=types[0] if types else None,
+                                      appeal_term_days=term, duplicate=duplicate, stakeholder=stakeholder,
+                                      trajectory_sites=trajectory, login_site_code=site_code)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    server_now = _server_now(session, dialog)
+    new_id = appeal_form_exception_id(dt.datetime.now(base.SHANGHAI_TZ))
+    tables = appeal_form_tables(fields, user_info, bill_code, new_id, server_now)
+    result = _save(session, dialog, tables[:1], "融辉新增申诉")
+    if len(tables) > 1:  # 原页申诉保存成功后再一次性保存全部附件
+        _save(session, dialog, tables[1:], "融辉申诉附件")
+    appeal_context = base._resolve_ronghui_page_context(session, APPEAL_MENU)
+    saved = [entry for entry in _all_rows(session, appeal_context, "FIND_TAB_EXCEPTION_APPEAL", _site_scope(user_info))
+             if _text(entry.get("EXCEPTION_ID")) == new_id]
+    if len(saved) != 1:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "申诉已提交，但申诉登记里读不到这条申诉，请到原系统核对，不要重复登记。")
+    if fields["files"] and len(_paths(session, parent, new_id, "申诉附件")) < len(fields["files"]):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "申诉已保存，但附件没有全部读回，请到原系统核对附件。")
+    note = "" if fields["files"] else "原页提示：请至少选择一个附件（申诉已保存，没有附件）。"
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id, "note": note}
+
+
 def _fresh_complaint(session: Any, context: dict[str, str], exception_id: str) -> dict[str, Any] | None:
     rows = _find(session, context, "FIND_TAB_EXCEPTION_REGISTER", {"EXCEPTION_ID": exception_id})
     return rows[0] if rows else None
@@ -686,6 +759,46 @@ def _yunda_reply_often(session: Any, item: dict[str, Any], payload: dict[str, An
     return {"ok": True, "replies": replies[:50]}
 
 
+ARBITRATION_PAGE = "https://kyzc.yunda56.com:8090/kyzc/arbitrament/arbitramentSearch"
+
+
+def _arbitration_messages(session: Any, decl_id: str) -> list[dict[str, Any]]:
+    response = session.post(f"{ARBITRATION_PAGE}/getMessage", data={"declId": decl_id},
+                            headers={"Referer": ARBITRATION_PAGE, "X-Requested-With": "XMLHttpRequest"}, timeout=20)
+    try:
+        result = response.json()
+    except ValueError:
+        raise ProcessingError("INVALID_RESPONSE", "韵达仲裁系统没有返回留言记录。") from None
+    if not isinstance(result, dict) or str(result.get("code")) != "0":
+        raise ProcessingError("SOURCE_QUERY_FAILED", _text((result or {}).get("msg")) or "韵达仲裁留言读取失败。")
+    return [row for row in (result.get("messageList") or []) if isinstance(row, dict)]
+
+
+def _arbitration_message(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from agent.tms_runtime.monitoring_yunda import _open_arbitration_session
+    from shared.original_page_actions import ActionRuleError, validate_arbitration_message
+
+    decl_id = _text(item.get("external_id"))
+    try:
+        message = validate_arbitration_message(payload)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    _open_arbitration_session(session)
+    before = len(_arbitration_messages(session, decl_id))
+    response = session.post(f"{ARBITRATION_PAGE}/saveMessage", data={"declId": decl_id, "message": message, "messageType": "message"},
+                            headers={"Referer": ARBITRATION_PAGE, "X-Requested-With": "XMLHttpRequest"}, timeout=20)
+    try:
+        result = response.json()
+    except ValueError:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "留言已提交，但原系统没有返回结果，请到原系统核对。") from None
+    if not isinstance(result, dict) or str(result.get("code")) != "0":
+        raise ProcessingError("SOURCE_WRITE_FAILED", f"留言失败：{_text((result or {}).get('msg')) or '原系统拒绝'}")
+    after = _arbitration_messages(session, decl_id)
+    if len(after) <= before or not any(_text(row.get("message")) == message for row in after):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "留言已提交，但留言记录里读不到这条留言，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": decl_id}
+
+
 # (platform, kind, operation) -> handler(session, item, payload)
 Handler = Callable[[Any, dict[str, Any], dict[str, Any]], dict[str, Any]]
 PROCESS: dict[tuple[str, str, str], Handler] = {
@@ -694,6 +807,7 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     **{("ronghui", "work_order", operation): (lambda op: lambda s, i, p: _work_order_process(s, op, i, p))(operation)
        for operation in ("respond", "finish", "urge", "appeal")},
     ("ronghui", "complaint_against", "reply"): _complaint_against_reply,
+    ("ronghui", "complaint_against", "appeal"): _complaint_against_appeal,
     ("ronghui", "complaint_filed", "cancel"): _complaint_filed_cancel,
     ("ronghui", "complaint_filed", "appeal"): _complaint_filed_appeal,
     ("ronghui", "complaint_filed", "claim"): _complaint_filed_claim,
@@ -705,10 +819,13 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     ("yunda", "transfer", "accept"): _transfer_accept,
     ("yunda", "transfer", "transfer"): _transfer_transfer,
     ("yunda", "transfer", "abnormal"): _transfer_abnormal,
+    ("yunda", "arbitration", "message"): _arbitration_message,
 }
 LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "problem", "contact"): _problem_contact,
     ("ronghui", "site", "search"): _site_search,
+    ("ronghui", "appeal_form", "process_types"): _appeal_form_lookup("process_types"),
+    ("ronghui", "appeal_form", "appeal_types"): _appeal_form_lookup("appeal_types"),
     ("yunda", "site", "search"): _yunda_site_search,
     ("yunda", "problem", "reply_often"): _yunda_reply_often,
 }

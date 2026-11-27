@@ -210,3 +210,39 @@ class YundaTests(unittest.TestCase):
             self.assertEqual(("现场.jpg", b"jpg"), posts[0][2]["file"])
             self.assertEqual({"Replace_Id[]": ["R1"], "Abnormal_Type": "2", "Abnormal_Remark": ""}, posts[1][1])
             self.assertFalse((Path(folder) / "staged" / staged["new_name"]).exists())
+
+
+class NewAppealTests(unittest.TestCase):
+    def test_new_appeal_saves_appeal_then_files_and_reads_back(self):
+        row = {"EXCEPTION_ID": "E1", "BILL_CODE": "B1", "APPEAL_TYPE": "差错处理"}
+        saved, new_ids = [], []
+
+        def find(session, context, call_id, data, paged=False):
+            return {
+                "FIND_BILL_INFO_ON_EXCEPTION_REG": [{"PRODUCT_TYPE": "普通"}],
+                "FIND_APPEAL_TYPE_COMBOBOX": [{"APPEAL_TYPE": "延误", "BL_EVIDENCE": "0"}],
+                "GET_TAB_APPEAL_TYPE": [{"APPEAL_TERM": "7"}],
+                "FIND_EXCEPTION_APPEAL_VALIDATE": [], "FIND_TAB_APPEAL_TYPE": [{"BL_STAKEHOLDER": 0}],
+                "FIND_NOW": [{"SYSDATE": "2026-11-27 09:00:00"}],
+                "FIND_TAB_EXCEPTION_APPEAL": [{"EXCEPTION_ID": new_ids[0] if new_ids else ""}],
+                "FIND_EXCEPTION_PATH": [{"FILE_PATH": "/unauth/download/a"}],
+            }[call_id]
+
+        def save(session, context, tables, label):
+            saved.append(tables)
+            if tables[0][0] == "TAB_EXCEPTION_APPEAL_ADD":
+                new_ids.append(tables[0][1][0]["EXCEPTION_ID"])
+            return {"success": True}
+
+        with patch.object(base, "_read_user_info_cookie", return_value={**USER, "loginSiteType": "一级网点"}), \
+                patch.object(base, "_resolve_ronghui_page_context", return_value={"page_id": "P", "url": "u"}), \
+                patch.object(processing, "_subpage_context", return_value={"page_id": "SUB", "url": "s"}), \
+                patch.object(processing, "_complaint_row", return_value=row), patch.object(processing, "_find", side_effect=find), \
+                patch.object(processing, "_save", side_effect=save):
+            result = processing.run("ronghui", "process", object(), {"kind": "complaint_against", "operation": "appeal",
+                                                                      "item": {"external_id": "E1"}, "payload": {
+                                                                          "PROCESS_TYPE": "差错处理", "APPEAL_TYPE": "延误", "PHONE": "13800000000",
+                                                                          "CLAIM_AMOUNT": "20", "appeal_file1": [
+                                                                              {"platform": "ronghui", "file_name": "a.jpg", "file_path": "/unauth/download/a"}]}})
+        self.assertTrue(result["verified"])
+        self.assertEqual(["TAB_EXCEPTION_APPEAL_ADD", "TAB_EXCEPTION_PATH_ADD"], [tables[0][0] for tables in saved])

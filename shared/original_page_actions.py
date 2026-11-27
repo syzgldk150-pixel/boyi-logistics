@@ -300,14 +300,15 @@ def _slots(slots: Sequence[tuple[str, str]]) -> list[dict[str, str]]:
 
 
 def complaint_against_specs(row: Mapping[str, Any], user_info: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """被投诉方查询的“回复”：打开“新增投诉回复”（回复网点/回复人为当前登录，回复内容必填 ≤500，附件 ≤10 个 20MB）。"""
+    """被投诉方查询的“回复”（“新增投诉回复”：回复网点/回复人为当前登录，回复内容必填 ≤500，附件 ≤10 个 20MB）与“新增申诉”。"""
     user_info = user_info or {}
-    return [_spec("complaint_against", "reply", "回复", "新增投诉回复", [
+    reply = _spec("complaint_against", "reply", "回复", "新增投诉回复", [
         _field("BILL_CODE", "运单号", value=row.get("BILL_CODE")),
         _field("REPLY_SITE", "回复网点", value=user_info.get("loginSiteName")),
         _field("REPLY_MAN", "回复人", value=user_info.get("loginEmpName")),
         _field("REPLY_CONTENT", "回复内容", "textarea", required=True, max_length=COMPLAINT_REPLY_MAX),
-    ], attachments_purpose="complaint_reply")]
+    ], attachments_purpose="complaint_reply")
+    return [reply, appeal_form_spec(row)]  # 原页工具栏顺序：回复、新增申诉
 
 
 def complaint_reply_guid(server_guid: str) -> str:
@@ -717,6 +718,128 @@ def validate_transfer_abnormal(row: Mapping[str, Any], payload: Mapping[str, Any
     return {"Abnormal_Type": kind, "Abnormal_Remark": remark, "label": dict(TRANSFER_ABNORMAL_TYPES)[kind], "images": images}
 
 
+# 韵达快运仲裁查询“留言”（arbitramentSearch/saveMessage，messageType=message，1–1000 字）
+ARBITRATION_MESSAGE_MAX = 1000
+
+
+def arbitration_specs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [_spec("arbitration", "message", "留言", "留言", [
+        _field("message", "留言", "textarea", required=True, max_length=ARBITRATION_MESSAGE_MAX)])]
+
+
+def validate_arbitration_message(payload: Mapping[str, Any]) -> str:
+    text = _text(payload.get("message"))
+    if not 0 < len(text) <= ARBITRATION_MESSAGE_MAX:
+        raise ActionRuleError("填写留言内容限制1~1000字以内！")
+    return text
+
+
+# ---------------------------------------------------------------------------------------------
+# 融辉“新增申诉”（被投诉方查询 → 子页“申诉登记_测试_工单”）
+# ---------------------------------------------------------------------------------------------
+
+APPEAL_FORM_SUBPAGE = "申诉登记_测试_工单"
+APPEAL_FORM_FILES = 10
+APPEAL_FREE_DUPLICATE = "云呼未接申述"
+APPEAL_WEIGHT_TYPE = "偷重偷方"
+
+
+def appeal_side(login_site_type: str) -> str:
+    """``xxxChangeMethod``: 申诉方按登录网点类型取“中心”或“网点”。"""
+    site_type = _text(login_site_type)
+    return "中心" if "中心" in site_type else "网点" if "网点" in site_type else ""
+
+
+def appeal_form_spec(row: Mapping[str, Any]) -> dict[str, Any]:
+    process = _field("PROCESS_TYPE", "处理类型", "select", value=row.get("APPEAL_TYPE"), required=True)
+    process["lookup"] = {"kind": "appeal_form", "operation": "process_types"}
+    appeal = _field("APPEAL_TYPE", "申诉类型", "select", required=True)
+    appeal["lookup"] = {"kind": "appeal_form", "operation": "appeal_types", "depends_on": "PROCESS_TYPE"}
+    appeal["effects"] = {"placeholder": {"target": "APPEAL_CONTENT", "meta": "TIP"},
+                         "show_when": {"target": "PRACTICAL_WEIGHT", "equals": APPEAL_WEIGHT_TYPE}}
+    weight = _field("PRACTICAL_WEIGHT", "实际重量", "money")
+    weight["hidden"] = True
+    spec = _spec("complaint_against", "appeal", "新增申诉", "新增数据", [
+        _field("BILL_CODE", "运单号", value=row.get("BILL_CODE")), process, appeal,
+        _field("PHONE", "联系方式", "text", required=True),
+        _field("CLAIM_AMOUNT", "索赔金额", "money", value=row.get("EXCEPTION_VOLUME"), required=True),
+        _field("APPEAL_CONTENT", "申诉内容", "textarea"), weight,
+    ])
+    spec["attachment_slots"] = [{"key": f"appeal_file{i}", "label": f"附件{i}", "purpose": "appeal"} for i in range(1, APPEAL_FORM_FILES + 1)]
+    return spec
+
+
+def validate_appeal_form(row: Mapping[str, Any], payload: Mapping[str, Any], *, bill: Mapping[str, Any] | None,
+                         appeal_type: Mapping[str, Any] | None, appeal_term_days: int | None, duplicate: bool,
+                         stakeholder: bool, trajectory_sites: Sequence[str], login_site_code: str) -> dict[str, Any]:
+    """``getException`` + ``saveMethod`` 的检查，按原页顺序。"""
+    bill_code = _text(row.get("BILL_CODE"))
+    if bill is None:
+        raise ActionRuleError("未获取到相关运单信息!")
+    if _text(bill.get("IS_RETURN_BILL")) == "1":
+        raise ActionRuleError("回单禁止申诉!")
+    process, kind = _text(payload.get("PROCESS_TYPE")), _text(payload.get("APPEAL_TYPE"))
+    phone, claim = _text(payload.get("PHONE")), _text(payload.get("CLAIM_AMOUNT"))
+    if not (process and kind and phone and claim) or (appeal_type is None):
+        raise ActionRuleError("请将数据填写完整")
+    if _text(appeal_type.get("IS_COMPLAINT_CONTENT")) == "1" and not _text(payload.get("APPEAL_CONTENT")):
+        raise ActionRuleError("请将数据填写完整")
+    weight = _text(payload.get("PRACTICAL_WEIGHT")) if kind == APPEAL_WEIGHT_TYPE else ""
+    if weight:
+        try:
+            value = Decimal(weight)
+        except InvalidOperation:
+            raise ActionRuleError("实际重量必须是数字") from None
+        if value != value.quantize(Decimal("0.01")) or not Decimal("0") <= value <= Decimal("100000"):
+            raise ActionRuleError("实际重量须在 0 到 100000 之间，最多两位小数")
+    if appeal_term_days is not None and appeal_term_days < 0:
+        raise ActionRuleError("超过投诉申诉期不允许进行申诉登记！")  # 投诉日期为当天，只有负的申诉期会拦下
+    if duplicate and kind != APPEAL_FREE_DUPLICATE:
+        raise ActionRuleError("同一个运单号，同一个部门，同一个类型，只能登记一次！")
+    files = []
+    for index in range(1, APPEAL_FORM_FILES + 1):
+        try:
+            picked = attachments(payload.get(f"appeal_file{index}"), "ronghui", "appeal")
+        except AttachmentError as exc:
+            raise ActionRuleError(f"附件{index}：{exc}") from None
+        if picked:
+            files.append((index, picked[0]))
+    if _text(appeal_type.get("BL_EVIDENCE")) == "1" and not any(index <= 3 for index, _file in files):
+        raise ActionRuleError("请上传附件")
+    if stakeholder and login_site_code not in set(trajectory_sites):
+        raise ActionRuleError(f"申诉网点与【{bill_code}】无关联关系，无法提交数据")
+    return {"PROCESS_TYPE": process, "APPEAL_TYPE": kind, "APPEAL_TYPE_LB": _text(appeal_type.get("APPEAL_TYPE_LB")),
+            "PHONE": phone, "CLAIM_AMOUNT": claim, "APPEAL_CONTENT": _text(payload.get("APPEAL_CONTENT")),
+            "PRACTICAL_WEIGHT": weight, "PRODUCT_TYPE": _text(bill.get("PRODUCT_TYPE")), "files": files}
+
+
+def appeal_form_exception_id(now: dt.datetime, rand: int | None = None) -> str:
+    """原页初始化：yyyyMMddHHmmss + 10000–99998 的随机数作为“流水号”。"""
+    return now.strftime("%Y%m%d%H%M%S") + str(random.randrange(10000, 99999) if rand is None else rand)
+
+
+def appeal_form_tables(fields: Mapping[str, Any], user_info: Mapping[str, Any], bill_code: str, exception_id: str,
+                       server_now: str) -> list[tuple[str, list[dict[str, Any]]]]:
+    data = {key: fields[key] for key in ("PROCESS_TYPE", "APPEAL_TYPE", "APPEAL_TYPE_LB", "PHONE", "CLAIM_AMOUNT", "APPEAL_CONTENT",
+                                         "PRACTICAL_WEIGHT", "PRODUCT_TYPE")}
+    data.update({"EXCEPTION_DATE": server_now, "BILL_CODE": bill_code, "EXCEPTION_ID": exception_id,
+                 "APPEAL_SITE_CODE": _text(user_info.get("loginSiteCode")), "APPEAL_SITE": _text(user_info.get("loginSiteName")),
+                 "REGISTER_DATE": server_now, "CREATE_DATE": server_now, "CREATE_SITE": _text(user_info.get("loginSiteName")),
+                 "COMPLAINT_STATUS": "待审核"})
+    for index in range(1, APPEAL_FORM_FILES + 1):
+        data[f"FILE_PATH{index}"] = ""
+    for index, file in fields["files"]:
+        data[f"FILE_PATH{index}"] = _text(file.get("file_path"))
+    for key in ("CREATE_MAN", "APPEAL_MAN"):
+        if _text(user_info.get("loginUserName")):
+            data[key] = _text(user_info.get("loginUserName"))
+    tables = [("TAB_EXCEPTION_APPEAL_ADD", [data])]
+    if fields["files"]:
+        tables.append(("TAB_EXCEPTION_PATH_ADD", [exception_path_row(exception_id, _text(file.get("file_name")), _text(file.get("file_path")),
+                                                                     "申诉附件", user_info, server_now) for _index, file in fields["files"]]))
+    return tables
+
+
 SITE_KEY = re.compile(r"^[\w一-龥()（）\-]{1,30}$")
 
 
@@ -728,6 +851,8 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "APPEAL_FORM_SUBPAGE", "appeal_form_exception_id", "appeal_form_spec", "appeal_form_tables", "appeal_side", "validate_appeal_form",
+    "arbitration_specs", "validate_arbitration_message",
     "CSSP_CUI_REPLY", "CSSP_OPERATIONS", "TRANSFER_ABNORMAL_TYPES", "cssp_block", "cssp_specs", "cui_reply_spec",
     "transfer_abnormal_block", "transfer_accept_confirm", "transfer_specs", "validate_cssp", "validate_cui_reply",
     "validate_transfer_abnormal",

@@ -508,3 +508,71 @@ def test_yunda_work_order_and_transfer_buttons(app, browser):
         page.wait_for_function("[...document.querySelectorAll('.action-bar-note')].some((n) => n.textContent === '已接单')")
         assert posts[1] == {"confirm": "是否确认接单？"}
         assert posts[2]["kind"] == "transfer" and posts[2]["operation"] == "accept" and posts[2]["item"] == {"external_id": "R-SYN"}
+
+
+def test_ronghui_new_appeal_dialog_links_process_and_appeal_types(app, browser):
+    """融辉“新增申诉”：处理类型决定申诉类型下拉，选中申诉类型带出提示文字；偷重偷方时显示实际重量。"""
+    from shared.original_page_actions import complaint_against_specs
+
+    row = {"EXCEPTION_ID": "E-SYN", "BILL_CODE": "SYNTHETIC-3", "APPEAL_TYPE": "差错处理", "EXCEPTION_VOLUME": "20"}
+    item = {"id": "E-SYN", "title": "合成被投诉", "occurred_at": "2026-01-02 08:00:00", "content": "合成投诉", "status_label": "投诉待审核",
+            "actions": {"platform": "ronghui", "account_id": "ronghui_daxiang_s", "item": {"external_id": "E-SYN", "BILL_CODE": "SYNTHETIC-3"},
+                        "specs": complaint_against_specs(row, {"loginEmpName": "合成员工", "loginSiteName": "合成网点"})}}
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+                "systems": [{"system": "ronghui", "label": "融辉", "status": "ok", "categories": [
+                    {"category_id": "ronghui:complaints_against", "title": "被投诉 · 未完结", "count": 1, "items_supported": True}]}]}
+    lookups, posts = [], []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "items": [item], "total": 1, "has_more": False}))
+            elif parsed.path == "/customer-service/lookup":
+                sent = json.loads(route.request.post_data)
+                lookups.append((sent["operation"], sent["payload"]))
+                if sent["operation"] == "process_types":
+                    options = [{"value": "差错处理", "label": "差错处理"}, {"value": "仲裁处理", "label": "仲裁处理"}]
+                else:
+                    options = ([{"value": "偷重偷方", "label": "偷重偷方", "meta": {"TIP": "请上传称重照片"}},
+                                {"value": "延误", "label": "延误", "meta": {"TIP": "说明延误原因"}}]
+                               if sent["payload"].get("PROCESS_TYPE") == "差错处理" else [{"value": "仲裁类", "label": "仲裁类", "meta": {}}])
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "options": options}))
+            elif parsed.path == "/customer-service/process":
+                posts.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.click(".action-button[data-operation='appeal']")
+        page.wait_for_function("[...document.querySelectorAll('[aria-label=\"申诉类型\"] option')].length === 3")
+        assert page.input_value("[aria-label='处理类型']") == "差错处理"
+        assert page.locator("[data-action-row='PRACTICAL_WEIGHT']").is_hidden()
+        page.select_option("[aria-label='申诉类型']", "偷重偷方")
+        assert page.get_attribute("[aria-label='申诉内容']", "placeholder") == "请上传称重照片"
+        assert page.locator("[data-action-row='PRACTICAL_WEIGHT']").is_visible()
+        page.select_option("[aria-label='处理类型']", "仲裁处理")
+        page.wait_for_function("[...document.querySelectorAll('[aria-label=\"申诉类型\"] option')].map((o) => o.value).includes('仲裁类')")
+        assert ("appeal_types", {"PROCESS_TYPE": "仲裁处理"}) in lookups
+        page.select_option("[aria-label='申诉类型']", "仲裁类")
+        page.fill("[aria-label='联系方式']", "13800000000")
+        page.locator(".action-dialog .action-save").click()
+        page.wait_for_function("document.querySelector('.monitor-item-status')?.textContent === '已新增申诉'")
+        sent = posts[0]["payload"]
+        assert sent["PROCESS_TYPE"] == "仲裁处理" and sent["APPEAL_TYPE"] == "仲裁类" and sent["CLAIM_AMOUNT"] == "20"
+        assert sent["PHONE"] == "13800000000" and len([key for key in sent if key.startswith("appeal_file")]) == 10

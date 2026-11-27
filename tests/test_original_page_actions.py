@@ -190,3 +190,54 @@ def test_yunda_transfer_rules():
     assert fields["label"] == "客户联系不上" and fields["images"] == [(2, staged)]
     with pytest.raises(ActionRuleError, match="用途不符"):
         validate_transfer_abnormal(row, {"Abnormal_Type": "2", "abnormal_image1": [{**staged, "file_path": "/up/x.jpg"}]})
+
+
+def test_yunda_arbitration_message_rules():
+    from shared.original_page_actions import arbitration_specs, validate_arbitration_message
+
+    assert [spec["label"] for spec in arbitration_specs({})] == ["留言"]
+    with pytest.raises(ActionRuleError, match="1~1000"):
+        validate_arbitration_message({"message": ""})
+    with pytest.raises(ActionRuleError, match="1~1000"):
+        validate_arbitration_message({"message": "x" * 1001})
+    assert validate_arbitration_message({"message": " 请尽快审核 "}) == "请尽快审核"
+
+
+def test_ronghui_new_appeal_form_checks_in_page_order():
+    from shared.original_page_actions import (
+        appeal_form_exception_id, appeal_form_spec, appeal_form_tables, appeal_side, complaint_against_specs, validate_appeal_form,
+    )
+
+    row = {"EXCEPTION_ID": "E1", "BILL_CODE": "B1", "APPEAL_TYPE": "差错处理", "EXCEPTION_VOLUME": "50"}
+    assert [spec["label"] for spec in complaint_against_specs(row, USER)] == ["回复", "新增申诉"]
+    spec = appeal_form_spec(row)
+    assert [field["label"] for field in spec["fields"]] == ["运单号", "处理类型", "申诉类型", "联系方式", "索赔金额", "申诉内容", "实际重量"]
+    assert spec["fields"][2]["lookup"]["depends_on"] == "PROCESS_TYPE" and len(spec["attachment_slots"]) == 10
+    assert appeal_side("一级网点") == "网点" and appeal_side("分拨中心") == "中心" and appeal_side("总部") == ""
+    base = {"bill": {"PRODUCT_TYPE": "普通"}, "appeal_type": {"APPEAL_TYPE": "延误", "BL_EVIDENCE": "0"}, "appeal_term_days": 7,
+            "duplicate": False, "stakeholder": False, "trajectory_sites": [], "login_site_code": "S1"}
+    payload = {"PROCESS_TYPE": "差错处理", "APPEAL_TYPE": "延误", "PHONE": "13800000000", "CLAIM_AMOUNT": "50"}
+    with pytest.raises(ActionRuleError, match="未获取到相关运单信息"):
+        validate_appeal_form(row, payload, **{**base, "bill": None})
+    with pytest.raises(ActionRuleError, match="回单禁止申诉"):
+        validate_appeal_form(row, payload, **{**base, "bill": {"IS_RETURN_BILL": 1}})
+    with pytest.raises(ActionRuleError, match="请将数据填写完整"):
+        validate_appeal_form(row, {**payload, "PHONE": ""}, **base)
+    with pytest.raises(ActionRuleError, match="请将数据填写完整"):
+        validate_appeal_form(row, payload, **{**base, "appeal_type": {"IS_COMPLAINT_CONTENT": "1"}})
+    with pytest.raises(ActionRuleError, match="只能登记一次"):
+        validate_appeal_form(row, payload, **{**base, "duplicate": True})
+    assert validate_appeal_form(row, {**payload, "APPEAL_TYPE": "云呼未接申述"}, **{**base, "duplicate": True})
+    with pytest.raises(ActionRuleError, match="请上传附件"):
+        validate_appeal_form(row, payload, **{**base, "appeal_type": {"BL_EVIDENCE": "1"}})
+    with pytest.raises(ActionRuleError, match="无关联关系"):
+        validate_appeal_form(row, payload, **{**base, "stakeholder": True, "trajectory_sites": ["X"]})
+    file = {"platform": "ronghui", "file_name": "a.jpg", "file_path": "/unauth/download/a"}
+    fields = validate_appeal_form(row, {**payload, "appeal_file2": [file]}, **{**base, "appeal_type": {"BL_EVIDENCE": "1"}})
+    new_id = appeal_form_exception_id(dt.datetime(2026, 11, 27, 9, 0, 0), rand=12345)
+    assert new_id == "2026112709000012345"
+    tables = appeal_form_tables(fields, {**USER, "loginUserName": "合成用户"}, "B1", new_id, "T")
+    saved = tables[0][1][0]
+    assert saved["EXCEPTION_ID"] == new_id and saved["COMPLAINT_STATUS"] == "待审核" and saved["FILE_PATH2"] == "/unauth/download/a"
+    assert saved["APPEAL_SITE_CODE"] == "S1" and saved["CREATE_MAN"] == "合成用户" and saved["PRODUCT_TYPE"] == "普通"
+    assert tables[1][0] == "TAB_EXCEPTION_PATH_ADD" and tables[1][1][0]["FILE_UPLOAD_TYPE"] == "申诉附件"

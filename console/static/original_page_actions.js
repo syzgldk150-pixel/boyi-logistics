@@ -131,13 +131,63 @@
     if (field.type === 'select') {
       const box = el('select', 'action-select');
       box.setAttribute('aria-label', field.label);
-      [['', '请选择'], ...(field.options || []).map((option) => (Array.isArray(option) ? option : [option, option]))].forEach(([value, label]) => {
-        const option = el('option', '', label);
-        option.value = value;
-        box.append(option);
+      box.dataset.actionField = field.name;
+      const fill = (options) => {
+        box.replaceChildren();
+        [['', '请选择'], ...options.map((option) => (Array.isArray(option) ? option : [option.value ?? option, option.label ?? option]))]
+          .forEach(([value, label]) => {
+            const option = el('option', '', label);
+            option.value = value;
+            box.append(option);
+          });
+        box.value = values[field.name] ?? '';
+        if (box.value !== (values[field.name] ?? '')) values[field.name] = '';
+      };
+      values[field.name] = values[field.name] ?? field.value ?? '';
+      if (field.lookup) {
+        // 原页下拉的数据来自原平台（如处理类型→申诉类型联动），经同一业务账号只读查询。
+        const metaByValue = {};
+        const load = async () => {
+          const params = {};
+          if (field.lookup.depends_on) {
+            params[field.lookup.depends_on] = values[field.lookup.depends_on] || '';
+            if (!params[field.lookup.depends_on]) { fill([]); box.disabled = true; return; }
+          }
+          box.disabled = true;
+          try {
+            const data = await request('lookup', { ...context, kind: field.lookup.kind, operation: field.lookup.operation, payload: params });
+            (data.options || []).forEach((option) => { metaByValue[option.value] = option.meta || {}; });
+            fill(data.options || []);
+          } catch (error) {
+            fill([]);
+            box.title = error.message;
+          }
+          box.disabled = false;
+          box.dispatchEvent(new Event('change'));
+        };
+        box.addEventListener('action:reload', load);
+        box.metaFor = (value) => metaByValue[value] || {};
+        window.setTimeout(load, 0);
+      } else {
+        fill(field.options || []);
+      }
+      box.addEventListener('change', () => {
+        values[field.name] = box.value;
+        // 依赖本字段的下拉重新读取；本字段的效果（提示文字、显示实际重量）同原页 appleTypeChangeMethod。
+        form?.querySelectorAll('select').forEach((other) => {
+          if (other !== box && other.dataset.dependsOn === field.name) { values[other.dataset.actionField] = ''; other.dispatchEvent(new Event('action:reload')); }
+        });
+        const effects = field.effects || {};
+        if (effects.placeholder) {
+          const target = form?.querySelector(`[data-action-field="${effects.placeholder.target}"]`);
+          if (target) target.placeholder = (box.metaFor?.(box.value) || {})[effects.placeholder.meta] || '';
+        }
+        if (effects.show_when) {
+          const row = form?.querySelector(`[data-action-row="${effects.show_when.target}"]`);
+          if (row) row.hidden = box.value !== effects.show_when.equals;
+        }
       });
-      box.value = values[field.name] ?? field.value ?? '';
-      box.addEventListener('change', () => { values[field.name] = box.value; });
+      if (field.lookup?.depends_on) box.dataset.dependsOn = field.lookup.depends_on;
       return box;
     }
     const box = el(field.type === 'textarea' ? 'textarea' : 'input', field.type === 'textarea' ? 'action-textarea' : 'action-input');
@@ -160,6 +210,7 @@
   function missing(spec, values) {
     for (const field of spec.fields || []) {
       if (!field.required) continue;
+      if (field.hidden && values[`${field.name}__shown`] === undefined) continue;
       const value = field.type === 'site' ? values.site_code : String(values[field.name] ?? field.value ?? '').trim();
       if (!value) return `${field.label}不能为空`;
       if (field.type === 'digits' && !/^\d+$/.test(value)) return `请输入正确的${field.label}`;
@@ -196,6 +247,8 @@
     const form = el('div', 'action-dialog-body');
     (spec.fields || []).forEach((field) => {
       const row = el('label', 'action-row');
+      row.dataset.actionRow = field.name;
+      row.hidden = Boolean(field.hidden);
       const caption = el('span', 'action-label');
       if (field.required) caption.append(el('span', 'action-required', '*'));
       caption.append(document.createTextNode(field.label));

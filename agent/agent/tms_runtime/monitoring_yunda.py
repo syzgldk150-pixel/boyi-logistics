@@ -19,7 +19,7 @@ import requests
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime import monitoring_window
 from agent.tms_runtime.monitoring_window import RECENT_NOTE, is_recent, latest_activity
-from shared.original_page_actions import cssp_specs, cui_reply_spec, transfer_specs
+from shared.original_page_actions import arbitration_specs, cssp_specs, cui_reply_spec, transfer_specs
 from shared.problem_reply_rules import yunda_reply_form
 
 
@@ -372,6 +372,8 @@ def _arbitration_item(row: dict) -> dict[str, Any]:
         "occurred_at": latest_activity([row.get("createDate"), row.get("appealDate"), row.get("assignmentUpdateTime")]),
         "status_label": _arbitration_state(row), "waybill_no": _text(row.get("waybillCode")),
         "source_label": "韵达仲裁查询", "open_url": ARBITRATION_PAGE,
+        "actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID, "item": {"external_id": _text(row["declId"])},
+                    "specs": arbitration_specs(row)},
     }
 
 
