@@ -68,4 +68,7 @@ def handle_post(app: Any, handler: Any, path: str, _raw_path: str, _query: dict[
     if path == "/customer-service/problems/attachments/upload":
         app._handle_customer_service_attachment_upload(handler)
         return True
+    if path in ("/customer-service/process", "/customer-service/lookup"):
+        app._handle_original_page_action(handler, path.rsplit("/", 1)[-1])
+        return True
     return False

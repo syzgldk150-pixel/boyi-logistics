@@ -58,6 +58,8 @@ CUSTOMER_SERVICE_TOOL_BY_ACTION = {
     "reply": "customer_service_problem_reply",
     "publish": "customer_service_problem_publish",
     "upload_attachment": "customer_service_problem_upload_attachment",
+    "process": "customer_service_problem_process",
+    "lookup": "customer_service_problem_lookup",
 }
 
 
@@ -81,6 +83,7 @@ def _compatibility_action_is_read(endpoint_name: str, params: dict[str, Any]) ->
             "query",
             "detail",
             "fetch_attachment",
+            "lookup",
         }
     return False
 
@@ -875,7 +878,7 @@ def _build_handler(endpoint_name: str):
             return await _call_direct_business(
                 "customer-service-" + action.replace("_", "-"),
                 _normalize_customer_service_params(action, req.params), request,
-                request_id=str(uuid.uuid4()) if action in {"query", "detail", "fetch_attachment"}
+                request_id=str(uuid.uuid4()) if action in {"query", "detail", "fetch_attachment", "lookup"}
                     else str(req.idempotency_key or "").rsplit(":", 1)[-1],
                 timeout_sec=req.timeout_sec,
             )

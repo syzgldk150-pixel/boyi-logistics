@@ -40,6 +40,7 @@ from agent.tms_runtime.scripts.customer_service_problem import (
     _ronghui_query,
 )
 from agent.tms_runtime.session_validators import looks_like_ronghui_login
+from shared.original_page_actions import problem_forward_spec, work_order_specs
 from shared.problem_reply_rules import ronghui_reply_form
 
 ORIGIN = "https://tms.ronghuiwl.com"
@@ -150,6 +151,7 @@ class Account:
     site: str = ""
     site_code: str = ""
     site_type: str = ""
+    employee: str = ""
     contexts: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -241,7 +243,8 @@ def _open_account(profile: str, label: str, account_id: str, open_session: Calla
     session = open_session(profile)
     info = _read_user_info_cookie(session) or {}
     account = Account(profile, label, session, account_id=account_id, site=_text(info.get("loginSiteName")),
-                      site_code=_text(info.get("loginSiteCode")), site_type=_text(info.get("loginSiteType")))
+                      site_code=_text(info.get("loginSiteCode")), site_type=_text(info.get("loginSiteType")),
+                      employee=_text(info.get("loginEmpName")))
     if not account.site or not account.site_code:
         raise TMSAuthStateError("AUTH_REQUIRED", "融辉账号登录信息里没有网点，请到业务账号重新登录。")
     return account
@@ -342,6 +345,12 @@ def _work_order_item(account: Account, row: dict[str, Any], history: tuple[list,
         "content": content or "原系统正文为空", "occurred_at": occurred_at,
         "status_label": STATE_LABELS[state], "waybill_no": _text(row.get("BILL_CODE")),
         "source_label": _source_label(account, title), "open_url": HOME, "partial": history is None,
+        # 原页工具栏的 响应/完结/催工单/申诉（用户 2026-11-27 要求在博益直接处理）：按钮与对话框字段来自
+        # shared/original_page_actions.py，提交时 Agent 按单号/类型/类别在原平台重新读取这张工单再检查。
+        "actions": {"platform": "ronghui", "account_id": account.account_id,
+                    "item": {"external_id": _text(row["WORK_ORDER_CODE"]), "BILL_CODE": _text(row.get("BILL_CODE")),
+                             "WORK_TYPE": _text(row.get("WORK_TYPE")), "WORK_NAME": _text(row.get("WORK_NAME"))},
+                    "specs": work_order_specs(row, {"loginEmpName": account.employee, "loginSiteName": account.site})},
     }
 
 
@@ -439,7 +448,10 @@ def _problem_items(account: Account, source: Source) -> list[dict[str, Any]]:
             "reply": {"platform": "ronghui", "account_id": account.account_id, "external_id": _text(row.get("external_id")),
                       "source_direction": "received", "waybill_no": _text(row.get("waybill_no")),
                       "status": _text(row.get("status")), "registered_at": _text(row.get("registered_at")),
-                      "form": ronghui_reply_form(raw, account.site, monitoring_window.today())},
+                      "form": {**ronghui_reply_form(raw, account.site, monitoring_window.today()),
+                               # 原页同一表单里的“登记网点联系人和电话”、打开即标已查看、转发通知网点
+                               "contact_lookup": True, "mark_seen": True,
+                               "forward": problem_forward_spec(raw, account.site)}},
         })
     return items
 

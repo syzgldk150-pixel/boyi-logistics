@@ -164,6 +164,8 @@ def test_customer_service_compatibility_route_maps_actions_precisely() -> None:
         "reply": "customer_service_problem_reply",
         "publish": "customer_service_problem_publish",
         "upload_attachment": "customer_service_problem_upload_attachment",
+        "process": "customer_service_problem_process",
+        "lookup": "customer_service_problem_lookup",
     }
 
 

@@ -368,3 +368,76 @@ def test_yunda_reply_attachments_upload_at_once_and_go_with_the_reply(app, brows
         page.locator(".monitor-reply-done").wait_for()
         assert replies[0]["payload"]["attachments"] == [
             {"platform": "yunda", "file_name": "a.txt", "old_name": "a.txt", "new_name": "x1.txt", "file_path": "/up/x1.txt"}]
+
+
+WORK_SNAPSHOT = {
+    "ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+    "systems": [{"system": "ronghui", "label": "融辉", "status": "ok", "categories": [
+        {"category_id": "ronghui:work_response", "title": "收到工单 · 待响应", "count": 1, "items_supported": True}]}],
+}
+
+
+def _work_item():
+    from shared.original_page_actions import work_order_specs
+
+    row = {"WORK_ORDER_CODE": "W-SYN-1", "BILL_CODE": "SYNTHETIC-2", "WORK_TYPE": "咨询单", "WORK_NAME": "合成类别",
+           "WORK_CONTENT": "合成工单正文", "WORK_STATE": "待责任方响应", "URGE_COUNT": 0, "APPEAL_STATUS": None}
+    return {"id": "W-SYN-1", "title": "合成类别", "occurred_at": "2026-01-02 08:00:00", "content": "合成工单正文",
+            "status_label": "待责任方响应", "waybill_no": "SYNTHETIC-2",
+            "actions": {"platform": "ronghui", "account_id": "ronghui_daxiang_s",
+                        "item": {"external_id": "W-SYN-1", "BILL_CODE": "SYNTHETIC-2", "WORK_TYPE": "咨询单", "WORK_NAME": "合成类别"},
+                        "specs": work_order_specs(row, {"loginEmpName": "合成员工", "loginSiteName": "合成网点"})}}
+
+
+def test_work_order_buttons_open_the_original_dialog_and_save(app, browser):
+    """用户 2026-11-27：工单按原页工具栏处理；原页拦下的按钮显示原页提示，对话框字段与原页一致。"""
+    posts = []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(WORK_SNAPSHOT))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "items": [_work_item()], "total": 1, "has_more": False}))
+            elif parsed.path == "/customer-service/process":
+                posts.append((route.request.headers.get("x-browser-request-uuid"), json.loads(route.request.post_data)))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.locator(".action-button[data-operation='respond']").wait_for()
+        assert page.locator(".action-button").all_inner_texts() == ["响应", "完结", "催工单", "申诉"]
+        page.click(".action-button[data-operation='finish']")
+        assert page.inner_text(".action-bar-note") == "工单状态暂不支持完结"
+        assert page.locator(".action-dialog").count() == 0
+        page.click(".action-button[data-operation='respond']")
+        dialog = page.locator(".action-dialog")
+        assert dialog.locator(".action-label").all_inner_texts() == ["处理人", "处理站点", "工单类型", "工单类别", "工单内容", "*处理内容"]
+        assert page.input_value("[aria-label='处理人']") == "合成员工"
+        dialog.locator(".action-save").click()
+        assert dialog.locator(".action-message").inner_text() == "处理内容不能为空"
+        assert not posts
+        page.fill("[aria-label='处理内容']", "已联系客户，今天派送")
+        dialog.locator(".action-save").click()
+        page.wait_for_function("document.querySelector('.monitor-item-status')?.textContent === '已响应'")
+        uuid, sent = posts[0]
+        assert uuid
+        assert sent == {"platform": "ronghui", "account_id": "ronghui_daxiang_s",
+                        "item": {"external_id": "W-SYN-1", "BILL_CODE": "SYNTHETIC-2", "WORK_TYPE": "咨询单", "WORK_NAME": "合成类别"},
+                        "kind": "work_order", "operation": "respond",
+                        "payload": {"HANDLE_CONTENT": "已联系客户，今天派送", "attachments": []}}

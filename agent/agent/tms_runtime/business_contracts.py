@@ -159,6 +159,15 @@ def build_customer_action_params(action: str, params: dict[str, Any]) -> dict[st
         result["payload"] = payload
         return result
 
+    if action in {"process", "lookup"}:
+        # 原页处理动作：kind/operation 指定原页按钮，item 只用来在原平台找到记录（Agent 重新读取），
+        # payload 是对话框里填的内容（shared/original_page_actions.py 按原页规则检查）。
+        result["kind"] = params["kind"]
+        result["operation"] = params["operation"]
+        result["item"] = dict(params.get("item") or {})
+        result["payload"] = dict(params.get("payload") or {})
+        return result
+
     if action == "upload_attachment":
         result["payload"] = {
             "file_path": params["file_path"],
@@ -520,7 +529,7 @@ def validate_customer_write_response(
     source_result = payload.get("result")
     # Replies are confirmed by reading the problem back after saving (verified), not by the save
     # response alone: 韵达's reply endpoint answers with ``info`` rather than ``success``.
-    if action == "reply":
+    if action in {"reply", "process"}:
         confirmed = payload.get("verified") is True
     elif action == "upload_attachment":
         # The platform's answer turned into the attachment the pages save (shared/original_page_attachments.py).
@@ -536,6 +545,7 @@ def validate_customer_write_response(
         "reply": "third_party_reply_confirmed",
         "publish": "third_party_problem_publish_confirmed",
         "upload_attachment": "third_party_attachment_upload_confirmed",
+        "process": "third_party_process_confirmed",
     }
     condition = conditions.get(action)
     if condition is None:
@@ -550,6 +560,12 @@ def validate_customer_write_response(
         if not expected_id or _clean(payload.get("external_id")) != expected_id:
             return _write_failure("customer-service response did not confirm the approved external ID")
         details["external_id"] = expected_id
+    elif action == "process":
+        expected_id = _clean((params.get("item") or {}).get("external_id"))
+        if not expected_id or _clean(payload.get("external_id")) != expected_id:
+            return _write_failure("original-page processing did not confirm the approved record")
+        details.update({"external_id": expected_id, "kind": _clean(params.get("kind")),
+                        "operation": _clean(params.get("operation"))})
     elif action == "publish":
         external_id = _clean(payload.get("external_id"))
         if not external_id:

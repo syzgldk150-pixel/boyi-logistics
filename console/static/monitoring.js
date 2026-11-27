@@ -70,7 +70,8 @@
   // Inline replies to problem items (用户 2026-11-27): drafts survive re-renders; while one is open the
   // merged list is not redrawn (the next render waits), and a sent reply hides its form until the item leaves.
   const replyDrafts = new Map();   // itemKey -> {text, status, uuid, sending, error}
-  const repliedItems = new Map();  // itemKey -> reply text
+  const repliedItems = new Map();  // itemKey -> what was done (shown as is)
+  const processedItems = new Map();  // action key -> “已响应”等
   let deferredRender = null;
   let allPages = new Map(); // categoryKey -> {category, page, hasMore}
 
@@ -412,7 +413,24 @@
       row.append(details);
     }
     if (item.reply && typeof item.reply === 'object') appendReply(row, aside, item, category);
+    if (item.actions && typeof item.actions === 'object' && window.OriginalPageActions) appendActions(row, aside, item);
     return row;
+  }
+
+  function appendActions(row, aside, item) {
+    // 原页工具栏按钮（融辉工单 响应/完结/催工单/申诉 等，console/static/original_page_actions.js）。
+    const key = `${item.actions.platform}:${item.actions.account_id}:${item.actions.item?.external_id || item.id}`;
+    const bar = element('div', 'monitor-actions');
+    if (processedItems.has(key)) {
+      aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode(processedItems.get(key)));
+    }
+    window.OriginalPageActions.renderButtons(bar, item.actions, {
+      onDone: (spec) => {
+        processedItems.set(key, `已${spec.label}`);
+        aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode(`已${spec.label}`));
+      }
+    });
+    row.append(bar);
   }
 
   function replyKey(item) {
@@ -435,7 +453,7 @@
     const key = replyKey(item);
     if (repliedItems.has(key)) {
       aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode('已回复'));
-      row.append(element('p', 'monitor-reply-done', `已回复：${repliedItems.get(key)}`));
+      row.append(element('p', 'monitor-reply-done', repliedItems.get(key)));
       return;
     }
     const toggle = element('button', 'monitor-reply-toggle', '回复');
@@ -470,6 +488,8 @@
     const fields = element('div', 'monitor-reply-fields');
     window.ProblemReplyForm.render(fields, item.reply.form, draft.values, {
       accountId: item.reply.account_id,
+      item: { external_id: item.reply.external_id, waybill_no: item.reply.waybill_no, registered_at: item.reply.registered_at },
+      onForwarded: () => { repliedItems.set(key, '已转发通知网点'); },
       onSave: () => sendReply(item, key, draft, form),
       onCancel: () => closeReply(key, form.closest('li'))
     });
@@ -513,7 +533,7 @@
         draft.uuid = '';
         throw new Error(data.message || data.error?.message || `回复失败（${response.status}）`);
       }
-      repliedItems.set(key, replyText);
+      repliedItems.set(key, `已回复：${replyText}`);
       replyDrafts.delete(key);
       const row = current.closest('li');
       current.remove();

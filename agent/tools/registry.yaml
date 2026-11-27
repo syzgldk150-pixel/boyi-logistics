@@ -1145,6 +1145,171 @@ tools:
     timeout: 180
     heavy: false
 
+  - name: customer_service_problem_process
+    version: "1.0.0"
+    operation_type: external_write
+    risk_level: high
+    llm_exposed: false
+    approval:
+      mode: required
+      required_role: super_admin
+    permissions:
+      required_roles: [super_admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: none
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, external_id, execution_result]
+    postconditions: [third_party_process_confirmed]
+    description: "按原页逻辑处理一条工单、投诉、申诉、调拨件、代取件或问题件（响应、完结、转发等），写后回读核对"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        kind: {type: string, pattern: "^[a-z_]{1,40}$"}
+        operation: {type: string, pattern: "^[a-z_]{1,40}$"}
+        item:
+          type: object
+          required: [external_id]
+          properties:
+            external_id: {type: string, minLength: 1, maxLength: 128}
+          additionalProperties: {oneOf: [{type: string, maxLength: 4000}, {type: integer}, {type: number}, {type: boolean}, {type: "null"}]}
+        payload:
+          type: object
+          additionalProperties:
+            oneOf:
+              - {type: string, maxLength: 4000}
+              - {type: integer}
+              - {type: number}
+              - {type: boolean}
+              - {type: "null"}
+              - type: array
+                maxItems: 20
+                items:
+                  type: object
+                  additionalProperties: {oneOf: [{type: string, maxLength: 1000}, {type: integer}, {type: number}, {type: boolean}]}
+      required: [platform, account_id, kind, operation, item, payload]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_process_tool.py
+    timeout: 180
+    heavy: false
+
+  - name: customer_service_problem_lookup
+    version: "1.0.0"
+    operation_type: read
+    risk_level: low
+    llm_exposed: false
+    approval:
+      mode: none
+    permissions:
+      required_roles: [admin]
+    account_scope:
+      required: true
+      allow_implicit_default: false
+    idempotency:
+      mode: parameters
+      key_fields: []
+    retry:
+      safe: false
+      max_attempts: 1
+    evidence:
+      required: true
+      required_fields: [source, account, external_id]
+    postconditions: [authoritative_problem_detail_returned]
+    description: "读取原页处理对话框需要的资料（网点查询、登记网点联系人、常用回复语等），只读"
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        platform:
+          type: string
+          enum: [ronghui, yunda]
+        account_id: {type: string, minLength: 1, maxLength: 128}
+        account_label: {type: string, maxLength: 200}
+        kind: {type: string, pattern: "^[a-z_]{1,40}$"}
+        operation: {type: string, pattern: "^[a-z_]{1,40}$"}
+        item:
+          type: object
+          required: [external_id]
+          properties:
+            external_id: {type: string, minLength: 1, maxLength: 128}
+          additionalProperties: {oneOf: [{type: string, maxLength: 4000}, {type: integer}, {type: number}, {type: boolean}, {type: "null"}]}
+        payload:
+          type: object
+          additionalProperties:
+            oneOf:
+              - {type: string, maxLength: 4000}
+              - {type: integer}
+              - {type: number}
+              - {type: boolean}
+              - {type: "null"}
+              - type: array
+                maxItems: 20
+                items:
+                  type: object
+                  additionalProperties: {oneOf: [{type: string, maxLength: 1000}, {type: integer}, {type: number}, {type: boolean}]}
+      required: [platform, account_id, kind, operation, item, payload]
+    output_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        data:
+          type: object
+          additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        error:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+      required: [status, data, meta, warnings, error]
+    executor: tools/customer_service_problem_lookup_tool.py
+    timeout: 180
+    heavy: false
+
   - name: customer_service_problem_publish
     version: "1.0.0"
     operation_type: external_write

@@ -63,6 +63,8 @@ TOOL_ALLOWED_TMS_TARGETS: dict[str, frozenset[str]] = {
     "customer_service_problem_reply": frozenset({"customer_service_problem"}),
     "customer_service_problem_publish": frozenset({"customer_service_problem"}),
     "customer_service_problem_upload_attachment": frozenset({"customer_service_problem"}),
+    "customer_service_problem_process": frozenset({"customer_service_problem"}),
+    "customer_service_problem_lookup": frozenset({"customer_service_problem"}),
 }
 
 
@@ -82,6 +84,8 @@ _TOOL_ALLOWED_TMS_ACTIONS: dict[tuple[str, str], frozenset[str]] = {
     ("customer_service_problem_upload_attachment", "customer_service_problem"): frozenset(
         {"upload_attachment"}
     ),
+    ("customer_service_problem_process", "customer_service_problem"): frozenset({"process"}),
+    ("customer_service_problem_lookup", "customer_service_problem"): frozenset({"lookup"}),
 }
 
 

@@ -163,6 +163,27 @@
     causeText.readOnly = true;
     causeText.value = form.problem_cause || '';
     causeText.setAttribute('aria-label', '问题原因');
+    const context = options.accountId && options.item ? { platform: 'ronghui', account_id: options.accountId, item: options.item } : null;
+    const actionsApi = window.OriginalPageActions;
+    if (form.contact_lookup && context && actionsApi) {
+      // 原页左侧“登记网点联系人和电话”（getSiteInfo：登记网点、负责人、联系电话）。
+      const contact = el('textarea', 'reply-form-contact');
+      contact.readOnly = true;
+      contact.setAttribute('aria-label', '登记网点联系人和电话');
+      contact.value = draft.contact ?? '读取中…';
+      if (draft.contact === undefined) {
+        draft.contact = '读取中…';
+        actionsApi.request('lookup', { ...context, kind: 'problem', operation: 'contact', payload: {} })
+          .then((data) => { draft.contact = data.contact || ''; contact.value = draft.contact; })
+          .catch((error) => { draft.contact = `读取失败：${error.message}`; contact.value = draft.contact; });
+      }
+      cause.append(el('span', 'reply-form-label', '登记网点联系人和电话'), contact);
+    }
+    if (form.mark_seen && context && actionsApi && !draft.seenRequested) {
+      // 原页点开一条“未处理、未查看”的问题件即标为已查看（TAB_PROBLEM_UPT BL_SEE=1），不提示结果。
+      draft.seenRequested = true;
+      actionsApi.request('process', { ...context, kind: 'problem', operation: 'mark_seen', payload: {} }).catch(() => {});
+    }
     cause.append(el('span', 'reply-form-label', '问题原因'), causeText);
     const side = el('div', 'reply-form-side');
     side.append(el('p', 'reply-form-hint', '在回复框内，按CTRL+ENTER保存'));
@@ -194,6 +215,38 @@
       if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); options.onSave?.(); }
     });
     side.append(line('回复', text), actions(options, draft));
+    if (form.forward && !form.forward.blocked && context && actionsApi) {
+      // 原页“转发通知网点” + “确认转发”（turnSendData：改通知网点，转给别的网点处理）。
+      const values = draft.forward || (draft.forward = {});
+      const row = el('div', 'reply-form-forward');
+      const picker = actionsApi.sitePicker(context, form.forward.fields[0], values);
+      const confirm = el('button', 'reply-form-forward-confirm', draft.forwarding ? '转发中…' : '确认转发');
+      confirm.type = 'button';
+      confirm.disabled = Boolean(draft.forwarding);
+      const note = el('span', 'reply-form-message', draft.forwardMessage || '');
+      confirm.addEventListener('click', async () => {
+        if (!values.site_code) { note.textContent = '通知网点不能为空'; return; }
+        draft.forwarding = true;
+        confirm.disabled = true;
+        note.textContent = '转发中…';
+        try {
+          await actionsApi.request('process', { ...context, kind: 'problem', operation: 'forward', payload: { site_code: values.site_code } },
+            draft.forwardUuid || (draft.forwardUuid = window.crypto?.randomUUID?.() || String(Date.now())));
+          draft.forwardMessage = '数据保存成功';
+          note.textContent = draft.forwardMessage;
+          options.onForwarded?.();
+        } catch (error) {
+          if (!error.network) draft.forwardUuid = '';
+          draft.forwardMessage = error.message;
+          note.textContent = error.message;
+        } finally {
+          draft.forwarding = false;
+          confirm.disabled = false;
+        }
+      });
+      row.append(line('转发通知网点', picker), confirm, note);
+      side.append(row);
+    }
     layout.append(cause, side);
     container.append(layout);
   }
@@ -225,7 +278,8 @@
 
   /** Render the form into ``container``; ``draft`` keeps values, ``draft.sending``/``draft.error`` the save state.
    *  ``options``: ``onSave``, ``onCancel``, ``textAttr`` (extra attribute on the reply box), ``accountId``
-   *  (the problem's business account, for attachment uploads). Returns false when the
+   *  (the problem's business account, for attachments, contact, 已查看 and 转发), ``item`` ({external_id,
+   *  waybill_no, registered_at}: locates the problem for those), ``onForwarded``. Returns false when the
    *  problem cannot be replied to (the reason is shown instead). */
   function render(container, form, draft, options = {}) {
     container.replaceChildren();

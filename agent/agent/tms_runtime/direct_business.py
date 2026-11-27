@@ -23,9 +23,9 @@ DIRECT_READ_TARGETS = frozenset({
     "tracking_query", "waybill_tracking", "yunda_waybill_tracking",
 })
 CUSTOMER_ACTIONS = frozenset({
-    "query", "detail", "fetch_attachment", "mark_read", "reply", "publish", "upload_attachment",
+    "query", "detail", "fetch_attachment", "mark_read", "reply", "publish", "upload_attachment", "process", "lookup",
 })
-CUSTOMER_READ_ACTIONS = frozenset({"query", "detail", "fetch_attachment"})
+CUSTOMER_READ_ACTIONS = frozenset({"query", "detail", "fetch_attachment", "lookup"})
 
 
 class DirectBusinessError(ValueError):

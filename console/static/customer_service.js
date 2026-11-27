@@ -1324,6 +1324,7 @@
       window.ProblemReplyForm.render(container, row.reply_form, state.replyDraft, {
         textAttr: "data-cs-reply-text",
         accountId: row.account_id,
+        item: { external_id: row.external_id, waybill_no: row.waybill_no, registered_at: row.registered_at },
         onSave: () => submitReply({ preventDefault() {} }),
         onCancel: () => renderReplyForm(row),  // 原页“取消”清空已填写的内容
       });

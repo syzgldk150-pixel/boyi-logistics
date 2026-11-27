@@ -599,6 +599,45 @@ class CustomerServiceMixin:
             return
         self._send_json(handler, HTTPStatus.OK, data or {"ok": True})
 
+    def _handle_original_page_action(self, handler: BaseHTTPRequestHandler, action: str) -> None:
+        """原页处理动作（工单、投诉、问题件转发等）：只转发平台、业务账号、按钮与对话框内容，账号由服务器核对，
+        规则、重新读取、写入与回读都在 Agent（shared/original_page_actions.py）。"""
+        trusted_context = self._control_plane_write_context(handler)
+        if trusted_context is None:
+            return
+        body = self._parse_json_body(handler)
+        _accounts, account_map, warning = self._customer_service_account_maps(force=False)
+        if warning:
+            self._send_json(handler, HTTPStatus.BAD_GATEWAY, {"ok": False, "message": warning})
+            return
+        account, error = self._resolve_customer_service_action_account(body, account_map)
+        if error or not account:
+            self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": error or "请选择业务账号。"})
+            return
+        item = body.get("item") if isinstance(body.get("item"), dict) else {}
+        payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+        arguments = {
+            "platform": str(account.get("system") or "").strip().lower(),
+            "account_id": str(account.get("account_id") or "").strip(),
+            "account_label": str(account.get("name") or account.get("account_id") or "").strip(),
+            "kind": str(body.get("kind") or "").strip(),
+            "operation": str(body.get("operation") or "").strip(),
+            "item": {str(key): value for key, value in list(item.items())[:40]
+                     if isinstance(value, (str, int, float, bool)) or value is None},
+            "payload": {str(key): value for key, value in list(payload.items())[:40]},
+        }
+        if "attachments" in payload:
+            arguments["payload"]["attachments"] = _attachment_descriptors(payload.get("attachments"))
+        write = action == "process"
+        result = call_business(self, f"customer-service-{action}", arguments, trusted_context=trusted_context,
+                               write=write, request_id=str(handler.headers.get("X-Browser-Request-UUID") or ""))
+        if not result.get("ok"):
+            status = result.get("status") if isinstance(result.get("status"), int) and result.get("status", 0) >= 400 else HTTPStatus.BAD_GATEWAY
+            self._send_json(handler, status, {"ok": False, "error_code": result.get("error_code"),
+                                              "message": str(result.get("error") or "处理失败。")})
+            return
+        self._send_json(handler, HTTPStatus.OK, {"ok": True, **(result.get("data") or {})})
+
     @staticmethod
     def _customer_service_ai_ref(value: Any) -> dict[str, str] | None:
         item = value if isinstance(value, dict) else {}

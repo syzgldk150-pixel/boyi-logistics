@@ -46,7 +46,8 @@ SHANGHAI_TZ = dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai")
 YUNDA_ISSUE_DEFAULT_LOOKBACK_DAYS = 2
 
 SUPPORTED_PLATFORMS = {"ronghui", "yunda"}
-SUPPORTED_ACTIONS = {"query", "detail", "mark_read", "reply", "publish", "upload_attachment", "fetch_attachment"}
+SUPPORTED_ACTIONS = {"query", "detail", "mark_read", "reply", "publish", "upload_attachment", "fetch_attachment",
+                     "process", "lookup"}
 RONGHUI_QUERY_MENU_BY_DIRECTION = {
     "registered": "登记问题件查询",
     "sent": "登记问题件查询",
@@ -678,12 +679,14 @@ def _ronghui_query(session: Any, params: dict[str, Any]) -> dict[str, Any]:
         )
         if RONGHUI_QUERY_DIRECTIONS.get(menu_text, direction) == "received":
             # The reply form the original page would show for each row (shared/problem_reply_rules.py).
+            from shared.original_page_actions import problem_forward_spec
             from shared.problem_reply_rules import ronghui_reply_form
 
             login_site = _first_text(_read_user_info_cookie(session), "loginSiteName")
             today = dt.datetime.now(SHANGHAI_TZ).date()
             for row in rows:
-                row["reply_form"] = ronghui_reply_form(row.get("raw") or {}, login_site, today)
+                row["reply_form"] = {**ronghui_reply_form(row.get("raw") or {}, login_site, today), "contact_lookup": True,
+                                     "mark_seen": True, "forward": problem_forward_spec(row.get("raw") or {}, login_site)}
     declared_total = _extract_declared_total(payload)
     return {
         "ok": True,
@@ -1416,6 +1419,11 @@ def _fetch_problem_attachment(session: Any, params: dict[str, Any]) -> dict[str,
 
 
 def _dispatch_action(platform: str, action: str, session: Any, params: dict[str, Any]) -> dict[str, Any]:
+    if action in {"process", "lookup"}:
+        # 原页处理动作（工单、投诉、问题件转发等），规则在 shared/original_page_actions.py。
+        from agent.tms_runtime.scripts import original_page_processing
+
+        return original_page_processing.run(platform, action, session, params)
     if platform == "ronghui":
         if action == "query":
             return _ronghui_query(session, params)
