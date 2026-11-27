@@ -2,7 +2,7 @@
 module: 寄件查询
 type: 业务说明
 status: active
-updated: 2026-11-24
+updated: 2026-11-27
 ---
 
 # 寄件数据查询与覆盖范围（架构 V1 / P4）
@@ -135,7 +135,7 @@ isolated "$TASK_PYTHON" -m pytest -q tests/test_waybill_source_coverage.py tests
 
 - 融辉：`融辉寄件/<发件日期>.xlsx`，两个融辉账号合在一张表。第一列“来源网点”由宿主按所绑账号登录信息里的网点名（`userInfo` Cookie 的 `loginSiteName`）填写，插件不能自报；每个账号只替换自己网点的行，另一个网点的行原样保留（按表头名对齐）。其余列与飞书寄件表相同。
 - 韵达：`韵达寄件/<寄件日期>.xlsx`，整表替换为本次结果，列与韵达寄件表相同。
-- 同一天再拉取就覆盖成最新全天数据，作废单随之消失；按日期范围拉取时每天各写一个文件。实例设置 `sync_nas=false` 可关闭这一步，预览（`dry_run`）不写。
+- 同一天再拉取就覆盖成最新全天数据，作废单随之消失；按日期范围拉取时每天各写一个文件。当天没有寄件（融辉为两个网点合起来都没有）就不放文件（2026-11-27 用户要求，不放空表）；那天 NAS 上已有旧文件（之前的空表，或后来全部作废）时删除并读回确认已删除，删不掉记为写入结果未知。由宿主判断，插件无需升级。实例设置 `sync_nas=false` 可关闭这一步，预览（`dry_run`）不写。
 - 宿主原语 `network.request` / `nas.send_data.ronghui.replace_site`（挂在 `connector.boyi.daily_send_source@1` 的 `export_workbook`）与 `nas.send_data.yunda.replace_date`（挂在 `connector.boyi.yunda_send_projection@1`），实现见 `agent/agent/automation_plugins/send_data_export_handlers.py`，表格读写合并在 `shared/send_data_workbook.py`，WebDAV 在 `shared/send_data_nas_store.py`。同一文件的写入在进程内串行：读旧表、合并、写入，再读回逐格核对；读回不一致或写后读不回记为写入结果未知。文本单元格一律按文本写入，以“=”开头的内容不会变成公式。
 - NAS 经 Tailscale 用 WebDAV 访问，账号放在服务器 NAS 配置文件（默认 `~/.boyi-receipt-share/nas.env`，与回单共享同一文件）的独立键：`SEND_DATA_NAS_USER`、`SEND_DATA_NAS_PASS`，可选 `SEND_DATA_NAS_URL`（缺省用 `RECEIPT_NAS_URL`）与 `SEND_DATA_NAS_FOLDER`（缺省 `/NAS资料/寄件数据`）。每次写入时读取，缺配置、账号被拒、文件被占用（有人用 Excel 打开着，WebDAV 返回 423）都会让本次同步失败并写明原因；飞书与数据库此前已完成的写入不回退。
 - 回归：`tests/test_send_data_export.py`、`tests/test_sync_daily_send_orders_plugin_action.py`、`tests/test_yunda_action_payloads.py`、`tests/test_daily_send_plugin_router.py`（真实 ZIP 沙箱）。

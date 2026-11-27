@@ -34,6 +34,10 @@ class MemoryStore:
         self.writes += 1
         self.files[(folder, name)] = content
 
+    def delete(self, folder: str, name: str) -> None:
+        self.deletes = getattr(self, "deletes", 0) + 1
+        self.files.pop((folder, name), None)
+
 
 @dataclass
 class Context:
@@ -90,9 +94,47 @@ def test_yunda_workbook_is_replaced_whole_without_site_column():
     handler = _handlers(store)[YUNDA_ACTION]
     context = Context(YUNDA_SEND_TOOL, *YUNDA_ACTION)
     handler(context, {"target_date": "2026-11-24", "columns": COLUMNS, "rows": [["Y1", "2026-11-24", 1, ""]]})
+    assert read_workbook(store.files[("韵达寄件", "2026-11-24.xlsx")]) == (COLUMNS, [["Y1", "2026-11-24", 1, None]])
+    # 2026-11-27: a later run of the same day finds no sends — the day's file is removed, not emptied.
     result = handler(context, {"target_date": "2026-11-24", "columns": COLUMNS, "rows": []})
-    assert read_workbook(store.files[("韵达寄件", "2026-11-24.xlsx")]) == (COLUMNS, [])
-    assert result["site"] == "" and result["file_record_count"] == 0 and len(context.marks) == 2
+    assert ("韵达寄件", "2026-11-24.xlsx") not in store.files
+    assert result["verified"] and result["file"] == "" and result["record_count"] == 0 and len(context.marks) == 2
+
+
+def test_a_day_without_sends_leaves_no_file_on_the_nas():
+    store = MemoryStore()
+    yunda = _handlers(store)[YUNDA_ACTION]
+    context = Context(YUNDA_SEND_TOOL, *YUNDA_ACTION)
+    result = yunda(context, {"target_date": "2026-11-26", "columns": COLUMNS, "rows": []})
+    assert store.files == {} and store.writes == 0 and context.marks == []
+    assert result["committed"] and result["verified"] and result["file"] == "" and result["record_count"] == 0
+    assert result["evidence_ref"]
+
+
+def test_ronghui_keeps_the_shared_file_while_the_other_site_has_rows():
+    store = MemoryStore()
+    handler = _handlers(store)[RONGHUI_ACTION]
+    empty = handler(_ronghui("acct-2"), {"target_date": "2026-11-24", "columns": COLUMNS, "rows": []})
+    assert store.files == {} and empty["file"] == "" and empty["site"] == "测试乙站"
+    handler(_ronghui("acct-1"), {"target_date": "2026-11-24", "columns": COLUMNS, "rows": [["R1", "2026-11-24", 1, ""]]})
+    handler(_ronghui("acct-2"), {"target_date": "2026-11-24", "columns": COLUMNS, "rows": []})
+    assert read_workbook(store.files[("融辉寄件", "2026-11-24.xlsx")])[1] == [["测试甲站", "R1", "2026-11-24", 1, None]]
+    # The last site's rows go: nothing is left that day, so the file goes too.
+    handler(_ronghui("acct-1"), {"target_date": "2026-11-24", "columns": COLUMNS, "rows": []})
+    assert store.files == {}
+
+
+def test_a_file_that_survives_its_delete_is_an_unknown_write():
+    class Stubborn(MemoryStore):
+        def delete(self, folder, name):
+            pass
+
+    store = Stubborn()
+    store.files[("韵达寄件", "2026-11-26.xlsx")] = build_workbook(COLUMNS, [])
+    with pytest.raises(PluginExecutionError) as raised:
+        _handlers(store)[YUNDA_ACTION](Context(YUNDA_SEND_TOOL, *YUNDA_ACTION),
+                                      {"target_date": "2026-11-26", "columns": COLUMNS, "rows": []})
+    assert raised.value.code == "WRITE_OUTCOME_UNKNOWN"
 
 
 def test_wrong_tool_bad_table_and_locked_file_fail_clearly():
@@ -107,7 +149,7 @@ def test_wrong_tool_bad_table_and_locked_file_fail_clearly():
     locked = _handlers(MemoryStore(fail_write="NAS_FILE_LOCKED"))[RONGHUI_ACTION]
     context = _ronghui()
     with pytest.raises(PluginExecutionError) as error:
-        locked(context, {"target_date": "2026-11-24", "columns": COLUMNS, "rows": []})
+        locked(context, {"target_date": "2026-11-24", "columns": COLUMNS, "rows": [["R1", "2026-11-24", 1, None]]})
     assert error.value.code == "WRITE_OUTCOME_UNKNOWN" and "占用" in str(error.value) and context.marks == [1]
 
 
@@ -174,3 +216,30 @@ def test_production_store_settings_use_their_own_keys():
     store: Any = store_from_settings({"RECEIPT_NAS_URL": "http://127.0.0.1:9", "SEND_DATA_NAS_USER": "u",
                                       "SEND_DATA_NAS_PASS": "p", "SEND_DATA_NAS_FOLDER": "/NAS资料/寄件数据"})
     assert store._base.endswith("/NAS%E8%B5%84%E6%96%99/%E5%AF%84%E4%BB%B6%E6%95%B0%E6%8D%AE")
+
+
+def test_store_delete_sends_webdav_delete_and_accepts_an_already_gone_file():
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_DELETE(self):  # noqa: N802 - http.server naming
+            seen.append((self.path, self.headers.get("Authorization", "").startswith("Basic ")))
+            self.send_response(204 if len(seen) == 1 else 404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        store = SendDataNasStore(f"http://127.0.0.1:{server.server_port}/团队文件-寄件数据", "u", "p")
+        store.delete("韵达寄件", "2026-11-26.xlsx")
+        store.delete("韵达寄件", "2026-11-26.xlsx")  # already gone: fine
+    finally:
+        server.shutdown()
+    expected = "/%E5%9B%A2%E9%98%9F%E6%96%87%E4%BB%B6-%E5%AF%84%E4%BB%B6%E6%95%B0%E6%8D%AE/%E9%9F%B5%E8%BE%BE%E5%AF%84%E4%BB%B6/2026-11-26.xlsx"
+    assert seen == [(expected, True), (expected, True)]

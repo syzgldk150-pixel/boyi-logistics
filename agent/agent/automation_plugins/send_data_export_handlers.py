@@ -5,6 +5,10 @@ The Host only fixes where it goes (one ``<平台文件夹>/<发件日期>.xlsx``
 platform), fills the ``来源网点`` cell of Ronghui rows from the bound account's
 own login site so the two Ronghui accounts share one workbook without touching
 each other's rows, and confirms the write by reading the workbook back.
+
+A day with no rows has no file (用户 2026-11-27: 当天没有寄件就不放空文件): when the
+merged workbook would be empty nothing is written, and a file left from an earlier run of
+that day is removed and read back as gone.
 """
 from __future__ import annotations
 
@@ -126,6 +130,9 @@ class _SendDataExportHandlers:
                 raise _error(f"读取 NAS 上的寄件数据失败：{exc}", "BROKER_RESOURCE_UNAVAILABLE") from None
             except WorkbookError as exc:
                 raise _error(f"NAS 上的 {folder}/{name} 无法合并：{exc}", "BROKER_RESOURCE_UNAVAILABLE") from None
+            if not expected[1]:
+                return self._no_rows(context, folder=folder, name=name, target_date=target_date, site=site,
+                                     store=store, present=previous is not None)
             if context.mark_write_started is not None:
                 context.mark_write_started()
             try:
@@ -144,6 +151,23 @@ class _SendDataExportHandlers:
             "file_record_count": len(expected[1]),
             "readback_sha256": hashlib.sha256(readback).hexdigest(),
         }
+        return {"committed": True, "verified": True, **proof, "evidence_ref": self._evidence(context, proof)}
+
+    def _no_rows(self, context: CoreBrokerInvocationContext, *, folder: str, name: str, target_date: str,
+                 site: str | None, store: Any, present: bool) -> Mapping[str, Any]:
+        """No sends that day: no file. An earlier file of that day is deleted and read back as gone."""
+        if present:
+            if context.mark_write_started is not None:
+                context.mark_write_started()
+            try:
+                store.delete(folder, name)
+                gone = store.read_optional(folder, name) is None
+            except SendDataNasError as exc:
+                raise _error(f"删除 NAS 上当天无寄件的 {folder}/{name} 后未能读回确认：{exc}", "WRITE_OUTCOME_UNKNOWN") from None
+            if not gone:
+                raise _error(f"删除 NAS 上当天无寄件的 {folder}/{name} 后文件仍在。", "WRITE_OUTCOME_UNKNOWN")
+        proof = {"target_date": target_date, "file": "", "site": site or "", "record_count": 0,
+                 "file_record_count": 0, "readback_sha256": ""}
         return {"committed": True, "verified": True, **proof, "evidence_ref": self._evidence(context, proof)}
 
     def handler_map(self) -> dict[tuple[str, str], CoreBrokerHandler]:

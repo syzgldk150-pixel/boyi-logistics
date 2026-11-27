@@ -3,7 +3,8 @@
 The NAS share mapped as ``Z:`` on office PCs is reached from the ECS over
 Tailscale through the NAS WebDAV service. The caller passes the folder URL and
 account; this module reads no environment. Only ``<子文件夹>/<文件名>`` paths of
-plain names are addressable, and a workbook replaces the previous one.
+plain names are addressable; a workbook replaces the previous one, and a day
+without rows has its file removed.
 """
 from __future__ import annotations
 
@@ -101,6 +102,14 @@ class SendDataNasStore:
                 raise
         self._request("PUT", self._url(folder, name), data=bytes(content), headers={
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}).close()
+
+    def delete(self, folder: str, name: str) -> None:
+        """Remove the file; one that is already gone is fine."""
+        try:
+            self._request("DELETE", self._url(folder, name)).close()
+        except SendDataNasError as exc:
+            if exc.code != "NAS_NOT_FOUND":
+                raise
 
 
 __all__ = ["SendDataNasError", "SendDataNasStore"]
