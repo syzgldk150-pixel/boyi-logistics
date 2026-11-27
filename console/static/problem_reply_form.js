@@ -261,6 +261,44 @@
     }
     const text = replyText(form, draft, options);
     const counter = el('div', 'reply-form-count', `${draft.reply_text.length}/${text.maxLength}`);
+    if (form.reply_often && options.accountId && window.OriginalPageActions) {
+      // 原页“常用回复语”：勾选一条即填入回复正文（同时只能勾一条，“无”清空），再勾一次取消。
+      const often = el('div', 'reply-form-often');
+      const paint = () => {
+        often.replaceChildren();
+        if (!Array.isArray(draft.replyOften)) {
+          often.append(el('span', 'reply-form-hint', draft.replyOften || '常用回复语读取中…'));
+          return;
+        }
+        draft.replyOften.forEach((content, index) => {
+          const label = el('label', 'reply-form-often-item');
+          const box = el('input');
+          box.type = 'checkbox';
+          box.checked = draft.replyOftenPicked === index;
+          box.addEventListener('change', () => {
+            draft.replyOftenPicked = box.checked ? index : null;
+            if (box.checked) {
+              draft.reply_text = content === '无' ? '' : content;
+              text.value = draft.reply_text;
+              counter.textContent = `${text.value.length}/${text.maxLength}`;
+              text.focus();
+            }
+            paint();
+          });
+          label.append(box, document.createTextNode(content));
+          often.append(label);
+        });
+      };
+      if (draft.replyOften === undefined) {
+        draft.replyOften = '';
+        window.OriginalPageActions.request('lookup', { platform: 'yunda', account_id: options.accountId,
+          item: options.item || { external_id: 'reply_often' }, kind: 'problem', operation: 'reply_often', payload: {} })
+          .then((data) => { draft.replyOften = data.replies || []; paint(); })
+          .catch((error) => { draft.replyOften = `常用回复语读取失败：${error.message}`; paint(); });
+      }
+      paint();
+      box.append(often);
+    }
     text.addEventListener('input', () => { draft.reply_text = text.value; counter.textContent = `${text.value.length}/${text.maxLength}`; });
     const wrap = el('div', 'reply-form-text-wrap');
     wrap.append(text, counter);

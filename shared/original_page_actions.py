@@ -507,6 +507,216 @@ def pickup_revoke_row(row: Mapping[str, Any], user_info: Mapping[str, Any], serv
             "REVOKE_MAN": _text(user_info.get("loginEmpName")), "REVOKE_MAN_CODE": _text(user_info.get("loginEmpCode"))}
 
 
+# ---------------------------------------------------------------------------------------------
+# 韵达快运工单（CSSP“工单处理”详情页按钮、“催单待回复”回复）
+# ---------------------------------------------------------------------------------------------
+
+# 处理状态 compStatus（CSSP e5f8）：0 已发起 1 已分配 2 已响应 3 已首回 4 已结单 5 差评 6 延时 7 转站点 8 转理赔 10 已接单
+CSSP_TIMED = ("claim", "extend", "turn_site")  # 原页只允许 8:00–18:59 提交
+CSSP_IDENTITIES = ("投诉人", "发件人", "收件人", "第三方", "其他站点")
+CSSP_RESPONSE_DEFAULT = "已联系投诉人响应工单诉求。"
+CSSP_TEXT_MAX = 200
+CSSP_NAME_MAX = 20
+# operation -> (button, endpoint)
+CSSP_OPERATIONS = {
+    "prompt_resp": ("立即响应", "/cssp/comp/sysCompDeal/promptResp.do"),
+    "first_reply": ("首次回复", "/cssp/comp/sysCompDeal/firstReply.do"),
+    "reply_handling": ("回复处理", "/cssp/comp/sysCompDeal/replyHandling.do"),
+    "claim": ("转至理赔", "/cssp/comp/sysCompDeal/claimApply.do"),
+    "statement": ("结单", "/cssp/comp/sysCompDeal/statement.do"),
+    "extend": ("延长时效", "/cssp/comp/sysCompDeal/extendLaging.do"),
+    "turn_site": ("转站点", "/cssp/comp/sysCompDeal/turnOrg.do"),
+}
+CSSP_CUI_REPLY = "/cssp/collaboration/sysCollaborationManage/cuiReplay"
+
+
+def _status(value: Any) -> int | None:
+    try:
+        return int(_text(value))
+    except ValueError:
+        return None
+
+
+def cssp_block(operation: str, detail: Mapping[str, Any]) -> str:
+    """The detail page's ``disabled`` rule for each button (the original greys it out)."""
+    status = _status(detail.get("compStatus"))
+    allowed = {
+        "prompt_resp": status == 10, "first_reply": status == 2, "reply_handling": status == 3,
+        "claim": status not in (0, 4, 5, 6, 7, 8), "statement": status in (3, 4),
+        "extend": status in (1, 2, 3), "turn_site": status in (1, 10, 2, 3),
+    }.get(operation, False)
+    return "" if allowed else f"当前处理状态（{_text(detail.get('compStatusName')) or '未知'}）不能{CSSP_OPERATIONS[operation][0]}"
+
+
+def _autofill(detail: Mapping[str, Any]) -> dict[str, list[str]]:
+    return {"投诉人": [_text(detail.get("comper")), _text(detail.get("comperPhone"))],
+            "发件人": [_text(detail.get("sender")), _text(detail.get("senderPhone"))],
+            "收件人": [_text(detail.get("receiver")), _text(detail.get("receiverPhone"))]}
+
+
+def _contact_fields(detail: Mapping[str, Any], *, radio: bool) -> list[dict[str, Any]]:
+    if radio:  # 回复处理、结单：外呼人身份单选，选投诉人/发件人/收件人时带出姓名电话
+        identity = _field("putboundIdentity", "外呼人身份", "radio", value="投诉人", options=CSSP_IDENTITIES)
+        identity["autofill"] = {"targets": ["customerName", "callNumber"], "values": _autofill(detail)}
+    else:  # 立即响应、首次回复：外呼人身份是“投诉人”开关
+        identity = _field("putboundIdentity", "外呼人身份", "switch", value="投诉人")
+        identity.update({"on": "投诉人", "off": " ", "note": "投诉受理中请先与投诉人联系"})
+    return [identity,
+            _field("customerName", "姓名", "text", value=detail.get("comper"), required=True, max_length=CSSP_NAME_MAX),
+            _field("callNumber", "外呼电话", "digits", value=detail.get("comperPhone"), required=True)]
+
+
+def cssp_specs(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+    content = lambda label, value="": _field("dealContent", label, "textarea", value=value, required=True, max_length=CSSP_TEXT_MAX)  # noqa: E731
+    first = _contact_fields(detail, radio=False) + [
+        _field("estimatedCompletionTime", "预计解决时间", "datetime", required=True), content("解决进度")]
+    specs = [
+        _spec("cssp", "prompt_resp", "立即响应", "立即响应", _contact_fields(detail, radio=False) + [content("响应内容", CSSP_RESPONSE_DEFAULT)]),
+        _spec("cssp", "first_reply", "首次回复", "首次回复", first),
+        _spec("cssp", "reply_handling", "回复处理", "回复处理", _contact_fields(detail, radio=True) + [content("沟通记录")],
+              attachments_purpose="cssp_reply"),
+        _spec("cssp", "claim", "转至理赔", "转至理赔", [content("情况说明")]),
+        _spec("cssp", "statement", "结单", "结单", _contact_fields(detail, radio=True) + [content("处理结果")]),
+        _spec("cssp", "extend", "延长时效", "延长时效", [content("延长原因")]),
+        _spec("cssp", "turn_site", "转站点", "转站点", [content("申请说明")]),
+    ]
+    for spec in specs:
+        spec["blocked"] = cssp_block(spec["operation"], detail)
+    return specs
+
+
+def validate_cssp(operation: str, detail: Mapping[str, Any], payload: Mapping[str, Any], now: dt.datetime) -> dict[str, Any]:
+    if operation not in CSSP_OPERATIONS:
+        raise ActionRuleError("不支持的工单操作。")
+    blocked = cssp_block(operation, detail)
+    if blocked:
+        raise ActionRuleError(blocked)
+    if operation in CSSP_TIMED and not 8 <= now.hour <= 18:
+        raise ActionRuleError("请于上午8:00至下午18:00提交该申请")
+    params: dict[str, Any] = {}
+    if operation in ("prompt_resp", "first_reply", "reply_handling", "statement"):
+        identity = _text(payload.get("putboundIdentity")) if payload.get("putboundIdentity") != " " else " "
+        allowed = CSSP_IDENTITIES if operation in ("reply_handling", "statement") else ("投诉人", " ")
+        if identity not in allowed:
+            raise ActionRuleError("请选择外呼人身份")
+        name, phone = _text(payload.get("customerName")), _text(payload.get("callNumber"))
+        if not name:
+            raise ActionRuleError("请输入姓名")
+        if len(name) > CSSP_NAME_MAX:
+            raise ActionRuleError("姓名不能超过20个字")
+        if not phone or not re.fullmatch(r"\d+", phone):
+            raise ActionRuleError("请输入正确的外呼电话")
+        params.update({"putboundIdentity": identity, "customerName": name, "callNumber": phone})
+    if operation == "first_reply":
+        when = _text(payload.get("estimatedCompletionTime"))
+        try:
+            moment = dt.datetime.strptime(when, "%Y-%m-%d %H:%M")
+        except ValueError:
+            raise ActionRuleError("请选择预计解决时间") from None
+        if moment.date() < now.date():
+            raise ActionRuleError("预计解决时间不能早于今天")
+        params["estimatedCompletionTime"] = when
+    text = _text(payload.get("dealContent"))
+    if not text:
+        raise ActionRuleError("请填写内容")
+    if len(text) > CSSP_TEXT_MAX:
+        raise ActionRuleError("内容不能超过200个字")
+    params["dealContent"] = text
+    files: list[dict[str, Any]] = []
+    if operation == "reply_handling":
+        try:
+            files = attachments(payload.get("attachments"), "yunda", "cssp_reply")
+        except AttachmentError as exc:
+            raise ActionRuleError(str(exc)) from None
+    return {"params": params, "files": files}
+
+
+def cui_reply_spec(row: Mapping[str, Any]) -> dict[str, Any]:
+    return _spec("cssp_cui", "reply", "回复", "催单回复", [
+        _field("remark", "催单内容", "readonly_long", value=row.get("remark")),
+        _field("replayCustomerName", "姓名", "text", required=True, max_length=CSSP_NAME_MAX),
+        _field("replayCustomerPhone", "外呼电话", "digits", required=True),
+        _field("replayContent", "沟通记录", "textarea", required=True, max_length=CSSP_TEXT_MAX),
+    ])
+
+
+def validate_cui_reply(payload: Mapping[str, Any]) -> dict[str, str]:
+    name, phone, content = (_text(payload.get(key)) for key in ("replayCustomerName", "replayCustomerPhone", "replayContent"))
+    if not name:
+        raise ActionRuleError("请输入姓名")
+    if len(name) > CSSP_NAME_MAX:
+        raise ActionRuleError("姓名不能超过20个字")
+    if not phone or not re.fullmatch(r"\d+", phone):
+        raise ActionRuleError("请输入正确的外呼电话")
+    if not content:
+        raise ActionRuleError("请填写沟通记录")
+    if len(content) > CSSP_TEXT_MAX:
+        raise ActionRuleError("沟通记录不能超过200个字")
+    return {"replayCustomerName": name, "replayCustomerPhone": phone, "replayContent": content}
+
+
+# ---------------------------------------------------------------------------------------------
+# 韵达调拨件确认：接单、转单、异常登记
+# ---------------------------------------------------------------------------------------------
+
+TRANSFER_ABNORMAL_TYPES = (
+    ("1", "体积重量不符"), ("9", "发布网点余额不足"), ("11", "客户虚假电话"), ("12", "取件地址错误"), ("13", "客户取消发货"),
+    ("14", "末端网点关停"), ("15", "不可抗力(极端天气等自然灾害）"), ("16", "客户不在家"), ("17", "交货方式更改为自送"),
+    ("18", "客户上门地址变更"), ("19", "交通事故"), ("20", "货未贴箱唛或运单破损"), ("2", "客户联系不上"), ("3", "货物需二次包装"),
+    ("4", "违禁品"), ("5", "超标件"), ("6", "客户货未备齐或无货"), ("7", "预约上门取件"), ("8", "超区"), ("10", "其他异常"),
+)
+TRANSFER_REMARK_MAX = 50
+TRANSFER_IMAGE_SLOTS = (("abnormal_image1", "图片1"), ("abnormal_image2", "图片2"), ("abnormal_image3", "图片3"))
+
+
+def transfer_accept_confirm(row: Mapping[str, Any]) -> str:
+    if _text(row.get("Order_Source")) == "690" and ("镇上自提" in _text(row.get("Ext_Field4")) or _text(row.get("Special_Area_Code"))):
+        return "此单目的地址为“特殊区域/镇上自提/仓库”可能有加收，请核对后联系客户确认。是否确认接单？"
+    return "是否确认接单？"
+
+
+def transfer_abnormal_block(row: Mapping[str, Any]) -> str:
+    abnormal = _text(row.get("Abnormal_Type"))
+    if abnormal and not (abnormal == "客户货未备齐或无货" and _text(row.get("Delay_Day")) != "-"):
+        return "已做过异常登记无需再次登记"
+    if _text(row.get("Replace_Status_Code")) not in ("0", "1"):
+        return "只有待接单、已接单支持异常登记"
+    return ""
+
+
+def transfer_specs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    abnormal = _spec("transfer", "abnormal", "异常登记", "异常登记", [
+        _field("Abnormal_Type", "异常类型", "select", required=True, options=[list(item) for item in TRANSFER_ABNORMAL_TYPES]),
+        _field("Abnormal_Remark", "详细描述", "textarea", max_length=TRANSFER_REMARK_MAX),
+    ], blocked=transfer_abnormal_block(row))
+    abnormal["attachment_slots"] = [{"key": key, "label": label, "purpose": "transfer"} for key, label in TRANSFER_IMAGE_SLOTS]
+    transfer = _spec("transfer", "transfer", "转单", "调拨件转单", [
+        _field("Replace_Site", "转单网点", "site", required=True)])
+    transfer["fields"][0]["lookup"] = "yunda_site"
+    return [_spec("transfer", "accept", "接单", "提示", [], confirm=transfer_accept_confirm(row)), transfer, abnormal]
+
+
+def validate_transfer_abnormal(row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    blocked = transfer_abnormal_block(row)
+    if blocked:
+        raise ActionRuleError(blocked)
+    kind = _text(payload.get("Abnormal_Type"))
+    if kind not in dict(TRANSFER_ABNORMAL_TYPES):
+        raise ActionRuleError("请选择异常类型")
+    remark = _text(payload.get("Abnormal_Remark"))
+    if len(remark) > TRANSFER_REMARK_MAX:
+        raise ActionRuleError("详细描述最多50字")
+    images = []
+    for index, (key, label) in enumerate(TRANSFER_IMAGE_SLOTS, start=1):
+        try:
+            files = attachments(payload.get(key), "yunda", "transfer")
+        except AttachmentError as exc:
+            raise ActionRuleError(f"{label}：{exc}") from None
+        if files:
+            images.append((index, files[0]))
+    return {"Abnormal_Type": kind, "Abnormal_Remark": remark, "label": dict(TRANSFER_ABNORMAL_TYPES)[kind], "images": images}
+
+
 SITE_KEY = re.compile(r"^[\w一-龥()（）\-]{1,30}$")
 
 
@@ -518,6 +728,9 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "CSSP_CUI_REPLY", "CSSP_OPERATIONS", "TRANSFER_ABNORMAL_TYPES", "cssp_block", "cssp_specs", "cui_reply_spec",
+    "transfer_abnormal_block", "transfer_accept_confirm", "transfer_specs", "validate_cssp", "validate_cui_reply",
+    "validate_transfer_abnormal",
     "APPEAL_SLOTS", "CLAIM_SLOTS", "appeal_delete_block", "appeal_specs", "complaint_against_specs", "complaint_appeal_block",
     "complaint_appeal_update", "complaint_cancel_block", "complaint_cancel_check", "complaint_claim_block", "complaint_claim_update",
     "complaint_filed_specs", "complaint_reply_guid", "complaint_reply_tables", "exception_path_row", "pickup_revoke_block",

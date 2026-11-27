@@ -1001,6 +1001,7 @@ class CustomerServiceMixin:
         }
         if purpose:
             arguments["purpose"] = purpose
+            arguments["file_name"] = Path(str(file_item.filename or "")).name[:255]
         result = call_business(self, "customer-service-upload-attachment", arguments,
             trusted_context=trusted_context, request_id=browser_request_uuid, write=True)
         if result.get("ok"):

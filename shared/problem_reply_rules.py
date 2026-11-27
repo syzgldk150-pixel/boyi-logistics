@@ -203,6 +203,7 @@ def yunda_reply_form(row: Mapping[str, Any]) -> dict[str, Any]:
         "statuses": [{"value": code, "label": text} for code, text in YUNDA_STATUSES],
         "default_status": "1" if status in {"0", "未处理"} else "2",
         "review_entry": _text(row.get("prob_type_id")) == YUNDA_REVIEW_TYPE_ID,
+        "reply_often": True,  # 原页回复正文上方的“常用回复语”（query/getReplyOften.html）
     }
 
 

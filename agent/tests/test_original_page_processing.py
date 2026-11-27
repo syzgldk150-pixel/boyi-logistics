@@ -142,3 +142,71 @@ class ComplaintTests(unittest.TestCase):
                                                                       "item": {"external_id": "T1"}, "payload": {}})
         self.assertTrue(result["verified"])
         self.assertEqual("TAB_UNITE_ORDERS_UPT", save.call_args[0][2][0][0])
+
+
+class YundaTests(unittest.TestCase):
+    def test_cssp_prompt_response_posts_like_the_page_and_reads_back(self):
+        import datetime as dt
+
+        details = [{"complaintId": "C1", "compStatus": 10}, {"complaintId": "C1", "compStatus": 2}]
+        calls = []
+
+        def cssp(session, method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if "compInfo" in path:
+                return details.pop(0)
+            if "handlingDetail" in path:
+                return []
+            return {"code": 0, "msg": "操作成功"}
+
+        with patch.object(processing, "_cssp", side_effect=cssp), \
+                patch.object(processing.dt, "datetime", wraps=dt.datetime) as clock:
+            clock.now.return_value = dt.datetime(2026, 11, 27, 10, 0, tzinfo=base.SHANGHAI_TZ)
+            result = processing.run("yunda", "process", object(), {"kind": "cssp", "operation": "prompt_resp", "item": {"external_id": "C1"},
+                                                                    "payload": {"putboundIdentity": "投诉人", "customerName": "甲", "callNumber": "13800000000",
+                                                                                "dealContent": "已联系投诉人响应工单诉求。"}})
+        self.assertTrue(result["verified"])
+        post = [call for call in calls if call[0] == "post"][0]
+        self.assertEqual("/cssp/comp/sysCompDeal/promptResp.do", post[1])
+        self.assertEqual("C1", post[2]["params"]["complaintId"])
+
+    def test_cssp_unchanged_after_submit_is_unknown(self):
+        def cssp(session, method, path, **kwargs):
+            if "compInfo" in path:
+                return {"complaintId": "C1", "compStatus": 3}
+            if "handlingDetail" in path:
+                return {"rows": [{}]}
+            return {"code": 0}
+
+        with patch.object(processing, "_cssp", side_effect=cssp):
+            with self.assertRaises(base.CustomerServiceProblemError) as ctx:
+                processing.run("yunda", "process", object(), {"kind": "cssp", "operation": "statement", "item": {"external_id": "C1"},
+                                                               "payload": {"putboundIdentity": "投诉人", "customerName": "甲", "callNumber": "1", "dealContent": "完"}})
+        self.assertEqual("WRITE_OUTCOME_UNKNOWN", ctx.exception.code)
+
+    def test_transfer_abnormal_uploads_staged_images_then_saves(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(processing, "STAGE_DIR", Path(folder) / "staged"):
+            source = Path(folder) / "a.jpg"
+            source.write_bytes(b"jpg")
+            staged = processing.stage_file(source, "现场.jpg")
+            rows = [{"Replace_Id": "R1", "Replace_Status_Code": "0", "Abnormal_Type": ""},
+                    {"Replace_Id": "R1", "Replace_Status_Code": "0", "Abnormal_Type": "客户联系不上"}]
+            posts = []
+
+            def inms(session, url, data=None, files=None):
+                posts.append((url.rsplit("/", 1)[-1], data, files))
+                return {"status": 1, "msg": "成功"}
+
+            with patch.object(processing, "_transfer_row", side_effect=lambda s, rid, status="0": rows.pop(0) if rows else None), \
+                    patch.object(processing, "_inms", side_effect=inms):
+                result = processing.run("yunda", "process", object(), {"kind": "transfer", "operation": "abnormal", "item": {"external_id": "R1"},
+                                                                        "payload": {"Abnormal_Type": "2", "abnormal_image1": [staged]}})
+            self.assertTrue(result["verified"])
+            self.assertEqual(["uploadAbnormalImage.html", "save.html"], [post[0] for post in posts])
+            self.assertEqual({"Replace_Id": "R1", "Image_Sort": 1}, posts[0][1])
+            self.assertEqual(("现场.jpg", b"jpg"), posts[0][2]["file"])
+            self.assertEqual({"Replace_Id[]": ["R1"], "Abnormal_Type": "2", "Abnormal_Remark": ""}, posts[1][1])
+            self.assertFalse((Path(folder) / "staged" / staged["new_name"]).exists())

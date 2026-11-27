@@ -19,6 +19,7 @@ import requests
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime import monitoring_window
 from agent.tms_runtime.monitoring_window import RECENT_NOTE, is_recent, latest_activity
+from shared.original_page_actions import cssp_specs, cui_reply_spec, transfer_specs
 from shared.problem_reply_rules import yunda_reply_form
 
 
@@ -382,6 +383,8 @@ def _transfer_item(row: dict) -> dict[str, Any]:
         "id": _text(row["Replace_Id"]), "title": "调拨件待接单", "content": "\n".join(lines) or "原系统未提供详情",
         "occurred_at": _text(row.get("Create_Time")), "status_label": _text(row.get("Replace_Status")) or "待接单",
         "waybill_no": _text(row.get("Logistics_Id")), "source_label": "韵达调拨件确认", "open_url": TRANSFER_PAGE,
+        "actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID,
+                    "item": {"external_id": _text(row["Replace_Id"])}, "specs": transfer_specs(row)},
     }
 
 
@@ -400,6 +403,9 @@ def _work_order_item(session: Any, row: dict) -> dict[str, Any]:
         "status_label": _text(row.get("compStatusName")) or "状态未确认",
         "waybill_no": _text(row.get("listId")), "source_label": "韵达快运工单系统",
         "open_url": WORK_ORDER_PAGE, "deadline": _text(row.get("dealOverTime")),
+        # 原页“处理详情”的按钮（用户 2026-11-27 要求在博益直接处理）：提交时 Agent 重新读取工单详情再检查。
+        "actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID,
+                    "item": {"external_id": complaint_id, "waybill_no": _text(row.get("listId"))}, "specs": cssp_specs(info)},
     }
 
 
@@ -413,6 +419,10 @@ def _reply_item(row: dict) -> dict[str, Any]:
         "content": _content(row["remark"]), "occurred_at": occurred_at,
         "status_label": "待回复", "waybill_no": _text(row.get("listId")),
         "source_label": "韵达快运工单系统", "open_url": WORK_ORDER_PAGE,
+        **({"actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID,
+                        "item": {"external_id": f"{complaint_id}:{occurred_at}", "colId": _text(row.get("colId")),
+                                 "waybill_no": _text(row.get("listId"))}, "specs": [cui_reply_spec(row)]}}
+           if _text(row.get("colId")) else {}),
     }
 
 

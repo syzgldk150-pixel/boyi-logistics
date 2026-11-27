@@ -1307,6 +1307,18 @@ def _upload_yunda_attachment(session: Any, params: dict[str, Any]) -> dict[str, 
     path = Path(file_path)
     if not path.exists() or not path.is_file():
         raise CustomerServiceProblemError("FILE_NOT_FOUND", f"上传文件不存在：{path}")
+    from shared.original_page_attachments import STAGED_PURPOSES
+
+    if _clean_text(payload.get("purpose")) in STAGED_PURPOSES:
+        # 快运工单回复、调拨件异常图片随处理动作一起提交给原平台：这里只暂存（original_page_processing.stage_file）。
+        from agent.tms_runtime.scripts.original_page_processing import stage_file
+
+        try:
+            attachment = stage_file(path, _clean_text(payload.get("file_name")) or path.name)
+        finally:
+            if _bool_param(payload.get("delete_after_upload"), default=True):
+                path.unlink(missing_ok=True)
+        return {"ok": True, "result": {"staged": True}, "attachment": attachment}
     mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     try:
         with path.open("rb") as handle:

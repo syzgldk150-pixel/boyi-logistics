@@ -3991,3 +3991,12 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
 .action-site-option:hover { background: var(--bg-muted, #f6f7f9); }
 .reply-form-forward { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-top: 8px; }
 .reply-form-contact { width: 100%; min-height: 64px; resize: vertical; }
+.action-switch, .action-radios { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding-top: 6px; font-size: var(--fs-body); }
+.action-radio { display: inline-flex; align-items: center; gap: 4px; }
+.action-switch-note { color: var(--brand-red); font-size: var(--fs-caption); margin-left: 12px; }
+.reply-form-often { display: grid; gap: 6px; max-height: 160px; overflow: auto; padding: 4px 0; }
+.reply-form-often-item { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-body); word-break: break-all; }
+/* 全站 input 去掉了原生外观，单选框、复选框在这些对话框里要恢复，否则看不见。 */
+.action-dialog input[type="radio"], .action-dialog input[type="checkbox"], .action-switch input, .reply-form-often input, .action-select {
+  appearance: auto; -webkit-appearance: auto; width: auto; min-height: 0; margin: 0;
+}

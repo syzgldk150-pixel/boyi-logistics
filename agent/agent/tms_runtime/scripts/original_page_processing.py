@@ -11,6 +11,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import tempfile
+import time
+import uuid
+from pathlib import Path
 from typing import Any, Callable
 
 from agent.tms_runtime.scripts import customer_service_problem as base
@@ -395,6 +399,293 @@ def _pickup_revoke(session: Any, item: dict[str, Any], payload: dict[str, Any]) 
     return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": order_id}
 
 
+# ---------------------------------------------------------------------------------------------
+# 暂存附件（韵达快运工单回复、调拨件异常图片随处理动作一起提交）
+# ---------------------------------------------------------------------------------------------
+
+STAGE_DIR = Path(tempfile.gettempdir()) / "boyi-original-page-staged"
+STAGE_TTL_SECONDS = 2 * 3600
+
+
+def _stage_root() -> Path:
+    STAGE_DIR.mkdir(mode=0o700, exist_ok=True)
+    now = time.time()
+    for old in STAGE_DIR.iterdir():
+        try:
+            if now - old.stat().st_mtime > STAGE_TTL_SECONDS:
+                old.unlink()
+        except OSError:
+            pass
+    return STAGE_DIR
+
+
+def stage_file(source: Path, file_name: str) -> dict[str, Any]:
+    from shared.original_page_attachments import staged_descriptor
+
+    staged_id = uuid.uuid4().hex
+    target = _stage_root() / staged_id
+    data = source.read_bytes()
+    target.write_bytes(data)
+    target.chmod(0o600)
+    (_stage_root() / f"{staged_id}.name").write_text(Path(file_name).name[:255], encoding="utf-8")
+    return staged_descriptor(Path(file_name).name[:255], staged_id)
+
+
+def _staged(descriptor: dict[str, Any]) -> tuple[str, bytes]:
+    staged_id = _text(descriptor.get("file_path")).removeprefix("staged:")
+    if not re.fullmatch(r"[0-9a-f]{32}", staged_id):
+        raise ProcessingError("REPLY_RULE_REJECTED", "附件无效，请重新上传。")
+    path = _stage_root() / staged_id
+    if not path.is_file():
+        raise ProcessingError("REPLY_RULE_REJECTED", "附件已过期，请重新上传。")
+    name_file = _stage_root() / f"{staged_id}.name"
+    name = name_file.read_text(encoding="utf-8") if name_file.is_file() else staged_id
+    return name, path.read_bytes()
+
+
+def _discard_staged(descriptors: list[dict[str, Any]]) -> None:
+    for descriptor in descriptors:
+        staged_id = _text(descriptor.get("file_path")).removeprefix("staged:")
+        if re.fullmatch(r"[0-9a-f]{32}", staged_id):
+            (STAGE_DIR / staged_id).unlink(missing_ok=True)
+            (STAGE_DIR / f"{staged_id}.name").unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------------------------
+# 韵达快运工单（CSSP）
+# ---------------------------------------------------------------------------------------------
+
+CSSP_ORIGIN = "https://cssp.yunda56.com"
+CSSP_PAGE = f"{CSSP_ORIGIN}/cssp/vue/index.html#/work-order/deal"
+
+
+def _cssp(session: Any, method: str, path: str, **kwargs: Any) -> Any:
+    response = getattr(session, method)(CSSP_ORIGIN + path, headers={"Referer": CSSP_PAGE}, timeout=30, allow_redirects=False, **kwargs)
+    if getattr(response, "status_code", 200) in (301, 302, 303, 401):
+        raise ProcessingError("AUTH_REQUIRED", "韵达工单系统登录已失效，请到业务账号重新登录韵达。")
+    try:
+        return response.json()
+    except ValueError:
+        raise ProcessingError("INVALID_RESPONSE", "韵达工单系统没有返回有效数据。") from None
+
+
+def _cssp_ok(result: Any, label: str) -> None:
+    code = result.get("code") if isinstance(result, dict) else None
+    if code is not None and code not in (0, 200, "0", "200"):
+        raise ProcessingError("SOURCE_WRITE_FAILED", f"{label}失败：{_text(result.get('msg') or result.get('message')) or '原系统拒绝'}")
+    if not isinstance(result, dict):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", f"{label}已提交，但原系统没有返回结果，请到原系统核对，不要重复操作。")
+
+
+def _cssp_detail(session: Any, complaint_id: str) -> dict[str, Any]:
+    from urllib.parse import quote
+
+    info = _cssp(session, "get", f"/cssp/comp/sysCompMain/compInfo/{quote(complaint_id, safe='')}")
+    if not isinstance(info, dict) or _text(info.get("complaintId")) != complaint_id:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "韵达工单系统读不到这张工单，请刷新后重试。")
+    return info
+
+
+def _cssp_history_size(session: Any, complaint_id: str) -> int:
+    from urllib.parse import quote
+
+    detail = _cssp(session, "get", f"/cssp/comp/sysCompMain/handlingDetail/{quote(complaint_id, safe='')}")
+    if isinstance(detail, list):
+        return len(detail)
+    if isinstance(detail, dict):
+        return sum(len(value) for value in detail.values() if isinstance(value, list))
+    return 0
+
+
+def _cssp_process(session: Any, operation: str, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import CSSP_OPERATIONS, ActionRuleError, validate_cssp
+
+    complaint_id = _text(item.get("external_id"))
+    detail = _cssp_detail(session, complaint_id)
+    try:
+        fields = validate_cssp(operation, detail, payload, dt.datetime.now(base.SHANGHAI_TZ))
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    before = _cssp_history_size(session, complaint_id)
+    params = {**fields["params"], "complaintId": complaint_id}
+    endpoint = CSSP_OPERATIONS[operation][1]
+    if operation == "reply_handling":
+        # replyHandling.do 以表单提交（字段 + 多个 files）。
+        files = [("files", _staged(descriptor)) for descriptor in fields["files"]]
+        result = _cssp(session, "post", endpoint, data=params, files=[(key, (name, data)) for key, (name, data) in files] or None)
+    else:
+        result = _cssp(session, "post", endpoint, params=params)
+    _cssp_ok(result, f"韵达工单{CSSP_OPERATIONS[operation][0]}")
+    _discard_staged(fields["files"])
+    after_detail = _cssp_detail(session, complaint_id)
+    if _text(after_detail.get("compStatus")) == _text(detail.get("compStatus")) and _cssp_history_size(session, complaint_id) <= before:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "已提交，但工单的处理记录和状态都没有变化，请到原系统核对，不要重复操作。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": complaint_id}
+
+
+def _cui_pending(session: Any, user_id: str, waybill: str, col_id: str) -> bool:
+    rows = _cssp(session, "get", "/cssp/collaboration/sysCollaborationManage/cuiPageQuery",
+                 params={"offset": 0, "limit": 100, "userId": user_id, "listId": waybill})
+    items = rows.get("rows") if isinstance(rows, dict) else rows
+    return any(_text(row.get("colId")) == col_id for row in (items or []) if isinstance(row, dict))
+
+
+def _cui_reply(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import CSSP_CUI_REPLY, ActionRuleError, validate_cui_reply
+
+    col_id = _text(item.get("colId"))
+    if not col_id:
+        raise ProcessingError("MISSING_REQUIRED_FIELDS", "缺少催单编号。")
+    identity = _cssp(session, "get", "/cssp/sys/user/getUser")
+    user_id = _text(((identity or {}).get("User") or {}).get("userId")) if isinstance(identity, dict) else ""
+    if not user_id:
+        raise ProcessingError("AUTH_REQUIRED", "韵达工单系统用户信息读取失败，请重新登录韵达。")
+    waybill = _text(item.get("waybill_no"))
+    if not _cui_pending(session, user_id, waybill, col_id):
+        raise ProcessingError("REPLY_RULE_REJECTED", "这条催单已不在待回复列表，可能已经回复过。")
+    try:
+        fields = validate_cui_reply(payload)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    result = _cssp(session, "post", CSSP_CUI_REPLY, params={**fields, "colId": col_id})
+    _cssp_ok(result, "韵达催单回复")
+    if _cui_pending(session, user_id, waybill, col_id):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "催单回复已提交，但这条催单仍在待回复列表，请到原系统核对，不要重复回复。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": _text(item.get("external_id"))}
+
+
+# ---------------------------------------------------------------------------------------------
+# 韵达调拨件确认
+# ---------------------------------------------------------------------------------------------
+
+TRANSFER_ROOT = "https://kyinms.yunda56.com/ky_inms/public/index.php/business/replaceLogistics/ReplaceLogisticsConfirm"
+TRANSFER_PAGE = f"{TRANSFER_ROOT}/index.html?page=tab"  # 与 monitoring_yunda.TRANSFER_PAGE 相同
+YUNDA_SITE_URL = "https://kyinms.yunda56.com/ky_inms/public/index.php/like/getWebsite.html"
+
+
+def _inms(session: Any, url: str, data: Any = None, files: Any = None) -> Any:
+    response = session.post(url, data=data, files=files, headers={"Referer": TRANSFER_PAGE, "X-Requested-With": "XMLHttpRequest"},
+                            timeout=30, allow_redirects=False)
+    if getattr(response, "status_code", 200) in (300, 301, 302, 303, 401):
+        raise ProcessingError("AUTH_REQUIRED", "韵达登录已失效，请到业务账号重新登录韵达。")
+    try:
+        return response.json()
+    except ValueError:
+        raise ProcessingError("INVALID_RESPONSE", "韵达没有返回有效数据。") from None
+
+
+def _transfer_rows(session: Any, status: str) -> list[dict[str, Any]]:
+    today = dt.datetime.now(base.SHANGHAI_TZ).date()
+    start = today - dt.timedelta(days=30)
+    rows: list[dict[str, Any]] = []
+    for page in range(1, 11):
+        payload = _inms(session, f"{TRANSFER_ROOT}/list.html", data={
+            "start_date": start.isoformat(), "start_time": "00:00:00", "end_date": today.isoformat(), "end_time": "23:59:59",
+            "Replace_Status": status, "page": page, "rows": 100})
+        batch = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(batch, list):
+            raise ProcessingError("INVALID_RESPONSE", "韵达调拨件列表没有返回数据。")
+        rows.extend(row for row in batch if isinstance(row, dict))
+        if len(batch) < 100:
+            return rows
+    raise ProcessingError("TOO_MANY_ROWS", "韵达调拨件记录过多，无法确认这条记录，请到原系统处理。")
+
+
+def _transfer_row(session: Any, replace_id: str, status: str = "0") -> dict[str, Any] | None:
+    matches = [row for row in _transfer_rows(session, status) if _text(row.get("Replace_Id")) == replace_id]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _transfer_ok(result: Any, label: str) -> None:
+    if not isinstance(result, dict) or _text(result.get("status")) != "1":
+        message = _text(result.get("msg")) if isinstance(result, dict) else ""
+        raise ProcessingError("SOURCE_WRITE_FAILED", f"{label}失败：{message or '原系统拒绝'}")
+
+
+def _transfer_accept(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    replace_id = _text(item.get("external_id"))
+    if _transfer_row(session, replace_id) is None:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "这条调拨件已不在待接单列表，请刷新后查看。")
+    result = _inms(session, f"{TRANSFER_ROOT}/accept.html", data={"Replace_Id[]": [replace_id]})
+    _transfer_ok(result, "调拨件接单")
+    if _transfer_row(session, replace_id) is not None:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "接单已提交，但这条调拨件仍是待接单，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": replace_id}
+
+
+def _yunda_sites(session: Any, keyword: str) -> list[dict[str, str]]:
+    payload = _inms(session, YUNDA_SITE_URL, data={"keyword": keyword, "page": 1, "rows": 20})
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    return [{"SITE_CODE": _text(row.get("org_id")), "SITE_NAME": _text(row.get("org_name"))}
+            for row in (rows or []) if isinstance(row, dict)][:20]
+
+
+def _yunda_site_search(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, site_search_key
+
+    try:
+        key = site_search_key(payload.get("key"))
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    return {"ok": True, "sites": _yunda_sites(session, key)}
+
+
+def _transfer_transfer(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    replace_id = _text(item.get("external_id"))
+    site_code = _text(payload.get("site_code"))
+    if not site_code:
+        raise ProcessingError("REPLY_RULE_REJECTED", "转单网点不能为空")
+    if _transfer_row(session, replace_id) is None:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "这条调拨件已不在待接单列表，请刷新后查看。")
+    result = _inms(session, f"{TRANSFER_ROOT}/transfer.html", data={"Replace_Site_Code": site_code, "Replace_Id[]": [replace_id]})
+    _transfer_ok(result, "调拨件转单")
+    if _transfer_row(session, replace_id) is not None:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "转单已提交，但这条调拨件仍在本网点待接单，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": replace_id}
+
+
+def _transfer_abnormal(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, validate_transfer_abnormal
+
+    replace_id = _text(item.get("external_id"))
+    row = _transfer_row(session, replace_id) or _transfer_row(session, replace_id, "1")
+    if row is None:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "原系统找不到这条调拨件，请刷新后重试。")
+    try:
+        fields = validate_transfer_abnormal(row, payload)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    for sort, descriptor in fields["images"]:  # 原页每格图片选中即上传并挂到这条调拨件上
+        name, data = _staged(descriptor)
+        uploaded = _inms(session, f"{TRANSFER_ROOT}/uploadAbnormalImage.html", data={"Replace_Id": replace_id, "Image_Sort": sort},
+                         files={"file": (name, data)})
+        _transfer_ok(uploaded, f"异常图片{sort}上传")
+    result = _inms(session, f"{TRANSFER_ROOT}/save.html", data={"Replace_Id[]": [replace_id], "Abnormal_Type": fields["Abnormal_Type"],
+                                                               "Abnormal_Remark": fields["Abnormal_Remark"]})
+    _transfer_ok(result, "调拨件异常登记")
+    _discard_staged([descriptor for _sort, descriptor in fields["images"]])
+    after = _transfer_row(session, replace_id) or _transfer_row(session, replace_id, "1") or {}
+    if after and _text(after.get("Abnormal_Type")) not in (fields["label"], fields["Abnormal_Type"]):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "异常登记已提交，但读回的异常类型不一致，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": replace_id}
+
+
+def _yunda_reply_often(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """韵达问题件回复页的“常用回复语”（query/getReplyOften.html，info=1 时 data 为文字列表）。"""
+    response = session.post(f"{base.YUNDA_PUBLIC_ROOT}/query/getReplyOften.html",
+                            headers=base._yunda_headers(f"{base.YUNDA_PUBLIC_ROOT}/query/index.html"), timeout=20)
+    body = str(getattr(response, "text", "") or "")
+    base._raise_if_yunda_auth_required(response, body)
+    try:
+        result = response.json()
+    except ValueError:
+        raise ProcessingError("INVALID_RESPONSE", "韵达没有返回常用回复语。") from None
+    if not isinstance(result, dict) or _text(result.get("info")) != "1":
+        raise ProcessingError("SOURCE_QUERY_FAILED", _text((result or {}).get("msg")) or "常用回复语读取失败。")
+    replies = [_text(text) for text in (result.get("data") or []) if _text(text)]
+    return {"ok": True, "replies": replies[:50]}
+
+
 # (platform, kind, operation) -> handler(session, item, payload)
 Handler = Callable[[Any, dict[str, Any], dict[str, Any]], dict[str, Any]]
 PROCESS: dict[tuple[str, str, str], Handler] = {
@@ -408,10 +699,18 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "complaint_filed", "claim"): _complaint_filed_claim,
     ("ronghui", "appeal", "delete"): _appeal_delete,
     ("ronghui", "pickup", "revoke"): _pickup_revoke,
+    **{("yunda", "cssp", operation): (lambda op: lambda s, i, p: _cssp_process(s, op, i, p))(operation)
+       for operation in ("prompt_resp", "first_reply", "reply_handling", "claim", "statement", "extend", "turn_site")},
+    ("yunda", "cssp_cui", "reply"): _cui_reply,
+    ("yunda", "transfer", "accept"): _transfer_accept,
+    ("yunda", "transfer", "transfer"): _transfer_transfer,
+    ("yunda", "transfer", "abnormal"): _transfer_abnormal,
 }
 LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "problem", "contact"): _problem_contact,
     ("ronghui", "site", "search"): _site_search,
+    ("yunda", "site", "search"): _yunda_site_search,
+    ("yunda", "problem", "reply_often"): _yunda_reply_often,
 }
 
 

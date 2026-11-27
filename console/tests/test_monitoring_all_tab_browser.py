@@ -441,3 +441,70 @@ def test_work_order_buttons_open_the_original_dialog_and_save(app, browser):
                         "item": {"external_id": "W-SYN-1", "BILL_CODE": "SYNTHETIC-2", "WORK_TYPE": "咨询单", "WORK_NAME": "合成类别"},
                         "kind": "work_order", "operation": "respond",
                         "payload": {"HANDLE_CONTENT": "已联系客户，今天派送", "attachments": []}}
+
+
+def test_yunda_work_order_and_transfer_buttons(app, browser):
+    """韵达工单“回复处理”外呼人身份切换带出姓名电话；调拨件“接单”按原页确认后直接提交。"""
+    from shared.original_page_actions import cssp_specs, transfer_specs
+
+    detail = {"complaintId": "C-SYN", "compStatus": 3, "compStatusName": "已首回，待处理", "comper": "合成投诉人", "comperPhone": "13800000000",
+              "sender": "合成寄件人", "senderPhone": "13900000000", "receiver": "", "receiverPhone": ""}
+    items = [
+        {"id": "C-SYN", "title": "合成工单", "occurred_at": "2026-01-02 08:00:00", "content": "合成工单正文", "status_label": "已首回，待处理",
+         "actions": {"platform": "yunda", "account_id": "yunda_default", "item": {"external_id": "C-SYN"}, "specs": cssp_specs(detail)}},
+        {"id": "R-SYN", "title": "调拨件待接单", "occurred_at": "2026-01-02 07:00:00", "content": "合成调拨件", "status_label": "待接单",
+         "actions": {"platform": "yunda", "account_id": "yunda_default", "item": {"external_id": "R-SYN"},
+                     "specs": transfer_specs({"Replace_Id": "R-SYN", "Replace_Status_Code": "0"})}},
+    ]
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+                "systems": [{"system": "yunda", "label": "韵达", "status": "ok", "categories": [
+                    {"category_id": "yunda:work_orders", "title": "收到的待处理工单", "count": 2, "items_supported": True}]}]}
+    posts = []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "items": items, "total": 2, "has_more": False}))
+            elif parsed.path == "/customer-service/process":
+                posts.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.locator(".action-button[data-operation='reply_handling']").wait_for()
+        page.click(".action-button[data-operation='prompt_resp']")
+        assert "不能立即响应" in page.inner_text(".action-bar-note")
+        page.click(".action-button[data-operation='reply_handling']")
+        assert page.input_value("[aria-label='姓名']") == "合成投诉人"
+        page.check(".action-radio:has-text('发件人') input")
+        assert page.input_value("[aria-label='姓名']") == "合成寄件人" and page.input_value("[aria-label='外呼电话']") == "13900000000"
+        page.check(".action-radio:has-text('第三方') input")
+        assert page.input_value("[aria-label='姓名']") == ""
+        page.fill("[aria-label='姓名']", "合成第三方")
+        page.fill("[aria-label='外呼电话']", "13700000000")
+        page.fill("[aria-label='沟通记录']", "已沟通")
+        page.locator(".action-dialog .action-save").click()
+        page.wait_for_function("document.querySelectorAll('.monitor-item-status')[0]?.textContent === '已回复处理'")
+        assert posts[0]["payload"] == {"putboundIdentity": "第三方", "customerName": "合成第三方", "callNumber": "13700000000",
+                                       "dealContent": "已沟通", "attachments": []}
+        page.once("dialog", lambda dialog: (posts.append({"confirm": dialog.message}), dialog.accept()))
+        page.click(".action-button[data-operation='accept']")
+        page.wait_for_function("[...document.querySelectorAll('.action-bar-note')].some((n) => n.textContent === '已接单')")
+        assert posts[1] == {"confirm": "是否确认接单？"}
+        assert posts[2]["kind"] == "transfer" and posts[2]["operation"] == "accept" and posts[2]["item"] == {"external_id": "R-SYN"}

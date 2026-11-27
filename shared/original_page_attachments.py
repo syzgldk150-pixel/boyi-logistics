@@ -27,10 +27,14 @@ LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("ronghui", "appeal"): (20, 100 * MB),            # 申诉登记
     ("ronghui", "complaint_image"): (1, 30 * MB),     # 投诉方 提交申诉/提交材料：每格一张（/file/upload?sysFileUploadId=IMG）
     ("yunda", "problem_reply"): (3, 5 * MB),          # 问题件 query/reply.html
-    ("yunda", "transfer"): (3, 5 * MB),               # 调拨件异常图片
+    ("yunda", "transfer"): (1, 2 * MB),               # 调拨件异常登记：每格一张 jpg/png/jpeg（uploadAbnormalImage）
+    ("yunda", "cssp_reply"): (3, 1 * MB),             # 快运工单“回复处理”：最多 3 张 jpg/png，超 1MB 先压缩
 }
 # One request through the public entry (Nginx client_max_body_size 34m) carries at most this much.
 TRANSPORT_MAX = 30 * MB
+# 韵达快运工单回复与调拨件异常图片随处理动作一起提交给原平台：先在 Agent 暂存，处理时再发送。
+STAGED_PURPOSES = {"cssp_reply": frozenset({"jpg", "png"}), "transfer": frozenset({"jpg", "png", "jpeg"})}
+STAGED_PATH = re.compile(r"^staged:[0-9a-f]{32}$")
 YUNDA_EXTENSIONS = frozenset("jpg png gif bmp jpeg svg txt doc docx xls xlsx exe rar zip ppt pptx".split())
 _YUNDA_NAME = re.compile(r"^[a-zA-Z0-9\-._一-龥]+$")
 _RONGHUI_TYPES = (
@@ -61,7 +65,10 @@ def check_upload(platform: str, purpose: str, file_name: str, size: int) -> None
         raise AttachmentError(f"单个文件最大{limit[1] // MB}Mb")
     if size > TRANSPORT_MAX:
         raise AttachmentError(f"博益目前只能传 {TRANSPORT_MAX // MB}MB 以内的附件，更大的请在原系统上传。")
-    if platform == "yunda":
+    if platform == "yunda" and purpose in STAGED_PURPOSES:
+        if file_name.rsplit(".", 1)[-1].lower() not in STAGED_PURPOSES[purpose] or "." not in file_name:
+            raise AttachmentError("只能上传jpg/png文件")
+    elif platform == "yunda":
         if not _YUNDA_NAME.match(file_name):
             raise AttachmentError("不支持文件名包含符号的文件")
         if file_name.rsplit(".", 1)[-1].lower() not in YUNDA_EXTENSIONS or "." not in file_name:
@@ -115,6 +122,8 @@ def attachments(value: Any, platform: str, purpose: str) -> list[dict[str, Any]]
             raise AttachmentError("附件路径无效，请重新上传。")
         if platform == "yunda" and (not path or not _text(raw.get("new_name"))):
             raise AttachmentError("附件路径无效，请重新上传。")
+        if platform == "yunda" and bool(STAGED_PATH.match(path)) != (purpose in STAGED_PURPOSES):
+            raise AttachmentError("附件用途不符，请重新上传。")
         name = _text(raw.get("file_name") or raw.get("old_name"))
         if name in names:
             raise AttachmentError("列表已经存在该附件!")
@@ -141,10 +150,15 @@ def ronghui_attachment_rows(items: Sequence[Mapping[str, Any]], user_info: Mappi
     return rows
 
 
+def staged_descriptor(file_name: str, staged_id: str) -> dict[str, Any]:
+    return {"platform": "yunda", "file_name": file_name, "old_name": file_name, "new_name": staged_id,
+            "file_path": f"staged:{staged_id}"}
+
+
 def yunda_file_arr(items: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
     return [{"new_name": _text(item.get("new_name")), "old_name": _text(item.get("old_name")),
              "file_path": _text(item.get("file_path"))} for item in items]
 
 
-__all__ = ["AttachmentError", "LIMITS", "TRANSPORT_MAX", "attachments", "check_upload", "ronghui_attachment_rows", "ronghui_descriptor",
+__all__ = ["AttachmentError", "LIMITS", "STAGED_PATH", "STAGED_PURPOSES", "TRANSPORT_MAX", "staged_descriptor", "attachments", "check_upload", "ronghui_attachment_rows", "ronghui_descriptor",
            "ronghui_file_type", "yunda_descriptor", "yunda_file_arr"]

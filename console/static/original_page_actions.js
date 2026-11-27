@@ -79,7 +79,47 @@
     return box;
   }
 
-  function control(field, values, context) {
+  function control(field, values, context, form) {
+    if (field.type === 'switch') {
+      // 原页 el-switch：打开为“投诉人”，关闭为空格；旁边红字提示。
+      const box = el('span', 'action-switch');
+      const input = el('input');
+      input.type = 'checkbox';
+      input.setAttribute('aria-label', field.label);
+      values[field.name] = values[field.name] ?? field.value ?? field.on;
+      input.checked = values[field.name] === field.on;
+      input.addEventListener('change', () => { values[field.name] = input.checked ? field.on : field.off; });
+      box.append(input, el('span', '', field.on));
+      if (field.note) box.append(el('span', 'action-switch-note', field.note));
+      return box;
+    }
+    if (field.type === 'radio') {
+      const box = el('span', 'action-radios');
+      values[field.name] = values[field.name] ?? field.value ?? '';
+      (field.options || []).forEach((option) => {
+        const label = el('label', 'action-radio');
+        const input = el('input');
+        input.type = 'radio';
+        input.name = `${field.name}-${Math.random().toString(36).slice(2)}`;
+        input.value = option;
+        input.checked = values[field.name] === option;
+        input.addEventListener('change', () => {
+          values[field.name] = option;
+          // 原页选投诉人/发件人/收件人时带出姓名和电话，其他身份清空。
+          if (field.autofill) {
+            const fill = field.autofill.values[option] || ['', ''];
+            field.autofill.targets.forEach((target, index) => {
+              values[target] = fill[index] || '';
+              const node = form?.querySelector(`[data-action-field="${target}"]`);
+              if (node) node.value = values[target];
+            });
+          }
+        });
+        label.append(input, document.createTextNode(option));
+        box.append(label);
+      });
+      return box;
+    }
     if (field.type === 'readonly' || field.type === 'readonly_long') {
       const box = el(field.type === 'readonly_long' ? 'textarea' : 'input', 'action-readonly');
       box.readOnly = true;
@@ -101,12 +141,19 @@
       return box;
     }
     const box = el(field.type === 'textarea' ? 'textarea' : 'input', field.type === 'textarea' ? 'action-textarea' : 'action-input');
-    if (field.type !== 'textarea') box.type = 'text';
+    if (field.type === 'datetime') box.type = 'datetime-local';
+    else if (field.type !== 'textarea') box.type = 'text';
+    if (field.type === 'digits') box.inputMode = 'numeric';
+    box.dataset.actionField = field.name;
     if (field.type === 'money') box.inputMode = 'decimal';
     if (field.max) box.maxLength = field.max;
     box.value = values[field.name] ?? field.value ?? '';
     box.setAttribute('aria-label', field.label);
-    box.addEventListener('input', () => { values[field.name] = box.value; });
+    box.addEventListener('input', () => {
+      // datetime-local 给 “2026-11-27T09:30”，原页格式是 “yyyy-MM-dd HH:mm”。
+      values[field.name] = field.type === 'datetime' ? box.value.replace('T', ' ') : box.value;
+    });
+    if (field.type === 'datetime' && values[field.name]) box.value = String(values[field.name]).replace(' ', 'T');
     return box;
   }
 
@@ -115,6 +162,8 @@
       if (!field.required) continue;
       const value = field.type === 'site' ? values.site_code : String(values[field.name] ?? field.value ?? '').trim();
       if (!value) return `${field.label}不能为空`;
+      if (field.type === 'digits' && !/^\d+$/.test(value)) return `请输入正确的${field.label}`;
+      if (field.max && value.length > field.max) return `${field.label}不能超过${field.max}个字`;
     }
     if (spec.attachments?.required && !(values.attachments || []).length) return '请上传附件';
     return '';
@@ -150,7 +199,7 @@
       const caption = el('span', 'action-label');
       if (field.required) caption.append(el('span', 'action-required', '*'));
       caption.append(document.createTextNode(field.label));
-      row.append(caption, control(field, values, context));
+      row.append(caption, control(field, values, context, form));
       form.append(row);
     });
     if (spec.attachments && window.OriginalPageAttachments) {

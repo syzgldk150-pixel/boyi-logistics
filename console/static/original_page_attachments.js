@@ -9,7 +9,7 @@
   // (platform:purpose) -> [most files, largest file]; mirrors shared/original_page_attachments.LIMITS.
   const LIMITS = {
     'ronghui:work_order': [9, 200 * MB], 'ronghui:complaint_reply': [10, 20 * MB], 'ronghui:appeal': [20, 100 * MB],
-    'ronghui:complaint_image': [1, 30 * MB], 'yunda:problem_reply': [3, 5 * MB], 'yunda:transfer': [3, 5 * MB]
+    'ronghui:complaint_image': [1, 30 * MB], 'yunda:problem_reply': [3, 5 * MB], 'yunda:transfer': [1, 2 * MB], 'yunda:cssp_reply': [3, 1 * MB]
   };
   const YUNDA_NAME = /^[a-zA-Z0-9\-._一-龥]+$/;
   const el = (tag, className, text) => {
@@ -84,14 +84,17 @@
       const chosen = Array.from(files || []);
       if (items.length + chosen.length > most) { message.textContent = `最多只能上传${most}个文件`; return; }
       for (const file of chosen) {
-        if (file.size > largest) { message.textContent = `单个文件最大${Math.round(largest / MB)}Mb`; return; }
+        if (file.size > largest && !(context.purpose === 'cssp_reply' && /^image\//.test(file.type))) { message.textContent = `单个文件最大${Math.round(largest / MB)}Mb`; return; }
         if (context.platform === 'yunda' && !YUNDA_NAME.test(file.name)) { message.textContent = '不支持文件名包含符号的文件'; return; }
         if (items.some((item) => (item.file_name || item.old_name) === file.name)) { message.textContent = `文件 ${file.name} 已存在`; return; }
       }
       for (const file of chosen) {
         message.textContent = `正在上传 ${file.name}…`;
         try {
-          const ready = context.platform === 'yunda' && /^image\//.test(file.type) && file.size > 20000 ? await compressImage(file) : file;
+          // 韵达问题件回复：图片超 20KB 按质量 0.5 压缩；快运工单回复处理：超 1MB 先压缩到 1MB 以内（原页 compressAccurately）。
+          const compress = context.platform === 'yunda' && /^image\//.test(file.type)
+            && ((context.purpose === 'problem_reply' && file.size > 20000) || (context.purpose === 'cssp_reply' && file.size > MB));
+          const ready = compress ? await compressImage(file) : file;
           items.push(await upload(ready, context));
         } catch (error) {
           message.textContent = `${file.name}：${error.message || '上传失败'}`;

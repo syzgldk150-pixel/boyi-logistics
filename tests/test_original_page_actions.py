@@ -142,3 +142,51 @@ def test_appeal_delete_and_pickup_revoke_rules():
     assert pickup_revoke_block({"STATUS": "待揽收"}) == ""
     assert pickup_revoke_row({"TX_LOGISTIC_ID": "T1"}, USER, "T") == {"TX_LOGISTIC_ID": "T1", "STATUS": 3, "REVOKE_DATE": "T",
                                                                      "REVOKE_MAN": "合成员工", "REVOKE_MAN_CODE": "E1"}
+
+
+def test_yunda_work_order_buttons_follow_the_detail_page():
+    from shared.original_page_actions import cssp_specs, validate_cssp, validate_cui_reply
+
+    detail = {"complaintId": "C1", "compStatus": 10, "compStatusName": "已接单，待响应", "comper": "合成投诉人", "comperPhone": "13800000000",
+              "sender": "合成寄件人", "senderPhone": "13900000000"}
+    specs = {spec["operation"]: spec for spec in cssp_specs(detail)}
+    assert [spec["label"] for spec in specs.values()] == ["立即响应", "首次回复", "回复处理", "转至理赔", "结单", "延长时效", "转站点"]
+    assert specs["prompt_resp"]["blocked"] == "" and specs["first_reply"]["blocked"].startswith("当前处理状态")
+    assert specs["turn_site"]["blocked"] == "" and specs["statement"]["blocked"] != ""
+    respond = specs["prompt_resp"]["fields"]
+    assert respond[0]["type"] == "switch" and respond[1]["value"] == "合成投诉人" and respond[-1]["value"] == "已联系投诉人响应工单诉求。"
+    reply = specs["reply_handling"]["fields"][0]
+    assert reply["type"] == "radio" and reply["autofill"]["values"]["发件人"] == ["合成寄件人", "13900000000"]
+    now = dt.datetime(2026, 11, 27, 10, 0)
+    good = {"putboundIdentity": "投诉人", "customerName": "合成投诉人", "callNumber": "13800000000", "dealContent": "已联系"}
+    assert validate_cssp("prompt_resp", detail, good, now)["params"]["callNumber"] == "13800000000"
+    with pytest.raises(ActionRuleError, match="外呼电话"):
+        validate_cssp("prompt_resp", detail, {**good, "callNumber": "138-0"}, now)
+    with pytest.raises(ActionRuleError, match="8:00至下午18:00"):
+        validate_cssp("turn_site", detail, {"dealContent": "转"}, dt.datetime(2026, 11, 27, 19, 0))
+    first = {**detail, "compStatus": 2}
+    with pytest.raises(ActionRuleError, match="预计解决时间"):
+        validate_cssp("first_reply", first, good, now)
+    assert validate_cssp("first_reply", first, {**good, "estimatedCompletionTime": "2026-11-28 10:00"}, now)["params"]["estimatedCompletionTime"]
+    with pytest.raises(ActionRuleError, match="沟通记录"):
+        validate_cui_reply({"replayCustomerName": "甲", "replayCustomerPhone": "1"})
+
+
+def test_yunda_transfer_rules():
+    from shared.original_page_actions import transfer_abnormal_block, transfer_accept_confirm, transfer_specs, validate_transfer_abnormal
+
+    row = {"Replace_Id": "R1", "Replace_Status_Code": "0", "Order_Source": "690", "Ext_Field4": "镇上自提", "Abnormal_Type": ""}
+    assert "可能有加收" in transfer_accept_confirm(row) and transfer_accept_confirm({**row, "Order_Source": "1"}) == "是否确认接单？"
+    assert [spec["label"] for spec in transfer_specs(row)] == ["接单", "转单", "异常登记"]
+    assert transfer_abnormal_block({**row, "Abnormal_Type": "超区"}) == "已做过异常登记无需再次登记"
+    assert transfer_abnormal_block({**row, "Abnormal_Type": "客户货未备齐或无货", "Delay_Day": "2"}) == ""
+    assert transfer_abnormal_block({**row, "Replace_Status_Code": "2"}) == "只有待接单、已接单支持异常登记"
+    with pytest.raises(ActionRuleError, match="请选择异常类型"):
+        validate_transfer_abnormal(row, {})
+    with pytest.raises(ActionRuleError, match="最多50字"):
+        validate_transfer_abnormal(row, {"Abnormal_Type": "2", "Abnormal_Remark": "x" * 51})
+    staged = {"platform": "yunda", "file_name": "a.jpg", "old_name": "a.jpg", "new_name": "0" * 32, "file_path": "staged:" + "0" * 32}
+    fields = validate_transfer_abnormal(row, {"Abnormal_Type": "2", "abnormal_image2": [staged]})
+    assert fields["label"] == "客户联系不上" and fields["images"] == [(2, staged)]
+    with pytest.raises(ActionRuleError, match="用途不符"):
+        validate_transfer_abnormal(row, {"Abnormal_Type": "2", "abnormal_image1": [{**staged, "file_path": "/up/x.jpg"}]})

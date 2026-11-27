@@ -172,6 +172,7 @@ def build_customer_action_params(action: str, params: dict[str, Any]) -> dict[st
         result["payload"] = {
             "file_path": params["file_path"],
             "purpose": _clean(params.get("purpose")),
+            "file_name": _clean(params.get("file_name")),
             # The caller owns the file lifecycle.  Never let this adapter
             # delete an arbitrary path after upload.
             "delete_after_upload": False,
