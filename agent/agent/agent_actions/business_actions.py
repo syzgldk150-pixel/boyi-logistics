@@ -298,7 +298,7 @@ class BusinessTurn:
             store.remember(key, state)
             return (f"{when.isoformat()} 没有已审核生效的收费规则，不能给出金额。规则在后台“业务手册 → 计算规则”审核生效后才会使用。",
                     "EXECUTE")
-        named = fee_actions.match_fees(message, rules)
+        named = fee_actions.match_fees(message, rules, none_chosen=not state.fee_kinds)
         if named:
             adding = bool(fee_actions._ADD.search(message)) and state.fee_kinds
             state.fee_kinds = list(dict.fromkeys([*(state.fee_kinds if adding else []), *named]))

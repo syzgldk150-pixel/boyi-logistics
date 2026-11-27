@@ -209,12 +209,15 @@ def fee_aliases(name: str) -> list[str]:
     return sorted((word for word in words if len(word) >= 2), key=lambda word: (-len(word), word))
 
 
-def match_fees(message: str, rules: Sequence[Any]) -> list[str]:
+def match_fees(message: str, rules: Sequence[Any], *, none_chosen: bool = False) -> list[str]:
+    """Fees named in the message, plus those its floors/yes-no/choices imply. With ``none_chosen``
+    (nothing picked yet in this thread) the implied ones count on their own: "有电梯 上2楼" means
+    上楼费. Once fees are picked, a bare "那3楼呢" must not replace them, so it needs a named fee."""
     text = unicodedata.normalize("NFKC", message or "")
     if _ALL.search(text):
         return [rule.fee_kind for rule in rules]
     named = [rule.fee_kind for rule in rules if any(alias in text for alias in fee_aliases(rule.name))]
-    return [*named, *implied_fees(text, rules, named)] if named else []
+    return [*named, *implied_fees(text, rules, named)] if named or none_chosen else []
 
 
 def implied_fees(message: str, rules: Sequence[Any], named: Sequence[str]) -> list[str]:

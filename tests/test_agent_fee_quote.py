@@ -111,6 +111,12 @@ def test_with_a_lift_the_floor_is_not_asked():
     assert decision.decision == "EXECUTE" and "送到几楼" not in text and "· 上楼费：" in text
 
 
+def test_floor_and_lift_without_a_fee_name_mean_the_upstairs_fee():
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=ALL)
+    text, decision = ask(turn, f"{CODE} 普货 有电梯 上2楼", CODE)
+    assert decision.decision == "EXECUTE" and "· 上楼费：" in text and "要算哪些费用" not in text
+
+
 def test_without_a_lift_the_floor_is_still_asked():
     turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]))
     text, decision = ask(turn, f"{CODE} 无电梯上楼，普货", CODE)
