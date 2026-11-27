@@ -29,6 +29,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from agent.agent_actions import fee_actions
 from agent.agent_actions.gateway import ActionGateway, GatewayDecision
+from agent.agent_actions.grounding import said_terms
 from agent.agent_actions.pending import PendingConfirmations
 from agent.agent_actions.spec import ActionSpec
 from shared.agent_action_audit import ActionDecision
@@ -78,13 +79,14 @@ SPECS: dict[str, tuple[ActionSpec, str]] = {
             "fees": {"type": "array", "title": "费用", "x-ground": "action_checked", "maxItems": 12,
                      "items": {"type": "string", "maxLength": 20}},
             "conditions": {"type": "array", "title": "条件", "x-ground": "standard_terms", "maxItems": 12,
-                           "items": {"type": "string", "maxLength": 20}}}}),
+                           "items": {"type": "string", "maxLength": 40}}}}),
         "按后台“业务手册 → 计算规则”里已生效的规则，计算一票融辉运单或一趟送货的费用（上楼费、卸货费、开箱清点、码放、夜送等）。"
         "tracking_number 只填用户原话里的完整单号，没有单号就不填；用户在补充楼层、电梯、件数或要加算的费用时不填单号，沿用上一次。"
         "fees 填这句话想算的费用，用标准费用名（例如“有电梯、上2楼”是要算“上楼费”；“卸车”是“卸货费”），"
         "只是补充楼层、电梯等条件或问“那3楼呢”时不填。"
-        "conditions 把这句话里说到的条件改写成标准说法，一项一个，例如“2楼”“有电梯”“无电梯”“普货”“3件”“每件80公斤”“48级台阶”；"
-        "数字必须是用户原话里的，没说到的条件不要补，不确定就不填。系统会核对并按运单补全，缺的会再问。"),
+        "conditions 只写这句话里用户明确说到的条件，一项一个，写成“标准说法=原话里对应的字”，"
+        "例如“2楼=上2楼”“有电梯=电梯能用”“无电梯=走楼梯”“床垫=席梦思”“3件=三件”“48级台阶=48级”；"
+        "原话里没说到的条件（电梯、货物类型等）一律不写，系统按规则默认值计算或再问，不要自己补。"),
 }
 
 Invoke = Callable[[str, dict[str, Any], Mapping[str, Any], str], Mapping[str, Any]]
@@ -316,7 +318,9 @@ class BusinessTurn:
                     "EXECUTE")
         # The model's understanding (fees it took the person to want, conditions restated in standard
         # wording) only fills what the person's own words, read by code, leave open.
-        ai_fees, ai_terms = list(arguments.get("fees") or ()), list(arguments.get("conditions") or ())
+        ai_fees = list(arguments.get("fees") or ())
+        ai_terms = list(said_terms(arguments.get("conditions") or (), message,
+                                   reserved=[arguments.get("tracking_number")]).values())
         named = fee_actions.match_fees(message, rules, none_chosen=not state.fee_kinds)
         if not named and not state.fee_kinds and (ai_fees or ai_terms):
             named = fee_actions.match_fees(" ".join([*ai_fees, *ai_terms]), rules, none_chosen=True)

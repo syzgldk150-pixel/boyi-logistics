@@ -71,15 +71,17 @@ def test_lists_are_accepted_only_when_their_schema_says_how_they_are_checked():
     terms = {"type": "object", "properties": {
         "fees": {"type": "array", "x-ground": "action_checked", "items": {"type": "string"}},
         "conditions": {"type": "array", "x-ground": "standard_terms", "items": {"type": "string"}}}}
-    # Chinese numerals in the message count: 上二楼 → “2楼”, 十二层 → “12楼”.
-    assert ground_inputs(terms, {"fees": ["上楼费"], "conditions": ["2楼", "有电梯", "2楼"]}, "有电梯 上二楼") == {
-        "fees": ["上楼费"], "conditions": ["2楼", "有电梯"]}
-    assert ground_inputs(terms, {"conditions": ["12楼"]}, "送十二层") == {"conditions": ["12楼"]}
-    for bad in (["3楼"], ["每件80公斤"]):
-        with pytest.raises(GroundingError) as raised:
-            ground_inputs(terms, {"conditions": bad}, "有电梯 上二楼")
-        assert raised.value.code == "ARGUMENT_NOT_GROUNDED"
-    for bad in ([1], ["x" * 21], ["楼"] * 13):
+    # Each condition cites the person's words (标准说法=原话); Chinese numerals count: 上二楼 → “2楼”.
+    assert ground_inputs(terms, {"fees": ["上楼费"], "conditions": ["2楼=上二楼", "有电梯=有电梯", "2楼=上二楼"]},
+                         "有电梯 上二楼") == {"fees": ["上楼费"], "conditions": ["2楼=上二楼", "有电梯=有电梯"]}
+    assert ground_inputs(terms, {"conditions": ["12楼=送十二层"]}, "送十二层") == {"conditions": ["12楼=送十二层"]}
+    # Not said, cited words not in the message, or a number the cited words do not carry: dropped.
+    unsaid = ["普货", "普货=普通货物", "3楼=上二楼", "每件80公斤=", "=上二楼"]
+    assert ground_inputs(terms, {"conditions": unsaid}, "有电梯 上二楼") == {"conditions": []}
+    # One stretch of words backs one condition: 上二楼 cannot also say 无电梯 — both are dropped.
+    assert ground_inputs(terms, {"conditions": ["2楼=上二楼", "无电梯=上二楼", "普货=普货"]}, "上二楼 普货") == {
+        "conditions": ["普货=普货"]}
+    for bad in ([1], ["x" * 41], ["楼"] * 13):
         with pytest.raises(GroundingError):
             ground_inputs(terms, {"fees": bad}, "上楼费")
 

@@ -241,16 +241,18 @@ def test_the_models_understanding_names_the_fee_and_conditions_code_cannot_read(
     text, decision = ask(_turn(platform, rules=ALL), f"{CODE} 普货 电梯能用", CODE)
     assert decision.decision == "CLARIFY"
     text, decision = ask_understood(_turn(platform, rules=ALL), f"{CODE} 普货 电梯能用", CODE,
-                                    fees=["上楼费"], conditions=["有电梯", "普货"])
+                                    fees=["上楼费"], conditions=["有电梯=电梯能用", "普货=普货"])
     assert decision.decision == "EXECUTE" and "· 上楼费：" in text and "· 卸货费" not in text
 
 
-def test_a_number_the_person_did_not_say_is_not_taken_from_the_model():
-    text, decision = ask_understood(_turn(Platform(), rules=ALL), f"{CODE} 无电梯 搬上二楼", CODE,
-                                    fees=["上楼费"], conditions=["3楼", "无电梯"])
-    assert decision.decision == "CLARIFY" and "“3楼”里的数字不在你的原话里" in text
-    text, decision = ask_understood(_turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=ALL),
-                                    f"{CODE} 无电梯 搬上二楼 普货", CODE, fees=["上楼费"], conditions=["2楼", "无电梯", "普货"])
+def test_a_condition_not_tied_to_the_persons_words_is_not_used():
+    platform = Platform(rows=[row(actual_weight=80, settlement_weight=80)])
+    # “3楼” cites words that say 二楼; “每件80公斤” cites nothing: both are dropped, the floor read by code stays.
+    text, decision = ask_understood(_turn(platform, rules=ALL), f"{CODE} 电梯坏了 搬上五楼 普货", CODE,
+                                    fees=["上楼费"], conditions=["3楼=搬上五楼", "无电梯=电梯坏了", "每件80公斤"])
+    assert decision.decision == "EXECUTE" and "送到几楼 5 楼" in text and "有电梯 否" in text
+    text, decision = ask_understood(_turn(platform, rules=ALL), f"{CODE} 无电梯 搬上二楼 普货", CODE,
+                                    fees=["上楼费"], conditions=["2楼=搬上二楼", "无电梯=无电梯", "普货=普货"])
     assert decision.decision == "EXECUTE" and "· 上楼费：" in text
 
 
@@ -258,14 +260,14 @@ def test_the_persons_own_words_win_over_the_models_restatement():
     platform = Platform(rows=[row(actual_weight=80, settlement_weight=80)])
     plain, _ = ask(_turn(platform, rules=ALL), f"{CODE} 上楼费 5楼 无电梯 普货", CODE)
     understood, _ = ask_understood(_turn(platform, rules=ALL), f"{CODE} 上楼费 5楼 无电梯 普货", CODE,
-                                   fees=["上楼费"], conditions=["5楼", "有电梯", "普货"])
+                                   fees=["上楼费"], conditions=["5楼=5楼", "有电梯=上楼费", "普货=普货"])
     assert understood == plain and "· 上楼费：37.60 元" in plain
 
 
 def test_a_follow_up_keeps_the_fees_already_chosen():
     turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=ALL)
     ask(turn, f"{CODE} 上楼费 5楼 无电梯 普货", CODE)
-    text, _ = ask_understood(turn, "那3楼呢", fees=["卸货费"], conditions=["3楼"])
+    text, _ = ask_understood(turn, "那3楼呢", fees=["卸货费"], conditions=["3楼=3楼"])
     assert "· 上楼费：33.60 元" in text and "· 卸货费" not in text
 
 
@@ -303,3 +305,13 @@ def test_stairs_said_plainly_override_the_lift_default(said):
     text, decision = ask(turn, f"{CODE} 上楼费 {said}", CODE)
     assert decision.decision == "EXECUTE" and "· 上楼费：37.60 元" in text and "有电梯 否" in text
     assert "没说明的按规则默认：货物类型 普货" in text
+
+
+def test_conditions_the_person_did_not_say_take_the_rule_default_not_the_models_guess():
+    """2026-11-27: “R… 上2楼” — the model wrote 有电梯 / 普货 though they were not said; they are
+    not used, the rule defaults are, and the reply says so."""
+    turn = _turn(Platform(rows=[row(actual_weight=80, settlement_weight=80)]), rules=(_with_defaults(),))
+    text, decision = ask_understood(turn, f"{CODE} 上2楼", CODE, fees=["上楼费"],
+                                    conditions=["2楼=上2楼", "有电梯", "普货=普货", "无电梯=上2楼", f"无电梯={CODE}"])
+    assert decision.decision == "EXECUTE" and "送到几楼 2 楼" in text
+    assert "没说明的按规则默认：有电梯 是 · 货物类型 普货" in text

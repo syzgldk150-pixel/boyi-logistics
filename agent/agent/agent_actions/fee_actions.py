@@ -2,8 +2,9 @@
 
 Replaces the upstairs-only action (C3). The model picks the action, copies the waybill
 number and restates what it understood: the fees wanted and the conditions in standard wording
-(“有电梯、上2楼” → fees 上楼费, conditions 2楼 / 有电梯; numbers checked against the message by
-``grounding``). Code does the rest, and its own reading of the person's words wins:
+(“有电梯、上2楼” → fees 上楼费, conditions “2楼=上2楼” / “有电梯=有电梯”: each tied to the words it
+came from, checked by ``grounding``; what was not said is never filled in by the model, the rule
+default or a question covers it). Code does the rest, and its own reading of the person's words wins:
 
 * reads the Ronghui waybill live (``query_waybill_detail``): billing date (``REGISTER_DATE``,
   picks the rule versions), settlement weight, piece count, actual weight, the upstairs flag

@@ -7,10 +7,13 @@ The model may only *copy* values out of what the person said. Code verifies it:
 * a waybill number must appear in the message and pass the local format check;
 * an enum value must be one of the declared options;
 * a list of short strings is accepted only when its schema says how it is checked
-  (``x-ground``): ``"standard_terms"`` — the model's restatement of the person's words in the
-  standard wording code parses (“2楼”, “有电梯”); every number in it must appear in the message
-  (digits or Chinese numerals). ``"action_checked"`` — names the action itself matches against
-  a closed list it owns (fee names against the approved rules), unknown ones are dropped there;
+  (``x-ground``): ``"standard_terms"`` — conditions the person said, each restated in the
+  standard wording code parses and tied to the words it came from, ``标准说法=原话``
+  (“2楼=上2楼”, “有电梯=电梯能用”); the 原话 part must be in the message and every number of
+  the standard part must be in it. An item without such words is dropped, never used: what the
+  person did not say is not filled in by the model (rule defaults or a question cover it).
+  ``"action_checked"`` — names the action itself matches against a closed list it owns (fee
+  names against the approved rules), unknown ones are dropped there;
 * anything else (booleans, objects, other arrays) is never accepted from the model.
 
 A failed check never becomes a guess: it raises :class:`GroundingError`, whose
@@ -123,7 +126,7 @@ def ground_tracking_number(field: str, value: Any, message: str) -> str:
 
 
 _MAX_TERMS = 12
-_MAX_TERM_LENGTH = 20
+_MAX_TERM_LENGTH = 40
 
 
 def ground_terms(field: str, value: Any, message: str, *, schema: Mapping[str, Any]) -> list[str]:
@@ -135,11 +138,48 @@ def ground_terms(field: str, value: Any, message: str, *, schema: Mapping[str, A
     if len(terms) != len(value) or len(terms) > _MAX_TERMS or any(len(term) > _MAX_TERM_LENGTH for term in terms):
         raise GroundingError("没有读懂要用的条件，请再说一遍。", field=field, code="ARGUMENT_INVALID")
     if mode == "standard_terms":
-        said = numbers_said(message)
-        for term in terms:
-            if any(number not in said for number in numbers_in(term)):
-                raise GroundingError(f"“{term}”里的数字不在你的原话里，请直接说一下。", field=field)
+        kept = set(said_terms(terms, message))
+        terms = [term for term in terms if term in kept]
     return list(dict.fromkeys(terms))
+
+
+def said_terms(terms: Any, message: str, *, reserved: Any = ()) -> dict[str, str]:
+    """``{标准说法=原话 item: 标准说法}`` for the items tied to the person's words (``said_term``).
+    One stretch of words backs one condition: items whose 原话 overlap another item's with a
+    different standard part, or overlap ``reserved`` text (the waybill number), are all dropped —
+    “上2楼” says the floor, it cannot also say 无电梯."""
+    text = normalize(message)
+    spans: list[tuple[str, str, int, int]] = []
+    for item in dict.fromkeys(term for term in terms or () if isinstance(term, str)):
+        standard = said_term(item, message)
+        if standard is None:
+            continue
+        words = normalize(item.partition("=")[2])
+        start = text.find(words)
+        spans.append((item, standard, start, start + len(words)))
+    blocked = []
+    for value in reserved or ():
+        start = text.find(normalize(value)) if value else -1
+        if start >= 0:
+            blocked.append((start, start + len(normalize(value))))
+    kept: dict[str, str] = {}
+    for item, standard, start, end in spans:
+        overlaps = [other for other in spans if other[0] != item and other[2] < end and start < other[3]
+                    and normalize(other[1]) != normalize(standard)]
+        if not overlaps and not any(low < end and start < high for low, high in blocked):
+            kept[item] = standard
+    return kept
+
+
+def said_term(term: str, message: str) -> str | None:
+    """The standard part of ``标准说法=原话`` when 原话 is in the message and carries every number of
+    the standard part; None when the item is not tied to the person's words."""
+    standard, sep, words = (part.strip() for part in str(term or "").partition("="))
+    if not sep or not standard or not words or normalize(words) not in normalize(message):
+        return None
+    if any(number not in numbers_said(words) for number in numbers_in(standard)):
+        return None
+    return standard
 
 
 def ground_inputs(schema: Mapping[str, Any], arguments: Mapping[str, Any], message: str) -> dict[str, Any]:
@@ -179,4 +219,5 @@ def ground_inputs(schema: Mapping[str, Any], arguments: Mapping[str, Any], messa
 
 
 __all__ = ["FIELD_LABELS", "GroundingError", "ground_inputs", "ground_number", "ground_text",
-           "ground_terms", "ground_tracking_number", "label", "normalize", "numbers_in", "numbers_said"]
+           "ground_terms", "ground_tracking_number", "label", "normalize", "numbers_in", "numbers_said",
+           "said_term", "said_terms"]
