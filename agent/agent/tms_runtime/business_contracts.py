@@ -134,7 +134,8 @@ def build_customer_action_params(action: str, params: dict[str, Any]) -> dict[st
             result["payload"] = {}
             return result
         # 原页回复表单的全部字段（2026-11-27 按原页重做，规则在 shared/problem_reply_rules.py）。
-        result["payload"] = _selected(params, ('reply_text', 'prob_status', 'old_prob_status', 'review_entry_status', 'pick_type', 'pickup_day', 'pickup_hour', 'return_opinion', 'drivers'))
+        result["payload"] = _selected(params, ("reply_text", "prob_status", "old_prob_status", "review_entry_status", "pick_type", "pickup_day",
+                      "pickup_hour", "return_opinion", "drivers", "attachments"))
         return result
 
     if action == "publish":
@@ -519,7 +520,14 @@ def validate_customer_write_response(
     source_result = payload.get("result")
     # Replies are confirmed by reading the problem back after saving (verified), not by the save
     # response alone: 韵达's reply endpoint answers with ``info`` rather than ``success``.
-    confirmed = payload.get("verified") is True if action == "reply" else _source_confirmed(source_result)
+    if action == "reply":
+        confirmed = payload.get("verified") is True
+    elif action == "upload_attachment":
+        # The platform's answer turned into the attachment the pages save (shared/original_page_attachments.py).
+        attachment = payload.get("attachment")
+        confirmed = isinstance(attachment, dict) and bool(_clean(attachment.get("file_path")))
+    else:
+        confirmed = _source_confirmed(source_result)
     if not confirmed:
         return _write_failure(f"customer-service {action} source response did not confirm success")
 
@@ -548,7 +556,7 @@ def validate_customer_write_response(
             return _write_failure("customer-service publish returned no external ID")
         details["external_id"] = external_id
     else:
-        upload_ref = _external_upload_ref(
+        upload_ref = _clean((payload.get("attachment") or {}).get("file_path")) or _external_upload_ref(
             source_result,
             local_file_path=_clean(params.get("file_path")),
         )

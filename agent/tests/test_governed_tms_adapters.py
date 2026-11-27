@@ -373,8 +373,10 @@ class GovernedTmsAdapterTests(unittest.TestCase):
                 {"external_id": "problem-new", "result": {"success": True}},
             ),
             "upload_attachment": (
+                # 2026-11-27: the platform's answer turned into the attachment the pages save.
                 "third_party_attachment_upload_confirmed",
-                {"result": {"success": True, "data": {"file_id": "file-1"}}},
+                {"result": {"code": 1, "path": "/upload/a.png"},
+                 "attachment": {"platform": "yunda", "file_path": "/upload/a.png", "new_name": "a1.png"}},
             ),
         }
         for action, (condition, payload) in cases.items():
@@ -433,6 +435,12 @@ class GovernedTmsAdapterTests(unittest.TestCase):
             },
         )
         self.assertEqual(local_path_only["error_code"], "POSTCONDITION_UNVERIFIED")
+        no_attachment = adapter.validate_customer_write_response(
+            "upload_attachment",
+            {"ok": True, "data": {"ok": True, "result": {"success": True, "data": [{"fileDir": "x"}]}}},
+            {"platform": "ronghui", "account_id": "ronghui-a", "file_path": "/tmp/upload.png"},
+        )
+        self.assertEqual(no_attachment["error_code"], "POSTCONDITION_UNVERIFIED")
 
 
 if __name__ == "__main__":

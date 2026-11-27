@@ -7,6 +7,23 @@ from console.app_support import *  # noqa: F403
 from console.services.business_calls import call_business
 
 
+def _attachment_descriptors(value: Any) -> list[dict[str, Any]]:
+    """Attachments returned by /customer-service/problems/attachments/upload, closed to their known keys;
+    the Agent checks platform, count and path again (shared/original_page_attachments.py)."""
+    items = value if isinstance(value, list) else []
+    result = []
+    for item in items[:20]:
+        if not isinstance(item, dict):
+            continue
+        clean: dict[str, Any] = {key: str(item.get(key) or "").strip()
+                                 for key in ("platform", "file_name", "file_ext", "file_path", "old_name", "new_name")}
+        try:
+            clean["file_size_kb"] = max(0, int(item.get("file_size_kb") or 0))
+        except (TypeError, ValueError):
+            clean["file_size_kb"] = 0
+        result.append({key: value for key, value in clean.items() if value != ""})
+    return result
+
 class CustomerServiceMixin:
     @staticmethod
     def _customer_service_login_account(account: dict[str, Any]) -> str:
@@ -326,6 +343,7 @@ class CustomerServiceMixin:
                         {key: str(driver.get(key) or "").strip() for key in ("name", "phone", "idCard", "plate", "count")}
                         for driver in drivers[:5] if isinstance(driver, dict)
                     ],
+                    "attachments": _attachment_descriptors(payload.get("attachments")),
                 }
             )
             arguments = {key: value for key, value in arguments.items() if value not in ("", [])}
@@ -906,6 +924,18 @@ class CustomerServiceMixin:
         if not payload_bytes:
             self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "message": "附件文件为空。"})
             return
+        # The original page's checks for this kind of attachment (shared/original_page_attachments.py).
+        from shared.original_page_attachments import AttachmentError, check_upload
+
+        purpose = str(form.getvalue("purpose") or "").strip()
+        if purpose:
+            try:
+                check_upload(str(account.get("system") or "").strip().lower(), purpose,
+                             Path(str(file_item.filename or "")).name, len(payload_bytes))
+            except AttachmentError as exc:
+                self._send_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "error_code": "ATTACHMENT_REJECTED",
+                                                                  "message": str(exc)})
+                return
         target_preexisted = target.exists()
         if target_preexisted and hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(
             payload_bytes

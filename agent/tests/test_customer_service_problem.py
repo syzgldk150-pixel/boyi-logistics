@@ -682,6 +682,49 @@ class CustomerServiceProblemTargetTests(unittest.TestCase):
             self._yunda_reply({"reply_text": "x"}, replied=False)
         self.assertEqual("WRITE_OUTCOME_UNKNOWN", ctx.exception.code)
 
+    def test_yunda_reply_sends_uploaded_attachments_as_file_arr(self):
+        attachment = {"platform": "yunda", "file_name": "a.png", "old_name": "a.png", "new_name": "x.png", "file_path": "/up/x.png"}
+        _, posts = self._yunda_reply({"reply_text": "x", "attachments": [attachment]})
+        reply = [data for url, data in posts if url == customer_service_problem.YUNDA_QUERY_REPLY_URL][0]
+        self.assertEqual([{"new_name": "x.png", "old_name": "a.png", "file_path": "/up/x.png"}], reply["file_arr"])
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            self._yunda_reply({"reply_text": "x", "attachments": [attachment] * 4})
+        self.assertIn("最多上传3个附件", str(ctx.exception))
+
+    def test_upload_returns_the_attachment_the_pages_keep(self):
+        import tempfile
+
+        class Upload:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self.payload
+
+        class Session:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def post(self, url, **kwargs):
+                return Upload(self.payload)
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            handle.write(b"png")
+        with patch.object(customer_service_problem, "_resolve_ronghui_page_context",
+                          return_value={"menu_text": "问题件录入", "authentication_key": "a", "page_id": "p", "url": "u"}):
+            result = customer_service_problem._upload_ronghui_attachment(
+                Session({"success": True, "data": [{"fileName": "a.png", "fileSize": 2048, "fileExt": ".png", "fileDir": "d/a.png"}]}),
+                {"payload": {"file_path": handle.name}})
+        self.assertEqual("/unauth/download/d/a.png", result["attachment"]["file_path"])
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            handle.write(b"png")
+        with self.assertRaises(customer_service_problem.CustomerServiceProblemError) as ctx:
+            customer_service_problem._upload_yunda_attachment(Session({"code": 0, "msg": "文件过大"}), {"payload": {"file_path": handle.name}})
+        self.assertEqual("SOURCE_UPLOAD_FAILED", ctx.exception.code)
+
     def test_resolve_ronghui_page_context_uses_post_menu_tree_and_children_wrapper(self):
         menu_payload = {
             "children": [

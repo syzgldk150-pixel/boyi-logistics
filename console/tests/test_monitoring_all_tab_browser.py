@@ -316,3 +316,55 @@ def test_ronghui_self_pickup_reply_sends_the_original_form_fields(app, browser):
             "reply_text": "已安排司机提货", "pick_type": "安排司机提货", "pickup_day": "2026-01-03", "pickup_hour": "10:00-11:00",
             "drivers": [{"name": "合成司机", "phone": "13800000000", "idCard": "", "plate": "湘E12345", "count": "2"}],
         }
+
+
+def test_yunda_reply_attachments_upload_at_once_and_go_with_the_reply(app, browser):
+    replies, uploads = [], []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(REPLY_SNAPSHOT))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({
+                    "ok": True, "items": [REPLY_ITEM], "total": 1, "has_more": False}))
+            elif parsed.path == "/customer-service/problems/attachments/upload":
+                data = route.request.post_data_buffer or b""
+                uploads.append((route.request.headers.get("x-browser-request-uuid"), b'name="purpose"' in data and b"problem_reply" in data,
+                                b'name="account_id"' in data and b"yunda_default" in data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "attachment": {
+                    "platform": "yunda", "file_name": "a.txt", "old_name": "a.txt", "new_name": "x1.txt", "file_path": "/up/x1.txt"}}))
+            elif parsed.path == "/customer-service/problems/reply":
+                replies.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.click(".monitor-reply-toggle")
+        assert page.inner_text(".attach-zone") == "附件选择（最多3个，最大5M，支持拖拽）"
+        page.set_input_files(".attach-zone input", files=[{"name": "a&b.txt", "mimeType": "text/plain", "buffer": b"x"}])
+        page.wait_for_function("document.querySelector('.attach-message')?.textContent === '不支持文件名包含符号的文件'")
+        assert not uploads
+        page.set_input_files(".attach-zone input", files=[{"name": "a.txt", "mimeType": "text/plain", "buffer": b"x"}])
+        page.locator(".attach-item").wait_for()
+        assert page.inner_text(".attach-name") == "a.txt"
+        assert uploads and uploads[0][0] and uploads[0][1] and uploads[0][2]
+        page.fill("[aria-label='回复正文']", "已处理，附件为签收照片")
+        page.click(".reply-form-save")
+        page.locator(".monitor-reply-done").wait_for()
+        assert replies[0]["payload"]["attachments"] == [
+            {"platform": "yunda", "file_name": "a.txt", "old_name": "a.txt", "new_name": "x1.txt", "file_path": "/up/x1.txt"}]

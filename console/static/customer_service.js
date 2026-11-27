@@ -1323,6 +1323,7 @@
       if (!container || !state.replyDraft) return;
       window.ProblemReplyForm.render(container, row.reply_form, state.replyDraft, {
         textAttr: "data-cs-reply-text",
+        accountId: row.account_id,
         onSave: () => submitReply({ preventDefault() {} }),
         onCancel: () => renderReplyForm(row),  // 原页“取消”清空已填写的内容
       });

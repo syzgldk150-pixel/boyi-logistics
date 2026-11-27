@@ -33,7 +33,7 @@
   function freshDraft(form) {
     return {
       reply_text: '', prob_status: form?.default_status || '', review_entry_status: '', pick_type: '',
-      pickup_day: '', pickup_hour: '', return_opinion: '', drivers: []
+      pickup_day: '', pickup_hour: '', return_opinion: '', drivers: [], attachments: []
     };
   }
 
@@ -211,12 +211,21 @@
     text.addEventListener('input', () => { draft.reply_text = text.value; counter.textContent = `${text.value.length}/${text.maxLength}`; });
     const wrap = el('div', 'reply-form-text-wrap');
     wrap.append(text, counter);
-    box.append(line('回复正文', wrap, { required: true }), actions(options, draft));
+    box.append(line('回复正文', wrap, { required: true }));
+    // 原页回复正文下方的附件选择（最多3个，最大5M，支持拖拽），console/static/original_page_attachments.js。
+    if (window.OriginalPageAttachments && options.accountId) {
+      const files = el('div', 'reply-form-files');
+      window.OriginalPageAttachments.render(files, { platform: 'yunda', accountId: options.accountId, purpose: 'problem_reply' },
+        draft.attachments || (draft.attachments = []));
+      box.append(files);
+    }
+    box.append(actions(options, draft));
     container.append(box);
   }
 
   /** Render the form into ``container``; ``draft`` keeps values, ``draft.sending``/``draft.error`` the save state.
-   *  ``options``: ``onSave``, ``onCancel``, ``textAttr`` (extra attribute on the reply box). Returns false when the
+   *  ``options``: ``onSave``, ``onCancel``, ``textAttr`` (extra attribute on the reply box), ``accountId``
+   *  (the problem's business account, for attachment uploads). Returns false when the
    *  problem cannot be replied to (the reason is shown instead). */
   function render(container, form, draft, options = {}) {
     container.replaceChildren();
@@ -264,6 +273,7 @@
     if (form?.platform === 'yunda') {
       body.prob_status = draft.prob_status || form.default_status;
       if (draft.review_entry_status) body.review_entry_status = draft.review_entry_status;
+      if ((draft.attachments || []).length) body.attachments = draft.attachments;
       return body;
     }
     if (draft.return_opinion) body.return_opinion = draft.return_opinion;

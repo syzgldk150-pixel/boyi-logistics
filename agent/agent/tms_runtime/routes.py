@@ -772,7 +772,8 @@ def _normalize_customer_service_params(
     elif action == "reply":
         for key in ("external_id", "source_direction", "waybill_no", "status", "registered_at"):
             normalized[key] = item.get(key, params.get(key))
-        for key in ('reply_text', 'prob_status', 'old_prob_status', 'review_entry_status', 'pick_type', 'pickup_day', 'pickup_hour', 'return_opinion', 'drivers'):
+        for key in ("reply_text", "prob_status", "old_prob_status", "review_entry_status", "pick_type", "pickup_day",
+                      "pickup_hour", "return_opinion", "drivers", "attachments"):
             normalized[key] = payload.get(key, params.get(key))
     elif action == "fetch_attachment":
         normalized["source_url"] = payload.get("source_url", params.get("source_url"))

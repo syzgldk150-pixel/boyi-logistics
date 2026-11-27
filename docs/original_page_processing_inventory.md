@@ -13,6 +13,8 @@ updated: 2026-11-27
 
 ## 通用机制
 
+附件通道（2026-11-27）：浏览器选文件即上传到 Console `/customer-service/problems/attachments/upload`（带用途 `purpose`），按原页对应页面的数量/大小/文件名规则先检查（`shared/original_page_attachments.py`），再由 Agent 用业务账号传到原平台，原平台返回整理为统一附件描述（融辉 `FILE_PATH=/unauth/download/<fileDir>`，韵达 `new_name/old_name/file_path`），提交处理动作时带回。经公网入口单次最大 30MB（Nginx `client_max_body_size 34m`），原页允许更大的（融辉工单 200MB、申诉 100MB）需在原系统上传或调大 Nginx。原先按服务器文件路径上传的结果确认对两平台的返回格式都不成立，已改为以整理出的附件描述为准。
+
 - **融辉**：所有写入都是 `POST /dataOperation/saveTables`，正文为若干组 `$Z.Parameter("<操作键>")`，同一次提交可以包含多组（例如“新增处理记录 + 更新工单状态 + 新增附件”），由原系统一次事务保存。附件先 `POST /file/upload?sysFileUploadId=ALL` 上传取得路径，再作为附件行随同保存。处理人、处理网点等字段原页取自登录信息 `userInfo`（`loginEmpName/loginEmpCode/loginSiteName/loginSiteCode`），时间先读 `FIND_NOW` 的服务器时间。记录编号有的原页本地生成（`getWorkOrderCodeTwo`），有的读 `FIND_GUID`。
 - **韵达**：问题件系统、网点运营系统（调拨件）为表单 `POST`；快运工单系统 CSSP 为单页应用，处理接口在 `/cssp/comp/sysCompDeal/*.do` 与 `/cssp/collaboration/sysCollaborationManage/*`；仲裁系统 `kyzc` 为 `POST /kyzc/arbitrament/...`。
 
@@ -80,7 +82,7 @@ updated: 2026-11-27
 
 保存：`POST /ky_problem/public/index.php/query/replyInfo.html`，字段 `prob_status`（**数值** 1 处理中 / 2 已处理，原页没有“已完结”）、`reply_text`（必填，最多 600 字）、`prob_main_id`、`old_prob_status`（原页固定传 2）、`review_entry_status`（预约进仓类问题件需选 1 同意 / 2 不同意）、`file_arr`（附件最多 3 个，先 `issue/uploadImg.html` 上传，文件名不能含符号）。另有常用回复语（`getReplyOften`/`saveReplyOften`）；双击一行会调用 `query/Read.html` 标已读。
 
-**已按本节重做（2026-11-27）**：原先按文字（处理中/已处理/已完结）提交、`old_prob_status` 传当前状态文字；现按原页提交数值状态、固定 `old_prob_status=2`、支持预约进仓确认，回复前读详情（`reply_auth` 为 2 或状态 2/4 时原页不显示回复按钮），回复后读回详情核对。附件（最多 3 个）与常用回复语尚未做。
+**已按本节重做（2026-11-27）**：原先按文字（处理中/已处理/已完结）提交、`old_prob_status` 传当前状态文字；现按原页提交数值状态、固定 `old_prob_status=2`、支持预约进仓确认，回复前读详情（`reply_auth` 为 2 或状态 2/4 时原页不显示回复按钮），回复后读回详情核对。附件已接入（最多 3 个、5MB、文件名只允许字母数字汉字与 `-._`、超过 20KB 的图片按原页先压缩，经共用附件通道上传后以 `file_arr` 提交）；常用回复语尚未做。
 
 ### 收到工单与催单（快运工单系统 CSSP）
 

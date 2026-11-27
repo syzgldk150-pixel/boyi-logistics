@@ -1103,6 +1103,20 @@ tools:
               idCard: {type: string, maxLength: 20}
               plate: {type: string, maxLength: 12}
               count: {type: string, maxLength: 6}
+        attachments:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              platform: {type: string, enum: [ronghui, yunda]}
+              file_name: {type: string, maxLength: 255}
+              file_ext: {type: string, maxLength: 20}
+              file_size_kb: {type: integer, minimum: 0}
+              file_path: {type: string, maxLength: 1000}
+              old_name: {type: string, maxLength: 255}
+              new_name: {type: string, maxLength: 255}
       required: [platform, account_id, external_id, waybill_no]
     output_schema:
       type: object

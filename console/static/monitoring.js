@@ -469,6 +469,7 @@
     const form = element('div', 'monitor-reply');
     const fields = element('div', 'monitor-reply-fields');
     window.ProblemReplyForm.render(fields, item.reply.form, draft.values, {
+      accountId: item.reply.account_id,
       onSave: () => sendReply(item, key, draft, form),
       onCancel: () => closeReply(key, form.closest('li'))
     });

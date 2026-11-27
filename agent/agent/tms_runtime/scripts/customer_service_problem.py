@@ -959,7 +959,13 @@ def _upload_ronghui_attachment(session: Any, params: dict[str, Any]) -> dict[str
                 path.unlink()
             except OSError:
                 pass
-    return {"ok": True, "result": _safe_json(result)}
+    from shared.original_page_attachments import AttachmentError, ronghui_descriptor
+
+    try:
+        attachment = ronghui_descriptor(result)
+    except AttachmentError as exc:
+        raise CustomerServiceProblemError("SOURCE_UPLOAD_FAILED", f"融辉附件上传失败：{exc}") from None
+    return {"ok": True, "result": _safe_json(result), "attachment": attachment}
 
 
 def _yunda_origin_date_parts(filters: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -1247,7 +1253,12 @@ def _yunda_reply(session: Any, params: dict[str, Any]) -> dict[str, Any]:
     except ReplyRuleError as exc:
         raise CustomerServiceProblemError("REPLY_RULE_REJECTED", str(exc)) from None
     before = _yunda_reply_texts(detail).count(data["reply_text"])
-    data["file_arr"] = payload.get("file_arr") if isinstance(payload.get("file_arr"), list) else []
+    from shared.original_page_attachments import AttachmentError, attachments, yunda_file_arr
+
+    try:
+        data["file_arr"] = yunda_file_arr(attachments(payload.get("attachments"), "yunda", "problem_reply"))
+    except AttachmentError as exc:
+        raise CustomerServiceProblemError("REPLY_RULE_REJECTED", str(exc)) from None
     result = _yunda_post_json(
         session,
         YUNDA_QUERY_REPLY_URL,
@@ -1314,7 +1325,13 @@ def _upload_yunda_attachment(session: Any, params: dict[str, Any]) -> dict[str, 
                 path.unlink()
             except OSError:
                 pass
-    return {"ok": True, "result": _safe_json(result)}
+    from shared.original_page_attachments import AttachmentError, yunda_descriptor
+
+    try:
+        attachment = yunda_descriptor(result)
+    except AttachmentError as exc:
+        raise CustomerServiceProblemError("SOURCE_UPLOAD_FAILED", f"韵达附件上传失败：{exc}") from None
+    return {"ok": True, "result": _safe_json(result), "attachment": attachment}
 
 
 def _sniff_image_content_type(payload: bytes) -> str:

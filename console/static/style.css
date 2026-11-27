@@ -3955,3 +3955,12 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
   .reply-form-driver-input { flex-basis: 45%; }
   .reply-form-radio, .reply-form-add, .reply-form-remove, .reply-form-save, .reply-form-cancel { min-height: 44px; }
 }
+
+/* 原页附件选择（console/static/original_page_attachments.js） */
+.attach-box { display: grid; gap: 6px; }
+.attach-zone { display: grid; place-items: center; min-height: 56px; padding: 12px; border: 1px dashed var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-muted); font-size: var(--fs-caption); cursor: pointer; }
+.attach-zone.is-over, .attach-zone:hover { border-color: var(--brand-red); color: var(--text-primary); }
+.attach-message { min-height: 16px; color: var(--brand-red); font-size: var(--fs-caption); }
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 0; padding: 0; list-style: none; }
+.attach-item { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-body); }
+.attach-remove { min-height: 24px; padding: 0 6px; border: 0; background: none; color: var(--brand-red); font-size: var(--fs-caption); cursor: pointer; }
