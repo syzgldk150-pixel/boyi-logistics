@@ -30,7 +30,7 @@ updated: 2026-11-27
 
 保存前校验：选“收件人自行提货/安排司机提货”时司机信息须填完整，司机件数合计不得大于开单件数；已回复过的不能再选“处理中”（“问题件只能回复一次”）；回复内容与司机信息至少一项；按 `FIND_BILL_STATUS_ON_PROBLEM` 查运单：来源为协商再投接口/APP/K13 的问题件，若该运单已有“退回/弃货”的问题件则不允许再处理，运单已签收只允许“再派”，已退件/已弃货不允许处理。已回复后再改处理结果时原页会清空回复、提货、司机、退回意见字段再写。
 
-**已按本节重做（2026-11-27）**：原先客服页和消息中心的融辉回复只写 `GUID/BILL_CODE/REVERSION`；现按原页读回整行写回，规则在 `shared/problem_reply_rules.py`。原页“处理结果”控件已注释，保存实际写 `BL_CHECKOK=1` 且不改 `DEAL_RESULT`；`FIND_BILL_STATUS_ON_PROBLEM` 只返回 `BILL_STATUS/DEAL_RESULT`，原页“已有退回/弃货问题件”的判断实际不生效，只有本问题件来源为协商再投接口/APP/K13 时按运单已签收/已退件/已弃货拦截。打开时标“已查看”与“确认转发”尚未做。
+**已按本节重做（2026-11-27）**：原先客服页和消息中心的融辉回复只写 `GUID/BILL_CODE/REVERSION`；现按原页读回整行写回，规则在 `shared/problem_reply_rules.py`。原页“处理结果”控件已注释，保存实际写 `BL_CHECKOK=1` 且不改 `DEAL_RESULT`；`FIND_BILL_STATUS_ON_PROBLEM` 只返回 `BILL_STATUS/DEAL_RESULT`，原页“已有退回/弃货问题件”的判断实际不生效，只有本问题件来源为协商再投接口/APP/K13 时按运单已签收/已退件/已弃货拦截。打开回复框即按原页标“已查看”（仅未处理且未查看时，不提示结果）、左侧显示“登记网点联系人和电话”（`FIND_SITE_INFO_BY_PROBLEM_SITE`）、“转发通知网点 + 确认转发”（网点查 `FIND_SITE_ALL_COMBOBOX`，参数 `key`；转发后按整行读回通知网点）均已做。
 
 ### 收到工单（“工单接收方查询-工单裁定申诉”）
 
@@ -44,13 +44,17 @@ updated: 2026-11-27
 
 附件：最多 9 个，单个不超过 200MB，同名不可重复。
 
+**已做（2026-11-27）**：响应/完结/催工单/申诉四个按钮与对话框按原页实现（`shared/original_page_actions.py` 的 `work_order_*`）。保存须用对话框子页自己的 `authenticationKey/pageId`（从工单页面 HTML 里的 `/widget/home?authenticationKey=…&pageId=…` 链接按子页标题找，用外层页面的标识读子页接口会被拒为“非法的请求”）；提交前按单号+类型+类别重新读这张工单，提交后以处理记录里出现本次 GUID 且工单状态/催单次数/申诉状态变化为成功。工单类别（`FIND_TAB_WORK_ORDER_TYPE`）查不到时原页不拦，博益同样不拦。
+
 ### 被投诉方（“被投诉方查询”）
 
 | 原页按钮 | 函数 → 子页 | 写入 | 要点 |
 | --- | --- | --- | --- |
 | 回复 | `addReplyMethod` → “投诉回复-新增” | `TAB_PROCESS_RECORD_ADD`（`PROCESS_TYPE=投诉回复`、`PAGE_REPLY_TYPE=被投诉方回复`、回复内容必填，编号取 `FIND_GUID`）+ `TAB_PROCESS_RECORD_PATH_ADD` | 附件最多 10 个，单个不超过 20MB |
 | 新增申诉 | `addMethod` → “申诉登记_测试_工单” | 见“申诉” | 带入运单号、处理类型、索赔金额 |
-| 仲裁反馈（投诉信息页签） | `saveComplainMethod` | `TAB_EXCEPTION_UPT`：`ARBITRATION_BACK_CONTENT`、`BL_ARBITRATION_REPLY=1`、`ARBITRATION_REPLY_DATE/SITE/MAN` | 只提交与原值不同的字段 |
+| 仲裁反馈（投诉信息页签） | `saveComplainMethod` | `TAB_EXCEPTION_UPT`：`ARBITRATION_BACK_CONTENT`、`BL_ARBITRATION_REPLY=1`、`ARBITRATION_REPLY_DATE/SITE/MAN` | 页面里没有 `ARBITRATION_BACK_CONTENT` 输入框和对应按钮（只剩脚本），实际不可用，博益不做 |
+
+**已做（2026-11-27）**：“回复”（子页“投诉回复-新增”，表单字段为处理类型、运单号、投诉编号、回复网点/人及编码、回复内容；`PAGE_REPLY_TYPE` 只用于附件类型“被投诉方回复附件”，不写入记录；以 `FIND_TAB_PROCESS_RECORD` 读到本次 GUID 为成功）与“新增申诉”（见“申诉”）。
 
 ### 投诉方（“投诉方登记”）
 
@@ -62,12 +66,16 @@ updated: 2026-11-27
 | 仲裁反馈 | `saveComplainMethod` | 同被投诉方 | |
 | 修改 / 新增 | `editMethodCs` / `addMethodCs5` | 投诉登记表单（异形件、查重查方等多个变体） | 属于新登记投诉，不是待办处理，建议不纳入 |
 
+**已做（2026-11-27）**：取消投诉（仅投诉人，APP 投诉允许投诉网点；违禁品不可；以 `FIND_TAB_EXCEPTION_REGISTER` 读回已审核则拦、删除后读不到为成功）、提交申诉、提交材料。原页细节照做：提交申诉的页签只在“投诉状态和仲裁状态都有值且都不是审核驳回”时拦下（仲裁状态为空即放行）；复审驳回或已传过申诉附件时按钮置灰；申诉期判断对日期字符串计算为 NaN，实际不拦；提交材料在处理类型不为空且不是 2 时拦（处理类型是文字，等于实际只有为空时可提交）；两个页签的图片格都走 `/file/upload?sysFileUploadId=IMG`、每格一张，主记录保存后再逐张 `TAB_EXCEPTION_PATH_ADD`。修改/新增投诉未做（待用户确认范围）。
+
 ### 申诉（“申诉登记”）
 
 | 原页按钮 | 函数 → 子页 | 写入 | 要点 |
 | --- | --- | --- | --- |
 | 新增 | `addMethod33` → “申诉登记_测试_工单”（被投诉方“新增申诉”同此页） | `TAB_EXCEPTION_APPEAL_ADD`（`COMPLAINT_STATUS`、`APPEAL_MAN/SITE`、`CREATE_*`、`REGISTER_DATE`）+ 附件 `TAB_EXCEPTION_PATH_ADD` | 运单号、投诉编号、索赔金额、电话必填；超过投诉申诉期不允许；同一运单+同一部门+同一类型只能登记一次；回单禁止申诉；须上传附件；核对申诉网点与运单轨迹网点（`FIND_TRAJECTORY_SITECODE1`）；单文件不超过 100MB |
 | 删除 | `deleteMethod` | `TAB_EXCEPTION_APPEAL_DEL` | 仅“待审核”可删除 |
+
+**已做（2026-11-27）**：删除；被投诉方“新增申诉”（子页“申诉登记_测试_工单”）：处理类型 `GET_EXCEPTION_TYPE_DISTINCT1` → 申诉类型 `FIND_APPEAL_TYPE_COMBOBOX`（按登录网点类型带 `APPEAL_SIDE` 中心/网点），申诉类型决定申诉内容是否必填（`IS_COMPLAINT_CONTENT`）、提示文字（`TIP`）、是否必须附件（`BL_EVIDENCE`，看前 3 格）、偷重偷方显示实际重量；流水号为本地 yyyyMMddHHmmss + 5 位随机数、投诉日期为当天（因此申诉期检查只在申诉期为负时拦）；申诉保存成功后一次性保存全部附件（原页没有附件时只提示“请至少选择一个附件”，申诉照样已保存）；以申诉登记列表读到新流水号为成功。“申诉登记”页自己的“新增”打开的是另一个子页“申诉登记_新增-速通”（不挂在某条投诉上），属新登记，未做。
 
 ### 代取件（“网点代取件业务”，仅大祥、大祥S账号）
 
@@ -76,17 +84,21 @@ updated: 2026-11-27
 | 撤销 | `revokeFun` | `TAB_UNITE_ORDERS_UPT` | 已揽收不支持撤销；已取消不能重复撤销；撤销待审核不支持撤销 |
 | 编辑 | `updateOrder` → 代取件开单页（约 37 万字符的开单表单） | 开单表单 | 已揽收、已取消不可编辑；属于改单，建议首期不做 |
 
+**已做（2026-11-27）**：撤销（确认后提交 `TX_LOGISTIC_ID/STATUS=3/REVOKE_DATE/REVOKE_MAN/_CODE`，读回订单状态为已取消）。编辑未做（待用户确认范围）。
+
 ## 韵达
 
 ### 问题件（问题件系统 `query/reply.html` 弹窗）
 
 保存：`POST /ky_problem/public/index.php/query/replyInfo.html`，字段 `prob_status`（**数值** 1 处理中 / 2 已处理，原页没有“已完结”）、`reply_text`（必填，最多 600 字）、`prob_main_id`、`old_prob_status`（原页固定传 2）、`review_entry_status`（预约进仓类问题件需选 1 同意 / 2 不同意）、`file_arr`（附件最多 3 个，先 `issue/uploadImg.html` 上传，文件名不能含符号）。另有常用回复语（`getReplyOften`/`saveReplyOften`）；双击一行会调用 `query/Read.html` 标已读。
 
-**已按本节重做（2026-11-27）**：原先按文字（处理中/已处理/已完结）提交、`old_prob_status` 传当前状态文字；现按原页提交数值状态、固定 `old_prob_status=2`、支持预约进仓确认，回复前读详情（`reply_auth` 为 2 或状态 2/4 时原页不显示回复按钮），回复后读回详情核对。附件已接入（最多 3 个、5MB、文件名只允许字母数字汉字与 `-._`、超过 20KB 的图片按原页先压缩，经共用附件通道上传后以 `file_arr` 提交）；常用回复语尚未做。
+**已按本节重做（2026-11-27）**：原先按文字（处理中/已处理/已完结）提交、`old_prob_status` 传当前状态文字；现按原页提交数值状态、固定 `old_prob_status=2`、支持预约进仓确认，回复前读详情（`reply_auth` 为 2 或状态 2/4 时原页不显示回复按钮），回复后读回详情核对。附件已接入（最多 3 个、5MB、文件名只允许字母数字汉字与 `-._`、超过 20KB 的图片按原页先压缩，经共用附件通道上传后以 `file_arr` 提交）；常用回复语已做（回复正文上方列出 `query/getReplyOften.html` 的内容，勾一条填入正文、“无”清空；原页没有保存常用语的入口）。
 
 ### 收到工单与催单（快运工单系统 CSSP）
 
 处理接口（`/cssp/comp/sysCompDeal/` 下，`.do`）：接单 `receive`、指定人接单 `receiveAppointUser`、加急接单 `urgentReceive`、首次回复 `firstReply`、及时响应 `promptResp`、回复处理 `replyHandling`（JSON 正文）、结案说明 `statement`、转部门 `turnOrg`、延时 `extendLaging`、上级协助 `upOrgHelp`（先 `upOrgHelpValidate`）、首次责任申诉 `fristDutyAppeal`、理赔申请 `claimApply`、补充说明 `bcsmExplain`、违规申报 `wgDeclare`；催单回复 `/cssp/collaboration/sysCollaborationManage/cuiReplay`，协同 `saveCol`；附件 `comp/uploadFile/uploadCommon`。各动作的字段由页面组件组装，实现时按动作逐个从 `static/js/app.*.js` 取数并在真实工单上核对。
+
+**已做（2026-11-27）**：“工单处理”详情页的按钮（组件 chunk-43ccf3dd、混入 a835/4bf6、接口表 53c1）：立即响应（处理状态 10）、首次回复（2，预计解决时间不早于今天）、回复处理（3，`replyHandling.do` 实际以表单提交，最多 3 张 jpg/png、超 1MB 先压缩）、转至理赔（状态不在 0/4/5/6/7/8）、结单（3 或 4）、延长时效（1/2/3）、转站点（1/10/2/3）；后三个及转至理赔原页只允许 8:00–18:59 提交。外呼人身份：立即响应/首次回复是“投诉人”开关，回复处理/结单是五选一并带出投诉人/发件人/收件人的姓名电话；姓名 ≤20 字、电话为数字、内容 ≤200 字。其余接口均为 `POST` 查询串、返回 `code` 0/200 为成功；以处理记录条数增加或处理状态变化为成功。催单待回复的“回复”（姓名、外呼电话、沟通记录，带 `colId`）以该催单离开待回复列表为成功。按钮权限（`v-control`）由原系统按账号判断，博益不预判，被拒时显示原系统原因。接单/加急接单/转人员是列表级批量操作，不挂在单条消息上，未做。
 
 ### 调拨件（网点运营系统“调拨件确认”）
 
@@ -100,9 +112,17 @@ updated: 2026-11-27
 | 罚款登记 | `fineRegistration.html` | `Penalty_Type`、`Remark`、`Penalty_Amount`、`Reward_Amount`、`Penalty_Site_Code`、`Reward_Site_Code` |
 | 异常图片 | `uploadAbnormalImage.html` / `deleteAbnormalImage.html` | |
 
+**已做（2026-11-27）**：接单（确认后提交 `Replace_Id[]`，读回不再是待接单）、转单（网点查 `like/getWebsite.html`，参数 `keyword`，取 `org_id/org_name`；读回不在本网点待接单）、异常登记（已做过异常登记或状态不是待接单/已接单时不可；三格图片每格一张 jpg/png/jpeg ≤2MB，原页是选中即带 `Replace_Id/Image_Sort` 上传挂到调拨件，博益在提交时先逐张上传再保存）。回复只对“异常回复”状态有用（消息中心只列待接单），延迟发货/转业务员/罚款登记未做。这两类随动作提交的图片先在 Agent 临时目录暂存（2 小时过期），处理后删除。
+
 ### 仲裁（仲裁系统“仲裁查询”）
 
 本页只有：留言 `arbitramentSearch/saveMessage`、继续申报 `goOnDeclare`（进入申报页）、查看详情（申报、留言、图片、处理记录）。仲裁系统首页菜单未能只读取得，是否还有“仲裁处理/举证”页需用业务账号在原系统菜单中确认后再清点。
+
+**已做（2026-11-27）**：留言（1–1000 字，`messageType=message`，以 `getMessage` 留言记录读回）。继续申报是整张申报单重填（多类图片），属修改类，未做（待用户确认范围）。
+
+## 实现位置（2026-11-27）
+
+规则单点在 `shared/original_page_actions.py`（按钮、置灰原因、对话框字段、保存前检查、写入行），附件规则在 `shared/original_page_attachments.py`；Agent `agent/agent/tms_runtime/scripts/original_page_processing.py` 按 `(平台, kind, operation)` 分派：重新读取记录 → 检查 → 按原页写入 → 读回，结果只有读回一致才带 `verified`，否则 `WRITE_OUTCOME_UNKNOWN`。业务动作为客服 `process`（写，超级管理员）与 `lookup`（读：网点查询、联系人、常用回复语、联动下拉），Console `/customer-service/process|lookup` 只转发平台、业务账号、按钮与对话框内容。消息中心条目带 `actions`（按钮与字段），对话框组件为 `console/static/original_page_actions.js`。
 
 ## 后续
 

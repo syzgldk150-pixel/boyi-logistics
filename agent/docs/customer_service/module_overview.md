@@ -112,6 +112,10 @@ updated: 2026-11-27
 
 自动回复插件 1.1.0 起把处理过程拆成四块积木：取待回复问题件（可设每轮最多几件）→ 筛选（可选，可多次，按平台、场景、AI 把握）→ AI 起草并判断（锁定）→ 回复原平台并回读核对（锁定，必须最后）。在“自动化”卡片点“处理流程”，可用一句话让 AI 在这些积木内调整（如“只处理韵达的问题件”），先看前后对比、用最近的 AI 建议记录试运行，确认后保存为新配置版本，可在“设置”页修改记录中恢复。筛选只会让插件少处理，不会绕过授权、按模板和把握度这些宿主检查。规则见 [插件平台](../../../docs/plugin-platform-v2.md#可调整处理流程积木--流程配置)。
 
+## 原页处理动作（2026-11-27）
+
+除问题件回复外，消息中心的工单、投诉、申诉、代取件、调拨件、仲裁条目也在博益按原页处理（用户 2026-11-27：1:1 按原页功能做，处理逻辑与原页一致、操作闭环）。规则在 `shared/original_page_actions.py`，附件规则在 `shared/original_page_attachments.py`，Agent 执行在 `agent/agent/tms_runtime/scripts/original_page_processing.py`，业务动作为 `customer-service-process`（写，`customer_service_problem_process`，超级管理员，`verified` 才算成功）与 `customer-service-lookup`（读，`customer_service_problem_lookup`）。每个动作先在原平台重新读取记录、按原页检查、按原页写入，再用原页同一查询读回；读回不一致为 `WRITE_OUTCOME_UNKNOWN`，不重复提交。已做与未做的清单见 [原页处理功能清点](../../../docs/original_page_processing_inventory.md)。融辉问题件回复框另有登记网点联系人和电话、打开即标已查看、转发通知网点；韵达问题件回复框有常用回复语。
+
 ## 代码入口
 
 - 客服自动回复：`agent/service_v2_plugins/customer_problem_auto_reply_v2/`（插件包）、`agent/agent/automation_plugins/customer_auto_reply_handlers.py`（宿主写入原语）、`agent/plugin_core_adapters/customer_auto_reply.py`（生产端口与延迟绑定）、`agent/agent/automation_plugins/customer_connectors_v2.py`（连接器契约）；回归见 `tests/test_customer_auto_reply.py`、`tests/test_customer_auto_reply_v2_packaged.py`；处理流程见 `shared/plugin_flow.py`、`agent/agent/plugin_flow_editor.py`、`console/services/automation_plugin_flow.py`，回归见 `tests/test_plugin_flow.py`、`console/tests/test_automation_plugin_flow.py`。
