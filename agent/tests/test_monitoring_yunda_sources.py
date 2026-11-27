@@ -81,7 +81,7 @@ class WindowedSourceTests(FixedToday):
         self.assertIn("请尽快派送虚构件", item["content"])
         self.assertIn("本网点尚未回复", item["content"])
         self.assertEqual("处理中", item["status_label"])
-        self.assertEqual(6, current.post.call_count)
+        self.assertEqual(4, current.post.call_count)
         queries = set()
         for call in current.post.call_args_list:
             self.assertEqual(source.PROBLEM_LIST, call.args[0])
@@ -90,7 +90,7 @@ class WindowedSourceTests(FixedToday):
             self.assertEqual(("2026-11-16", "2026-11-18"), (data["start_date"], data["end_date"]))
             queries.add((data["time"], data["prob_status"]))
             self.assertFalse(call.kwargs["allow_redirects"])
-        self.assertEqual({(time, status) for time in "12" for status in "013"}, queries)
+        self.assertEqual({(time, status) for time in "12" for status in "01"}, queries)
         current.get.assert_not_called()
 
     def test_problem_reply_is_shown_and_finished_record_fails_closed(self):

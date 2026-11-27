@@ -45,8 +45,9 @@ FETCH_PAGE_SIZE = 100
 MAX_PENDING_ROWS = 500
 # 问题件、仲裁、调拨件原页一次最多查询 31 天（实测 2026-11-18），最近 3 天范围在限制内。
 
-# 问题件查询 base/getProbStatus：0 未处理、1 处理中、3 超时未完结（2 已完结、4 超时已完结、5 无需处理不显示）。
-PROBLEM_OPEN_STATUSES = {"0": "未处理", "1": "处理中", "3": "超时未完结"}
+# 问题件查询 base/getProbStatus：0 未处理、1 处理中（2 已完结、3 超时未完结、4 超时已完结、5 无需处理不显示；
+# 用户确认 2026-11-27 超时未完结不计入消息中心）。
+PROBLEM_OPEN_STATUSES = {"0": "未处理", "1": "处理中"}
 # 仲裁查询“最新处理状态”：除三个终态外都显示（用户确认 2026-11-18）。
 ARBITRATION_OPEN_CODES = "ysbwjd,yjdwcl,yclwss,yssdcl,ssycldsh,tdkjxsb,ycldsh,jxsbwcl"
 ARBITRATION_FINAL_STATES = {"结算审核通过", "结算审核不通过", "中心不受理"}

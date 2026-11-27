@@ -2,7 +2,7 @@
 module: 首页消息监控
 type: 业务说明
 status: active
-updated: 2026-11-19
+updated: 2026-11-27
 ---
 
 # 首页消息与收到工单
@@ -16,7 +16,7 @@ updated: 2026-11-19
 | 融辉公告 | 公告查询上下文；`FIND_TAB_NOTICE_NOT_SEE` | 未读公告的 `GUID/TITLE/CONTENT/CONTENT1/CONTENT2/NOTICE_DATETIME` |
 | 融辉收到工单 | “工单接收方查询-工单裁定申诉”；`FIND_TAB_WORK_ORDER`，`ZRF=1`、`IS_DEL1=1`，分别查询 `WORK_STATE=2/3`，每页 50 条读完全部页 | 只保留责任方 `RESPONSIBLE_PARTY` 为邵阳大祥站、邵阳大祥S站、邵阳操作场、邵阳自提部的待责任方响应、待责任方处理工单（用户 2026-11-18 确认）；“已完结”不显示，缺责任方字段或出现其他状态明确失败；`WORK_ORDER_CODE/WORK_NAME/WORK_CONTENT/WORK_STATE/REGISTER_DATE` 及响应、完结期限 |
 | 融辉处理记录 | 按工单编号读取 `FIND_TAB_WORK_ORDER_DETAILS`，按 `HANDLE_DATE` 倒序分页 | `HANDLE_CONTENT/HANDLE_STATE/HANDLE_DATE`，最多最新 20 条；原系统未提供回复未读标识，不能称为“新回复数” |
-| 韵达问题件 | 问题件查询 `kyproblem.yunda56.com/ky_problem/public/index.php/query/list.html`，`issuer_site=1`（发布给我的），`time=1`（发布时间）与 `time=2`（处理时间）各查一次后合并，`prob_status` 分别为 0 未处理、1 处理中、3 超时未完结 | `prob_main_id/ship_no/prob_type_nm/prob_text/prob_status/site_id/created_time/reply_text/reply_time/over_time`；返回已完结记录明确失败 |
+| 韵达问题件 | 问题件查询 `kyproblem.yunda56.com/ky_problem/public/index.php/query/list.html`，`issuer_site=1`（发布给我的），`time=1`（发布时间）与 `time=2`（处理时间）各查一次后合并，`prob_status` 分别为 0 未处理、1 处理中（3 超时未完结不计入，用户确认 2026-11-27） | `prob_main_id/ship_no/prob_type_nm/prob_text/prob_status/site_id/created_time/reply_text/reply_time/over_time`；返回已完结记录明确失败 |
 | 韵达仲裁 | 快运仲裁系统 `kyzc.yunda56.com:8090`，先打开 `/kyzc/arbitrament/arbitramentSearch` 经统一登录换取本系统会话，再 `GET .../arbitramentSearch/list`，`searchDate` 分别为 `k.declare_date`（申报时间）与 `g.assignment_update_time`（最新处理时间）后合并，`belongCate=arbitrament`，`disposeState` 传除“结算审核通过、结算审核不通过、中心不受理”外的全部状态代码，`limit/offset` 分页 | `declId/waybillCode/declType/declCategory/disposeState/declareDept/costTypeName/money/createDate/appealDate/assignmentUpdateTime`；返回终态记录明确失败 |
 | 韵达调拨件 | 网点运营系统“调拨件确认” `kyinms.yunda56.com/.../replaceLogistics/ReplaceLogisticsConfirm/list.html`，`Replace_Status=0`（待接单，用户确认只显示该状态），`page/rows` 分页 | `Replace_Id/Logistics_Id/Replace_Status/Replace_Status_Code/Apply_Site_Name/Replace_Site_Name/Sender_Address/Create_Time`；`Replace_Status_Code` 非 0 明确失败 |
 | 韵达收到工单 | 快运工单系统 `/cssp/vue/index.html#/work-order/deal`；`GET /cssp/comp/sysComplaintSearch/compDealPageQuery` | 处理列表中的 `complaintId/compTypeName/compStatusName/compTime/listId/dealOverTime`，正文从 `GET /cssp/comp/sysCompMain/compInfo/{complaintId}` 的 `compContent` 读取 |
