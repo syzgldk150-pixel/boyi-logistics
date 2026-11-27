@@ -341,7 +341,7 @@ class CustomerServiceModuleTests(unittest.TestCase):
         self.assertIn("customer-service-problem-attachment-block", template)
         self.assertIn("<h4>附件</h4>", template)
         self.assertIn("data-cs-reply-fields", template)
-        self.assertIn("text.rows = 3", (CONSOLE_DIR / "static" / "problem_reply_form.js").read_text(encoding="utf-8"))
+        self.assertIn("'reply-form-text'", (CONSOLE_DIR / "static" / "problem_reply_form.js").read_text(encoding="utf-8"))
         self.assertIn("renderProblemMetaGroups", script)
         self.assertIn('title: "站点"', script)
         self.assertIn('title: "人员与货物"', script)

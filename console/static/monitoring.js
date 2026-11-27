@@ -447,7 +447,7 @@
     toggle.addEventListener('click', () => {
       const current = replyDrafts.get(key);
       if (current?.open) { closeReply(key, row); return; }
-      const fresh = current || { values: window.ProblemReplyForm.freshDraft(item.reply.form), uuid: '', sending: false, error: '' };
+      const fresh = current || { values: window.ProblemReplyForm.freshDraft(item.reply.form), uuid: '' };
       fresh.open = true;
       replyDrafts.set(key, fresh);
       row.querySelector('.monitor-reply')?.remove();
@@ -458,46 +458,41 @@
 
   function closeReply(key, row) {
     const draft = replyDrafts.get(key);
-    if (draft?.sending) return;
+    if (draft?.values?.sending) return;
     replyDrafts.delete(key);
     row?.querySelector('.monitor-reply')?.remove();
     flushDeferredRender();
   }
 
   function replyForm(item, key, draft) {
-    // Fields are the original page's reply form (console/static/problem_reply_form.js, 2026-11-27).
-    const form = element('form', 'monitor-reply');
+    // The original page's reply form with its own 保存 / 取消 (console/static/problem_reply_form.js, 2026-11-27).
+    const form = element('div', 'monitor-reply');
     const fields = element('div', 'monitor-reply-fields');
-    const usable = window.ProblemReplyForm.render(fields, item.reply.form, draft.values);
-    const actions = element('div', 'monitor-reply-actions');
-    const note = element('span', 'monitor-reply-note', draft.error || '提交后写入原平台并读回核对');
-    if (draft.error) note.dataset.tone = 'error';
-    const cancel = element('button', 'monitor-action-btn', usable ? '取消' : '关闭');
-    cancel.type = 'button';
-    cancel.disabled = draft.sending;
-    cancel.addEventListener('click', () => closeReply(key, form.closest('li')));
-    actions.append(note, cancel);
-    if (usable) {
-      const submit = element('button', 'monitor-action-btn is-primary', draft.sending ? '提交中…' : '提交回复');
-      submit.type = 'submit';
-      submit.disabled = draft.sending;
-      actions.append(submit);
-    }
-    form.append(fields, actions);
-    form.addEventListener('submit', (event) => { event.preventDefault(); if (usable) sendReply(item, key, draft, form); });
+    window.ProblemReplyForm.render(fields, item.reply.form, draft.values, {
+      onSave: () => sendReply(item, key, draft, form),
+      onCancel: () => closeReply(key, form.closest('li'))
+    });
+    form.append(fields);
     return form;
   }
 
   async function sendReply(item, key, draft, form) {
-    if (draft.sending) return;
+    if (draft.values.sending) return;
     const reply = item.reply;
-    const payload = window.ProblemReplyForm.payload(form.querySelector('.monitor-reply-fields'), reply.form, draft.values);
+    const fieldsNode = form.querySelector('.monitor-reply-fields');
+    const invalid = window.ProblemReplyForm.validate(fieldsNode, reply.form, draft.values);
+    if (invalid) {
+      draft.values.error = invalid;
+      form.replaceWith(replyForm(item, key, draft));
+      return;
+    }
+    const payload = window.ProblemReplyForm.payload(fieldsNode, reply.form, draft.values);
     const replyText = payload.reply_text || '已提交提货/司机信息';
     // A retry after an unknown network result keeps the request id, so the server reads back the same
     // request instead of replying twice; a reply the server answered (even with a failure) gets a new id.
     draft.uuid = draft.uuid || (window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now()));
-    draft.sending = true;
-    draft.error = '';
+    draft.values.sending = true;
+    draft.values.error = '';
     let current = replyForm(item, key, draft);
     form.replaceWith(current);
     try {
@@ -528,8 +523,8 @@
       }
       flushDeferredRender();
     } catch (error) {
-      draft.sending = false;
-      draft.error = draft.uuid
+      draft.values.sending = false;
+      draft.values.error = draft.uuid
         ? '网络中断，不确定是否已提交；请先到原平台核对，再点“提交回复”（会按同一请求核对，不会重复回复）'
         : `${error.message || '回复失败'}；内容已保留，可重试`;
       const next = replyForm(item, key, draft);

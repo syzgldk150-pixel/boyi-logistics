@@ -1253,6 +1253,10 @@
     }
 
     function setReplySubmitting(isSubmitting) {
+      if (state.replyDraft && state.selected) {
+        state.replyDraft.sending = Boolean(isSubmitting);
+        drawReplyForm(state.selected);
+      }
       const button = $("[data-cs-reply-submit]");
       const label = button?.querySelector("span");
       if (!button) return;
@@ -1314,13 +1318,22 @@
 
     // The original page's reply form (console/static/problem_reply_form.js, 2026-11-27): rendered from
     // the row's reply_form; the Agent checks every field again and its message is shown as is.
-    function renderReplyForm(row) {
+    function drawReplyForm(row) {
       const container = $("[data-cs-reply-fields]");
-      if (!container) return;
+      if (!container || !state.replyDraft) return;
+      window.ProblemReplyForm.render(container, row.reply_form, state.replyDraft, {
+        textAttr: "data-cs-reply-text",
+        onSave: () => submitReply({ preventDefault() {} }),
+        onCancel: () => renderReplyForm(row),  // 原页“取消”清空已填写的内容
+      });
+    }
+
+    function renderReplyForm(row) {
       state.replyDraft = window.ProblemReplyForm.freshDraft(row.reply_form);
-      const usable = window.ProblemReplyForm.render(container, row.reply_form, state.replyDraft, { textAttr: "data-cs-reply-text" });
+      drawReplyForm(row);
+      // The form carries the original page's own 保存 / 取消.
       const submit = $("[data-cs-reply-submit]");
-      if (submit) submit.hidden = !usable;
+      if (submit) submit.hidden = true;
     }
 
     async function submitReply(event) {
@@ -1329,6 +1342,13 @@
       const row = state.selected;
       if (!row || !row.reply_form || row.reply_form.blocked) return;
       const container = $("[data-cs-reply-fields]");
+      const invalid = window.ProblemReplyForm.validate(container, row.reply_form, state.replyDraft);
+      if (invalid) {
+        state.replyDraft.error = invalid;
+        drawReplyForm(row);
+        return;
+      }
+      state.replyDraft.error = "";
       const payload = window.ProblemReplyForm.payload(container, row.reply_form, state.replyDraft);
       const replyText = payload.reply_text;
       const isYunda = row.platform === "yunda";
@@ -1360,6 +1380,7 @@
         await runQuery();
       } catch (error) {
         setStatus(error.message || "回复失败", "error");
+        if (state.replyDraft && state.selected === row) state.replyDraft.error = error.message || "回复失败";
       } finally {
         state.replying = false;
         setReplySubmitting(false);

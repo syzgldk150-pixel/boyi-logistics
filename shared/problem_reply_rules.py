@@ -78,7 +78,7 @@ def ronghui_reply_form(row: Mapping[str, Any], login_site: str, today: dt.date) 
     """What the reply form shows for this raw “收到问题件查询” row."""
     return {
         "platform": "ronghui", "blocked": ronghui_reply_block(row, login_site),
-        "reply_max": RONGHUI_REPLY_MAX,
+        "reply_max": RONGHUI_REPLY_MAX, "problem_cause": _text(row.get("PROBLEM_CAUSE")),
         "return_opinions": list(RONGHUI_RETURN_OPINIONS) if _text(row.get("TYPE")) == "退件" else [],
         "self_pick": _text(row.get("IS_SELF_PICK")) == "1",
         "pick_types": list(RONGHUI_PICK_TYPES), "driver_pick_types": list(RONGHUI_DRIVER_PICK_TYPES),

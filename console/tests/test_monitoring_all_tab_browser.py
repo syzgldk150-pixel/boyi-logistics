@@ -174,12 +174,12 @@ def test_problem_items_are_replied_in_place(app, browser):
         assert page.locator(".monitor-reply select option").all_inner_texts() == ["处理中", "已处理"]
         assert page.input_value(".monitor-reply select") == "2"
         page.fill(".monitor-reply textarea", "已联系收件人，明天派送")
-        page.click(".monitor-reply button[type=submit]")
-        page.wait_for_function("document.querySelector('.monitor-reply-note')?.dataset.tone === 'error'")
-        assert "原平台未确认" in page.inner_text(".monitor-reply-note")
+        page.click(".reply-form-save")
+        page.wait_for_function("document.querySelector('.reply-form-message')?.dataset.tone === 'error'")
+        assert "原平台未确认" in page.inner_text(".reply-form-message")
         assert page.input_value(".monitor-reply textarea") == "已联系收件人，明天派送"  # kept for a retry
 
-        page.click(".monitor-reply button[type=submit]")
+        page.click(".reply-form-save")
         page.locator(".monitor-reply-done").wait_for()
         assert page.inner_text(".monitor-reply-done") == "已回复：已联系收件人，明天派送"
         assert page.locator(".monitor-reply-toggle").count() == 0
@@ -233,10 +233,10 @@ def test_a_reply_lost_in_the_network_is_retried_with_the_same_request(app, brows
         page.locator(".monitor-reply-toggle").wait_for()
         page.click(".monitor-reply-toggle")
         page.fill(".monitor-reply textarea", "合成回复")
-        page.click(".monitor-reply button[type=submit]")
-        page.wait_for_function("document.querySelector('.monitor-reply-note')?.dataset.tone === 'error'")
-        assert "不确定是否已提交" in page.inner_text(".monitor-reply-note")
-        page.click(".monitor-reply button[type=submit]")
+        page.click(".reply-form-save")
+        page.wait_for_function("document.querySelector('.reply-form-message')?.dataset.tone === 'error'")
+        assert "不确定是否已提交" in page.inner_text(".reply-form-message")
+        page.click(".reply-form-save")
         page.locator(".monitor-reply-done").wait_for()
         assert replies[0] and replies[0] == replies[1]
 
@@ -288,19 +288,28 @@ def test_ronghui_self_pickup_reply_sends_the_original_form_fields(app, browser):
         page.click(".monitor-reply-toggle")
         assert page.locator(".monitor-reply .reply-form-driver").count() == 0  # drivers only after a pickup type
         page.get_by_label("安排司机提货").check()
+        # 原页：选了提货方式就生成第一行，件数默认开单件数，行末“添加司机”，计数右上。
+        assert page.input_value("[aria-label='司机1件数']") == "3"
+        assert page.inner_text(".reply-form-counter") == "当前已添加 1 名司机（最多5名）"
         page.fill("[aria-label='司机1司机姓名']", "合成司机")
+        page.fill("[aria-label='司机1手机号']", "1380000")
+        page.locator("[aria-label='司机1身份证号']").focus()  # leaving a box checks it, message under it
+        assert page.locator(".reply-form-driver-input").nth(1).inner_text() == "手机号格式不正确"
         page.fill("[aria-label='司机1手机号']", "13800000000")
         page.fill("[aria-label='司机1车牌号']", "湘E12345")
         page.fill("[aria-label='司机1件数']", "2")
-        page.get_by_text("＋ 添加司机").click()  # adding and removing a row keeps what was typed
+        page.select_option("[aria-label='提货日期']", "2026-01-03")
+        page.select_option("[aria-label='提货时间段']", "10:00-11:00")
+        page.get_by_text("添加司机", exact=True).click()
         assert page.locator(".monitor-reply .reply-form-driver").count() == 2
-        page.locator(".reply-form-driver").nth(1).get_by_text("删除").click()
+        page.click(".reply-form-save")  # an empty second row blocks saving, as on the original page
+        page.wait_for_function("document.querySelector('.reply-form-message')?.textContent === '司机信息填完整!'")
+        assert not replies
+        page.get_by_text("删除司机").click()
         assert page.locator(".monitor-reply .reply-form-driver").count() == 1
         assert page.input_value("[aria-label='司机1司机姓名']") == "合成司机"
-        page.locator(".monitor-reply select").nth(0).select_option("2026-01-03")
-        page.locator(".monitor-reply select").nth(1).select_option("10:00-11:00")
-        page.fill(".monitor-reply textarea", "已安排司机提货")
-        page.click(".monitor-reply button[type=submit]")
+        page.fill("[aria-label='回复']", "已安排司机提货")
+        page.click(".reply-form-save")
         page.locator(".monitor-reply-done").wait_for()
         assert replies[0]["item"]["registered_at"] == "2026-01-02 08:00:00"
         assert replies[0]["payload"] == {
