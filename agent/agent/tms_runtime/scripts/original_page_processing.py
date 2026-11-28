@@ -362,6 +362,253 @@ def _save_appeal_form(session: Any, parent: dict[str, str], dialog: dict[str, st
     return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id, "note": note}
 
 
+# ---------------------------------------------------------------------------------------------
+# 融辉投诉方登记“新增”“修改”（子页“投诉登记-异形件”）
+# ---------------------------------------------------------------------------------------------
+
+def _complaint_dialog(session: Any) -> tuple[dict[str, str], dict[str, str]]:
+    from shared.original_page_actions import COMPLAINT_FORM_SUBPAGE
+
+    parent = base._resolve_ronghui_page_context(session, FILED_MENU)
+    return parent, _subpage_context(session, parent, COMPLAINT_FORM_SUBPAGE)
+
+
+def _complaint_bill(session: Any, dialog: dict[str, str], bill_code: str) -> tuple[dict[str, Any] | None, bool]:
+    """``getBillInfo``：先查运单，查不到再查代取件订单（REG1）。"""
+    rows = _find(session, dialog, "FIND_BILL_INFO_ON_EXCEPTION_REG", {"BILL_CODE": bill_code})
+    if rows:
+        return rows[0], False
+    rows = _find(session, dialog, "FIND_BILL_INFO_ON_EXCEPTION_REG1", {"BILL_CODE": bill_code})
+    return (rows[0], True) if rows else (None, False)
+
+
+def _complaint_levels(session: Any, dialog: dict[str, str], user_info: dict[str, Any]) -> str:
+    rows = _find(session, dialog, "FIND_TAB_SITE_CS_MANAGERINFO", {"SITE_CODE": _text(user_info.get("loginSiteCode"))})
+    return _text(rows[0].get("LEVELS")) if rows else ""
+
+
+def _complaint_types(session: Any, dialog: dict[str, str], user_info: dict[str, Any], appeal_type: str, category: str) -> list[dict[str, Any]]:
+    return _find(session, dialog, "FIND_EXCEPTION_TYPE_COMBOBOX", {"TYPE_STATUS": 1, "TYPE_NAME": appeal_type, "CATEGORY": category,
+                                                                  "OWNER_SITE": _complaint_levels(session, dialog, user_info)})
+
+
+def _type_meta(row: dict[str, Any]) -> dict[str, str]:
+    return {key: _text(row.get(key)) for key in ("ACCUSED_SITE_TYPE", "BL_ARBITRATION", "IS_COMPLAINT_CONTENT", "DEPT_NAME", "TYPE_CODE",
+                                                 "BL_NOTITY_DEBITEDPPARTY", "BL_RELATED_SITE", "BL_SIGN")}
+
+
+def _side_site_call(exception_type: str) -> str:
+    return "FIND_SITE_INFO_ON_EXCEPTION_COMBOX5" if exception_type == "封签号不一致" else "FIND_SITE_INFO_ON_EXCEPTION_COMBOX6"
+
+
+def _paged(session: Any, dialog: dict[str, str], call_id: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    return _find(session, dialog, call_id, {**data, "pageIndex": 0, "pageSize": 20}, paged=True)[:20]
+
+
+def _complaint_form_lookup(operation: str) -> Handler:
+    def handler(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        from shared.original_page_actions import accused_site_types
+
+        user_info = _user_info(session)
+        _parent, dialog = _complaint_dialog(session)
+        get = lambda key: _text(payload.get(key))  # noqa: E731
+        if operation == "bill":
+            bill, from_order = _complaint_bill(session, dialog, get("BILL_CODE"))
+            if bill is None:
+                raise ProcessingError("REPLY_RULE_REJECTED", "未获取到相关运单信息!")
+            return {"ok": True, "bill": {"SEND_DATE": "" if from_order else _text(bill.get("SEND_DATE")),
+                                         "REGISTER_DATE": "" if from_order else _text(bill.get("REGISTER_DATE")),
+                                         "SIGN_DATE": "" if from_order else _text(bill.get("SIGN_DATE")),
+                                         "PRODUCT_TYPE": _text(bill.get("PRODUCT_TYPE"))}}
+        if operation == "process_types":
+            rows = _find(session, dialog, "GET_EXCEPTION_TYPE_DISTINCT", {})
+            return {"ok": True, "options": [{"value": _text(r.get("TYPE_NAME")), "label": _text(r.get("TYPE_NAME"))} for r in rows if _text(r.get("TYPE_NAME"))]}
+        if operation == "categories":
+            rows = _find(session, dialog, "FIND_EXCEPTION_TYPE_COMBOBOX2", {"TYPE_STATUS": 1, "TYPE_NAME": get("APPEAL_TYPE"),
+                                                                            "OWNER_SITE": _complaint_levels(session, dialog, user_info)})
+            return {"ok": True, "options": [{"value": _text(r.get("CATEGORY")), "label": _text(r.get("CATEGORY"))} for r in rows if _text(r.get("CATEGORY"))]}
+        if operation == "types":
+            rows = _complaint_types(session, dialog, user_info, get("APPEAL_TYPE"), get("CATEGORY"))
+            return {"ok": True, "options": [{"value": _text(r.get("COMPLAINT_TYPE")), "label": _text(r.get("COMPLAINT_TYPE")),
+                                             "meta": {**_type_meta(r), "SITE_TYPE": accused_site_types(r.get("ACCUSED_SITE_TYPE"))}}
+                                            for r in rows if _text(r.get("COMPLAINT_TYPE"))]}
+        if operation == "type_info":
+            rows = _find(session, dialog, "FIND_EXCEPTION_TYPE_PAGE", {"COMPLAINT_TYPE": get("COMPLAINT_TYPE")})
+            return {"ok": True, "description": _text(rows[0].get("REMARK")) if rows else ""}
+        if operation == "subjects":
+            rows = _find(session, dialog, "FIND_TAB_EXCEPTION_FILE_NEW", {"EXCEPTION_TYPE_CODE": get("TYPE_CODE"), "pageIndex": 0, "pageSize": 100}, paged=True)
+            return {"ok": True, "subjects": [{key: _text(r.get(key)) for key in ("FILE_CODE", "FILE_NAME_NEW", "IS_REQUIRED_TEXT", "FILE_DESCRIPTION")}
+                                             for r in rows if _text(r.get("FILE_CODE"))]}
+        if operation == "existing":
+            rows = _paths(session, dialog, get("EXCEPTION_ID"), "投诉方附件")
+            return {"ok": True, "files": [{key: _text(r.get(key)) for key in ("GUID", "FILE_NAME", "FILE_CODE", "FILE_SIZE")} for r in rows]}
+        if operation == "czc_site":
+            rows = _find(session, dialog, "GET_CZC_SITE_CODE", {"SITE_CODE": get("SITE_CODE")})
+            row = rows[0] if rows else {}
+            return {"ok": True, "range_company": _text(row.get("RANGE_COMPANY")), "range_company_code": _text(row.get("RANGE_COMPANY_CODE"))}
+        if operation == "collars":
+            rows = _find(session, dialog, "FIND_TAB_COLLAR_CURRENT_SITE", {"BELONG_SITE_CODE": get("SITE_CODE"), "COLLAR_STATUS": "空闲"})
+            return {"ok": True, "options": [{"value": _text(r.get("GUID")), "label": _text(r.get("COLLAR_NUMBER"))} for r in rows if _text(r.get("GUID"))]}
+        key = get("key")
+        if not re.fullmatch(r"[\w\u4e00-\u9fa5()（）\-]{1,30}", key):
+            raise ProcessingError("REPLY_RULE_REJECTED", "请输入名称或编号。")
+        if operation == "side_sites":
+            rows = _paged(session, dialog, _side_site_call(get("EXCEPTION_TYPE")), {"key": key, "SITE_TYPE": get("SITE_TYPE")})
+            return {"ok": True, "sites": [{"SITE_CODE": _text(r.get("SITE_CODE")), "SITE_NAME": _text(r.get("SITE_NAME")),
+                                           "OPERATE_ATTR": _text(r.get("OPERATE_ATTR"))} for r in rows if _text(r.get("SITE_CODE"))]}
+        if operation == "sites":
+            rows = _paged(session, dialog, "FIND_SITE_INFO_ON_EXCEPTION_COMBOX", {"key": key})
+            return {"ok": True, "sites": [{"SITE_CODE": _text(r.get("SITE_CODE")), "SITE_NAME": _text(r.get("SITE_NAME"))} for r in rows if _text(r.get("SITE_CODE"))]}
+        if operation == "depts":
+            rows = _paged(session, dialog, "FIND_TAB_DEPT_COMBOBOX", {"key": key})
+            return {"ok": True, "sites": [{"SITE_CODE": _text(r.get("DEPT_CODE")), "SITE_NAME": _text(r.get("DEPT_NAME"))} for r in rows if _text(r.get("DEPT_CODE"))]}
+        rows = _paged(session, dialog, "FIND_TAB_EMPLOYEE_COMBOBOX", {"key": key})
+        return {"ok": True, "sites": [{"SITE_CODE": _text(r.get("EMPLOYEE_CODE")), "SITE_NAME": _text(r.get("EMPLOYEE_NAME"))} for r in rows if _text(r.get("EMPLOYEE_CODE"))]}
+    return handler
+
+
+def _pick(rows: list[dict[str, Any]], code_key: str, code: str) -> dict[str, Any] | None:
+    matches = [row for row in rows if _text(row.get(code_key)) == code]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _complaint_save(operation: str) -> Handler:
+    def handler(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        from shared.original_page_actions import (
+            COMPLAINT_USER_FIELDS, ActionRuleError, AttachmentError, attachments, complaint_attachment_rows, complaint_bill_fields,
+            complaint_edit_block, complaint_save_row, validate_complaint_form,
+        )
+
+        user_info = _user_info(session)
+        parent, dialog = _complaint_dialog(session)
+        values = {key: _text(payload.get(key)) for key in COMPLAINT_USER_FIELDS}
+        row: dict[str, Any] = {}
+        if operation == "update":
+            row = _complaint_row(session, parent, "FIND_TAB_EXCEPTION_REGISTER_CS", user_info, _text(item.get("external_id")))
+            blocked = complaint_edit_block(row)
+            if blocked:
+                raise _rule(ActionRuleError(blocked))
+            values["BILL_CODE"] = _text(row.get("BILL_CODE"))  # 修改时运单号不可改
+        bill_code = values["BILL_CODE"]
+        bill, from_order = _complaint_bill(session, dialog, bill_code) if bill_code else (None, False)
+        loss_rows = _find(session, dialog, "FIND_BILL_INFO_ON_EXCEPTION_REG", {"BILL_CODE": bill_code}) if bill_code else []
+        types = _complaint_types(session, dialog, user_info, values["APPEAL_TYPE"], values["CATEGORY"]) if values["CATEGORY"] else []
+        type_pick = _pick(types, "COMPLAINT_TYPE", values["EXCEPTION_TYPE"])
+        type_rows = _find(session, dialog, "FIND_TAB_EXCEPTION_TYPE", {"COMPLAINT_TYPE": values["EXCEPTION_TYPE"]}) if values["EXCEPTION_TYPE"] else []
+        signed_rows = _find(session, dialog, "FIND_TAB_EXCEPTION_TYPE", {"COMPLAINT_TYPE": values["EXCEPTION_TYPE"], "TYPE_STATUS": 1}) if values["EXCEPTION_TYPE"] else []
+        type_row = type_rows[0] if type_rows else {}
+        extra: dict[str, Any] = {}
+        if values["EXCEPTIONSITE_SIDE_CODE"]:
+            from shared.original_page_actions import accused_site_types
+
+            sites = _paged(session, dialog, _side_site_call(values["EXCEPTION_TYPE"]),
+                           {"key": values["EXCEPTIONSITE_SIDE_CODE"], "SITE_TYPE": accused_site_types((type_pick or {}).get("ACCUSED_SITE_TYPE"))})
+            site = _pick(sites, "SITE_CODE", values["EXCEPTIONSITE_SIDE_CODE"])
+            if site is None and values["BL_BANGDING_SITE"] != "1":
+                raise _rule(ActionRuleError("被投诉网点无效，请重新选择。"))
+            if site is not None:
+                extra.update({"EXCEPTIONSITE_SIDE": _text(site.get("SITE_NAME")), "EXCEPTION_SIDE_F_CENTER": _text(site.get("SUPERIOR_FINANCE_CENTER")),
+                              "EXCEPTION_SIDE_F_CENTER_CODE": _text(site.get("SUPERIOR_FINANCE_CENTER_CODE"))})
+            else:  # 操作场改绑网点（系统默认网点），名称取改绑结果
+                extra["EXCEPTIONSITE_SIDE"] = _text(payload.get("EXCEPTIONSITE_SIDE"))
+        for code_key, call, value_key, name_key, row_code, row_name in (
+                ("EXCEPTION_DEPT_SIDE_CODE", "FIND_TAB_DEPT_COMBOBOX", "DEPT_CODE", "EXCEPTION_DEPT_SIDE", "DEPT_CODE", "DEPT_NAME"),
+                ("EXCEPTION_MAN_SIDE_CODE", "FIND_TAB_EMPLOYEE_COMBOBOX", "EMPLOYEE_CODE", "EXCEPTION_MAN_SIDE", "EMPLOYEE_CODE", "EMPLOYEE_NAME")):
+            if values[code_key]:
+                found = _pick(_paged(session, dialog, call, {"key": values[code_key]}), value_key, values[code_key])
+                if found is None:
+                    raise _rule(ActionRuleError("被投诉部门或人员无效，请重新选择。"))
+                extra[name_key] = _text(found.get(row_name))
+        if values["BL_AGENT"] == "1" and values["EXCEPTION_SITE_CODE"]:
+            site = _pick(_paged(session, dialog, "FIND_SITE_INFO_ON_EXCEPTION_COMBOX", {"key": values["EXCEPTION_SITE_CODE"]}),
+                         "SITE_CODE", values["EXCEPTION_SITE_CODE"])
+            if site is None:
+                raise _rule(ActionRuleError("投诉网点无效，请重新选择。"))
+            extra.update({"EXCEPTION_SITE": _text(site.get("SITE_NAME")), "EXCEPTION_FINANCE_CENTER": _text(site.get("SUPERIOR_FINANCE_CENTER")),
+                          "EXCEPTION_FINANCE_CENTER_CODE": _text(site.get("SUPERIOR_FINANCE_CENTER_CODE"))})
+        elif values["BL_AGENT"] != "1":
+            values["EXCEPTION_SITE_CODE"] = _text(row.get("EXCEPTION_SITE_CODE")) if operation == "update" else _text(user_info.get("loginSiteCode"))
+            extra["EXCEPTION_SITE"] = _text(row.get("EXCEPTION_SITE")) if operation == "update" else _text(user_info.get("loginSiteName"))
+        subjects = _find(session, dialog, "FIND_TAB_EXCEPTION_FILE_NEW", {"EXCEPTION_TYPE_CODE": _text((type_pick or {}).get("TYPE_CODE")),
+                                                                         "pageIndex": 0, "pageSize": 100}, paged=True) if type_pick else []
+        exception_id = _text(row.get("EXCEPTION_ID"))
+        removed = {guid for guid in _text(payload.get("remove_paths")).split(",") if guid}
+        existing = [entry for entry in (_paths(session, dialog, exception_id, "投诉方附件") if exception_id else []) if _text(entry.get("GUID")) not in removed]
+        new_files: dict[str, list[dict[str, Any]]] = {}
+        try:
+            for key, value in payload.items():
+                if key.startswith("file__") and value:
+                    new_files[key.removeprefix("file__")] = attachments(value, "ronghui", "complaint_form")
+        except AttachmentError as exc:
+            raise _rule(ActionRuleError(str(exc))) from None
+        files: dict[str, list[Any]] = {}
+        for entry in existing:
+            files.setdefault(_text(entry.get("FILE_CODE")), []).append(entry)
+        for code, items in new_files.items():
+            files.setdefault(code, []).extend(items)
+        check_bill = bill if operation == "create" else {"SIGN_DATE": _text(row.get("SIGN_DATE")), "SEND_SITE_CODE": _text(row.get("SEND_SITE_CODE")),
+                                                         "BL_SIGNS_MARKING": "0"}
+        duplicate_query = {"BILL_CODE": bill_code, "EXCEPTION_TYPE": values["EXCEPTION_TYPE"], "APPEAL_TYPE": values["APPEAL_TYPE"]}
+        if _text(type_row.get("REPEAT_SITE_COMPLAINT")) == "1":
+            duplicate_query["EXCEPTION_SITE_CODE"] = values["EXCEPTION_SITE_CODE"]
+        duplicates = _find(session, dialog, "FIND_EXCETION_INFO_VALIDATE", duplicate_query) if values["EXCEPTION_TYPE"] else []
+        duplicate = bool(duplicates) and _text(duplicates[0].get("EXCEPTION_ID")) != exception_id
+        trajectory = lambda call: {_text(r.get("SITE_CODE")) for r in _find(session, dialog, call, {"BILL_CODE": bill_code})}  # noqa: E731
+        side_ok = self_ok = True
+        if _text(type_row.get("BL_RELATED_SITE")) == "1":
+            side_ok = values["EXCEPTIONSITE_SIDE_CODE"] in trajectory("FIND_TRAJECTORY_SITECODE_ORDER" if from_order else "FIND_TRAJECTORY_SITECODE")
+        if _text(type_row.get("BL_RELATED_SITE1")) == "1":
+            self_ok = values["EXCEPTION_SITE_CODE"] in trajectory("FIND_TRAJECTORY_SITECODE_ORDER1" if from_order else "FIND_TRAJECTORY_SITECODE")
+        car = None
+        if values["EXCEPTION_TYPE"] == "延误请车":
+            car = any(_find(session, dialog, "FIND_TAB_WORK_ORDER_DATA", {"BILL_CODE": bill_code, "WORK_NAME": name}) for name in ("客诉加急请车", "加急请车"))
+        collar_bill = None
+        if values["EXCEPTION_TYPE"] == "围板箱录单不规范":
+            collar_rows = _find(session, dialog, "FIND_BILL_BY_BILL_CODE", {"BILL_CODE": bill_code})
+            collar_bill = collar_rows[0] if collar_rows else None
+        server_now = _server_now(session, dialog)
+        try:
+            validate_complaint_form(values, type_meta=_type_meta(type_pick) if type_pick else None, type_row=type_row,
+                                    signed_type_row=signed_rows[0] if signed_rows else None, bill=check_bill, from_order=from_order,
+                                    loss_bill=loss_rows[0] if loss_rows else None, subjects=subjects, files=files, duplicate=duplicate,
+                                    side_in_trajectory=side_ok, self_in_trajectory=self_ok, login_site_code=_text(user_info.get("loginSiteCode")),
+                                    now=dt.datetime.strptime(server_now, "%Y-%m-%d %H:%M:%S"), car_work_orders=car, collar_bill=collar_bill)
+        except ActionRuleError as exc:
+            raise _rule(exc) from None
+        if type_pick is None:
+            raise _rule(ActionRuleError("请把信息填写完整"))
+        if operation == "create":
+            ids = _find(session, dialog, "FIND_EXCEPTION_ID_ON_INSERT_EXCEPTION", {})
+            exception_id = _text(ids[0].get("EXCEPTION_ID")) if ids else ""
+            if not exception_id:
+                raise ProcessingError("INVALID_RESPONSE", "原系统没有返回投诉编号。")
+            extra.update(complaint_bill_fields(bill, from_order))
+            extra.update({"EXCEPTION_MAN": _text(user_info.get("loginEmpName")), "EXCEPTION_MAN_CODE": _text(user_info.get("loginEmpCode"))})
+        elif values["EXCEPTION_TYPE"] != _text(row.get("EXCEPTION_TYPE")):
+            info = _find(session, dialog, "FIND_EXCEPTION_TYPE_PAGE", {"COMPLAINT_TYPE": values["EXCEPTION_TYPE"]})
+            extra["EXCEPTION_TYPE_DATA_FROM"] = _text(info[0].get("REMARK")) if info else ""
+        extra.update({"EXCEPTION_ID": exception_id, "DEPT_NAME": _text(type_pick.get("DEPT_NAME")),
+                      "BL_NOTITY_DEBITEDPPARTY": _text(type_pick.get("BL_NOTITY_DEBITEDPPARTY")) or _text(row.get("BL_NOTITY_DEBITEDPPARTY"))})
+        if values["EXCEPTION_TYPE"] != "围板箱录单不规范":
+            values["COLLAR_NUMBER_LIST"] = ""
+        saved_row = complaint_save_row(operation, {**values, **extra}, row, user_info, server_now)
+        for guid in removed:  # 原页点“删除”即删附件（TAB_EXCEPTION_PATH_DEL）
+            entry = next((e for e in _paths(session, dialog, exception_id, "投诉方附件") if _text(e.get("GUID")) == guid), None)
+            if entry is not None:
+                _save(session, dialog, [("TAB_EXCEPTION_PATH_DEL", [entry])], "融辉删除投诉附件")
+        tables = [("TAB_EXCEPTION_ADD" if operation == "create" else "TAB_EXCEPTION_UPT", [saved_row])]
+        pictures = complaint_attachment_rows(new_files, exception_id, user_info, dt.datetime.now(base.SHANGHAI_TZ))
+        if pictures:
+            tables.append(("TAB_EXCEPTION_PATH_ADD", pictures))
+        result = _save(session, dialog, tables, "融辉投诉登记")
+        fresh = _fresh_complaint(session, parent, exception_id) or {}
+        if _text(fresh.get("EXCEPTION_TYPE")) != values["EXCEPTION_TYPE"] or _text(fresh.get("EXCEPTION_MAN_PHONE")) != values["EXCEPTION_MAN_PHONE"]:
+            raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "投诉已提交，但读回的投诉内容不一致，请到原系统核对，不要重复登记。")
+        return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": _text(item.get("external_id")),
+                "exception_id": exception_id}
+    return handler
+
+
 def _fresh_complaint(session: Any, context: dict[str, str], exception_id: str) -> dict[str, Any] | None:
     rows = _find(session, context, "FIND_TAB_EXCEPTION_REGISTER", {"EXCEPTION_ID": exception_id})
     return rows[0] if rows else None
@@ -1014,6 +1261,8 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "complaint_against", "reply"): _complaint_against_reply,
     ("ronghui", "complaint_against", "appeal"): _complaint_against_appeal,
     ("ronghui", "appeal", "create"): _appeal_create,
+    ("ronghui", "complaint_filed", "create"): _complaint_save("create"),
+    ("ronghui", "complaint_filed", "update"): _complaint_save("update"),
     ("ronghui", "complaint_filed", "cancel"): _complaint_filed_cancel,
     ("ronghui", "complaint_filed", "appeal"): _complaint_filed_appeal,
     ("ronghui", "complaint_filed", "claim"): _complaint_filed_claim,
@@ -1037,6 +1286,9 @@ LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "problem", "contact"): _problem_contact,
     ("ronghui", "site", "search"): _site_search,
     ("ronghui", "appeal_form", "process_types"): _appeal_form_lookup("process_types"),
+    **{("ronghui", "complaint_form", operation): _complaint_form_lookup(operation)
+       for operation in ("bill", "process_types", "categories", "types", "type_info", "subjects", "existing", "czc_site", "collars",
+                         "side_sites", "sites", "depts", "employees")},
     ("ronghui", "appeal_form", "appeal_types"): _appeal_form_lookup("appeal_types"),
     ("yunda", "site", "search"): _yunda_site_search,
     ("yunda", "problem", "reply_often"): _yunda_reply_often,

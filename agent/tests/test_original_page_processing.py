@@ -354,3 +354,54 @@ class AppealCreateTests(unittest.TestCase):
         self.assertEqual("申诉登记", captured["menu"])
         with self.assertRaises(base.CustomerServiceProblemError):
             processing.run("ronghui", "process", object(), {"kind": "appeal", "operation": "create", "item": {"external_id": "new"}, "payload": {}})
+
+
+class ComplaintFormTests(unittest.TestCase):
+    TYPES = [{"COMPLAINT_TYPE": "延误", "TYPE_CODE": "T1", "ACCUSED_SITE_TYPE": "网点", "BL_ARBITRATION": "0", "IS_COMPLAINT_CONTENT": "0",
+              "DEPT_NAME": "合成部门", "BL_NOTITY_DEBITEDPPARTY": "1"}]
+
+    def find(self, overrides=None):
+        tables = {
+            "FIND_BILL_INFO_ON_EXCEPTION_REG": [{"PIECE_NUMBER": "3", "SEND_SITE": "甲", "SEND_SITE_CODE": "S2", "BL_SIGNS_MARKING": 1, "SIGN_DATE": ""}],
+            "FIND_TAB_SITE_CS_MANAGERINFO": [{"LEVELS": "一级网点"}], "FIND_EXCEPTION_TYPE_COMBOBOX": self.TYPES,
+            "FIND_TAB_EXCEPTION_TYPE": [{"BL_SIGN": 1, "REPEAT_SITE_COMPLAINT": "0"}],
+            "FIND_SITE_INFO_ON_EXCEPTION_COMBOX6": [{"SITE_CODE": "S9", "SITE_NAME": "合成被投诉网点", "SUPERIOR_FINANCE_CENTER": "乙中心",
+                                                     "SUPERIOR_FINANCE_CENTER_CODE": "C9"}],
+            "FIND_TAB_EXCEPTION_FILE_NEW": [{"FILE_CODE": "F1", "IS_REQUIRED_TEXT": "是"}], "FIND_EXCETION_INFO_VALIDATE": [],
+            "FIND_EXCEPTION_ID_ON_INSERT_EXCEPTION": [{"EXCEPTION_ID": "E-NEW"}], "FIND_EXCEPTION_PATH": [],
+        }
+        tables.update(overrides or {})
+        return lambda session, context, call_id, data, paged=False: tables[call_id]
+
+    def run_create(self, payload, overrides=None):
+        saved = []
+        with patch.object(processing, "_user_info", return_value={**USER, "loginUserName": "合成用户", "loginUserId": "U1"}), \
+                patch.object(processing, "_complaint_dialog", return_value=({"page_id": "P"}, {"page_id": "SUB"})), \
+                patch.object(processing, "_find", side_effect=self.find(overrides)), \
+                patch.object(processing, "_server_now", return_value="2026-11-28 10:00:00"), \
+                patch.object(processing, "_save", side_effect=lambda s, c, tables, label: saved.append(tables) or {"success": True}), \
+                patch.object(processing, "_fresh_complaint", return_value={"EXCEPTION_TYPE": "延误", "EXCEPTION_MAN_PHONE": "13800000000"}):
+            result = processing.run("ronghui", "process", object(), {"kind": "complaint_filed", "operation": "create",
+                                                                      "item": {"external_id": "new"}, "payload": payload})
+        return result, saved
+
+    PAYLOAD = {"BILL_CODE": "B1", "EXCEPTION_MAN_PHONE": "13800000000", "APPEAL_TYPE": "差错处理", "CATEGORY": "延误类",
+               "EXCEPTION_TYPE": "延误", "OBJECT_TYPE": "1", "EXCEPTIONSITE_SIDE_CODE": "S9", "BL_AGENT": "0"}
+
+    def test_create_fills_hidden_fields_and_saves_attachments(self):
+        attachment = {"platform": "ronghui", "file_name": "照片.jpg", "file_ext": ".jpg", "file_size_kb": 5, "file_path": "/unauth/download/a"}
+        result, saved = self.run_create({**self.PAYLOAD, "file__F1": [attachment]})
+        self.assertTrue(result["verified"])
+        self.assertEqual("E-NEW", result["exception_id"])
+        tables = saved[0]
+        self.assertEqual(["TAB_EXCEPTION_ADD", "TAB_EXCEPTION_PATH_ADD"], [key for key, _ in tables])
+        row = tables[0][1][0]
+        self.assertEqual(("E-NEW", "合成被投诉网点", "C9", "S1", "甲", "合成部门", "K13", "待审核"),
+                         (row["EXCEPTION_ID"], row["EXCEPTIONSITE_SIDE"], row["EXCEPTION_SIDE_F_CENTER_CODE"], row["EXCEPTION_SITE_CODE"],
+                          row["SEND_SITE"], row["DEPT_NAME"], row["EXCEPTION_TYPE_DATA_FROM"], row["STATUS"]))
+        self.assertEqual(("F1", "E-NEW", "投诉方附件"), (tables[1][1][0]["FILE_CODE"], tables[1][1][0]["EXCEPTION_ID"], tables[1][1][0]["FILE_UPLOAD_TYPE"]))
+
+    def test_missing_required_attachment_is_refused_before_writing(self):
+        with self.assertRaises(base.CustomerServiceProblemError) as ctx:
+            self.run_create(self.PAYLOAD)
+        self.assertIn("请完善附件后进行保存", str(ctx.exception))

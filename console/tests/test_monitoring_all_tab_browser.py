@@ -707,3 +707,95 @@ def test_ronghui_appeal_create_picks_business_account(app, browser):
         page.wait_for_function("document.querySelectorAll('.action-dialog').length === 0")
         assert posts[0]["account_id"] == "price_default" and posts[0]["operation"] == "create"
         assert posts[0]["payload"]["BILL_CODE"] == "SYNTHETIC-9"
+
+
+def test_ronghui_complaint_create_dialog_follows_the_original_form(app, browser):
+    """融辉投诉方登记“新增”：运单带出日期，三级联动，投诉类型决定被投诉网点、处理部门与附件科目，提交原页字段。"""
+    from shared.original_page_actions import complaint_form_spec
+
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+                "systems": [{"system": "ronghui", "label": "融辉", "status": "ok", "categories": [
+                    {"category_id": "ronghui:complaints_filed", "title": "投诉 · 未完结", "count": 0, "items_supported": True,
+                     "actions": {"platform": "ronghui", "account_id": "ronghui_daxiang_s", "label": "融辉投诉方登记", "item": {"external_id": "new"},
+                                 "specs": [complaint_form_spec(None, {}, [("ronghui_daxiang_s", "大祥S站账号")])]}}]}]}
+    lookups, posts, uploads = [], [], []
+    answers = {
+        "bill": {"bill": {"SEND_DATE": "2026-01-01 08:00:00", "REGISTER_DATE": "2026-01-01 08:00:00", "SIGN_DATE": "", "PRODUCT_TYPE": "普通"}},
+        "process_types": {"options": [{"value": "差错处理", "label": "差错处理"}, {"value": "仲裁处理", "label": "仲裁处理"}]},
+        "categories": {"options": [{"value": "延误类", "label": "延误类"}]},
+        "types": {"options": [{"value": "延误", "label": "延误", "meta": {"TYPE_CODE": "T1", "SITE_TYPE": "一级网点,二级网点",
+                                                                         "BL_ARBITRATION": "1", "IS_COMPLAINT_CONTENT": "1", "DEPT_NAME": "合成部门"}}]},
+        "subjects": {"subjects": [{"FILE_CODE": "F1", "FILE_NAME_NEW": "现场照片", "IS_REQUIRED_TEXT": "是", "FILE_DESCRIPTION": ""}]},
+        "type_info": {"description": "合成类型描述"},
+        "side_sites": {"sites": [{"SITE_CODE": "S9", "SITE_NAME": "合成被投诉网点", "OPERATE_ATTR": "1"}]},
+    }
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "items": [], "total": 0, "has_more": False}))
+            elif parsed.path == "/customer-service/lookup":
+                sent = json.loads(route.request.post_data)
+                lookups.append((sent["operation"], sent["payload"]))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, **answers[sent["operation"]]}))
+            elif parsed.path == "/customer-service/problems/attachments/upload":
+                uploads.append(b"complaint_form" in (route.request.post_data_buffer or b""))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "attachment": {
+                    "platform": "ronghui", "file_name": "a.jpg", "file_ext": ".jpg", "file_size_kb": 1, "file_path": "/unauth/download/a"}}))
+            elif parsed.path == "/customer-service/process":
+                posts.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.locator(".monitor-category-actions .action-button").click()
+        dialog = page.locator(".complaint-dialog")
+        dialog.wait_for()
+        page.fill("[aria-label='运单编号']", "SYNTHETIC-5")
+        page.locator("[aria-label='运单编号']").dispatch_event("change")
+        page.wait_for_function("document.querySelector('[data-action-field=\"SEND_DATE\"]').value === '2026-01-01 08:00:00'")
+        page.wait_for_function("document.querySelector('[aria-label=\"处理类型\"]').options.length === 3")
+        page.select_option("[aria-label='处理类型']", "差错处理")
+        page.wait_for_function("document.querySelector('[aria-label=\"投诉类别\"]').options.length === 2")
+        page.select_option("[aria-label='投诉类别']", "延误类")
+        page.wait_for_function("document.querySelector('[aria-label=\"投诉类型\"]').options.length === 2")
+        page.select_option("[aria-label='投诉类型']", "延误")
+        page.locator(".complaint-subject").wait_for()
+        assert page.input_value("[data-action-field='DEPT_NAME']") == "合成部门"
+        assert page.input_value("[data-action-field='EXCEPTION_TYPE_DATA_FROM']") == "合成类型描述"
+        assert not dialog.locator("[data-action-row='GOODS_PRICE'] .action-required").is_hidden()   # 仲裁类投诉类型
+        page.fill("[aria-label='联系电话']", "13800000000")
+        dialog.locator(".action-save").click()
+        assert dialog.locator(".action-message").inner_text() == "请把信息填写完整"
+        assert not posts
+        page.fill("[aria-label='EXCEPTIONSITE_SIDE_CODE']", "合成")
+        dialog.locator("[data-action-row='EXCEPTIONSITE_SIDE_CODE'] .action-site-search").click()
+        dialog.locator(".action-site-option").click()
+        for label, value in (("LOSS_GOODS_NAME", "合成货"), ("COMPLAINANT_NAME", "合成投诉人"), ("GOODS_PRICE", "100")):
+            page.fill(f"[data-action-field='{label}']", value)
+        page.fill("[aria-label='问题描述']", "合成经过")
+        page.set_input_files(".complaint-subject .attach-zone input", files=[{"name": "a.jpg", "mimeType": "image/jpeg", "buffer": b"x"}])
+        dialog.locator(".complaint-subject .attach-item").wait_for()
+        dialog.locator(".action-save").click()
+        page.wait_for_function("document.querySelectorAll('.complaint-dialog').length === 0")
+        sent = posts[0]
+        assert (sent["kind"], sent["operation"], sent["account_id"]) == ("complaint_filed", "create", "ronghui_daxiang_s")
+        assert sent["payload"]["EXCEPTIONSITE_SIDE_CODE"] == "S9" and sent["payload"]["BILL_CODE"] == "SYNTHETIC-5"
+        assert sent["payload"]["file__F1"][0]["file_path"] == "/unauth/download/a" and uploads == [True]
+        assert ("side_sites", {"key": "合成", "EXCEPTION_TYPE": "延误", "SITE_TYPE": "一级网点,二级网点"}) in lookups

@@ -392,6 +392,7 @@ def complaint_filed_specs(row: Mapping[str, Any], user_info: Mapping[str, Any]) 
                   [_field("BILL_CODE", "运单号", value=row.get("BILL_CODE"))], blocked=complaint_claim_block(row))
     claim["attachment_slots"] = _slots(CLAIM_SLOTS)
     return [
+        complaint_form_spec(row, user_info),
         _spec("complaint_filed", "cancel", "取消投诉", "取消投诉", [], blocked=complaint_cancel_block(row, user_info),
               confirm="确定取消投诉？"),
         appeal, claim,
@@ -1011,6 +1012,230 @@ def appeal_form_tables(fields: Mapping[str, Any], user_info: Mapping[str, Any], 
     return tables
 
 
+# ---------------------------------------------------------------------------------------------
+# 融辉投诉方登记“新增”“修改”（子页“投诉登记-异形件”，saveExceptionData）
+# ---------------------------------------------------------------------------------------------
+
+COMPLAINT_FORM_SUBPAGE = "投诉登记-异形件"
+COMPLAINT_ATTACHMENT_TYPE = "投诉方附件"
+COMPLAINT_UNFIXED_REASONS = ("受污染", "液体泄露", "浸湿", "破损程度无法修复", "缺少修复工具", "货物变形", "缺少操作时间",
+                             "无修复意识", "修复费用问题", "其它")
+COMPLAINT_DAMAGE_CATEGORIES = ("破损类", "破损类修复")
+COMPLAINT_COLLAR_TYPE = "围板箱录单不规范"
+COMPLAINT_CAR_TYPE = "延误请车"
+COMPLAINT_CAR_MESSAGE = ("经核查，该单号未按流程先上报工单“客诉加急请车或加急请车”。根据规定，此类情况不予受理仲裁延误请车申请。"
+                         "所有请车后次日及之后补登记的工单，均做驳回处理，请知悉。")
+# 表单 getData() 带出的全部字段（含隐藏字段），按原页顺序
+COMPLAINT_FORM_FIELDS = (
+    "EXCEPTION_ID", "SEND_SITE", "SEND_SITE_CODE", "DISPATCH_SITE", "DISPATCH_SITE_CODE", "SEND_COMPANY", "RECEIVER_COMPANY",
+    "DISPATCH_FINANCE_CENTER", "DISPATCH_FINANCE_CENTER_CODE", "EXCEPTION_FINANCE_CENTER", "EXCEPTION_FINANCE_CENTER_CODE",
+    "EXCEPTION_SIDE_F_CENTER", "EXCEPTION_SIDE_F_CENTER_CODE", "EXCEPTION_MAN", "EXCEPTION_MAN_CODE", "SEND_DATE", "GOODS_NAME",
+    "PIECE_NUMBER", "GOODS_VALUES", "SEND_ADDRESS", "RECEIVER_ADDRESS", "REGISTER_DATE", "SIGN_DATE", "BL_NOTITY_DEBITEDPPARTY",
+    "BL_BANGDING_SITE", "EXCEPTION_MAN_TYPE", "BILL_CODE", "OBJECT_TYPE", "APPEAL_TYPE", "CATEGORY", "EXCEPTION_TYPE",
+    "COLLAR_NUMBER_LIST", "EXCEPTIONSITE_SIDE_CODE", "EXCEPTIONSITE_SIDE", "EXCEPTION_DEPT_SIDE_CODE", "EXCEPTION_DEPT_SIDE",
+    "EXCEPTION_MAN_SIDE_CODE", "EXCEPTION_MAN_SIDE", "BL_AGENT", "EXCEPTION_MAN_PHONE", "EXCEPTION_SITE_CODE", "EXCEPTION_SITE",
+    "DEPT_NAME", "EXCEPTION_VOLUME", "LOSS_NUMBER", "LOSS_GOODS_NAME", "COMPLAINANT_NAME", "GOODS_PRICE", "IS_FIXED",
+    "UNFIXED_REASON", "REMARK", "EXCEPTION_TYPE_DATA_FROM", "OTHER_REASON",
+)
+# 用户在对话框里填写的字段（其余由运单、类型、网点查询带出）
+COMPLAINT_USER_FIELDS = (
+    "EXCEPTION_MAN_TYPE", "BILL_CODE", "OBJECT_TYPE", "APPEAL_TYPE", "CATEGORY", "EXCEPTION_TYPE", "COLLAR_NUMBER_LIST",
+    "EXCEPTIONSITE_SIDE_CODE", "EXCEPTION_DEPT_SIDE_CODE", "EXCEPTION_MAN_SIDE_CODE", "BL_AGENT", "EXCEPTION_MAN_PHONE",
+    "EXCEPTION_SITE_CODE", "EXCEPTION_VOLUME", "LOSS_NUMBER", "LOSS_GOODS_NAME", "COMPLAINANT_NAME", "GOODS_PRICE", "IS_FIXED",
+    "UNFIXED_REASON", "REMARK", "OTHER_REASON", "BL_BANGDING_SITE",
+)
+
+
+def complaint_edit_block(row: Mapping[str, Any]) -> str:
+    """``editMethodCs``：投诉状态或仲裁状态为待审核才可修改；违禁品不可修改。"""
+    if _text(row.get("STATUS")) == "待审核" or _text(row.get("ARBITRATE_STATUS")) == "待审核":
+        return "投诉类型为【违禁品】,不可修改" if _text(row.get("CATEGORY")) == "违禁品" else ""
+    if _text(row.get("APPEAL_TYPE")) == "仲裁处理":
+        return f"仲裁状态为【{_text(row.get('ARBITRATE_STATUS'))}】,不可修改"
+    return f"投诉状态为【{_text(row.get('STATUS'))}】,不可修改"
+
+
+def complaint_form_spec(row: Mapping[str, Any] | None, user_info: Mapping[str, Any],
+                        accounts: Sequence[tuple[str, str]] = ()) -> dict[str, Any]:
+    """“新增”（row 为空，挂在分类上方并先选业务账号）与“修改”（挂在本人投诉上）的同一张表单。"""
+    editing = row is not None
+    values = {key: _text((row or {}).get(key)) for key in COMPLAINT_USER_FIELDS + ("EXCEPTION_ID", "PRODUCT_TYPE", "SEND_DATE",
+                                                                                  "REGISTER_DATE", "SIGN_DATE", "DEPT_NAME",
+                                                                                  "EXCEPTIONSITE_SIDE", "EXCEPTION_DEPT_SIDE",
+                                                                                  "EXCEPTION_MAN_SIDE", "EXCEPTION_SITE",
+                                                                                  "EXCEPTION_TYPE_DATA_FROM")}
+    if not editing:
+        values.update({"OBJECT_TYPE": "1", "BL_AGENT": "0", "EXCEPTION_SITE_CODE": _text(user_info.get("loginSiteCode")),
+                       "EXCEPTION_SITE": _text(user_info.get("loginSiteName"))})
+    spec = _spec("complaint_filed", "update" if editing else "create", "修改" if editing else "新增",
+                 "修改数据" if editing else "新增数据", [], blocked=complaint_edit_block(row) if editing else "")
+    spec.update({"form": "complaint", "values": values, "unfixed_reasons": list(COMPLAINT_UNFIXED_REASONS),
+                 "damage_categories": list(COMPLAINT_DAMAGE_CATEGORIES), "collar_type": COMPLAINT_COLLAR_TYPE})
+    if accounts:
+        spec["account_options"] = [list(item) for item in accounts]
+    return spec
+
+
+def accused_site_types(accused: Any) -> str:
+    """``changeEXCEPTION_TYPE``：被投诉方可选的网点类型（网点→一级、二级网点；分拨→分拨中心；总部）。"""
+    text, parts = _text(accused), []
+    if "网点" in text:
+        parts.append("一级网点,二级网点")
+    if "分拨" in text:
+        parts.append("分拨中心")
+    if "总部" in text:
+        parts.append("总部")
+    return ",".join(parts)
+
+
+def _decimal_in(value: str, low: str, high: str, integer: bool = False) -> bool:
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        return False
+    if integer and amount != amount.to_integral_value():
+        return False
+    return Decimal(low) <= amount <= Decimal(high)
+
+
+def complaint_required_missing(values: Mapping[str, Any], type_meta: Mapping[str, Any] | None) -> bool:
+    """表单校验（form.validate）：固定必填 + 按处理类型、投诉类型、对象、代登记、破损修复切换的必填与数值范围。"""
+    meta = type_meta or {}
+    get = lambda key: _text(values.get(key))  # noqa: E731
+    required = ["BILL_CODE", "EXCEPTION_MAN_PHONE", "APPEAL_TYPE", "CATEGORY", "EXCEPTION_TYPE"]
+    if get("APPEAL_TYPE") == "仲裁处理":
+        required += ["EXCEPTION_VOLUME", "LOSS_NUMBER"]
+    if _text(meta.get("BL_ARBITRATION")) not in ("", "0"):
+        required += ["LOSS_GOODS_NAME", "COMPLAINANT_NAME", "GOODS_PRICE"]
+    if _text(meta.get("IS_COMPLAINT_CONTENT")) == "1":
+        required.append("REMARK")
+    if get("EXCEPTION_TYPE") == COMPLAINT_COLLAR_TYPE:
+        required.append("COLLAR_NUMBER_LIST")
+    if accused_site_types(meta.get("ACCUSED_SITE_TYPE")) and get("OBJECT_TYPE") in ("", "1"):
+        required.append("EXCEPTIONSITE_SIDE_CODE")
+    required += {"2": ["EXCEPTION_DEPT_SIDE_CODE"], "3": ["EXCEPTION_MAN_SIDE_CODE"]}.get(get("OBJECT_TYPE"), [])
+    if get("BL_AGENT") == "1":
+        required.append("EXCEPTION_SITE_CODE")
+    if get("CATEGORY") in COMPLAINT_DAMAGE_CATEGORIES:
+        required.append("IS_FIXED")
+        if get("IS_FIXED") not in ("", "1"):
+            required.append("UNFIXED_REASON")
+            if get("UNFIXED_REASON") == "其它":
+                required.append("OTHER_REASON")
+    if any(not get(key) for key in required):
+        return True
+    ranges = (("EXCEPTION_VOLUME", "0.01", "99999999", False), ("LOSS_NUMBER", "1", "2000", True),
+              ("GOODS_PRICE", "0.01", "2000000", False))
+    return any(get(key) and not _decimal_in(get(key), low, high, integer) for key, low, high, integer in ranges)
+
+
+def validate_complaint_form(values: Mapping[str, Any], *, type_meta: Mapping[str, Any] | None, type_row: Mapping[str, Any] | None,
+                            signed_type_row: Mapping[str, Any] | None, bill: Mapping[str, Any] | None, from_order: bool,
+                            loss_bill: Mapping[str, Any] | None, subjects: Sequence[Mapping[str, Any]],
+                            files: Mapping[str, Sequence[Any]], duplicate: bool, side_in_trajectory: bool,
+                            self_in_trajectory: bool, login_site_code: str, now: dt.datetime,
+                            car_work_orders: bool | None, collar_bill: Mapping[str, Any] | None) -> None:
+    """``saveExceptionData`` 的检查，按原页顺序；任一不过即抛出原页提示。"""
+    if complaint_required_missing(values, type_meta):
+        raise ActionRuleError("请把信息填写完整")
+    get = lambda key: _text(values.get(key))  # noqa: E731
+    if loss_bill is None:
+        raise ActionRuleError("未获取到相关运单信息!")
+    if get("LOSS_NUMBER") and int(Decimal(get("LOSS_NUMBER"))) > int(Decimal(_text(loss_bill.get("PIECE_NUMBER")) or "0")):
+        raise ActionRuleError("损失数量必须小于等于运单子单数!")
+    if any(_text(subject.get("IS_REQUIRED_TEXT")) == "是" and not files.get(_text(subject.get("FILE_CODE"))) for subject in subjects):
+        raise ActionRuleError("请完善附件后进行保存！")
+    row = type_row or {}
+    if duplicate:
+        raise ActionRuleError("同一单号同一类型同一网点仅支持上报一次" if _text(row.get("REPEAT_SITE_COMPLAINT")) == "1"
+                              else "同一单号同一类型仅支持上报一次")
+    if _text(row.get("BL_RELATED_SITE")) == "1" and not side_in_trajectory:
+        raise ActionRuleError(f"被投诉投诉网点与【{get('BILL_CODE')}】无关联关系，无法提交数据")
+    if _text(row.get("BL_RELATED_SITE1")) == "1" and not self_in_trajectory and login_site_code != "88888":
+        raise ActionRuleError(f"投诉网点与【{get('BILL_CODE')}】无关联关系，无法提交数据")
+    if _text(row.get("BL_AGREEMENT_TOUSU")) in ("", "0") and get("EXCEPTION_SITE_CODE") and get("EXCEPTIONSITE_SIDE_CODE") \
+            and get("EXCEPTION_SITE_CODE") == get("EXCEPTIONSITE_SIDE_CODE"):
+        raise ActionRuleError("投诉方和被投诉方不应该是同一个网点")
+    sign_date = _text((bill or {}).get("SIGN_DATE"))
+    if sign_date and _text(row.get("AGING")):
+        signed = dt.datetime.strptime(sign_date[:19], DATE_FORMAT) if len(sign_date) >= 19 else dt.datetime.strptime(sign_date[:10], "%Y-%m-%d")
+        if abs((now - signed).total_seconds()) / 3600 > float(_text(row.get("AGING"))):
+            raise ActionRuleError("超出投诉时效，该类型无法投诉")
+    signed_ok = signed_type_row is not None and (_text(signed_type_row.get("BL_SIGN")) == "1"
+                                                 or (not from_order and _text((bill or {}).get("BL_SIGNS_MARKING")) == "1"))
+    if not signed_ok:
+        raise ActionRuleError("该运单未签收，此类型不允许未签收投诉")
+    if not _text((bill or {}).get("SEND_SITE_CODE") or (bill or {}).get("PREPARE_SITE_CODE")):
+        raise ActionRuleError(f"运单号【{get('BILL_CODE')}】不存在!")
+    if get("OBJECT_TYPE") == "1" and not get("EXCEPTIONSITE_SIDE_CODE"):
+        raise ActionRuleError("被投诉方编号不可为空！")
+    if get("EXCEPTION_TYPE") == COMPLAINT_CAR_TYPE and car_work_orders is False:
+        raise ActionRuleError(COMPLAINT_CAR_MESSAGE)
+    if get("EXCEPTION_TYPE") == COMPLAINT_COLLAR_TYPE:
+        if collar_bill is None:
+            raise ActionRuleError("未获取到相关运单信息!")
+        if _text(collar_bill.get("REGISTER_SITE_CODE")) != get("EXCEPTIONSITE_SIDE_CODE"):
+            raise ActionRuleError("被投诉网点并不是运单录入网点!")
+        if _text(collar_bill.get("BL_SIGNS_MARKING")) != "1":
+            raise ActionRuleError("该类型只能投诉已签收运单!")
+
+
+def complaint_bill_fields(bill: Mapping[str, Any] | None, from_order: bool) -> dict[str, str]:
+    """``getBillInfo``：按运单（或代取件订单）带出的隐藏字段。"""
+    bill = bill or {}
+    if from_order:
+        return {"EXCEPTION_FINANCE_CENTER": "", "EXCEPTION_FINANCE_CENTER_CODE": "", "SEND_SITE": _text(bill.get("PREPARE_SITE")),
+                "SEND_SITE_CODE": _text(bill.get("PREPARE_SITE_CODE")), "SEND_DATE": "", "DISPATCH_SITE": _text(bill.get("DESTINATION")),
+                "DISPATCH_SITE_CODE": _text(bill.get("DESTINATION_CODE")), "SEND_COMPANY": "", "RECEIVER_COMPANY": "",
+                "DISPATCH_FINANCE_CENTER": "", "DISPATCH_FINANCE_CENTER_CODE": "", "SEND_ADDRESS": "", "RECEIVER_ADDRESS": "",
+                "GOODS_NAME": _text(bill.get("ITEM_NAME")), "GOODS_VALUES": _text(bill.get("INSURANCE_VALUE")), "REGISTER_DATE": "",
+                "SIGN_DATE": ""}
+    return {"EXCEPTION_FINANCE_CENTER": _text(bill.get("SEND_FINANCE_CENTER")),
+            "EXCEPTION_FINANCE_CENTER_CODE": _text(bill.get("SEND_FINANCE_CENTER_CODE")), "SEND_SITE": _text(bill.get("SEND_SITE")),
+            "SEND_SITE_CODE": _text(bill.get("SEND_SITE_CODE")), "SEND_DATE": _text(bill.get("SEND_DATE")),
+            "DISPATCH_SITE": _text(bill.get("DISPATCH_SITE")), "DISPATCH_SITE_CODE": _text(bill.get("DISPATCH_SITE_CODE")),
+            "SEND_COMPANY": _text(bill.get("SEND_MAN_COMPANY")), "RECEIVER_COMPANY": _text(bill.get("ACCEPT_MAN_COMPANY")),
+            "DISPATCH_FINANCE_CENTER": _text(bill.get("DISPATCH_FINANCE_CENTER")),
+            "DISPATCH_FINANCE_CENTER_CODE": _text(bill.get("DISPATCH_FINANCE_CENTER_CODE")),
+            "SEND_ADDRESS": _text(bill.get("SEND_MAN_ADDRESS")), "RECEIVER_ADDRESS": _text(bill.get("ACCEPT_MAN_ADDRESS")),
+            "GOODS_NAME": _text(bill.get("GOODS_NAME")), "GOODS_VALUES": _text(bill.get("REAL_VALUE")),
+            "REGISTER_DATE": _text(bill.get("REGISTER_DATE")), "SIGN_DATE": _text(bill.get("SIGN_DATE"))}
+
+
+def complaint_save_row(operation: str, values: Mapping[str, Any], base_row: Mapping[str, Any], user_info: Mapping[str, Any],
+                       server_now: str) -> dict[str, Any]:
+    """表单数据 + 原页 ``saveExceptionData`` 补的字段（新增：登记信息、状态、来源 K13；修改：修改信息）。"""
+    data = {key: _text(base_row.get(key)) for key in COMPLAINT_FORM_FIELDS}
+    data.update({key: _text(values.get(key)) for key in COMPLAINT_FORM_FIELDS if key in values})
+    if not data["EXCEPTION_SITE_CODE"]:
+        data.update({"EXCEPTION_SITE": _text(user_info.get("loginSiteName")), "EXCEPTION_SITE_CODE": _text(user_info.get("loginSiteCode")),
+                     "EXCEPTION_FINANCE_CENTER": _text(user_info.get("loginOwnerFinanceName")),
+                     "EXCEPTION_FINANCE_CENTER_CODE": _text(user_info.get("loginOwnerFinanceCode"))})
+    name, user_id = _text(user_info.get("loginUserName")), _text(user_info.get("loginUserId"))
+    if operation == "create":
+        data.update({"REGISTER_DATE": server_now, "REGISTER_SITE": _text(user_info.get("loginSiteName")),
+                     "REGISTER_SITE_CODE": _text(user_info.get("loginSiteCode")), "REGISTER_MAN": name, "REGISTER_MAN_CODE": user_id,
+                     "SUPERIOR_FINANCE_CENTER": _text(user_info.get("loginOwnerFinanceName")),
+                     "SUPERIOR_FINANCE_CENTER_CODE": _text(user_info.get("loginOwnerFinanceCode")),
+                     "APPEAL_STATUS": "未申诉", "EXCEPTION_TYPE_DATA_FROM": "K13"})
+        data["ARBITRATE_STATUS" if data["APPEAL_TYPE"] == "仲裁处理" else "STATUS"] = "待审核"
+        if data["BL_AGENT"] == "1":
+            data.update({"AGENT_REGISTER_MAN": name, "AGENT_REGISTER_MAN_CODE": user_id})
+    else:
+        data.update({"MODIFY_DATE": server_now, "MODIFY_SITE": _text(user_info.get("loginSiteName")),
+                     "MODIFY_SITE_CODE": _text(user_info.get("loginSiteCode")), "MODIFIER": name, "MODIFIER_CODE": user_id})
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def complaint_attachment_rows(files: Mapping[str, Sequence[Mapping[str, Any]]], exception_id: str, user_info: Mapping[str, Any],
+                              now: dt.datetime) -> list[dict[str, Any]]:
+    rows = []
+    for file_code, items in files.items():
+        for row in ronghui_attachment_rows(items, user_info, now, COMPLAINT_ATTACHMENT_TYPE, FILE_CODE=file_code, EXCEPTION_ID=exception_id):
+            rows.append(row)
+    return rows
+
+
 SITE_KEY = re.compile(r"^[\w一-龥()（）\-]{1,30}$")
 
 
@@ -1022,6 +1247,9 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "COMPLAINT_FORM_FIELDS", "COMPLAINT_FORM_SUBPAGE", "COMPLAINT_USER_FIELDS", "accused_site_types", "complaint_attachment_rows",
+    "complaint_bill_fields", "complaint_edit_block", "complaint_form_spec", "complaint_required_missing", "complaint_save_row",
+    "validate_complaint_form",
     "appeal_create_spec",
     "transfer_delay_block", "transfer_delay_days", "transfer_reply_block", "validate_transfer_delay", "validate_transfer_reply",
     "CSSP_PERMISSIONS", "CSSP_RECEIVE", "cssp_appoint_spec", "cssp_permissions", "cssp_receive_specs", "cui_reply_specs",

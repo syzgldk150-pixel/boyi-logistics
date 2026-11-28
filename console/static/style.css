@@ -4003,3 +4003,10 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
 .action-row[hidden] { display: none; }
 .monitor-category-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: var(--fs-caption); color: var(--text-muted); }
 .monitor-category-actions .action-bar { margin-top: 0; }
+.complaint-dialog { width: min(820px, calc(100vw - 32px)); }
+.complaint-body .action-row { grid-template-columns: 128px 1fr; }
+.complaint-rebind { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-control); background: var(--bg-muted, #f6f7f9); font-size: var(--fs-body); }
+.complaint-subjects { display: grid; gap: 10px; padding-top: 8px; border-top: 1px solid var(--line-default); }
+.complaint-subjects-title { font-weight: 600; font-size: var(--fs-body); }
+.complaint-subject { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line-default); border-radius: var(--r-control); }
+.complaint-subject-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }

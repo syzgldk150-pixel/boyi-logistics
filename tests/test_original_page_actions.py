@@ -110,7 +110,7 @@ def test_complaint_rules_follow_the_original_pages():
     assert complaint_appeal_block({**own, "STATUS": "审核驳回"}) == ""
     assert complaint_appeal_block({**own, "STATUS": "审核驳回", "AUDIT_STATUS": 2}) == "该投诉已提交申诉。"
     assert complaint_claim_block(own) == "仲裁才有理赔的资料补充；普通投诉没有理赔！"
-    assert [spec["operation"] for spec in complaint_filed_specs(own, USER)] == ["cancel", "appeal", "claim"]
+    assert [spec["operation"] for spec in complaint_filed_specs(own, USER)] == ["update", "cancel", "appeal", "claim"]
     rejected = {**own, "STATUS": "审核驳回", "APPEAL_TYPE": "仲裁处理", "ARBITRATE_STATUS": "待理赔"}
     with pytest.raises(ActionRuleError, match="待理赔"):
         validate_complaint_appeal(rejected, {"APPEAL_CONTENT": "x"}, dt.datetime(2026, 11, 27))
@@ -296,3 +296,73 @@ def test_ronghui_appeal_create_is_the_same_form_with_typed_waybill():
     assert spec["fields"][0] == {"name": "BILL_CODE", "label": "运单号", "type": "text", "value": "", "required": True, "max": 30}
     assert spec["account_options"] == [["ronghui_default", "操作场账号"], ["price_default", "大祥站账号"]]
     assert spec["fields"][1]["value"] == "" and spec["fields"][4]["value"] == ""
+
+
+def _complaint_values(**changes):
+    values = {"BILL_CODE": "B1", "EXCEPTION_MAN_PHONE": "13800000000", "APPEAL_TYPE": "差错处理", "CATEGORY": "延误类",
+              "EXCEPTION_TYPE": "延误", "OBJECT_TYPE": "1", "EXCEPTIONSITE_SIDE_CODE": "S9", "EXCEPTION_SITE_CODE": "S1", "BL_AGENT": "0"}
+    values.update(changes)
+    return values
+
+
+def _complaint_kwargs(**changes):
+    kwargs = {"type_meta": {"ACCUSED_SITE_TYPE": "网点", "BL_ARBITRATION": "0", "IS_COMPLAINT_CONTENT": "0", "TYPE_CODE": "T1"},
+              "type_row": {"AGING": "", "REPEAT_SITE_COMPLAINT": "0"}, "signed_type_row": {"BL_SIGN": 1},
+              "bill": {"SIGN_DATE": "", "SEND_SITE_CODE": "S2", "BL_SIGNS_MARKING": 0}, "from_order": False,
+              "loss_bill": {"PIECE_NUMBER": "3"}, "subjects": [], "files": {}, "duplicate": False, "side_in_trajectory": True,
+              "self_in_trajectory": True, "login_site_code": "S1", "now": dt.datetime(2026, 11, 28, 10, 0),
+              "car_work_orders": None, "collar_bill": None}
+    kwargs.update(changes)
+    return kwargs
+
+
+def test_complaint_form_checks_follow_save_exception_data_order():
+    from shared.original_page_actions import (
+        accused_site_types, complaint_edit_block, complaint_required_missing, validate_complaint_form,
+    )
+
+    assert accused_site_types("网点,分拨,总部") == "一级网点,二级网点,分拨中心,总部" and accused_site_types("") == ""
+    assert complaint_edit_block({"STATUS": "待审核"}) == "" and complaint_edit_block({"STATUS": "待审核", "CATEGORY": "违禁品"}).startswith("投诉类型为【违禁品】")
+    assert complaint_edit_block({"STATUS": "审核通过"}) == "投诉状态为【审核通过】,不可修改"
+    assert complaint_edit_block({"APPEAL_TYPE": "仲裁处理", "ARBITRATE_STATUS": "已理赔"}) == "仲裁状态为【已理赔】,不可修改"
+    meta = _complaint_kwargs()["type_meta"]
+    assert not complaint_required_missing(_complaint_values(), meta)
+    assert complaint_required_missing(_complaint_values(APPEAL_TYPE="仲裁处理"), meta)          # 索赔金额、损失数量
+    assert complaint_required_missing(_complaint_values(), {**meta, "BL_ARBITRATION": "1"})      # 品名、投诉人、货值
+    assert complaint_required_missing(_complaint_values(CATEGORY="破损类"), meta)                 # 是否修复
+    assert complaint_required_missing(_complaint_values(CATEGORY="破损类", IS_FIXED="0", UNFIXED_REASON="其它"), meta)
+    assert complaint_required_missing(_complaint_values(LOSS_NUMBER="2001"), meta)
+    assert complaint_required_missing(_complaint_values(OBJECT_TYPE="2", EXCEPTIONSITE_SIDE_CODE=""), meta)
+    validate_complaint_form(_complaint_values(), **_complaint_kwargs())
+    for changes, kwargs, message in (
+        ({"LOSS_NUMBER": "5"}, {}, "损失数量必须小于等于运单子单数"),
+        ({}, {"subjects": [{"FILE_CODE": "F1", "IS_REQUIRED_TEXT": "是"}]}, "请完善附件后进行保存"),
+        ({}, {"duplicate": True}, "同一单号同一类型仅支持上报一次"),
+        ({}, {"duplicate": True, "type_row": {"REPEAT_SITE_COMPLAINT": "1"}}, "同一网点仅支持上报一次"),
+        ({}, {"type_row": {"BL_RELATED_SITE": "1"}, "side_in_trajectory": False}, "被投诉投诉网点与【B1】无关联关系"),
+        ({"EXCEPTIONSITE_SIDE_CODE": "S1"}, {}, "投诉方和被投诉方不应该是同一个网点"),
+        ({}, {"type_row": {"AGING": "24"}, "bill": {"SIGN_DATE": "2026-11-26 09:00:00", "SEND_SITE_CODE": "S2"}}, "超出投诉时效"),
+        ({}, {"signed_type_row": None}, "该运单未签收"),
+        ({}, {"bill": {"SEND_SITE_CODE": "", "BL_SIGNS_MARKING": 1}}, "运单号【B1】不存在"),
+        ({"EXCEPTION_TYPE": "延误请车"}, {"car_work_orders": False}, "未按流程先上报工单"),
+        ({"EXCEPTION_TYPE": "围板箱录单不规范", "COLLAR_NUMBER_LIST": "G1"}, {"collar_bill": {"REGISTER_SITE_CODE": "X", "BL_SIGNS_MARKING": 1}},
+         "被投诉网点并不是运单录入网点"),
+    ):
+        with pytest.raises(ActionRuleError, match=message):
+            validate_complaint_form(_complaint_values(**changes), **_complaint_kwargs(**kwargs))
+    with pytest.raises(ActionRuleError, match="未获取到相关运单信息"):
+        validate_complaint_form(_complaint_values(), **_complaint_kwargs(loss_bill=None))
+
+
+def test_complaint_save_row_adds_what_the_page_adds():
+    from shared.original_page_actions import complaint_bill_fields, complaint_save_row
+
+    user = {**USER, "loginUserName": "合成用户", "loginUserId": "U1", "loginOwnerFinanceName": "合成财务", "loginOwnerFinanceCode": "F1"}
+    values = {**_complaint_values(APPEAL_TYPE="仲裁处理", BL_AGENT="1"), **complaint_bill_fields({"SEND_SITE": "甲", "SEND_SITE_CODE": "S2"}, False)}
+    created = complaint_save_row("create", values, {}, user, "2026-11-28 10:00:00")
+    assert created["REGISTER_DATE"] == "2026-11-28 10:00:00" and created["ARBITRATE_STATUS"] == "待审核" and "STATUS" not in created
+    assert created["EXCEPTION_TYPE_DATA_FROM"] == "K13" and created["APPEAL_STATUS"] == "未申诉" and created["AGENT_REGISTER_MAN_CODE"] == "U1"
+    assert created["SUPERIOR_FINANCE_CENTER_CODE"] == "F1" and created["SEND_SITE"] == "甲"
+    updated = complaint_save_row("update", {"REMARK": "补充"}, {"EXCEPTION_ID": "E1", "EXCEPTION_TYPE_DATA_FROM": "K13"}, user, "T")
+    assert updated["MODIFIER_CODE"] == "U1" and updated["EXCEPTION_ID"] == "E1" and updated["REMARK"] == "补充" and "REGISTER_SITE" not in updated
+    assert complaint_bill_fields({"PREPARE_SITE": "乙", "ITEM_NAME": "货"}, True)["SEND_SITE"] == "乙"

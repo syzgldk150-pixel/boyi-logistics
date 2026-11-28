@@ -243,6 +243,8 @@
 
   /** Open the dialog for one spec. ``context``: platform, account_id, item. ``onDone(spec, data)`` after a verified save. */
   function open(spec, baseContext, onDone) {
+    // 字段与联动特别多的原页表单有专用渲染器（投诉登记：console/static/complaint_form.js）。
+    if (spec.form === 'complaint' && window.ComplaintForm) return window.ComplaintForm.open(spec, baseContext, onDone);
     // 合并了多个业务账号的分类（如融辉申诉登记“新增”）先选账号；后面的查询与提交都用所选账号。
     const context = { ...baseContext };
     const dialog = el('dialog', 'action-dialog');
@@ -357,7 +359,7 @@
       button.addEventListener('click', async () => {
         if (spec.blocked) { note.textContent = spec.blocked; return; }
         note.textContent = '';
-        if (!(spec.fields || []).length && !spec.attachments && !(spec.attachment_slots || []).length) {
+        if (!spec.form && !(spec.fields || []).length && !spec.attachments && !(spec.attachment_slots || []).length) {
           // 原页直接确认的操作（取消投诉、删除、撤销）：确认后提交，结果写在按钮旁。
           if (spec.confirm && !window.confirm(spec.confirm)) return;
           button.disabled = true;

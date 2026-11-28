@@ -25,6 +25,7 @@ LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("ronghui", "work_order"): (9, 200 * MB),         # 工单 响应/完结/催工单/申诉
     ("ronghui", "complaint_reply"): (10, 20 * MB),    # 被投诉方“投诉回复-新增”
     ("ronghui", "appeal"): (20, 100 * MB),            # 申诉登记
+    ("ronghui", "complaint_form"): (60, 30 * MB),     # 投诉登记：按附件科目上传，单次最多 5 个、单个 200MB（经公网 30MB）
     ("ronghui", "complaint_image"): (1, 30 * MB),     # 投诉方 提交申诉/提交材料：每格一张（/file/upload?sysFileUploadId=IMG）
     ("yunda", "problem_reply"): (3, 5 * MB),          # 问题件 query/reply.html
     ("yunda", "transfer"): (1, 2 * MB),               # 调拨件异常登记：每格一张 jpg/png/jpeg（uploadAbnormalImage）

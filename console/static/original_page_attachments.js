@@ -9,7 +9,7 @@
   // (platform:purpose) -> [most files, largest file]; mirrors shared/original_page_attachments.LIMITS.
   const LIMITS = {
     'ronghui:work_order': [9, 200 * MB], 'ronghui:complaint_reply': [10, 20 * MB], 'ronghui:appeal': [20, 100 * MB],
-    'ronghui:complaint_image': [1, 30 * MB], 'yunda:problem_reply': [3, 5 * MB], 'yunda:transfer': [1, 2 * MB], 'yunda:cssp_reply': [3, 1 * MB]
+    'ronghui:complaint_image': [1, 30 * MB], 'ronghui:complaint_form': [5, 30 * MB], 'yunda:problem_reply': [3, 5 * MB], 'yunda:transfer': [1, 2 * MB], 'yunda:cssp_reply': [3, 1 * MB]
   };
   const YUNDA_NAME = /^[a-zA-Z0-9\-._一-龥]+$/;
   const el = (tag, className, text) => {
