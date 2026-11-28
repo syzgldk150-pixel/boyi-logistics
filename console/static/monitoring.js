@@ -380,14 +380,14 @@
     setItemsBusy(false);
   }
 
-  // 主次（用户 2026-11-28）：记录当前状态下“轮到我做”的那一个动作是主按钮，有它的记录归入“待我处理”。
+  // 主次（用户 2026-11-28）：记录当前状态下“轮到我做”的那一个动作是主按钮；待我处理的记录左侧标色。
+  // 列表不分组、不折叠（用户 2026-11-28），仍按时间倒序。
   // 只看原页按钮本身是否可用（spec.blocked 由 shared/original_page_actions.py 按原页规则给出），不另猜状态。
   const primaryOperations = [
     'work_order:respond', 'work_order:finish', 'complaint_against:reply',
     'cssp:prompt_resp', 'cssp:first_reply', 'cssp:reply_handling', 'cssp:statement',
     'cssp_cui:reply', 'transfer:accept', 'arbitration:redeclare'
   ];
-  const quietOpen = new Set();  // 展开了的“等对方处理”记录
 
   function primarySpec(item) {
     const specs = Array.isArray(item?.actions?.specs) ? item.actions.specs : [];
@@ -406,20 +406,14 @@
       || Boolean(item?.reply && typeof item.reply === 'object' && !repliedItems.has(replyKey(item))) || Boolean(primarySpec(item));
   }
 
-  function itemKey(item, category) {
-    return `${categoryKey(category)}:${item.id || item.waybill_no || item.title || ''}`;
-  }
-
   function kindLabel(category) {
     // “仲裁 · 未结束”之类的分类名只留类别，状态单独显示。
     return String(category?.title || '消息').split(/\s*·\s*/)[0];
   }
 
-  function createMessageItem(item, expanded, category = activeCategory, grouped = false) {
+  function createMessageItem(item, expanded, category = activeCategory) {
     const attention = needsMe(item, category);
-    const key = itemKey(item, category);
-    const quiet = grouped && !attention;
-    const row = element('li', `monitor-item${attention ? ' is-attention' : ''}${quiet ? ' is-quiet' : ''}`);
+    const row = element('li', `monitor-item${attention ? ' is-attention' : ''}`);
     row.dataset.sortTime = String(item.occurred_at || '');
     const title = item.title || '消息';
     const head = element('div', 'monitor-item-head');
@@ -428,8 +422,6 @@
     const status = element('span', 'monitor-item-status', item.status_label || '状态未确认');
     status.dataset.tone = attention ? 'attention' : 'neutral';
     head.append(tag, element('span', 'monitor-item-title', title), status);
-    // 折叠成一行时仍能看到运单号。
-    if (item.waybill_no) head.append(element('span', 'monitor-item-head-waybill', item.waybill_no));
     const aside = element('div', 'monitor-item-aside');
     aside.append(element('span', 'monitor-item-time', item.occurred_at || '时间未提供'));
     head.append(aside);
@@ -479,27 +471,6 @@
     }
     if (!foot.childElementCount) foot.remove();
 
-    if (quiet) {
-      // 等对方处理的记录默认只显示一行，点标题行展开正文与次要操作。
-      const open = quietOpen.has(key);
-      row.classList.toggle('is-open', open);
-      head.tabIndex = 0;
-      head.setAttribute('role', 'button');
-      head.setAttribute('aria-expanded', String(open));
-      const chevron = element('i');
-      chevron.setAttribute('data-feather', 'chevron-down');
-      aside.append(chevron);
-      const toggle = () => {
-        const next = !row.classList.contains('is-open');
-        row.classList.toggle('is-open', next);
-        head.setAttribute('aria-expanded', String(next));
-        if (next) quietOpen.add(key); else quietOpen.delete(key);
-      };
-      head.addEventListener('click', toggle);
-      head.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
-      });
-    }
     return row;
   }
 
@@ -727,28 +698,14 @@
   function renderAll(failed) {
     if (replyOpen()) { deferredRender = () => renderAll(failed); return; }
     const expanded = new Set(Array.from(els.items.querySelectorAll('details[open]')).map((node) => node.dataset.itemId));
-    const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category, true));
+    const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category));
     if (pendingState.available && !cardFilter) {
       const holder = document.createElement('ul');
       root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: holder, status: null, platform: activeSource } }));
       Array.from(holder.children).forEach((node) => { node.classList.add('is-attention'); rows.push(node); });
     }
     rows.sort((a, b) => sortTime(b) - sortTime(a));
-    // 分两组（用户 2026-11-28）：轮到我做的在上，等对方处理的折叠成一行。
-    const mine = rows.filter((node) => node.classList.contains('is-attention'));
-    const waiting = rows.filter((node) => !node.classList.contains('is-attention'));
-    const groupHead = (label, count, note) => {
-      const head = element('li', 'monitor-group-head');
-      head.append(element('span', 'monitor-group-title', label), element('span', 'monitor-group-count', fmt(count)));
-      if (note) head.append(element('span', 'monitor-group-note', note));
-      return head;
-    };
-    const nodes = [];
-    if (rows.length) {
-      nodes.push(groupHead('待我处理', mine.length, mine.length ? '' : '目前没有需要你处理的消息'), ...mine);
-      if (waiting.length) nodes.push(groupHead('等对方处理', waiting.length, '点开查看详情与其他操作'), ...waiting);
-    }
-    els.items.replaceChildren(...nodes);
+    els.items.replaceChildren(...rows);
     if (window.feather) window.feather.replace();
     displayedItemsKey = 'all';
     const more = [...allPages.values()].some((entry) => entry.hasMore);
@@ -756,7 +713,7 @@
     const notes = [];
     if (!rows.length && !failed.length) notes.push('目前没有待处理消息。');
     if (failed.length) notes.push(`以下来源读取失败：${failed.join('；')}`);
-    setItemsStatus(notes.join('；'), failed.length ? 'error' : '');  // 分组标题已说明排序，正常时不再多一行
+    setItemsStatus(notes.join('；'), failed.length ? 'error' : '');  // 副标题已写“按时间排序”，正常时不再多一行
   }
 
   function failures(results) {

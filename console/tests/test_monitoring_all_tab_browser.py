@@ -421,11 +421,12 @@ def test_work_order_buttons_open_the_original_dialog_and_save(app, browser):
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
         page.locator(".action-button[data-operation='respond']").wait_for()
-        # 原页会拦下的按钮（完结：状态不支持；申诉：不是待申诉）不显示；轮到我做的“响应”是主按钮，记录归入“待我处理”。
+        # 原页会拦下的按钮（完结：状态不支持；申诉：不是待申诉）不显示；轮到我做的“响应”是主按钮。
         assert page.locator(".action-button").all_inner_texts() == ["响应", "催工单"]
         assert "is-primary" in page.get_attribute(".action-button[data-operation='respond']", "class")
         assert "is-quiet" in page.get_attribute(".action-button[data-operation='urge']", "class")
-        assert page.locator(".monitor-group-head").all_inner_texts()[0].startswith("待我处理")
+        # 列表不分组、不折叠（用户 2026-11-28），待我处理的记录只在左侧标色。
+        assert page.locator(".monitor-group-head").count() == 0
         assert page.locator(".monitor-item.is-attention").count() == 1
         page.click(".action-button[data-operation='respond']")
         dialog = page.locator(".action-dialog")
