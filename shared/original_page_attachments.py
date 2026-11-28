@@ -29,12 +29,17 @@ LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("ronghui", "complaint_image"): (1, 30 * MB),     # 投诉方 提交申诉/提交材料：每格一张（/file/upload?sysFileUploadId=IMG）
     ("yunda", "problem_reply"): (3, 5 * MB),          # 问题件 query/reply.html
     ("yunda", "transfer"): (1, 2 * MB),               # 调拨件异常登记：每格一张 jpg/png/jpeg（uploadAbnormalImage）
-    ("yunda", "cssp_reply"): (3, 1 * MB),             # 快运工单“回复处理”：最多 3 张 jpg/png，超 1MB 先压缩
+    ("yunda", "cssp_reply"): (3, 1 * MB),
+    ("yunda", "arbitration_image"): (8, 10 * MB),     # 仲裁继续申报图片：jpg/gif/png，名称不超过 64 字（超 500KB 先压缩）
+    ("yunda", "arbitration_video"): (3, 30 * MB),     # 仲裁继续申报视频：mp4/flv，单个 30M，最多三段
+    ("yunda", "arbitration_audio"): (2, 10 * MB),     # 仲裁继续申报录音：mp3/m4a/wav，单个 10M，最多 2 条             # 快运工单“回复处理”：最多 3 张 jpg/png，超 1MB 先压缩
 }
 # One request through the public entry (Nginx client_max_body_size 34m) carries at most this much.
 TRANSPORT_MAX = 30 * MB
 # 韵达快运工单回复与调拨件异常图片随处理动作一起提交给原平台：先在 Agent 暂存，处理时再发送。
-STAGED_PURPOSES = {"cssp_reply": frozenset({"jpg", "png"}), "transfer": frozenset({"jpg", "png", "jpeg"})}
+STAGED_PURPOSES = {"cssp_reply": frozenset({"jpg", "png"}), "transfer": frozenset({"jpg", "png", "jpeg"}),
+                   "arbitration_image": frozenset({"jpg", "gif", "png"}), "arbitration_video": frozenset({"mp4", "flv"}),
+                   "arbitration_audio": frozenset({"mp3", "m4a", "wav"})}
 STAGED_PATH = re.compile(r"^staged:[0-9a-f]{32}$")
 YUNDA_EXTENSIONS = frozenset("jpg png gif bmp jpeg svg txt doc docx xls xlsx exe rar zip ppt pptx".split())
 _YUNDA_NAME = re.compile(r"^[a-zA-Z0-9\-._一-龥]+$")
@@ -67,6 +72,8 @@ def check_upload(platform: str, purpose: str, file_name: str, size: int) -> None
     if size > TRANSPORT_MAX:
         raise AttachmentError(f"博益目前只能传 {TRANSPORT_MAX // MB}MB 以内的附件，更大的请在原系统上传。")
     if platform == "yunda" and purpose in STAGED_PURPOSES:
+        if purpose.startswith("arbitration_") and len(file_name) > 64:
+            raise AttachmentError("文件名称不能超过64个字符！")
         if file_name.rsplit(".", 1)[-1].lower() not in STAGED_PURPOSES[purpose] or "." not in file_name:
             raise AttachmentError("只能上传jpg/png文件")
     elif platform == "yunda":

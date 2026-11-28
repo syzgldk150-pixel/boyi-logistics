@@ -32,7 +32,11 @@
       throw failure;
     }
     const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.ok === false) throw new Error(data.message || `处理失败（${response.status}）`);
+    if (!response.ok || data.ok === false) {
+      const failure = new Error(data.message || `处理失败（${response.status}）`);
+      failure.code = data.error_code || '';
+      throw failure;
+    }
     return data;
   }
 
@@ -245,6 +249,7 @@
   function open(spec, baseContext, onDone) {
     // 字段与联动特别多的原页表单有专用渲染器（投诉登记：console/static/complaint_form.js）。
     if (spec.form === 'complaint' && window.ComplaintForm) return window.ComplaintForm.open(spec, baseContext, onDone);
+    if (spec.form === 'arbitration' && window.ArbitrationForm) return window.ArbitrationForm.open(spec, baseContext, onDone);
     // 合并了多个业务账号的分类（如融辉申诉登记“新增”）先选账号；后面的查询与提交都用所选账号。
     const context = { ...baseContext };
     const dialog = el('dialog', 'action-dialog');

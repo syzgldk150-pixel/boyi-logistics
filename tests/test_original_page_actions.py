@@ -366,3 +366,37 @@ def test_complaint_save_row_adds_what_the_page_adds():
     updated = complaint_save_row("update", {"REMARK": "补充"}, {"EXCEPTION_ID": "E1", "EXCEPTION_TYPE_DATA_FROM": "K13"}, user, "T")
     assert updated["MODIFIER_CODE"] == "U1" and updated["EXCEPTION_ID"] == "E1" and updated["REMARK"] == "补充" and "REGISTER_SITE" not in updated
     assert complaint_bill_fields({"PREPARE_SITE": "乙", "ITEM_NAME": "货"}, True)["SEND_SITE"] == "乙"
+
+
+def test_arbitration_redeclare_rules():
+    from shared.original_page_actions import (
+        arbitration_hidden_ids, arbitration_redeclare_block, arbitration_visible_groups, validate_arbitration_redeclare,
+    )
+
+    assert arbitration_redeclare_block({}, "退单,可继续申报") == ""
+    assert "不允许继续申报" in arbitration_redeclare_block({}, "已申报待处理")
+    assert arbitration_redeclare_block({}, "已申诉,待处理").startswith("申诉有效")
+    assert "费用申请仲裁" in arbitration_redeclare_block({"declCategoryName": "费用申请仲裁"}, "退单,可继续申报")
+    pictures = {"marina": [{"fileId": "1"}], "prove": [{"fileId": "2"}, {"fileId": "3", "isCentreUpload": "Y"}]}
+    visible = arbitration_visible_groups(pictures, {"isBillsUpload": "N", "isProofPicture": "Y"})
+    assert visible == {"marina": False, "prove": True, "state": False, "proof": True}
+    assert arbitration_hidden_ids(pictures, visible) == ["old1"]
+    values = {"declType": "T", "declCategory": "C", "claimAmount": "12.5", "dutyDept": "甲", "dutyDeptCode": "D1", "abnormalNum": "1",
+              "problemDescribe": "描述"}
+    image = {"platform": "yunda", "file_name": "a.png", "new_name": "x", "file_path": "staged:" + "0" * 32}
+    ok = dict(detail={"number": "2"}, values=values, pictures=pictures, removed=set(), new_files={"proof": [image]}, visible=visible,
+              videos=[], new_videos=[], audios=[], new_audios=[])
+    validate_arbitration_redeclare(**ok)
+    for changes, message in (
+        ({"new_files": {"proof": [image], "prove": [image] * 6}}, "价值证明只能上传6张图片"),
+        ({"values": {**values, "claimAmount": ""}}, "请填写索赔金额"),
+        ({"values": {**values, "dutyDeptCode": ""}}, "请填写正确责任网点"),
+        ({"values": {**values, "claimAmount": "01"}}, "只能输入数字"),
+        ({"values": {**values, "abnormalNum": "3"}}, "异常件数必须小于等于子单数"),
+        ({"values": {**values, "problemDescribe": "x" * 1001}}, "限制长度1000字"),
+        ({"new_files": {}}, "举证图片附件信息必填"),
+        ({"videos": [{"fileId": "9"}], "removed": {"old9"}}, "上传视频信息必填"),
+        ({"new_audios": [image] * 3}, "最多上传2段音频"),
+    ):
+        with pytest.raises(ActionRuleError, match=message):
+            validate_arbitration_redeclare(**{**ok, **changes})

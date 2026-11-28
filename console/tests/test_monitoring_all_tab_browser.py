@@ -799,3 +799,75 @@ def test_ronghui_complaint_create_dialog_follows_the_original_form(app, browser)
         assert sent["payload"]["EXCEPTIONSITE_SIDE_CODE"] == "S9" and sent["payload"]["BILL_CODE"] == "SYNTHETIC-5"
         assert sent["payload"]["file__F1"][0]["file_path"] == "/unauth/download/a" and uploads == [True]
         assert ("side_sites", {"key": "合成", "EXCEPTION_TYPE": "延误", "SITE_TYPE": "一级网点,二级网点"}) in lookups
+
+
+def test_yunda_arbitration_redeclare_dialog(app, browser):
+    """韵达仲裁“继续申报”：读出原申报，换类别按配置显示图片分组，非地址解析问题时先确认再提交。"""
+    from shared.original_page_actions import arbitration_redeclare_spec
+
+    item = {"id": "D-SYN", "title": "合成仲裁", "occurred_at": "2026-01-02 08:00:00", "content": "合成仲裁", "status_label": "退单,可继续申报",
+            "actions": {"platform": "yunda", "account_id": "yunda_default", "item": {"external_id": "D-SYN"},
+                        "specs": [arbitration_redeclare_spec({}, "退单,可继续申报")]}}
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+                "systems": [{"system": "yunda", "label": "韵达", "status": "ok", "categories": [
+                    {"category_id": "yunda:arbitrations", "title": "仲裁 · 未结束", "count": 1, "items_supported": True}]}]}
+    answers = {
+        "detail": {"values": {"waybillCode": "SYNTHETIC-7", "number": "2", "declType": "T1", "declCategory": "C1", "claimAmount": "10",
+                              "dutyDept": "合成网点", "dutyDeptCode": "S1", "abnormalNum": "1", "problemDescribe": "原描述", "typeDescribe": ""},
+                   "files": {"marina": [{"fileId": "5", "fileName": "面单.png", "isCentreUpload": "N"}]}, "waybill_depts": ["S1"]},
+        "types": {"options": [{"value": "T1", "label": "合成类型"}]},
+        "categories": {"options": [{"value": "C1", "label": "原类别"}, {"value": "2019042911092400492", "label": "转退件费"}]},
+        "modules": {"modules": {"isBillsUpload": "Y", "isProofPicture": "Y", "remark": "转退件说明"}},
+    }
+    posts = []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "items": [item], "total": 1, "has_more": False}))
+            elif parsed.path == "/customer-service/lookup":
+                sent = json.loads(route.request.post_data)
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, **answers[sent["operation"]]}))
+            elif parsed.path == "/customer-service/process":
+                sent = json.loads(route.request.post_data)
+                posts.append(sent)
+                if sent["payload"].get("gis_confirmed") != "1":
+                    route.fulfill(status=502, content_type="application/json", body=json.dumps({
+                        "ok": False, "error_code": "GIS_CONFIRM_REQUIRED", "message": "非地址解析问题，是否仍然申报？"}))
+                else:
+                    route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.click(".action-button[data-operation='redeclare']")
+        page.wait_for_function("document.querySelector('[aria-label=\"问题描述\"]')?.value === '原描述'")
+        assert page.locator("[data-group='marina']").count() == 1 and page.locator("[data-group='proof']").count() == 0
+        page.wait_for_function("document.querySelector('[aria-label=\"仲裁类别\"]').options.length === 2")
+        page.select_option("[aria-label='仲裁类别']", "2019042911092400492")
+        page.locator("[data-group='proof']").wait_for()
+        assert page.input_value("[aria-label='类型描述']") == "转退件说明"
+        assert page.locator("[aria-label='是否地址解析问题']").is_visible()
+        page.fill("[aria-label='问题描述']", "新描述")
+        dialogs = []
+        page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.accept()))
+        page.locator(".complaint-dialog .action-save").click()
+        page.wait_for_function("document.querySelectorAll('.complaint-dialog').length === 0")
+        assert dialogs == ["是否保存？", "非地址解析问题，是否仍然申报？"]
+        assert [post["payload"].get("gis_confirmed") for post in posts] == [None, "1"]
+        assert posts[1]["payload"]["problemDescribe"] == "新描述" and posts[1]["payload"]["declCategory"] == "2019042911092400492"

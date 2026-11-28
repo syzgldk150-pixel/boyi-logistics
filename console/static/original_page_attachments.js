@@ -9,7 +9,7 @@
   // (platform:purpose) -> [most files, largest file]; mirrors shared/original_page_attachments.LIMITS.
   const LIMITS = {
     'ronghui:work_order': [9, 200 * MB], 'ronghui:complaint_reply': [10, 20 * MB], 'ronghui:appeal': [20, 100 * MB],
-    'ronghui:complaint_image': [1, 30 * MB], 'ronghui:complaint_form': [5, 30 * MB], 'yunda:problem_reply': [3, 5 * MB], 'yunda:transfer': [1, 2 * MB], 'yunda:cssp_reply': [3, 1 * MB]
+    'ronghui:complaint_image': [1, 30 * MB], 'ronghui:complaint_form': [5, 30 * MB], 'yunda:problem_reply': [3, 5 * MB], 'yunda:transfer': [1, 2 * MB], 'yunda:cssp_reply': [3, 1 * MB], 'yunda:arbitration_image': [8, 10 * MB], 'yunda:arbitration_video': [3, 30 * MB], 'yunda:arbitration_audio': [2, 10 * MB]
   };
   const YUNDA_NAME = /^[a-zA-Z0-9\-._一-龥]+$/;
   const el = (tag, className, text) => {
@@ -93,7 +93,8 @@
         try {
           // 韵达问题件回复：图片超 20KB 按质量 0.5 压缩；快运工单回复处理：超 1MB 先压缩到 1MB 以内（原页 compressAccurately）。
           const compress = context.platform === 'yunda' && /^image\//.test(file.type)
-            && ((context.purpose === 'problem_reply' && file.size > 20000) || (context.purpose === 'cssp_reply' && file.size > MB));
+            && ((context.purpose === 'problem_reply' && file.size > 20000) || (context.purpose === 'cssp_reply' && file.size > MB)
+              || (context.purpose === 'arbitration_image' && file.size > 500 * 1024));
           const ready = compress ? await compressImage(file) : file;
           items.push(await upload(ready, context));
         } catch (error) {

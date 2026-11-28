@@ -1236,6 +1236,107 @@ def complaint_attachment_rows(files: Mapping[str, Sequence[Mapping[str, Any]]], 
     return rows
 
 
+# ---------------------------------------------------------------------------------------------
+# 韵达快运仲裁“继续申报”（仲裁查询详情页，updateAndSave('/save')）
+# ---------------------------------------------------------------------------------------------
+
+ARBITRATION_REDECLARE_STATE = "退单,可继续申报"
+ARBITRATION_GIS_CATEGORY = "2019042911092400492"  # 转退件费：换到这个类别时先做地址解析检查
+ARBITRATION_FEE_APPLY = "202203111359159596452"     # 费用申请仲裁
+ARBITRATION_AUTO_CATEGORIES = ("2024011210033821415925", "2024031214334922121462", "2024042416251022970162",
+                               "2024042416264022970249")  # 自动仲裁类别：不是当前类别时不可选
+# (分组, 名称, 类别配置字段, 本次最多新增, 提交字段)
+ARBITRATION_PICTURE_GROUPS = (("marina", "主面单", "isBillsUpload", 1, "marinaMult"),
+                              ("prove", "价值证明", "isClaimLetterPicture", 6, "proveMult"),
+                              ("state", "索赔函", "isStatement", 4, "stateMult"),
+                              ("proof", "举证图片", "isProofPicture", 8, "proofMult"))
+ARBITRATION_EDIT_FIELDS = ("declType", "declCategory", "claimAmount", "dutyDept", "dutyDeptCode", "abnormalNum", "problemDescribe")
+ARBITRATION_PROBLEM_MAX = 1000
+_CLAIM_AMOUNT = re.compile(r"^(([1-9][0-9]*)|(([0]\.\d{1,2}|[1-9][0-9]*\.\d{1,2})))$")
+
+
+def arbitration_redeclare_block(row: Mapping[str, Any], state: str) -> str:
+    """``goOnDeclare``：只有“退单,可继续申报”可继续申报；费用申请仲裁不可。"""
+    if state == "已申诉,待处理":
+        return "申诉有效，不予处理！如有异议，请联系总部客服！热线：22136666!"
+    if state != ARBITRATION_REDECLARE_STATE:
+        return "该单不是‘退单,可继续申报’状态，不允许继续申报！"
+    if _text(row.get("declCategoryName") or row.get("declCategory")) == "费用申请仲裁":
+        return "该单是 费用申请仲裁，此类别不允许继续申报"
+    return ""
+
+
+def arbitration_redeclare_spec(row: Mapping[str, Any], state: str) -> dict[str, Any]:
+    spec = _spec("arbitration", "redeclare", "继续申报", "继续申报", [], blocked=arbitration_redeclare_block(row, state))
+    spec.update({"form": "arbitration", "gis_category": ARBITRATION_GIS_CATEGORY, "fee_apply": ARBITRATION_FEE_APPLY,
+                 "auto_categories": list(ARBITRATION_AUTO_CATEGORIES),
+                 "picture_groups": [{"key": key, "label": label, "limit": limit} for key, label, _flag, limit, _field in ARBITRATION_PICTURE_GROUPS]})
+    return spec
+
+
+def arbitration_visible_groups(pictures: Mapping[str, Sequence[Any]], modules: Mapping[str, Any] | None) -> dict[str, bool]:
+    """详情里有图片的分组显示；换了仲裁类别时按类别配置 Y 显示、N 隐藏，其他值不变（showModule）。"""
+    visible = {key: bool(pictures.get(key)) for key, *_rest in ARBITRATION_PICTURE_GROUPS}
+    for key, _label, flag, _limit, _field in ARBITRATION_PICTURE_GROUPS:
+        value = _text((modules or {}).get(flag))
+        if value == "Y":
+            visible[key] = True
+        elif value == "N":
+            visible[key] = False
+    return visible
+
+
+def validate_arbitration_redeclare(detail: Mapping[str, Any], values: Mapping[str, Any], pictures: Mapping[str, Sequence[Mapping[str, Any]]],
+                                   removed: set[str], new_files: Mapping[str, Sequence[Any]], visible: Mapping[str, bool],
+                                   videos: Sequence[Mapping[str, Any]], new_videos: Sequence[Any], audios: Sequence[Mapping[str, Any]],
+                                   new_audios: Sequence[Any]) -> None:
+    """``validatePic`` + ``validateGoOnDeclareParam`` + 必传分组与视频、录音条数，按原页顺序。"""
+    get = lambda key: _text(values.get(key))  # noqa: E731
+    if len(get("problemDescribe")) > ARBITRATION_PROBLEM_MAX:
+        raise ActionRuleError("问题描述限制长度1000字！")
+    kept = lambda items: [item for item in items if f"old{_text(item.get('fileId'))}" not in removed]  # noqa: E731
+    for key, label, _flag, limit, _field in ARBITRATION_PICTURE_GROUPS:
+        items = kept(pictures.get(key) or [])
+        centre = sum(1 for item in items if _text(item.get("isCentreUpload")) == "Y")
+        if len(items) + len(new_files.get(key) or []) - centre > limit:
+            raise ActionRuleError(f"{label}只能上传{limit}张图片！")
+    if not get("declType"):
+        raise ActionRuleError("请填写仲裁类型!")
+    if not get("declCategory"):
+        raise ActionRuleError("请填写仲裁类别!")
+    if not get("claimAmount"):
+        raise ActionRuleError("请填写索赔金额!")
+    if not get("dutyDept") or not get("dutyDeptCode"):
+        raise ActionRuleError("请填写正确责任网点！")
+    if not _CLAIM_AMOUNT.match(get("claimAmount")) or Decimal(get("claimAmount")) > Decimal("9999999999.99"):
+        raise ActionRuleError("索赔金额只能输入数字且必须大于等于0")
+    try:
+        if get("abnormalNum") and int(Decimal(get("abnormalNum"))) > int(Decimal(_text(detail.get("number")) or "0")):
+            raise ActionRuleError("异常件数必须小于等于子单数！")
+    except InvalidOperation:
+        raise ActionRuleError("异常件数必须是数字") from None
+    if not get("problemDescribe"):
+        raise ActionRuleError("问题描述不能为空！")
+    names = {"marina": "主面单附件信息必填！", "prove": "价值证明附件信息必填！", "state": "索赔函附件信息必填！", "proof": "举证图片附件信息必填！"}
+    for key, *_rest in ARBITRATION_PICTURE_GROUPS:
+        if visible.get(key) and not (kept(pictures.get(key) or []) or new_files.get(key)):
+            raise ActionRuleError(names[key])
+    if videos:  # 详情里有视频时视频区显示，必须有 1–3 段
+        total = len(kept(videos)) + len(new_videos)
+        if total < 1:
+            raise ActionRuleError("上传视频信息必填！")
+        if total > 3:
+            raise ActionRuleError("最多上传三段视频！")
+    if len(kept(audios)) + len(new_audios) > 2:
+        raise ActionRuleError("最多上传2段音频！")
+
+
+def arbitration_hidden_ids(pictures: Mapping[str, Sequence[Mapping[str, Any]]], visible: Mapping[str, bool]) -> list[str]:
+    """``getHiddenPic``：被隐藏分组里的原有图片都记入 marinaUpdate（old + fileId）。"""
+    return [f"old{_text(item.get('fileId'))}" for key, *_rest in ARBITRATION_PICTURE_GROUPS if not visible.get(key)
+            for item in pictures.get(key) or []]
+
+
 SITE_KEY = re.compile(r"^[\w一-龥()（）\-]{1,30}$")
 
 
@@ -1247,6 +1348,8 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "ARBITRATION_EDIT_FIELDS", "ARBITRATION_GIS_CATEGORY", "ARBITRATION_PICTURE_GROUPS", "arbitration_hidden_ids",
+    "arbitration_redeclare_block", "arbitration_redeclare_spec", "arbitration_visible_groups", "validate_arbitration_redeclare",
     "COMPLAINT_FORM_FIELDS", "COMPLAINT_FORM_SUBPAGE", "COMPLAINT_USER_FIELDS", "accused_site_types", "complaint_attachment_rows",
     "complaint_bill_fields", "complaint_edit_block", "complaint_form_spec", "complaint_required_missing", "complaint_save_row",
     "validate_complaint_form",

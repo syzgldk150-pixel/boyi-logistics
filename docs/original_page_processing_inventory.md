@@ -118,7 +118,7 @@ updated: 2026-11-27
 
 本页只有：留言 `arbitramentSearch/saveMessage`、继续申报 `goOnDeclare`（进入申报页）、查看详情（申报、留言、图片、处理记录）。仲裁系统首页菜单未能只读取得，是否还有“仲裁处理/举证”页需用业务账号在原系统菜单中确认后再清点。
 
-**已做（2026-11-27）**：留言（1–1000 字，`messageType=message`，以 `getMessage` 留言记录读回）。继续申报是整张申报单重填（多类图片），属修改类，未做（待用户确认范围）。
+**已做（2026-11-27）**：留言（1–1000 字，`messageType=message`，以 `getMessage` 留言记录读回）。2026-11-28 已做“继续申报”（专用渲染器 `console/static/arbitration_form.js`）：仅“退单,可继续申报”且不是费用申请仲裁；可改仲裁类型（`/kyzc/common/select/declareType` 所属类型，费用申请仲裁按原页只能与自身互换）、仲裁类别（所属类别，自动仲裁类别不是当前类别时不可选）、索赔金额（原页数字规则，上限 9999999999.99）、责任网点（`/kyzc/common/dropList/autocompleteCompany`，不是运单关联网点 `getEncode` 时只提示）、异常件数（≤ 子单数）、问题描述（必填 ≤1000）。换类别时按 `/kyzc/basic/complainType/edit/{类别}` 的 Y/N 显示主面单（新增 ≤1）、价值证明（≤6）、索赔函（≤4）、举证图片（≤8），显示的分组必须有图（中心上传的不计入新增上限）；已有视频时须保留 1–3 段，录音最多 2 条；图片只收 jpg/gif/png 且名称 ≤64 字（超 500KB 先压缩），视频 mp4/flv ≤30M，录音 mp3/m4a/wav ≤10M，先在 Agent 暂存。删除的已有附件与因换类别被隐藏的分组里的原图都以 `marinaUpdate=old<fileId>` 提交。换到转退件费（`2019042911092400492`）且“是否地址解析问题”为是时先查 `getZydzJudgeMsg`：是地址问题记 `isAddressParseProblem=T`，否则按原页先确认“非地址解析问题，是否仍然申报？”再记 F。以 multipart 提交 `/kyzc/arbitrament/arbitramentSearch/save`（原表单全部字段），读回 `loadDeclareDetail` 的问题描述、索赔金额、类别。
 
 ## 实现位置（2026-11-27）
 

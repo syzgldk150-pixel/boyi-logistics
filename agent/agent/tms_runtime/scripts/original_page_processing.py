@@ -1251,6 +1251,151 @@ def _arbitration_message(session: Any, item: dict[str, Any], payload: dict[str, 
     return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": decl_id}
 
 
+# ---------------------------------------------------------------------------------------------
+# 韵达快运仲裁“继续申报”
+# ---------------------------------------------------------------------------------------------
+
+KYZC = "https://kyzc.yunda56.com:8090/kyzc"
+ARBITRATION_FORM_FIELDS = (
+    "abnormalNum", "addrAddress", "addrTel", "addressee", "appealCause", "baseUrl", "belongCate", "claimAmount", "closeWeight", "createDate",
+    "daysDelay", "declCategory", "declId", "declType", "declareDept", "declareDeptCode", "declareId", "declareName", "declareTelephone",
+    "deferredDays", "delayDays", "dutyDept", "dutyDeptCode", "exceptionEndTime", "exceptionStartTime", "exemptAssessmentDay",
+    "exemptAssessmentEndTime", "firstOpenSignTime", "gdzcTransferTime", "goodName", "number", "objTyp", "orderTime", "packName",
+    "postponedDaysTime", "problemDescribe", "sendAddress", "sendTel", "sender", "sign", "signState", "signingTime", "sjzcTransferTime",
+    "stateContent", "supportAmount", "typeDescribe", "updatePerEmpId", "updatePerEmpName",
+)
+
+
+def _kyzc(session: Any, method: str, path: str, **kwargs: Any) -> Any:
+    response = getattr(session, method)(KYZC + path, headers={"Referer": ARBITRATION_PAGE, "X-Requested-With": "XMLHttpRequest"},
+                                        timeout=30, **kwargs)
+    try:
+        return response.json()
+    except ValueError:
+        raise ProcessingError("INVALID_RESPONSE", "韵达仲裁系统没有返回有效数据。") from None
+
+
+def _kyzc_data(result: Any, label: str) -> Any:
+    if not isinstance(result, dict) or str(result.get("code")) != "0":
+        raise ProcessingError("SOURCE_QUERY_FAILED", f"{label}读取失败：{_text((result or {}).get('msg')) or '原系统拒绝'}")
+    return result.get("data")
+
+
+def _arbitration_detail(session: Any, decl_id: str) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    detail = _kyzc_data(_kyzc(session, "post", "/arbitrament/loadDetail/loadDeclareDetail", data={"declId": decl_id}), "仲裁申报")
+    pictures = _kyzc_data(_kyzc(session, "post", "/arbitrament/loadDetail/loadPictureDetail", data={"declId": decl_id}), "仲裁图片")
+    if not isinstance(detail, dict):
+        raise ProcessingError("PROBLEM_NOT_FOUND", "韵达仲裁系统读不到这条仲裁，请刷新后重试。")
+    groups = {key: [row for row in (pictures or {}).get(key) or [] if isinstance(row, dict)]
+              for key in ("marina", "prove", "state", "proof", "appeal", "video", "audio")} if isinstance(pictures, dict) else {}
+    return detail, groups
+
+
+def _arbitration_modules(session: Any, category: str) -> dict[str, Any]:
+    from urllib.parse import quote
+
+    result = _kyzc(session, "get", f"/basic/complainType/edit/{quote(category, safe='')}")
+    data = result.get("data") if isinstance(result, dict) else None
+    return data if isinstance(data, dict) else (result if isinstance(result, dict) else {})
+
+
+def _arbitration_lookup(operation: str) -> Handler:
+    def handler(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        from agent.tms_runtime.monitoring_yunda import _open_arbitration_session
+
+        _open_arbitration_session(session)
+        get = lambda key: _text(payload.get(key))  # noqa: E731
+        if operation == "detail":
+            detail, groups = _arbitration_detail(session, _text(item.get("external_id")))
+            files = {key: [{"fileId": _text(row.get("fileId")), "fileName": _text(row.get("fileName")),
+                            "isCentreUpload": _text(row.get("isCentreUpload"))} for row in rows] for key, rows in groups.items()}
+            depts = _kyzc(session, "get", "/arbitrament/arbitramentDeclare/getEncode", params={"waybillCode": _text(detail.get("waybillCode"))})
+            waybill = depts.get("waybill") if isinstance(depts, dict) else None
+            return {"ok": True, "values": {key: _text(detail.get(key)) for key in ARBITRATION_FORM_FIELDS + ("declTypeName", "declCategoryName", "waybillCode")},
+                    "files": files, "waybill_depts": [_text(d.get("bm")) for d in (waybill or {}).get("deptIds") or [] if isinstance(d, dict)]}
+        if operation in ("types", "categories"):
+            data = {"declareType": "所属类型", "belong_cate": "2"} if operation == "types" else {
+                "declareType": "所属类别", "sup_complain_id": get("declType"), "belong_cate": "2"}
+            result = _kyzc(session, "post", "/common/select/declareType", data=data)
+            rows = (result or {}).get("list") if isinstance(result, dict) else None
+            return {"ok": True, "options": [{"value": _text(r.get("complainId")), "label": _text(r.get("complainName"))}
+                                            for r in rows or [] if isinstance(r, dict) and _text(r.get("complainId"))]}
+        if operation == "modules":
+            data = _arbitration_modules(session, get("declCategory"))
+            return {"ok": True, "modules": {key: _text(data.get(key)) for key in ("isBillsUpload", "isProofPicture", "isClaimLetterPicture",
+                                                                                   "isStatement", "remark")}}
+        key = get("key")
+        if not re.fullmatch(r"[\w\u4e00-\u9fa5()（）\-]{1,30}", key):
+            raise ProcessingError("REPLY_RULE_REJECTED", "请输入网点名称或编码。")
+        params = {"limit": 20, "offset": 0, ("orgcode" if re.fullmatch(r"[0-9]*", key) else "orgname"): key}
+        result = _kyzc(session, "get", "/common/dropList/autocompleteCompany", params=params)
+        rows = result.get("rows") if isinstance(result, dict) else result
+        return {"ok": True, "sites": [{"SITE_CODE": _text(r.get("bm")), "SITE_NAME": _text(r.get("mc"))}
+                                      for r in rows or [] if isinstance(r, dict) and _text(r.get("bm"))][:20]}
+    return handler
+
+
+def _arbitration_redeclare(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from agent.tms_runtime.monitoring_yunda import _arbitration_state, _open_arbitration_session
+    from shared.original_page_actions import (
+        ARBITRATION_EDIT_FIELDS, ARBITRATION_GIS_CATEGORY, ARBITRATION_PICTURE_GROUPS, ActionRuleError, AttachmentError, arbitration_hidden_ids,
+        arbitration_redeclare_block, arbitration_visible_groups, attachments, validate_arbitration_redeclare,
+    )
+
+    decl_id = _text(item.get("external_id"))
+    _open_arbitration_session(session)
+    detail, groups = _arbitration_detail(session, decl_id)
+    blocked = arbitration_redeclare_block(detail, _arbitration_state(detail))
+    if blocked:
+        raise _rule(ActionRuleError(blocked))
+    values = {key: _text(payload.get(key)) for key in ARBITRATION_EDIT_FIELDS}
+    changed_category = values["declCategory"] != _text(detail.get("declCategory"))
+    modules = _arbitration_modules(session, values["declCategory"]) if changed_category and values["declCategory"] else None
+    visible = arbitration_visible_groups(groups, modules)
+    removed = {fid for fid in _text(payload.get("remove_files")).split(",") if re.fullmatch(r"old[0-9A-Za-z_-]+", fid)}
+    try:
+        new_files = {key: attachments(payload.get(f"files_{key}"), "yunda", "arbitration_image") for key, *_rest in ARBITRATION_PICTURE_GROUPS}
+        new_videos = attachments(payload.get("files_video"), "yunda", "arbitration_video")
+        new_audios = attachments(payload.get("files_audio"), "yunda", "arbitration_audio")
+        validate_arbitration_redeclare(detail, values, groups, removed, new_files, visible, groups.get("video") or [], new_videos,
+                                       groups.get("audio") or [], new_audios)
+    except (ActionRuleError, AttachmentError) as exc:
+        raise _rule(exc) from None
+    form: list[tuple[str, Any]] = [(key, _text(detail.get(key))) for key in ARBITRATION_FORM_FIELDS if key not in values]
+    form += list(values.items())
+    if modules is not None:
+        form = [(key, value) for key, value in form if key != "typeDescribe"] + [("typeDescribe", _text(modules.get("remark")))]
+    if changed_category and values["declCategory"] == ARBITRATION_GIS_CATEGORY and _text(payload.get("isGis") or "T") == "T":
+        gis = _kyzc(session, "get", "/arbitrament/arbitramentDeclare/getZydzJudgeMsg", params={"waybillCode": _text(detail.get("waybillCode"))})
+        if not isinstance(gis, dict) or str(gis.get("code")) != "0":
+            raise ProcessingError("SOURCE_QUERY_FAILED", "接口响应异常，请稍后重试！")
+        if _text(gis.get("IsGISProblem")) == "1":
+            form += [("isAddressParseProblem", "T"), ("remark", _text(gis.get("PromptMsg")))]
+        elif _text(payload.get("gis_confirmed")) != "1":
+            raise ProcessingError("GIS_CONFIRM_REQUIRED", "非地址解析问题，是否仍然申报？")
+        else:
+            form += [("isAddressParseProblem", "F"), ("remark", _text(gis.get("PromptMsg")) + " 是否gis解析问题：否")]
+    for fid in sorted(removed) + arbitration_hidden_ids(groups, visible):
+        form.append(("marinaUpdate", fid))
+    files = [(field, _staged(descriptor)) for key, _label, _flag, _limit, field in ARBITRATION_PICTURE_GROUPS for descriptor in new_files[key]]
+    files += [("videoMult", _staged(descriptor)) for descriptor in new_videos] + [("audioMult", _staged(descriptor)) for descriptor in new_audios]
+    # 原页以 FormData（multipart）提交：表单字段与新文件都作为分段，没有新文件时也一样。
+    parts = [(key, (None, str(value))) for key, value in form] + [(field, (name, data)) for field, (name, data) in files]
+    response = session.post(f"{KYZC}/arbitrament/arbitramentSearch/save", files=parts,
+                            headers={"Referer": ARBITRATION_PAGE, "X-Requested-With": "XMLHttpRequest"}, timeout=60)
+    try:
+        result = response.json()
+    except ValueError:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "继续申报已提交，但原系统没有返回结果，请到原系统核对。") from None
+    if not isinstance(result, dict) or str(result.get("code")) != "0":
+        raise ProcessingError("SOURCE_WRITE_FAILED", f"继续申报失败：{_text((result or {}).get('msg')) or '原系统拒绝'}")
+    _discard_staged([d for items in new_files.values() for d in items] + new_videos + new_audios)
+    after, _ = _arbitration_detail(session, decl_id)
+    if any(_text(after.get(key)) != values[key] for key in ("problemDescribe", "claimAmount", "declCategory")):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "继续申报已提交，但读回的申报内容不一致，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": decl_id}
+
+
 # (platform, kind, operation) -> handler(session, item, payload)
 Handler = Callable[[Any, dict[str, Any], dict[str, Any]], dict[str, Any]]
 PROCESS: dict[tuple[str, str, str], Handler] = {
@@ -1281,6 +1426,7 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     ("yunda", "transfer", "job"): _transfer_job,
     ("yunda", "transfer", "reply"): _transfer_reply,
     ("yunda", "arbitration", "message"): _arbitration_message,
+    ("yunda", "arbitration", "redeclare"): _arbitration_redeclare,
 }
 LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "problem", "contact"): _problem_contact,
@@ -1294,6 +1440,8 @@ LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("yunda", "problem", "reply_often"): _yunda_reply_often,
     ("yunda", "cssp", "people"): _cssp_people_search,
     ("yunda", "transfer", "salesman"): _transfer_salesman_search,
+    **{("yunda", "arbitration_form", operation): _arbitration_lookup(operation)
+       for operation in ("detail", "types", "categories", "modules", "duty_depts")},
     ("yunda", "cssp", "receive_count"): _cssp_waiting_lookup("receive"),
     ("yunda", "cssp", "urgent_receive_count"): _cssp_waiting_lookup("urgent_receive"),
 }

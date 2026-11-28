@@ -405,3 +405,51 @@ class ComplaintFormTests(unittest.TestCase):
         with self.assertRaises(base.CustomerServiceProblemError) as ctx:
             self.run_create(self.PAYLOAD)
         self.assertIn("请完善附件后进行保存", str(ctx.exception))
+
+
+class ArbitrationRedeclareTests(unittest.TestCase):
+    DETAIL = {"declId": "D1", "declType": "T", "declCategory": "C", "claimAmount": "10", "problemDescribe": "旧", "number": "3",
+              "waybillCode": "W1", "disposeState": "退单,可继续申报", "dutyDept": "甲", "dutyDeptCode": "S1"}
+    PAYLOAD = {"declType": "T", "declCategory": "2019042911092400492", "claimAmount": "20", "dutyDept": "甲", "dutyDeptCode": "S1",
+               "abnormalNum": "1", "problemDescribe": "新描述", "isGis": "T"}
+
+    def run_redeclare(self, payload, gis):
+        posts = []
+        details = [(dict(self.DETAIL), {"marina": [{"fileId": "5"}]}),
+                   ({**self.DETAIL, "declCategory": payload["declCategory"], "claimAmount": "20", "problemDescribe": "新描述"}, {})]
+
+        def kyzc(session, method, path, **kwargs):
+            if path.endswith("getZydzJudgeMsg"):
+                return gis
+            return {"code": 0, "data": {"isBillsUpload": "N", "remark": "转退件说明"}}
+
+        class Response:
+            def json(self):
+                return {"code": 0}
+
+        class Session:
+            def post(self, url, **kwargs):
+                posts.append(kwargs["files"])
+                return Response()
+
+        with patch("agent.tms_runtime.monitoring_yunda._open_arbitration_session"), \
+                patch("agent.tms_runtime.monitoring_yunda._arbitration_state", return_value="退单,可继续申报"), \
+                patch.object(processing, "_arbitration_detail", side_effect=details), patch.object(processing, "_kyzc", side_effect=kyzc):
+            result = processing.run("yunda", "process", Session(), {"kind": "arbitration", "operation": "redeclare",
+                                                                     "item": {"external_id": "D1"}, "payload": payload})
+        return result, posts
+
+    def test_gis_problem_is_recorded_and_hidden_pictures_marked(self):
+        result, posts = self.run_redeclare(self.PAYLOAD, {"code": 0, "IsGISProblem": 1, "PromptMsg": "地址解析有误"})
+        self.assertTrue(result["verified"])
+        parts = dict((key, value[1]) for key, value in posts[0] if value[0] is None)
+        self.assertEqual(("T", "地址解析有误", "old5", "转退件说明", "新描述"),
+                         (parts["isAddressParseProblem"], parts["remark"], parts["marinaUpdate"], parts["typeDescribe"], parts["problemDescribe"]))
+
+    def test_not_gis_problem_asks_before_declaring(self):
+        with self.assertRaises(base.CustomerServiceProblemError) as ctx:
+            self.run_redeclare(self.PAYLOAD, {"code": 0, "IsGISProblem": 0, "PromptMsg": "正常"})
+        self.assertEqual("GIS_CONFIRM_REQUIRED", ctx.exception.code)
+        result, posts = self.run_redeclare({**self.PAYLOAD, "gis_confirmed": "1"}, {"code": 0, "IsGISProblem": 0, "PromptMsg": "正常"})
+        parts = dict((key, value[1]) for key, value in posts[0] if value[0] is None)
+        self.assertEqual(("F", "正常 是否gis解析问题：否"), (parts["isAddressParseProblem"], parts["remark"]))
