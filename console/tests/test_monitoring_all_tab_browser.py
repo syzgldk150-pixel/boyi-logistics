@@ -576,3 +576,75 @@ def test_ronghui_new_appeal_dialog_links_process_and_appeal_types(app, browser):
         sent = posts[0]["payload"]
         assert sent["PROCESS_TYPE"] == "仲裁处理" and sent["APPEAL_TYPE"] == "仲裁类" and sent["CLAIM_AMOUNT"] == "20"
         assert sent["PHONE"] == "13800000000" and len([key for key in sent if key.startswith("appeal_file")]) == 10
+
+
+def test_yunda_receive_toolbar_and_appoint(app, browser):
+    """韵达工单分类上方的“接单”读本站待接单量后提交本次接单量；工单“转人员”从本机构人员里查找选择。"""
+    from shared.original_page_actions import cssp_receive_specs, cssp_specs
+
+    permissions = frozenset({"comp:sysCompDeal:receive", "comp:sysCompDeal:receiveAppointUser"})
+    detail = {"complaintId": "C-SYN", "compStatus": 2, "compStatusName": "已响应，待首回"}
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+                "systems": [{"system": "yunda", "label": "韵达", "status": "ok", "categories": [
+                    {"category_id": "yunda:work_orders", "title": "收到的待处理工单", "count": 1, "items_supported": True,
+                     "actions": {"platform": "yunda", "account_id": "yunda_default", "label": "韵达工单",
+                                 "item": {"external_id": "receive"}, "specs": cssp_receive_specs(permissions)}}]}]}
+    items = [{"id": "C-SYN", "title": "合成工单", "occurred_at": "2026-01-02 08:00:00", "content": "合成工单正文", "status_label": "已响应，待首回",
+              "actions": {"platform": "yunda", "account_id": "yunda_default", "item": {"external_id": "C-SYN", "waybill_no": "W1"},
+                          "specs": cssp_specs(detail, permissions)}}]
+    posts, lookups = [], []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "items": items, "total": 1, "has_more": False}))
+            elif parsed.path == "/customer-service/lookup":
+                sent = json.loads(route.request.post_data)
+                lookups.append((sent["operation"], sent["payload"]))
+                data = {"ok": True, "value": "7"} if sent["operation"] == "receive_count" else {
+                    "ok": True, "sites": [{"SITE_CODE": "1001", "SITE_NAME": "合成员工(1001)"}]}
+                route.fulfill(content_type="application/json", body=json.dumps(data))
+            elif parsed.path == "/customer-service/process":
+                posts.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        toolbar = page.locator(".monitor-category-actions")
+        toolbar.wait_for()
+        assert toolbar.locator(".action-button").all_inner_texts() == ["接单"]
+        # 只有“结单…”等有权限的按钮显示；本账号有转人员权限、没有加急接单权限。
+        assert page.locator(".action-button[data-operation='appoint']").count() == 1
+        assert page.locator(".action-button[data-operation='urgent_receive']").count() == 0
+        toolbar.locator(".action-button").click()
+        page.wait_for_function("document.querySelector('[aria-label=\"本站待接单量\"]')?.value === '7'")
+        page.locator(".action-dialog .action-save").click()
+        assert page.inner_text(".action-dialog .action-message") == "本次接单量不能为空"
+        page.fill("[aria-label='本次接单量']", "2")
+        page.locator(".action-dialog .action-save").click()
+        page.wait_for_function("document.querySelectorAll('.action-dialog').length === 0")
+        assert posts[0]["operation"] == "receive" and posts[0]["payload"] == {"receiveNum": "2"}
+        page.click(".action-button[data-operation='appoint']")
+        page.fill("[aria-label='转入人员']", "合成")
+        page.click(".action-dialog .action-site-search")
+        page.click(".action-site-option")
+        page.locator(".action-dialog .action-save").click()
+        page.wait_for_function("document.querySelectorAll('.action-dialog').length === 0")
+        assert posts[1]["operation"] == "appoint" and posts[1]["payload"] == {"user_code": "1001"}
+        assert ("people", {"key": "合成"}) in lookups

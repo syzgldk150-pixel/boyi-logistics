@@ -529,6 +529,40 @@ CSSP_OPERATIONS = {
     "turn_site": ("转站点", "/cssp/comp/sysCompDeal/turnOrg.do"),
 }
 CSSP_CUI_REPLY = "/cssp/collaboration/sysCollaborationManage/cuiReplay"
+# 原页按钮的 v-control 权限（账号的权限来自 /cssp/sys/menu/newTree 中 type 为 2/3 的节点 perms）
+CSSP_PERMISSIONS = {
+    "prompt_resp": "comp:sysCompDeal:promptResp", "first_reply": "comp:sysCompDeal:firstReply",
+    "reply_handling": "comp:sysCompDeal:replyHandling", "claim": "comp:sysCompDeal:claimApply",
+    "statement": "comp:sysCompDeal:statement", "extend": "comp:sysCompDeal:extendLaging", "turn_site": "comp:sysCompDeal:turnOrg",
+    "appoint": "comp:sysCompDeal:receiveAppointUser", "receive": "comp:sysCompDeal:receive",
+    "urgent_receive": "comp:sysCompDeal:urgentReceive", "cui_reply": "collaboration:sysCollaborationManage:cuiReplay",
+}
+CSSP_APPOINT_STATUSES = (1, 10, 2, 3)  # 列表复选框只允许已分配、已接单、已响应、已首回的工单
+CSSP_RECEIVE = {"receive": ("接单", "/cssp/comp/sysCompDeal/receive.do", "/cssp/comp/sysCompDeal/receiveNumQuery"),
+                "urgent_receive": ("加急工单接单", "/cssp/comp/sysCompDeal/urgentReceive.do",
+                                   "/cssp/comp/sysCompDeal/urgentReceiveNumQuery")}
+
+
+def cssp_permissions(tree: Any) -> frozenset[str]:
+    """``D()``: perms of every node whose attributes.type is "3" or 2."""
+    found: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for child in node:
+                walk(child)
+        elif isinstance(node, Mapping):
+            attributes = node.get("attributes") if isinstance(node.get("attributes"), Mapping) else {}
+            if attributes.get("type") in ("3", 2) and _text(attributes.get("perms")):
+                found.add(_text(attributes.get("perms")))
+            walk(node.get("children") or [])
+
+    walk(tree.get("data") if isinstance(tree, Mapping) and "data" in tree else tree)
+    return frozenset(found)
+
+
+def _allowed(operation: str, permissions: Any) -> bool:
+    return permissions is None or CSSP_PERMISSIONS.get(operation, "") in permissions
 
 
 def _status(value: Any) -> int | None:
@@ -567,7 +601,15 @@ def _contact_fields(detail: Mapping[str, Any], *, radio: bool) -> list[dict[str,
             _field("callNumber", "外呼电话", "digits", value=detail.get("comperPhone"), required=True)]
 
 
-def cssp_specs(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+def cssp_appoint_spec(detail: Mapping[str, Any]) -> dict[str, Any]:
+    """列表“转人员”：转入人员从本机构人员中查（getDeptEmp，按姓名或工号），必选。"""
+    person = _field("userId", "转入人员", "site", required=True)
+    person.update({"lookup_kind": "cssp", "lookup_operation": "people", "payload_key": "user_code", "placeholder": "输入姓名或工号"})
+    blocked = "" if _status(detail.get("compStatus")) in CSSP_APPOINT_STATUSES else "该工单当前状态不能转人员"
+    return _spec("cssp", "appoint", "转人员", "转人员", [person], blocked=blocked)
+
+
+def cssp_specs(detail: Mapping[str, Any], permissions: Any = None) -> list[dict[str, Any]]:
     content = lambda label, value="": _field("dealContent", label, "textarea", value=value, required=True, max_length=CSSP_TEXT_MAX)  # noqa: E731
     first = _contact_fields(detail, radio=False) + [
         _field("estimatedCompletionTime", "预计解决时间", "datetime", required=True), content("解决进度")]
@@ -583,7 +625,8 @@ def cssp_specs(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
     for spec in specs:
         spec["blocked"] = cssp_block(spec["operation"], detail)
-    return specs
+    specs.append(cssp_appoint_spec(detail))
+    return [spec for spec in specs if _allowed(spec["operation"], permissions)]  # 没有权限的按钮原页不显示
 
 
 def validate_cssp(operation: str, detail: Mapping[str, Any], payload: Mapping[str, Any], now: dt.datetime) -> dict[str, Any]:
@@ -632,6 +675,10 @@ def validate_cssp(operation: str, detail: Mapping[str, Any], payload: Mapping[st
     return {"params": params, "files": files}
 
 
+def cui_reply_specs(row: Mapping[str, Any], permissions: Any = None) -> list[dict[str, Any]]:
+    return [cui_reply_spec(row)] if _allowed("cui_reply", permissions) else []
+
+
 def cui_reply_spec(row: Mapping[str, Any]) -> dict[str, Any]:
     return _spec("cssp_cui", "reply", "回复", "催单回复", [
         _field("remark", "催单内容", "readonly_long", value=row.get("remark")),
@@ -639,6 +686,30 @@ def cui_reply_spec(row: Mapping[str, Any]) -> dict[str, Any]:
         _field("replayCustomerPhone", "外呼电话", "digits", required=True),
         _field("replayContent", "沟通记录", "textarea", required=True, max_length=CSSP_TEXT_MAX),
     ])
+
+
+def cssp_receive_specs(permissions: Any = None) -> list[dict[str, Any]]:
+    """工单处理列表工具栏的“加急工单接单”“接单”（打开时读本站待接单量，本次接单量为不小于 1 的整数）。"""
+    specs = []
+    for operation in ("urgent_receive", "receive"):
+        if not _allowed(operation, permissions):
+            continue
+        waiting = _field("wait_num", "本站待接单量")
+        waiting["lookup"] = {"kind": "cssp", "operation": f"{operation}_count"}
+        specs.append(_spec("cssp", operation, CSSP_RECEIVE[operation][0], CSSP_RECEIVE[operation][0], [
+            waiting, _field("receiveNum", "本次接单量", "digits", required=True)]))
+    return specs
+
+
+def validate_receive_num(payload: Mapping[str, Any]) -> int:
+    text = _text(payload.get("receiveNum"))
+    if not text:
+        raise ActionRuleError("此项必填")
+    if not re.fullmatch(r"-?\d+", text):
+        raise ActionRuleError("数值必须为整数")
+    if int(text) < 1:
+        raise ActionRuleError("数值不能小于1")
+    return int(text)
 
 
 def validate_cui_reply(payload: Mapping[str, Any]) -> dict[str, str]:
@@ -851,6 +922,8 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "CSSP_PERMISSIONS", "CSSP_RECEIVE", "cssp_appoint_spec", "cssp_permissions", "cssp_receive_specs", "cui_reply_specs",
+    "validate_receive_num",
     "APPEAL_FORM_SUBPAGE", "appeal_form_exception_id", "appeal_form_spec", "appeal_form_tables", "appeal_side", "validate_appeal_form",
     "arbitration_specs", "validate_arbitration_message",
     "CSSP_CUI_REPLY", "CSSP_OPERATIONS", "TRANSFER_ABNORMAL_TYPES", "cssp_block", "cssp_specs", "cui_reply_spec",

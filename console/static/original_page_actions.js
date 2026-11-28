@@ -41,7 +41,7 @@
     const box = el('div', 'action-site');
     const input = el('input', 'action-site-input');
     input.type = 'text';
-    input.placeholder = '输入网点名称或编号';
+    input.placeholder = field.placeholder || '输入网点名称或编号';
     input.value = values[`${field.name}_text`] || field.value || '';
     input.setAttribute('aria-label', field.label);
     const search = el('button', 'action-site-search', '查询');
@@ -52,9 +52,11 @@
       note.textContent = '查询中…';
       list.replaceChildren();
       try {
-        const data = await request('lookup', { ...context, kind: 'site', operation: 'search', payload: { key: input.value.trim() } });
+        // 网点查询；转人员等用同一个查找框，查询种类由字段指定（lookup_kind/lookup_operation）。
+        const data = await request('lookup', { ...context, kind: field.lookup_kind || 'site', operation: field.lookup_operation || 'search',
+          payload: { key: input.value.trim() } });
         const sites = data.sites || [];
-        note.textContent = sites.length ? '' : '没有找到网点';
+        note.textContent = sites.length ? '' : (field.lookup_kind ? '没有找到' : '没有找到网点');
         sites.forEach((site) => {
           const option = el('li');
           const pick = el('button', 'action-site-option', `${site.SITE_CODE} ${site.SITE_NAME}`);
@@ -125,6 +127,13 @@
       box.readOnly = true;
       box.value = field.value || '';
       box.setAttribute('aria-label', field.label);
+      if (field.lookup) {
+        // 打开对话框时从原系统实时读取（如“本站待接单量”）。
+        box.value = '读取中…';
+        request('lookup', { ...context, kind: field.lookup.kind, operation: field.lookup.operation, payload: {} })
+          .then((data) => { box.value = data.value ?? ''; })
+          .catch((error) => { box.value = `读取失败：${error.message}`; });
+      }
       return box;
     }
     if (field.type === 'site') return sitePicker(context, field, values);
@@ -224,7 +233,7 @@
     const body = {};
     for (const field of spec.fields || []) {
       if (field.type === 'readonly' || field.type === 'readonly_long') continue;
-      if (field.type === 'site') body.site_code = values.site_code || '';
+      if (field.type === 'site') body[field.payload_key || 'site_code'] = values.site_code || '';
       else body[field.name] = String(values[field.name] ?? field.value ?? '');
     }
     if (spec.attachments) body.attachments = values.attachments || [];

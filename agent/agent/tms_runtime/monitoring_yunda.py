@@ -19,7 +19,9 @@ import requests
 from agent.tms_runtime.errors import TMSAuthStateError
 from agent.tms_runtime import monitoring_window
 from agent.tms_runtime.monitoring_window import RECENT_NOTE, is_recent, latest_activity
-from shared.original_page_actions import arbitration_specs, cssp_specs, cui_reply_spec, transfer_specs
+from shared.original_page_actions import (
+    arbitration_specs, cssp_permissions, cssp_receive_specs, cssp_specs, cui_reply_specs, transfer_specs,
+)
 from shared.problem_reply_rules import yunda_reply_form
 
 
@@ -276,6 +278,14 @@ def _transfer_rows(session: Any) -> list[dict]:
     return merged
 
 
+def _cssp_permissions(session: Any) -> frozenset[str] | None:
+    """账号在快运工单系统里的按钮权限（原页 v-control 的来源 /cssp/sys/menu/newTree）；读不到时不预判，由原系统拒绝。"""
+    try:
+        return cssp_permissions(_request(session, "get", f"{CSSP_ORIGIN}/cssp/sys/menu/newTree", headers={"Referer": WORK_ORDER_PAGE}))
+    except Exception:
+        return None
+
+
 def _cssp_user_id(session: Any) -> str:
     identity = _request(session, "get", f"{CSSP_ORIGIN}/cssp/sys/user/getUser", headers={"Referer": WORK_ORDER_PAGE})
     if not isinstance(identity, dict) or identity.get("code") not in {0, "0"}:
@@ -332,6 +342,12 @@ def collect_categories(session: Any) -> list[dict[str, Any]]:
                         raise
                 total = len(_recent_cssp_rows(session, category_id, user_id=cssp_user_id))
             category = _category(category_id, total)
+            if category_id == "yunda:work_orders":
+                # 原页工单处理列表工具栏的“加急工单接单”“接单”，有权限才显示（用户 2026-11-28）。
+                specs = cssp_receive_specs(_cssp_permissions(session))
+                if specs:
+                    category["actions"] = {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID, "label": "韵达工单",
+                                           "item": {"external_id": "receive"}, "specs": specs}
         except Exception as exc:
             category.update(_failure(exc), count=None, tone="warning")
         result.append(category)
@@ -390,7 +406,7 @@ def _transfer_item(row: dict) -> dict[str, Any]:
     }
 
 
-def _work_order_item(session: Any, row: dict) -> dict[str, Any]:
+def _work_order_item(session: Any, row: dict, permissions: Any = None) -> dict[str, Any]:
     complaint_id = _text(row.get("complaintId"))
     if not complaint_id:
         raise SourceError("韵达工单记录缺少 complaintId。")
@@ -407,11 +423,11 @@ def _work_order_item(session: Any, row: dict) -> dict[str, Any]:
         "open_url": WORK_ORDER_PAGE, "deadline": _text(row.get("dealOverTime")),
         # 原页“处理详情”的按钮（用户 2026-11-27 要求在博益直接处理）：提交时 Agent 重新读取工单详情再检查。
         "actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID,
-                    "item": {"external_id": complaint_id, "waybill_no": _text(row.get("listId"))}, "specs": cssp_specs(info)},
+                    "item": {"external_id": complaint_id, "waybill_no": _text(row.get("listId"))}, "specs": cssp_specs(info, permissions)},
     }
 
 
-def _reply_item(row: dict) -> dict[str, Any]:
+def _reply_item(row: dict, permissions: Any = None) -> dict[str, Any]:
     complaint_id = _text(row.get("complaintId"))
     occurred_at = _text(row.get("colTime"))
     if not complaint_id or not occurred_at or "remark" not in row:
@@ -423,8 +439,8 @@ def _reply_item(row: dict) -> dict[str, Any]:
         "source_label": "韵达快运工单系统", "open_url": WORK_ORDER_PAGE,
         **({"actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID,
                         "item": {"external_id": f"{complaint_id}:{occurred_at}", "colId": _text(row.get("colId")),
-                                 "waybill_no": _text(row.get("listId"))}, "specs": [cui_reply_spec(row)]}}
-           if _text(row.get("colId")) else {}),
+                                 "waybill_no": _text(row.get("listId"))}, "specs": cui_reply_specs(row, permissions)}}
+           if _text(row.get("colId")) and cui_reply_specs(row, permissions) else {}),
     }
 
 
@@ -460,13 +476,14 @@ def collect_items(session: Any, category_id: str, page: int, page_size: int = 20
             rows = sorted(_recent_cssp_rows(session, category_id), key=lambda row: _text(row.get(time_key)), reverse=True)
             total = len(rows)
             rows = rows[(page - 1) * page_size:page * page_size]
+            permissions = _cssp_permissions(session) if rows else None
             if category_id == "yunda:work_order_replies":
-                items = [_reply_item(row) for row in rows]
+                items = [_reply_item(row, permissions) for row in rows]
             else:
                 # Bounded read-only requests, without mutating session config.
                 # At most 20 details / 4 workers, each with an 8-second timeout.
                 with ThreadPoolExecutor(max_workers=4, thread_name_prefix="yunda-monitor-detail") as executor:
-                    items = list(executor.map(lambda row: _work_order_item(session, row), rows))
+                    items = list(executor.map(lambda row: _work_order_item(session, row, permissions), rows))
             items.sort(key=lambda item: item["occurred_at"], reverse=True)
         ids = [item["id"] for item in items]
         if len(ids) != len(set(ids)):

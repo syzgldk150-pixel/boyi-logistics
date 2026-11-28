@@ -246,3 +246,46 @@ class NewAppealTests(unittest.TestCase):
                                                                               {"platform": "ronghui", "file_name": "a.jpg", "file_path": "/unauth/download/a"}]}})
         self.assertTrue(result["verified"])
         self.assertEqual(["TAB_EXCEPTION_APPEAL_ADD", "TAB_EXCEPTION_PATH_ADD"], [tables[0][0] for tables in saved])
+
+
+class YundaReceiveTests(unittest.TestCase):
+    def test_receive_posts_count_and_reads_waiting_back(self):
+        waiting = [5, 2]
+        posts = []
+        with patch.object(processing, "_cssp_waiting", side_effect=lambda s, op: waiting.pop(0)), \
+                patch.object(processing, "_cssp", side_effect=lambda s, m, path, **kw: posts.append((path, kw)) or {"code": 0}):
+            result = processing.run("yunda", "process", object(), {"kind": "cssp", "operation": "receive",
+                                                                    "item": {"external_id": "receive"}, "payload": {"receiveNum": "3"}})
+        self.assertTrue(result["verified"])
+        self.assertEqual(("/cssp/comp/sysCompDeal/receive.do", {"params": {"receiveNum": 3}}), posts[0])
+
+    def test_receive_without_change_is_unknown(self):
+        with patch.object(processing, "_cssp_waiting", return_value=4), patch.object(processing, "_cssp", return_value={"code": 0}):
+            with self.assertRaises(base.CustomerServiceProblemError) as ctx:
+                processing.run("yunda", "process", object(), {"kind": "cssp", "operation": "receive",
+                                                               "item": {"external_id": "receive"}, "payload": {"receiveNum": "1"}})
+        self.assertEqual("WRITE_OUTCOME_UNKNOWN", ctx.exception.code)
+
+    def test_appoint_checks_person_and_reads_owner_back(self):
+        calls = []
+
+        def cssp(session, method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if "compInfo" in path:
+                return {"complaintId": "C1", "compStatus": 2}
+            if path.endswith("/getUser"):
+                return {"code": 0, "User": {"userId": "U", "deptId": "D1"}}
+            if path.endswith("/getDeptEmp"):
+                return {"rows": [{"code": "1001", "name": "合成员工"}]}
+            if path.endswith("/compDealPageQuery"):
+                return {"rows": [{"complaintId": "C1", "belongUserName": "合成员工"}]}
+            return {"code": 0}
+
+        with patch.object(processing, "_cssp", side_effect=cssp):
+            result = processing.run("yunda", "process", object(), {"kind": "cssp", "operation": "appoint",
+                                                                    "item": {"external_id": "C1", "waybill_no": "W1"},
+                                                                    "payload": {"user_code": "1001"}})
+        self.assertTrue(result["verified"])
+        post = [call for call in calls if call[0] == "post"][0]
+        self.assertEqual({"userId": "1001", "complaintIds": "C1"}, post[2]["params"])
+        self.assertEqual({"gs": "D1", "empid": "1001"}, [call for call in calls if call[1].endswith("getDeptEmp")][0][2]["params"])

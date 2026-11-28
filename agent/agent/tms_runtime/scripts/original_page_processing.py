@@ -596,6 +596,107 @@ def _cssp_process(session: Any, operation: str, item: dict[str, Any], payload: d
     return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": complaint_id}
 
 
+def _cssp_user(session: Any) -> dict[str, Any]:
+    identity = _cssp(session, "get", "/cssp/sys/user/getUser")
+    user = (identity or {}).get("User") if isinstance(identity, dict) else None
+    if not isinstance(user, dict) or not _text(user.get("userId")):
+        raise ProcessingError("AUTH_REQUIRED", "韵达工单系统用户信息读取失败，请重新登录韵达。")
+    return user
+
+
+def _cssp_people(session: Any, key: str) -> list[dict[str, str]]:
+    """转人员的人员查询（getDeptEmp：全数字按工号 empid，否则按姓名 empname；gs 为本机构）。"""
+    params = {"gs": _text(_cssp_user(session).get("deptId"))}
+    params["empid" if re.fullmatch(r"[0-9]+", key) else "empname"] = key
+    rows = _cssp(session, "get", "/cssp/comp/loadCommon/getDeptEmp", params=params)
+    items = rows.get("rows") if isinstance(rows, dict) else rows
+    return [{"SITE_CODE": _text(row.get("code")), "SITE_NAME": f"{_text(row.get('name'))}({_text(row.get('code'))})"}
+            for row in (items or []) if isinstance(row, dict) and _text(row.get("code"))][:20]
+
+
+def _cssp_people_search(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    key = _text(payload.get("key"))
+    if not re.fullmatch(r"[\w\u4e00-\u9fa5]{1,20}", key):
+        raise ProcessingError("REPLY_RULE_REJECTED", "请输入姓名或工号。")
+    return {"ok": True, "sites": _cssp_people(session, key)}
+
+
+def _cssp_belongs_to(session: Any, complaint_id: str, waybill: str, user_code: str, user_name: str) -> bool:
+    rows = _cssp(session, "get", "/cssp/comp/sysComplaintSearch/compDealPageQuery",
+                 params={"offset": 0, "limit": 50, "listIds": waybill} if waybill else {"offset": 0, "limit": 200})
+    items = rows.get("rows") if isinstance(rows, dict) else rows
+    row = next((entry for entry in (items or []) if isinstance(entry, dict) and _text(entry.get("complaintId")) == complaint_id), None)
+    if row is None:
+        return False
+    owner = " ".join(_text(row.get(key)) for key in ("belongUser", "belongUserId", "belongUserName"))
+    return user_code in owner or (bool(user_name) and user_name in owner)
+
+
+def _cssp_appoint(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import CSSP_APPOINT_STATUSES
+
+    complaint_id = _text(item.get("external_id"))
+    user_code = _text(payload.get("user_code"))
+    if not user_code:
+        raise ProcessingError("REPLY_RULE_REJECTED", "此项必填")
+    detail = _cssp_detail(session, complaint_id)
+    try:
+        status = int(_text(detail.get("compStatus")))
+    except ValueError:
+        status = None
+    if status not in CSSP_APPOINT_STATUSES:
+        raise ProcessingError("REPLY_RULE_REJECTED", "该工单当前状态不能转人员")
+    people = [person for person in _cssp_people(session, user_code) if person["SITE_CODE"] == user_code]
+    if len(people) != 1:
+        raise ProcessingError("REPLY_RULE_REJECTED", "本机构里找不到这个人员，请重新选择。")
+    result = _cssp(session, "post", "/cssp/comp/sysCompDeal/receiveAppointUser.do", params={"userId": user_code, "complaintIds": complaint_id})
+    _cssp_ok(result, "韵达工单转人员")
+    name = people[0]["SITE_NAME"].rsplit("(", 1)[0]
+    if not _cssp_belongs_to(session, complaint_id, _text(item.get("waybill_no")), user_code, name):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "转人员已提交，但读回的工单归属人不是所选人员，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": complaint_id}
+
+
+def _cssp_waiting(session: Any, operation: str) -> int:
+    from shared.original_page_actions import CSSP_RECEIVE
+
+    response = session.post(CSSP_ORIGIN + CSSP_RECEIVE[operation][2], headers={"Referer": CSSP_PAGE}, timeout=20, allow_redirects=False)
+    text = _text(getattr(response, "text", ""))
+    try:
+        value = response.json()
+    except ValueError:
+        value = text
+    if isinstance(value, dict):
+        raise ProcessingError("SOURCE_QUERY_FAILED", _text(value.get("msg")) or "本站待接单量读取失败。")
+    try:
+        return int(_text(value))
+    except ValueError:
+        raise ProcessingError("INVALID_RESPONSE", "韵达工单系统没有返回待接单量。") from None
+
+
+def _cssp_waiting_lookup(operation: str) -> Handler:
+    def handler(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "value": str(_cssp_waiting(session, operation))}
+    return handler
+
+
+def _cssp_receive(operation: str) -> Handler:
+    def handler(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        from shared.original_page_actions import CSSP_RECEIVE, ActionRuleError, validate_receive_num
+
+        try:
+            count = validate_receive_num(payload)
+        except ActionRuleError as exc:
+            raise _rule(exc) from None
+        before = _cssp_waiting(session, operation)
+        result = _cssp(session, "post", CSSP_RECEIVE[operation][1], params={"receiveNum": count})
+        _cssp_ok(result, f"韵达工单{CSSP_RECEIVE[operation][0]}")
+        if _cssp_waiting(session, operation) >= before:
+            raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "接单已提交，但本站待接单量没有减少，请到原系统核对，不要重复接单。")
+        return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": _text(item.get("external_id"))}
+    return handler
+
+
 def _cui_pending(session: Any, user_id: str, waybill: str, col_id: str) -> bool:
     rows = _cssp(session, "get", "/cssp/collaboration/sysCollaborationManage/cuiPageQuery",
                  params={"offset": 0, "limit": 100, "userId": user_id, "listId": waybill})
@@ -816,6 +917,9 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     **{("yunda", "cssp", operation): (lambda op: lambda s, i, p: _cssp_process(s, op, i, p))(operation)
        for operation in ("prompt_resp", "first_reply", "reply_handling", "claim", "statement", "extend", "turn_site")},
     ("yunda", "cssp_cui", "reply"): _cui_reply,
+    ("yunda", "cssp", "appoint"): _cssp_appoint,
+    ("yunda", "cssp", "receive"): _cssp_receive("receive"),
+    ("yunda", "cssp", "urgent_receive"): _cssp_receive("urgent_receive"),
     ("yunda", "transfer", "accept"): _transfer_accept,
     ("yunda", "transfer", "transfer"): _transfer_transfer,
     ("yunda", "transfer", "abnormal"): _transfer_abnormal,
@@ -828,6 +932,9 @@ LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("ronghui", "appeal_form", "appeal_types"): _appeal_form_lookup("appeal_types"),
     ("yunda", "site", "search"): _yunda_site_search,
     ("yunda", "problem", "reply_often"): _yunda_reply_often,
+    ("yunda", "cssp", "people"): _cssp_people_search,
+    ("yunda", "cssp", "receive_count"): _cssp_waiting_lookup("receive"),
+    ("yunda", "cssp", "urgent_receive_count"): _cssp_waiting_lookup("urgent_receive"),
 }
 
 

@@ -61,6 +61,27 @@ class FixedToday(unittest.TestCase):
         patcher = patch.object(monitoring_window, "today", return_value=TODAY)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # 按钮权限（/cssp/sys/menu/newTree）单独测试；这里固定为读不到，不占用排好的假响应。
+        permissions = patch.object(source, "_cssp_permissions", return_value=None)
+        permissions.start()
+        self.addCleanup(permissions.stop)
+
+
+class CsspPermissionTests(unittest.TestCase):
+    def test_buttons_follow_account_permissions(self):
+        from shared.original_page_actions import cssp_permissions, cssp_receive_specs, cssp_specs
+
+        tree = [{"text": "工单", "attributes": {"type": "1"}, "children": [
+            {"text": "接单", "attributes": {"type": "3", "perms": "comp:sysCompDeal:receive"}},
+            {"text": "转人员", "attributes": {"type": 2, "perms": "comp:sysCompDeal:receiveAppointUser"}},
+            {"text": "结单", "attributes": {"type": "3", "perms": "comp:sysCompDeal:statement"}},
+            {"text": "菜单", "attributes": {"type": "1", "perms": "comp:sysCompDeal:promptResp"}}]}]
+        permissions = cssp_permissions(tree)
+        self.assertEqual({"comp:sysCompDeal:receive", "comp:sysCompDeal:receiveAppointUser", "comp:sysCompDeal:statement"}, set(permissions))
+        self.assertEqual(["接单"], [spec["label"] for spec in cssp_receive_specs(permissions)])
+        detail = {"complaintId": "C1", "compStatus": 3}
+        self.assertEqual(["结单", "转人员"], [spec["label"] for spec in cssp_specs(detail, permissions)])
+        self.assertEqual((2, 8), (len(cssp_receive_specs(None)), len(cssp_specs(detail, None))))  # 读不到权限时全部显示
 
 
 class WindowedSourceTests(FixedToday):

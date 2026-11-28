@@ -150,7 +150,7 @@ def test_yunda_work_order_buttons_follow_the_detail_page():
     detail = {"complaintId": "C1", "compStatus": 10, "compStatusName": "已接单，待响应", "comper": "合成投诉人", "comperPhone": "13800000000",
               "sender": "合成寄件人", "senderPhone": "13900000000"}
     specs = {spec["operation"]: spec for spec in cssp_specs(detail)}
-    assert [spec["label"] for spec in specs.values()] == ["立即响应", "首次回复", "回复处理", "转至理赔", "结单", "延长时效", "转站点"]
+    assert [spec["label"] for spec in specs.values()] == ["立即响应", "首次回复", "回复处理", "转至理赔", "结单", "延长时效", "转站点", "转人员"]
     assert specs["prompt_resp"]["blocked"] == "" and specs["first_reply"]["blocked"].startswith("当前处理状态")
     assert specs["turn_site"]["blocked"] == "" and specs["statement"]["blocked"] != ""
     respond = specs["prompt_resp"]["fields"]
@@ -241,3 +241,19 @@ def test_ronghui_new_appeal_form_checks_in_page_order():
     assert saved["EXCEPTION_ID"] == new_id and saved["COMPLAINT_STATUS"] == "待审核" and saved["FILE_PATH2"] == "/unauth/download/a"
     assert saved["APPEAL_SITE_CODE"] == "S1" and saved["CREATE_MAN"] == "合成用户" and saved["PRODUCT_TYPE"] == "普通"
     assert tables[1][0] == "TAB_EXCEPTION_PATH_ADD" and tables[1][1][0]["FILE_UPLOAD_TYPE"] == "申诉附件"
+
+
+def test_yunda_receive_and_appoint_rules():
+    from shared.original_page_actions import cssp_appoint_spec, cssp_receive_specs, validate_receive_num
+
+    assert [spec["label"] for spec in cssp_receive_specs()] == ["加急工单接单", "接单"]
+    waiting = cssp_receive_specs()[1]["fields"][0]
+    assert waiting["label"] == "本站待接单量" and waiting["lookup"] == {"kind": "cssp", "operation": "receive_count"}
+    for value, message in (("", "此项必填"), ("1.5", "数值必须为整数"), ("0", "数值不能小于1")):
+        with pytest.raises(ActionRuleError, match=message):
+            validate_receive_num({"receiveNum": value})
+    assert validate_receive_num({"receiveNum": "3"}) == 3
+    assert cssp_appoint_spec({"compStatus": 10})["blocked"] == ""
+    assert cssp_appoint_spec({"compStatus": 4})["blocked"] == "该工单当前状态不能转人员"
+    person = cssp_appoint_spec({"compStatus": 1})["fields"][0]
+    assert person["lookup_operation"] == "people" and person["payload_key"] == "user_code"

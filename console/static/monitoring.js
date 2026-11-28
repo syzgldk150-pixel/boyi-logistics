@@ -324,6 +324,18 @@
       nodes.push(chip);
     }
     if (!snapshot?.systems?.length) nodes.push(element('p', 'monitor-empty', '当前没有可读取的消息来源。'));
+    // 分类自带的原页工具栏（韵达工单处理列表的“加急工单接单”“接单”，用户 2026-11-28），只在该分类可见时显示。
+    const cardIds = cardFilter ? metricDefs[cardFilter]?.sum || [] : null;
+    if (window.OriginalPageActions) {
+      visible.filter((item) => item.actions && (!cardIds || cardIds.includes(item.category_id))).forEach((item) => {
+        const bar = element('span', 'monitor-category-actions');
+        bar.append(element('span', 'monitor-category-actions-label', `${item.actions.label || item.title}：`));
+        const buttons = element('span', '');
+        window.OriginalPageActions.renderButtons(buttons, item.actions, { onDone: () => { fetchSummary(true); } });
+        bar.append(buttons);
+        nodes.push(bar);
+      });
+    }
     els.systems.replaceChildren(...nodes);
     els.sourceSwitch?.querySelectorAll('[data-source]').forEach((button) => {
       const active = button.dataset.source === activeSource;

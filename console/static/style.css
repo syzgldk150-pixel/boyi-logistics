@@ -4001,3 +4001,5 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
   appearance: auto; -webkit-appearance: auto; width: auto; min-height: 0; margin: 0;
 }
 .action-row[hidden] { display: none; }
+.monitor-category-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: var(--fs-caption); color: var(--text-muted); }
+.monitor-category-actions .action-bar { margin-top: 0; }
