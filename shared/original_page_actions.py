@@ -931,6 +931,15 @@ def appeal_form_spec(row: Mapping[str, Any]) -> dict[str, Any]:
     return spec
 
 
+def appeal_create_spec(accounts: Sequence[tuple[str, str]]) -> dict[str, Any]:
+    """申诉登记页“新增”（addMethod33，与“新增申诉”同一子页，但运单号、处理类型、索赔金额由用户填写）。"""
+    spec = appeal_form_spec({})
+    spec.update({"kind": "appeal", "operation": "create", "label": "新增", "title": "新增数据"})
+    spec["fields"][0] = _field("BILL_CODE", "运单号", "text", required=True, max_length=30)
+    spec["account_options"] = [list(item) for item in accounts]
+    return spec
+
+
 def validate_appeal_form(row: Mapping[str, Any], payload: Mapping[str, Any], *, bill: Mapping[str, Any] | None,
                          appeal_type: Mapping[str, Any] | None, appeal_term_days: int | None, duplicate: bool,
                          stakeholder: bool, trajectory_sites: Sequence[str], login_site_code: str) -> dict[str, Any]:
@@ -1013,6 +1022,7 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "appeal_create_spec",
     "transfer_delay_block", "transfer_delay_days", "transfer_reply_block", "validate_transfer_delay", "validate_transfer_reply",
     "CSSP_PERMISSIONS", "CSSP_RECEIVE", "cssp_appoint_spec", "cssp_permissions", "cssp_receive_specs", "cui_reply_specs",
     "validate_receive_num",

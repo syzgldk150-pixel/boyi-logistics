@@ -648,3 +648,62 @@ def test_yunda_receive_toolbar_and_appoint(app, browser):
         page.wait_for_function("document.querySelectorAll('.action-dialog').length === 0")
         assert posts[1]["operation"] == "appoint" and posts[1]["payload"] == {"user_code": "1001"}
         assert ("people", {"key": "合成"}) in lookups
+
+
+def test_ronghui_appeal_create_picks_business_account(app, browser):
+    """融辉申诉登记“新增”挂在申诉分类上方；对话框先选业务账号，联动查询和提交都用所选账号。"""
+    from shared.original_page_actions import appeal_create_spec
+
+    snapshot = {"ok": True, "updated_at": "2026-01-02 10:00:00", "stale": False, "refreshing": False,
+                "systems": [{"system": "ronghui", "label": "融辉", "status": "ok", "categories": [
+                    {"category_id": "ronghui:appeals", "title": "申诉 · 未完结", "count": 0, "items_supported": True,
+                     "actions": {"platform": "ronghui", "account_id": "ronghui_default", "label": "融辉申诉登记", "item": {"external_id": "new"},
+                                 "specs": [appeal_create_spec([("ronghui_default", "操作场账号"), ("price_default", "大祥站账号")])]}}]}]}
+    lookups, posts = [], []
+    body = app.template_env.get_template("portal.html").render(app_title="离线合成测试", message="",
+                                                                message_kind="info", settings=app.settings)
+    with browser.new_context(viewport={"width": 1440, "height": 900}) as context:
+        page = context.new_page()
+        page.set_default_timeout(5000)
+
+        def serve(route):
+            parsed = urlparse(route.request.url)
+            if parsed.netloc != "console.test":
+                route.abort()
+            elif parsed.path == "/":
+                route.fulfill(content_type="text/html", body=body)
+            elif parsed.path == "/monitoring/summary":
+                route.fulfill(content_type="application/json", body=json.dumps(snapshot))
+            elif parsed.path == "/monitoring/items":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "items": [], "total": 0, "has_more": False}))
+            elif parsed.path == "/customer-service/lookup":
+                sent = json.loads(route.request.post_data)
+                lookups.append((sent["account_id"], sent["operation"]))
+                options = [{"value": "差错处理", "label": "差错处理"}] if sent["operation"] == "process_types" else [
+                    {"value": "延误", "label": "延误", "meta": {}}]
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "options": options}))
+            elif parsed.path == "/customer-service/process":
+                posts.append(json.loads(route.request.post_data))
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "verified": True}))
+            elif parsed.path == "/customer-service/pending-summary":
+                route.fulfill(content_type="application/json", body=json.dumps({"ok": True, "total": 0, "items": []}))
+            elif not serve_static(route, parsed):
+                route.fulfill(status=404, body="")
+
+        context.route("**/*", serve)
+        context.add_init_script("window.EventSource = undefined;")
+        page.goto(f"{ORIGIN}/")
+        page.locator(".monitor-category-actions .action-button").click()
+        page.select_option("[aria-label='业务账号']", "price_default")
+        page.wait_for_function("document.querySelector('[aria-label=\"处理类型\"]').options.length === 2")
+        assert ("price_default", "process_types") in lookups
+        page.fill("[aria-label='运单号']", "SYNTHETIC-9")
+        page.select_option("[aria-label='处理类型']", "差错处理")
+        page.wait_for_function("document.querySelector('[aria-label=\"申诉类型\"]').options.length === 2")
+        page.select_option("[aria-label='申诉类型']", "延误")
+        page.fill("[aria-label='联系方式']", "13800000000")
+        page.fill("[aria-label='索赔金额']", "10")
+        page.locator(".action-dialog .action-save").click()
+        page.wait_for_function("document.querySelectorAll('.action-dialog').length === 0")
+        assert posts[0]["account_id"] == "price_default" and posts[0]["operation"] == "create"
+        assert posts[0]["payload"]["BILL_CODE"] == "SYNTHETIC-9"

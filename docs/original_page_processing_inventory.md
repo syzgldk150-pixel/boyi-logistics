@@ -72,10 +72,10 @@ updated: 2026-11-27
 
 | 原页按钮 | 函数 → 子页 | 写入 | 要点 |
 | --- | --- | --- | --- |
-| 新增 | `addMethod33` → “申诉登记_测试_工单”（被投诉方“新增申诉”同此页） | `TAB_EXCEPTION_APPEAL_ADD`（`COMPLAINT_STATUS`、`APPEAL_MAN/SITE`、`CREATE_*`、`REGISTER_DATE`）+ 附件 `TAB_EXCEPTION_PATH_ADD` | 运单号、投诉编号、索赔金额、电话必填；超过投诉申诉期不允许；同一运单+同一部门+同一类型只能登记一次；回单禁止申诉；须上传附件；核对申诉网点与运单轨迹网点（`FIND_TRAJECTORY_SITECODE1`）；单文件不超过 100MB |
+| 新增 | `addMethod33` → “申诉登记_测试_工单”（被投诉方“新增申诉”同此页；`addMethod` 的速通子页未绑定按钮） | `TAB_EXCEPTION_APPEAL_ADD`（`COMPLAINT_STATUS`、`APPEAL_MAN/SITE`、`CREATE_*`、`REGISTER_DATE`）+ 附件 `TAB_EXCEPTION_PATH_ADD` | 运单号、投诉编号、索赔金额、电话必填；超过投诉申诉期不允许；同一运单+同一部门+同一类型只能登记一次；回单禁止申诉；须上传附件；核对申诉网点与运单轨迹网点（`FIND_TRAJECTORY_SITECODE1`）；单文件不超过 100MB |
 | 删除 | `deleteMethod` | `TAB_EXCEPTION_APPEAL_DEL` | 仅“待审核”可删除 |
 
-**已做（2026-11-27）**：删除；被投诉方“新增申诉”（子页“申诉登记_测试_工单”）：处理类型 `GET_EXCEPTION_TYPE_DISTINCT1` → 申诉类型 `FIND_APPEAL_TYPE_COMBOBOX`（按登录网点类型带 `APPEAL_SIDE` 中心/网点），申诉类型决定申诉内容是否必填（`IS_COMPLAINT_CONTENT`）、提示文字（`TIP`）、是否必须附件（`BL_EVIDENCE`，看前 3 格）、偷重偷方显示实际重量；流水号为本地 yyyyMMddHHmmss + 5 位随机数、投诉日期为当天（因此申诉期检查只在申诉期为负时拦）；申诉保存成功后一次性保存全部附件（原页没有附件时只提示“请至少选择一个附件”，申诉照样已保存）；以申诉登记列表读到新流水号为成功。“申诉登记”页自己的“新增”打开的是另一个子页“申诉登记_新增-速通”（不挂在某条投诉上），属新登记，未做。
+**已做（2026-11-27）**：删除；被投诉方“新增申诉”（子页“申诉登记_测试_工单”）：处理类型 `GET_EXCEPTION_TYPE_DISTINCT1` → 申诉类型 `FIND_APPEAL_TYPE_COMBOBOX`（按登录网点类型带 `APPEAL_SIDE` 中心/网点），申诉类型决定申诉内容是否必填（`IS_COMPLAINT_CONTENT`）、提示文字（`TIP`）、是否必须附件（`BL_EVIDENCE`，看前 3 格）、偷重偷方显示实际重量；流水号为本地 yyyyMMddHHmmss + 5 位随机数、投诉日期为当天（因此申诉期检查只在申诉期为负时拦）；申诉保存成功后一次性保存全部附件（原页没有附件时只提示“请至少选择一个附件”，申诉照样已保存）；以申诉登记列表读到新流水号为成功。“申诉登记”页的“新增”按钮实际绑定 `addMethod33`，打开的也是“申诉登记_测试_工单”（“申诉登记_新增-速通”子页没有按钮绑定）；2026-11-28 已做：挂在消息中心“申诉 · 未完结”分类上方，因四个融辉账号合并显示，对话框先选业务账号，运单号、处理类型、索赔金额由用户填写，其余检查与写入同“新增申诉”。
 
 ### 代取件（“网点代取件业务”，仅大祥、大祥S账号）
 

@@ -242,7 +242,9 @@
   }
 
   /** Open the dialog for one spec. ``context``: platform, account_id, item. ``onDone(spec, data)`` after a verified save. */
-  function open(spec, context, onDone) {
+  function open(spec, baseContext, onDone) {
+    // 合并了多个业务账号的分类（如融辉申诉登记“新增”）先选账号；后面的查询与提交都用所选账号。
+    const context = { ...baseContext };
     const dialog = el('dialog', 'action-dialog');
     dialog.setAttribute('aria-label', spec.title || spec.label);
     const values = {};
@@ -254,6 +256,28 @@
     close.setAttribute('aria-label', '关闭');
     head.append(close);
     const form = el('div', 'action-dialog-body');
+    if (Array.isArray(spec.account_options) && spec.account_options.length) {
+      const row = el('label', 'action-row');
+      const caption = el('span', 'action-label');
+      caption.append(el('span', 'action-required', '*'), document.createTextNode('业务账号'));
+      const picker = el('select', 'action-select');
+      picker.setAttribute('aria-label', '业务账号');
+      spec.account_options.forEach(([value, label]) => {
+        const option = el('option', '', label);
+        option.value = value;
+        picker.append(option);
+      });
+      picker.value = context.account_id;
+      if (picker.value !== context.account_id) context.account_id = picker.value;
+      picker.addEventListener('change', () => {
+        context.account_id = picker.value;
+        form.querySelectorAll('select[data-action-field]').forEach((select) => {
+          if (!select.dataset.dependsOn) select.dispatchEvent(new Event('action:reload'));
+        });
+      });
+      row.append(caption, picker);
+      form.append(row);
+    }
     (spec.fields || []).forEach((field) => {
       const row = el('label', 'action-row');
       row.dataset.actionRow = field.name;

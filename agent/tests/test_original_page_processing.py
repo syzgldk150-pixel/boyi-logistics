@@ -333,3 +333,24 @@ class YundaTransferMoreTests(unittest.TestCase):
                                                                     "payload": {"Abnormal_Type": "2", "Reply_Content": "已联系"}})
         self.assertTrue(result["verified"])
         self.assertEqual({"Abnormal_Type": "2", "Abnormal_Remark": "电话不通", "Reply_Content": "已联系", "Replace_Id": "R1"}, posts[0])
+
+
+class AppealCreateTests(unittest.TestCase):
+    def test_create_uses_the_typed_waybill_on_the_appeal_page(self):
+        captured = {}
+
+        def save_form(session, parent, dialog, user_info, row, payload, exception_id):
+            captured.update(row=row, menu=parent["menu"])
+            return {"ok": True, "verified": True, "external_id": exception_id}
+
+        with patch.object(base, "_read_user_info_cookie", return_value=USER), \
+                patch.object(base, "_resolve_ronghui_page_context", side_effect=lambda s, menu: {"menu": menu, "page_id": "P", "url": "u"}), \
+                patch.object(processing, "_subpage_context", return_value={"page_id": "SUB", "url": "s"}), \
+                patch.object(processing, "_save_appeal_form", side_effect=save_form):
+            result = processing.run("ronghui", "process", object(), {"kind": "appeal", "operation": "create", "item": {"external_id": "new"},
+                                                                      "payload": {"BILL_CODE": " B9 "}})
+        self.assertTrue(result["verified"])
+        self.assertEqual({"BILL_CODE": "B9"}, captured["row"])
+        self.assertEqual("申诉登记", captured["menu"])
+        with self.assertRaises(base.CustomerServiceProblemError):
+            processing.run("ronghui", "process", object(), {"kind": "appeal", "operation": "create", "item": {"external_id": "new"}, "payload": {}})

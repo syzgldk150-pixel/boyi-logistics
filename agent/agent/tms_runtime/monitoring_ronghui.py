@@ -41,7 +41,7 @@ from agent.tms_runtime.scripts.customer_service_problem import (
 )
 from agent.tms_runtime.session_validators import looks_like_ronghui_login
 from shared.original_page_actions import (
-    appeal_specs, complaint_against_specs, complaint_filed_specs, pickup_specs, problem_forward_spec, work_order_specs,
+    appeal_create_spec, appeal_specs, complaint_against_specs, complaint_filed_specs, pickup_specs, problem_forward_spec, work_order_specs,
 )
 from shared.problem_reply_rules import ronghui_reply_form
 
@@ -684,6 +684,11 @@ def collect_categories(open_session: Callable[[str], Any], *,
             "include_in_total": True, "count_scope": category_id.split(":", 1)[1],
             **_outcome(category_id, merged[category_id], failures[category_id], len(accounts)),
         })
+        if category_id == "ronghui:appeals":
+            # 申诉登记页工具栏的“新增”（用户 2026-11-28）：不挂在某条记录上，对话框里先选业务账号。
+            categories[-1]["actions"] = {"platform": "ronghui", "account_id": accounts[0][2], "label": "融辉申诉登记",
+                                         "item": {"external_id": "new"},
+                                         "specs": [appeal_create_spec([(account_id, label) for _profile, label, account_id in accounts])]}
     return categories
 
 

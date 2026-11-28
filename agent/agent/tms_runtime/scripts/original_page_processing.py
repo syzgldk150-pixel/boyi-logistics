@@ -274,10 +274,10 @@ def _complaint_against_reply(session: Any, item: dict[str, Any], payload: dict[s
     return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": exception_id}
 
 
-def _appeal_dialog(session: Any) -> tuple[dict[str, str], dict[str, str]]:
+def _appeal_dialog(session: Any, menu: str = AGAINST_MENU) -> tuple[dict[str, str], dict[str, str]]:
     from shared.original_page_actions import APPEAL_FORM_SUBPAGE
 
-    parent = base._resolve_ronghui_page_context(session, AGAINST_MENU)
+    parent = base._resolve_ronghui_page_context(session, menu)
     return parent, _subpage_context(session, parent, APPEAL_FORM_SUBPAGE)
 
 
@@ -303,12 +303,27 @@ def _appeal_form_lookup(operation: str) -> Handler:
 
 
 def _complaint_against_appeal(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    from shared.original_page_actions import ActionRuleError, appeal_form_exception_id, appeal_form_tables, validate_appeal_form
-
     exception_id = _text(item.get("external_id"))
     user_info = _user_info(session)
     parent, dialog = _appeal_dialog(session)
     row = _complaint_row(session, parent, "FIND_TAB_EXCEPTION_SIDE", user_info, exception_id)
+    return _save_appeal_form(session, parent, dialog, user_info, row, payload, exception_id)
+
+
+def _appeal_create(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """申诉登记页“新增”：同一子页，运单号由用户填写（原页 getException 按运单号带出产品类型、拦截回单）。"""
+    bill_code = _text(payload.get("BILL_CODE"))
+    if not bill_code:
+        raise ProcessingError("REPLY_RULE_REJECTED", "请输入运单号信息！")
+    user_info = _user_info(session)
+    parent, dialog = _appeal_dialog(session, APPEAL_MENU)
+    return _save_appeal_form(session, parent, dialog, user_info, {"BILL_CODE": bill_code}, payload, _text(item.get("external_id")))
+
+
+def _save_appeal_form(session: Any, parent: dict[str, str], dialog: dict[str, str], user_info: dict[str, Any],
+                      row: dict[str, Any], payload: dict[str, Any], exception_id: str) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, appeal_form_exception_id, appeal_form_tables, validate_appeal_form
+
     bill_code = _text(row.get("BILL_CODE"))
     bills = _find(session, dialog, "FIND_BILL_INFO_ON_EXCEPTION_REG", {"BILL_CODE": bill_code})
     process, kind = _text(payload.get("PROCESS_TYPE")), _text(payload.get("APPEAL_TYPE"))
@@ -998,6 +1013,7 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
        for operation in ("respond", "finish", "urge", "appeal")},
     ("ronghui", "complaint_against", "reply"): _complaint_against_reply,
     ("ronghui", "complaint_against", "appeal"): _complaint_against_appeal,
+    ("ronghui", "appeal", "create"): _appeal_create,
     ("ronghui", "complaint_filed", "cancel"): _complaint_filed_cancel,
     ("ronghui", "complaint_filed", "appeal"): _complaint_filed_appeal,
     ("ronghui", "complaint_filed", "claim"): _complaint_filed_claim,

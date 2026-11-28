@@ -286,3 +286,13 @@ def test_yunda_transfer_delay_job_reply_rules():
         validate_transfer_reply(row, detail, {"Reply_Content": "x" * 201})
     with pytest.raises(ActionRuleError, match="只有待接单、已接单"):
         validate_transfer_reply(row, {"Replace_Status": "2"}, {})
+
+
+def test_ronghui_appeal_create_is_the_same_form_with_typed_waybill():
+    from shared.original_page_actions import appeal_create_spec
+
+    spec = appeal_create_spec([("ronghui_default", "操作场账号"), ("price_default", "大祥站账号")])
+    assert (spec["kind"], spec["operation"], spec["label"]) == ("appeal", "create", "新增")
+    assert spec["fields"][0] == {"name": "BILL_CODE", "label": "运单号", "type": "text", "value": "", "required": True, "max": 30}
+    assert spec["account_options"] == [["ronghui_default", "操作场账号"], ["price_default", "大祥站账号"]]
+    assert spec["fields"][1]["value"] == "" and spec["fields"][4]["value"] == ""
