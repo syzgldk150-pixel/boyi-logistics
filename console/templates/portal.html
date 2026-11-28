@@ -81,18 +81,39 @@
   .monitor-items-status[data-status="error"] { color: var(--status-danger); }
   .monitor-items-status[data-stale="true"] { color: var(--status-warn); }
   .monitor-items { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line-subtle); }
-  .monitor-item { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-height: 82px; align-content: center; padding: 12px 20px; border-bottom: 1px solid var(--line-row); }
+  .monitor-item { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-content: center; padding: 14px 20px; border-bottom: 1px solid var(--line-row); }
+  .monitor-item.is-attention::before { content: ""; position: absolute; top: 12px; bottom: 12px; left: 0; width: 3px; border-radius: 0 2px 2px 0; background: var(--status-warn); }
+  .monitor-item.is-quiet { padding-top: 10px; padding-bottom: 10px; }
+  .monitor-item.is-quiet .monitor-item-head { cursor: pointer; }
+  .monitor-item.is-quiet .monitor-item-head:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 2px; }
+  .monitor-item.is-quiet .monitor-item-title { color: var(--text-secondary); font-size: var(--fs-body); }
+  .monitor-item.is-quiet:not(.is-open) .monitor-item-body, .monitor-item.is-quiet:not(.is-open) .monitor-item-foot { display: none; }
+  .monitor-item-head-waybill { display: none; flex: 0 0 auto; color: var(--text-muted); font: 400 var(--fs-label)/1 var(--font-num); }
+  .monitor-item.is-quiet:not(.is-open) .monitor-item-head-waybill { display: inline; }
+  .monitor-item.is-quiet .monitor-item-aside .feather { width: 14px; height: 14px; color: var(--text-muted); transition: transform .15s; }
+  .monitor-item.is-quiet.is-open .monitor-item-aside .feather { transform: rotate(180deg); }
+  .monitor-item-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; }
+  .monitor-item-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+  .monitor-item-foot .monitor-actions .action-bar { margin-top: 0; }
+  .monitor-group-head { display: flex; align-items: center; gap: 8px; padding: 10px 20px 8px; border-bottom: 1px solid var(--line-row); background: var(--bg-subtle); color: var(--text-secondary); font-size: var(--fs-label); }
+  .monitor-group-title { color: var(--text-primary); font-weight: 600; }
+  .monitor-group-count { min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px; background: var(--fill-muted); font: 500 var(--fs-tiny)/18px var(--font-num); text-align: center; }
+  .monitor-group-note { color: var(--text-muted); font-size: var(--fs-caption); }
+  .monitor-create { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .monitor-create .action-bar { margin-top: 0; }
+  .monitor-create .action-button { color: var(--brand-red); }
   .monitor-item:last-child { border-bottom: 0; }
   .monitor-item-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .monitor-source-tag, .monitor-item-kind { display: inline-flex; align-items: center; flex: 0 0 auto; height: 20px; padding: 0 8px; border-radius: var(--r-chip); background: var(--fill-muted); color: var(--text-secondary); font-size: var(--fs-tiny); }
   .monitor-source-tag[data-system="yunda"] { background: var(--brand-accent-soft); color: var(--brand-red); }
   .monitor-item-kind { border-radius: 999px; background: var(--bg-subtle); color: var(--text-tertiary); }
-  .monitor-item-title { flex: 1; min-width: 0; overflow: hidden; color: var(--text-primary); font-size: var(--fs-section); text-overflow: ellipsis; white-space: nowrap; }
-  .monitor-item-aside { display: flex; align-items: center; gap: 16px; flex: 0 0 auto; }
-  .monitor-item-status { color: var(--text-tertiary); font-size: var(--fs-caption); }
+  .monitor-item-title { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--text-primary); font-size: var(--fs-section); text-overflow: ellipsis; white-space: nowrap; }
+  .monitor-item.is-attention .monitor-item-title { font-weight: 600; }
+  .monitor-item-aside { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; margin-left: auto; }
+  .monitor-item-status { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 14em; height: 20px; padding: 0 8px; overflow: hidden; border-radius: 999px; background: var(--fill-muted); color: var(--text-tertiary); font-size: var(--fs-tiny); text-overflow: ellipsis; white-space: nowrap; }
+  .monitor-item-status[data-tone="attention"] { background: var(--status-warn-soft); color: var(--status-warn); font-weight: 500; }
+  .monitor-item-status[data-tone="done"] { background: var(--status-success-soft); color: var(--status-success); }
   .monitor-item-time { min-width: 56px; color: var(--text-muted); font: 400 var(--fs-label)/1 var(--font-num); text-align: right; }
-  .monitor-reply-toggle { height: 28px; padding: 0 10px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--brand-red); font-size: var(--fs-caption); cursor: pointer; }
-  .monitor-reply-toggle:hover { background: var(--bg-subtle); }
   .monitor-reply-toggle:focus-visible, .monitor-reply textarea:focus-visible, .monitor-reply select:focus-visible { outline: 2px solid var(--focus-strong); outline-offset: 1px; }
   .monitor-reply { display: grid; gap: 8px; margin-top: 8px; padding: 12px; border: 1px solid var(--line-subtle); border-radius: var(--r-control); background: var(--bg-subtle); }
   .monitor-reply textarea { width: 100%; min-height: 64px; padding: 8px 10px; border: 1px solid var(--line-default); border-radius: var(--r-control); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: var(--fs-body); resize: vertical; }
@@ -103,9 +124,9 @@
   .monitor-action-btn.is-primary { border-color: var(--brand-red); background: var(--brand-red); color: #fff; }
   .monitor-action-btn:disabled { opacity: .6; cursor: default; }
   .monitor-reply-done { margin: 8px 0 0; color: var(--text-muted); font-size: var(--fs-caption); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .monitor-item-link { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--line-default); border-radius: var(--r-control); color: var(--text-tertiary); }
+  .monitor-item-link { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding: 4px 6px; border-radius: var(--r-control); color: var(--text-muted); font-size: var(--fs-caption); }
   .monitor-item-link:hover { color: var(--text-primary); background: var(--bg-subtle); }
-  .monitor-item-link .feather { width: 13px; height: 13px; }
+  .monitor-item-link .feather { width: 12px; height: 12px; }
   .monitor-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding-left: 0; color: var(--text-tertiary); font-size: var(--fs-label); }
   .monitor-item-meta > span + span::before { content: "·"; margin-right: 12px; color: var(--text-disabled); }
   .monitor-item-content { margin: 0; color: var(--text-tertiary); font-size: var(--fs-label); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -213,7 +234,8 @@
         <p class="monitor-center-sub" data-monitoring-detail-subtitle>韵达 · 融辉 全部待办，按时间排序</p>
       </div>
       <div class="monitor-detail-actions">
-        <button class="monitor-action-btn" type="button" data-monitoring-open disabled>打开原系统</button>
+        <div class="monitor-create" data-monitoring-create></div>
+        <button class="monitor-action-btn" type="button" data-monitoring-open disabled hidden>打开原系统</button>
         <button class="monitor-action-btn monitor-icon-btn" type="button" data-monitoring-reload disabled aria-label="刷新消息" title="刷新消息"><i data-feather="refresh-cw"></i></button>
       </div>
     </header>
@@ -241,10 +263,10 @@
 
 {% block scripts %}
 <script src="/static/original_page_attachments.js?v=20261128-arbitration"></script>
-<script src="/static/original_page_actions.js?v=20261128-arbitration"></script>
+<script src="/static/original_page_actions.js?v=20261128-layout"></script>
 <script src="/static/complaint_form.js?v=20261128-complaint"></script>
 <script src="/static/arbitration_form.js?v=20261128-arbitration"></script>
 <script src="/static/problem_reply_form.js?v=20261127-actions3"></script>
-<script src="/static/monitoring.js?v=20261128-receive"></script>
+<script src="/static/monitoring.js?v=20261128-layout"></script>
 <script src="/static/overview_pending.js?v=20261118-all-tab"></script>
 {% endblock %}

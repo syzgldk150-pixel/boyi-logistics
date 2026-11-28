@@ -68,7 +68,7 @@ def test_message_center_merges_everything_without_category_tabs(app, browser):
         context.route("**/*", serve)
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
-        page.locator("[data-monitoring-items] li").nth(2).wait_for()
+        page.locator("[data-monitoring-items] li.monitor-item").nth(2).wait_for()
 
         # No category tabs, no “其余 N 类” note: just the total and the platform switch.
         assert page.locator("[data-monitoring-systems] .monitor-category").count() == 0
@@ -93,25 +93,25 @@ def test_message_center_merges_everything_without_category_tabs(app, browser):
 
         # 加载更多 reads page 2 only of the category that has more.
         page.click("[data-monitoring-more]")
-        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 4")
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li.monitor-item').length === 4")
         assert ("yunda:problems", "2") in item_requests and ("ronghui:work_response", "2") not in item_requests
         assert page.locator("[data-monitoring-more]").is_hidden()
 
         # A metric card narrows the merged list to all of its categories; the chip brings everything back.
         page.click('[data-monitoring-metric="work"]')
-        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 1")
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li.monitor-item').length === 1")
         assert "工单" in page.inner_text("[data-monitoring-clear-filter]")
         assert page.get_attribute('[data-monitoring-metric="work"]', "aria-pressed") == "true"
         page.click('[data-monitoring-metric="problems"]')
-        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 2")
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li.monitor-item').length === 2")
         assert page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts() == ["合成问题乙", "合成问题甲"]
         assert page.locator("[data-monitoring-more]").is_visible()  # its page 2 is read on demand
         page.click("[data-monitoring-clear-filter]")
-        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 3")
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li.monitor-item').length === 3")
 
         # The source switch narrows the merged list to that platform.
         page.locator('[data-monitoring-source-switch] [data-source="ronghui"]').click()
-        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li').length === 1")
+        page.wait_for_function("document.querySelectorAll('[data-monitoring-items] li.monitor-item').length === 1")
         assert page.locator("[data-monitoring-items] .monitor-item-title").all_inner_texts() == ["合成工单丙"]
         assert not errors
 
@@ -421,10 +421,12 @@ def test_work_order_buttons_open_the_original_dialog_and_save(app, browser):
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
         page.locator(".action-button[data-operation='respond']").wait_for()
-        assert page.locator(".action-button").all_inner_texts() == ["响应", "完结", "催工单", "申诉"]
-        page.click(".action-button[data-operation='finish']")
-        assert page.inner_text(".action-bar-note") == "工单状态暂不支持完结"
-        assert page.locator(".action-dialog").count() == 0
+        # 原页会拦下的按钮（完结：状态不支持；申诉：不是待申诉）不显示；轮到我做的“响应”是主按钮，记录归入“待我处理”。
+        assert page.locator(".action-button").all_inner_texts() == ["响应", "催工单"]
+        assert "is-primary" in page.get_attribute(".action-button[data-operation='respond']", "class")
+        assert "is-quiet" in page.get_attribute(".action-button[data-operation='urge']", "class")
+        assert page.locator(".monitor-group-head").all_inner_texts()[0].startswith("待我处理")
+        assert page.locator(".monitor-item.is-attention").count() == 1
         page.click(".action-button[data-operation='respond']")
         dialog = page.locator(".action-dialog")
         assert dialog.locator(".action-label").all_inner_texts() == ["处理人", "处理站点", "工单类型", "工单类别", "工单内容", "*处理内容"]
@@ -488,8 +490,9 @@ def test_yunda_work_order_and_transfer_buttons(app, browser):
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
         page.locator(".action-button[data-operation='reply_handling']").wait_for()
-        page.click(".action-button[data-operation='prompt_resp']")
-        assert "不能立即响应" in page.inner_text(".action-bar-note")
+        # 已首回的工单原页不能再立即响应：按钮不显示，主按钮是“回复处理”。
+        assert page.locator(".action-button[data-operation='prompt_resp']").count() == 0
+        assert "is-primary" in page.get_attribute(".action-button[data-operation='reply_handling']", "class")
         page.click(".action-button[data-operation='reply_handling']")
         assert page.input_value("[aria-label='姓名']") == "合成投诉人"
         page.check(".action-radio:has-text('发件人') input")
@@ -626,9 +629,9 @@ def test_yunda_receive_toolbar_and_appoint(app, browser):
         context.route("**/*", serve)
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
-        toolbar = page.locator(".monitor-category-actions")
-        toolbar.wait_for()
-        assert toolbar.locator(".action-button").all_inner_texts() == ["接单"]
+        toolbar = page.locator(".monitor-create")
+        toolbar.locator(".action-button").wait_for()
+        assert toolbar.locator(".action-button").all_inner_texts() == ["韵达接单"]
         # 只有“结单…”等有权限的按钮显示；本账号有转人员权限、没有加急接单权限。
         assert page.locator(".action-button[data-operation='appoint']").count() == 1
         assert page.locator(".action-button[data-operation='urgent_receive']").count() == 0
@@ -693,7 +696,7 @@ def test_ronghui_appeal_create_picks_business_account(app, browser):
         context.route("**/*", serve)
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
-        page.locator(".monitor-category-actions .action-button").click()
+        page.locator(".monitor-create .action-button").click()
         page.select_option("[aria-label='业务账号']", "price_default")
         page.wait_for_function("document.querySelector('[aria-label=\"处理类型\"]').options.length === 2")
         assert ("price_default", "process_types") in lookups
@@ -764,7 +767,7 @@ def test_ronghui_complaint_create_dialog_follows_the_original_form(app, browser)
         context.route("**/*", serve)
         context.add_init_script("window.EventSource = undefined;")
         page.goto(f"{ORIGIN}/")
-        page.locator(".monitor-category-actions .action-button").click()
+        page.locator(".monitor-create .action-button").click()
         dialog = page.locator(".complaint-dialog")
         dialog.wait_for()
         page.fill("[aria-label='运单编号']", "SYNTHETIC-5")

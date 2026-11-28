@@ -13,8 +13,10 @@
     refresh: document.querySelector('[data-monitoring-refresh]'), agentStatus: find('agent-status'), more: find('more'),
     syncFlags: find('sync-flags'), sourceAlert: find('source-alert'), sourceSwitch: find('source-switch'),
     pendingMore: root.querySelector('[data-overview-pending-more]'),
-    pendingMetric: root.querySelector('[data-overview-pending-metric]')
+    pendingMetric: root.querySelector('[data-overview-pending-metric]'),
+    create: find('create')
   };
+  const createLabels = { 'ronghui:complaints_filed': '新增投诉', 'ronghui:appeals': '新增申诉' };
   // Cards by kind across both platforms (用户 2026-11-27): 工单 / 问题件 / 投诉·仲裁 / 调拨件 / 待确认 / 公告.
   // Each card sums only its own disjoint categories; a note lists the parts (韵达催单 is shown, never summed).
   const metricDefs = {
@@ -114,6 +116,7 @@
   function setOpenUrl(value) {
     activeOpenUrl = safeOpenUrl(value);
     els.open.disabled = !activeOpenUrl;
+    els.open.hidden = !activeOpenUrl;  // 合并列表没有单一原页时不显示，避免一个灰按钮占位
   }
 
   function setItemsStatus(text, status = '', stale = false) {
@@ -324,19 +327,23 @@
       nodes.push(chip);
     }
     if (!snapshot?.systems?.length) nodes.push(element('p', 'monitor-empty', '当前没有可读取的消息来源。'));
-    // 分类自带的原页工具栏（韵达工单处理列表的“加急工单接单”“接单”，用户 2026-11-28），只在该分类可见时显示。
-    const cardIds = cardFilter ? metricDefs[cardFilter]?.sum || [] : null;
-    if (window.OriginalPageActions) {
-      visible.filter((item) => item.actions && (!cardIds || cardIds.includes(item.category_id))).forEach((item) => {
-        const bar = element('span', 'monitor-category-actions');
-        bar.append(element('span', 'monitor-category-actions-label', `${item.actions.label || item.title}：`));
-        const buttons = element('span', '');
-        window.OriginalPageActions.renderButtons(buttons, item.actions, { onDone: () => { fetchSummary(true); } });
-        bar.append(buttons);
-        nodes.push(bar);
-      });
-    }
     els.systems.replaceChildren(...nodes);
+    // 分类自带的原页工具栏（融辉投诉方登记/申诉登记“新增”、韵达工单“接单”），放在标题栏右侧，与筛选分开
+    // （用户 2026-11-28）；只在该分类在当前来源与卡片筛选下可见时显示。
+    const cardIds = cardFilter ? metricDefs[cardFilter]?.sum || [] : null;
+    if (els.create && window.OriginalPageActions) {
+      const groups = visible.filter((item) => item.actions && (!cardIds || cardIds.includes(item.category_id))).map((item) => {
+        const group = element('span', 'monitor-create-group');
+        group.title = item.actions.label || item.title || '';
+        const short = createLabels[item.category_id];
+        window.OriginalPageActions.renderButtons(group, item.actions, {
+          labelOf: (spec) => (short && spec.label === '新增' ? short : `${shortSource('', item.system)}${spec.label}`),
+          onDone: () => { fetchSummary(true); }
+        });
+        return group;
+      });
+      els.create.replaceChildren(...groups);
+    }
     els.sourceSwitch?.querySelectorAll('[data-source]').forEach((button) => {
       const active = button.dataset.source === activeSource;
       button.classList.toggle('is-active', active);
@@ -373,76 +380,150 @@
     setItemsBusy(false);
   }
 
-  function createMessageItem(item, expanded, category = activeCategory) {
-    const row = element('li', 'monitor-item');
+  // 主次（用户 2026-11-28）：记录当前状态下“轮到我做”的那一个动作是主按钮，有它的记录归入“待我处理”。
+  // 只看原页按钮本身是否可用（spec.blocked 由 shared/original_page_actions.py 按原页规则给出），不另猜状态。
+  const primaryOperations = [
+    'work_order:respond', 'work_order:finish', 'complaint_against:reply',
+    'cssp:prompt_resp', 'cssp:first_reply', 'cssp:reply_handling', 'cssp:statement',
+    'cssp_cui:reply', 'transfer:accept', 'arbitration:redeclare'
+  ];
+  const quietOpen = new Set();  // 展开了的“等对方处理”记录
+
+  function primarySpec(item) {
+    const specs = Array.isArray(item?.actions?.specs) ? item.actions.specs : [];
+    return specs.find((spec) => !spec.blocked && primaryOperations.includes(`${spec.kind}:${spec.operation}`)) || null;
+  }
+
+  // 本身就是“收到、等我处理”的分类（收到的工单、催单、问题件、被投诉、待接单调拨件）；投诉方登记、申诉、代取件、
+  // 仲裁等是“等对方处理”，其中仲裁“退单,可继续申报”等有主按钮时也算待我处理。
+  const attentionCategories = [
+    'ronghui:work_response', 'ronghui:work_processing', 'ronghui:problems', 'ronghui:complaints_against',
+    'yunda:work_orders', 'yunda:work_order_replies', 'yunda:problems', 'yunda:transfers'
+  ];
+
+  function needsMe(item, category) {
+    return attentionCategories.includes(category?.category_id)
+      || Boolean(item?.reply && typeof item.reply === 'object' && !repliedItems.has(replyKey(item))) || Boolean(primarySpec(item));
+  }
+
+  function itemKey(item, category) {
+    return `${categoryKey(category)}:${item.id || item.waybill_no || item.title || ''}`;
+  }
+
+  function kindLabel(category) {
+    // “仲裁 · 未结束”之类的分类名只留类别，状态单独显示。
+    return String(category?.title || '消息').split(/\s*·\s*/)[0];
+  }
+
+  function createMessageItem(item, expanded, category = activeCategory, grouped = false) {
+    const attention = needsMe(item, category);
+    const key = itemKey(item, category);
+    const quiet = grouped && !attention;
+    const row = element('li', `monitor-item${attention ? ' is-attention' : ''}${quiet ? ' is-quiet' : ''}`);
     row.dataset.sortTime = String(item.occurred_at || '');
     const title = item.title || '消息';
     const head = element('div', 'monitor-item-head');
-    head.append(sourceTag(shortSource(category.source_label, category.system), category.system),
-      element('span', 'monitor-item-kind', category.title || '消息'),
-      element('span', 'monitor-item-title', title));
+    const tag = sourceTag(`${shortSource(category.source_label, category.system)} · ${kindLabel(category)}`, category.system);
+    if (item.source_label) tag.title = item.source_label;
+    const status = element('span', 'monitor-item-status', item.status_label || '状态未确认');
+    status.dataset.tone = attention ? 'attention' : 'neutral';
+    head.append(tag, element('span', 'monitor-item-title', title), status);
+    // 折叠成一行时仍能看到运单号。
+    if (item.waybill_no) head.append(element('span', 'monitor-item-head-waybill', item.waybill_no));
     const aside = element('div', 'monitor-item-aside');
-    aside.append(element('span', 'monitor-item-status is-status', item.status_label || '状态未确认'),
-      element('span', 'monitor-item-time', item.occurred_at || '时间未提供'));
-    const openUrl = safeOpenUrl(item.open_url);
-    if (openUrl) {
-      const link = element('a', 'monitor-item-link');
-      link.href = openUrl;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.title = '去原系统处理';
-      link.setAttribute('aria-label', `去原系统处理：${title}`);
-      const icon = element('i');
-      icon.setAttribute('data-feather', 'arrow-up-right');
-      link.append(icon);
-      aside.append(link);
-    }
+    aside.append(element('span', 'monitor-item-time', item.occurred_at || '时间未提供'));
     head.append(aside);
-    const meta = element('div', 'monitor-item-meta');
-    // Ronghui labels repeat the selected category; Yunda labels name the push channel.
-    const source = item.source_label && !item.source_label.endsWith(category.title) ? item.source_label : '';
-    [item.waybill_no ? `运单 ${item.waybill_no}` : '', source]
-      .filter(Boolean).forEach((text) => meta.append(element('span', '', text)));
     row.append(head);
+
+    const body = element('div', 'monitor-item-body');
+    const meta = element('div', 'monitor-item-meta');
+    if (item.waybill_no) meta.append(element('span', 'monitor-item-waybill', `运单 ${item.waybill_no}`));
     const content = String(item.content || '').trim();
     if (!content) {
       meta.append(element('span', 'monitor-item-content is-empty', '原系统未提供消息正文。'));
-      row.append(meta);
+      body.append(meta);
     } else if (content === title) {
-      if (meta.childElementCount) row.append(meta);
+      if (meta.childElementCount) body.append(meta);
     } else if (content.length <= 80 && !content.includes('\n')) {
-      // Short bodies are shown in full; long ones collapse to one line.
       meta.append(element('span', 'monitor-item-content', content));
-      row.append(meta);
+      body.append(meta);
     } else {
-      if (meta.childElementCount) row.append(meta);
+      if (meta.childElementCount) body.append(meta);
       const details = element('details');
       details.dataset.itemId = String(item.id || '');
       details.open = expanded.has(String(item.id || ''));
       const summary = element('summary', 'monitor-item-summary');
       summary.append(element('span', 'monitor-item-preview', content), element('span', 'monitor-item-hint', '展开查看完整正文'));
       details.append(summary, element('p', 'monitor-item-content', content));
-      row.append(details);
+      body.append(details);
     }
-    if (item.reply && typeof item.reply === 'object') appendReply(row, aside, item, category);
-    if (item.actions && typeof item.actions === 'object' && window.OriginalPageActions) appendActions(row, aside, item);
+    row.append(body);
+
+    const foot = element('div', 'monitor-item-foot');
+    row.append(foot);  // 回复表单展开在按钮行下面
+    if (item.reply && typeof item.reply === 'object') appendReply(row, foot, item, category);
+    if (item.actions && typeof item.actions === 'object' && window.OriginalPageActions) appendActions(row, foot, item);
+    const openUrl = safeOpenUrl(item.open_url);
+    if (openUrl) {
+      const link = element('a', 'monitor-item-link');
+      link.href = openUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.title = '在原系统中打开这条记录';
+      link.setAttribute('aria-label', `在原系统中打开：${title}`);
+      link.append(document.createTextNode('原页'));
+      const icon = element('i');
+      icon.setAttribute('data-feather', 'arrow-up-right');
+      link.append(icon);
+      foot.append(link);
+    }
+    if (!foot.childElementCount) foot.remove();
+
+    if (quiet) {
+      // 等对方处理的记录默认只显示一行，点标题行展开正文与次要操作。
+      const open = quietOpen.has(key);
+      row.classList.toggle('is-open', open);
+      head.tabIndex = 0;
+      head.setAttribute('role', 'button');
+      head.setAttribute('aria-expanded', String(open));
+      const chevron = element('i');
+      chevron.setAttribute('data-feather', 'chevron-down');
+      aside.append(chevron);
+      const toggle = () => {
+        const next = !row.classList.contains('is-open');
+        row.classList.toggle('is-open', next);
+        head.setAttribute('aria-expanded', String(next));
+        if (next) quietOpen.add(key); else quietOpen.delete(key);
+      };
+      head.addEventListener('click', toggle);
+      head.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+      });
+    }
     return row;
   }
 
-  function appendActions(row, aside, item) {
-    // 原页工具栏按钮（融辉工单 响应/完结/催工单/申诉 等，console/static/original_page_actions.js）。
+  function appendActions(row, foot, item) {
+    // 原页按钮（console/static/original_page_actions.js）：原页会拦下的不显示，轮到我做的那个是主按钮。
     const key = `${item.actions.platform}:${item.actions.account_id}:${item.actions.item?.external_id || item.id}`;
     const bar = element('div', 'monitor-actions');
-    if (processedItems.has(key)) {
-      aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode(processedItems.get(key)));
-    }
-    window.OriginalPageActions.renderButtons(bar, item.actions, {
+    const setStatus = (text) => {
+      const status = row.querySelector('.monitor-item-status');
+      if (!status) return;
+      status.replaceChildren(document.createTextNode(text));
+      status.dataset.tone = 'done';
+    };
+    if (processedItems.has(key)) setStatus(processedItems.get(key));
+    const primary = primarySpec(item);
+    const shown = window.OriginalPageActions.renderButtons(bar, item.actions, {
+      hideBlocked: true,
+      primary: primary ? `${primary.kind}:${primary.operation}` : '',
       onDone: (spec) => {
         processedItems.set(key, `已${spec.label}`);
-        aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode(`已${spec.label}`));
+        setStatus(`已${spec.label}`);
       }
     });
-    row.append(bar);
+    if (shown) foot.append(bar);
   }
 
   function replyKey(item) {
@@ -461,17 +542,17 @@
     run();
   }
 
-  function appendReply(row, aside, item, category) {
+  function appendReply(row, foot, item, category) {
     const key = replyKey(item);
     if (repliedItems.has(key)) {
-      aside.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode('已回复'));
+      row.querySelector('.monitor-item-status')?.replaceChildren(document.createTextNode('已回复'));
       row.append(element('p', 'monitor-reply-done', repliedItems.get(key)));
       return;
     }
-    const toggle = element('button', 'monitor-reply-toggle', '回复');
+    const toggle = element('button', 'monitor-reply-toggle action-button is-primary', '回复');
     toggle.type = 'button';
     toggle.setAttribute('aria-label', `回复问题件：${item.title || item.waybill_no || ''}`);
-    aside.insertBefore(toggle, aside.querySelector('.monitor-item-link'));
+    foot.append(toggle);
     const draft = replyDrafts.get(key);
     if (draft?.open) row.append(replyForm(item, key, draft));
     toggle.addEventListener('click', () => {
@@ -646,14 +727,28 @@
   function renderAll(failed) {
     if (replyOpen()) { deferredRender = () => renderAll(failed); return; }
     const expanded = new Set(Array.from(els.items.querySelectorAll('details[open]')).map((node) => node.dataset.itemId));
-    const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category));
+    const rows = allEntries.map(({ item, category }) => createMessageItem(item, expanded, category, true));
     if (pendingState.available && !cardFilter) {
       const holder = document.createElement('ul');
       root.dispatchEvent(new CustomEvent('overview:pending-render', { detail: { list: holder, status: null, platform: activeSource } }));
-      rows.push(...Array.from(holder.children));
+      Array.from(holder.children).forEach((node) => { node.classList.add('is-attention'); rows.push(node); });
     }
     rows.sort((a, b) => sortTime(b) - sortTime(a));
-    els.items.replaceChildren(...rows);
+    // 分两组（用户 2026-11-28）：轮到我做的在上，等对方处理的折叠成一行。
+    const mine = rows.filter((node) => node.classList.contains('is-attention'));
+    const waiting = rows.filter((node) => !node.classList.contains('is-attention'));
+    const groupHead = (label, count, note) => {
+      const head = element('li', 'monitor-group-head');
+      head.append(element('span', 'monitor-group-title', label), element('span', 'monitor-group-count', fmt(count)));
+      if (note) head.append(element('span', 'monitor-group-note', note));
+      return head;
+    };
+    const nodes = [];
+    if (rows.length) {
+      nodes.push(groupHead('待我处理', mine.length, mine.length ? '' : '目前没有需要你处理的消息'), ...mine);
+      if (waiting.length) nodes.push(groupHead('等对方处理', waiting.length, '点开查看详情与其他操作'), ...waiting);
+    }
+    els.items.replaceChildren(...nodes);
     if (window.feather) window.feather.replace();
     displayedItemsKey = 'all';
     const more = [...allPages.values()].some((entry) => entry.hasMore);
@@ -661,7 +756,7 @@
     const notes = [];
     if (!rows.length && !failed.length) notes.push('目前没有待处理消息。');
     if (failed.length) notes.push(`以下来源读取失败：${failed.join('；')}`);
-    setItemsStatus(notes.join('；') || '按时间排序，最新在上', failed.length ? 'error' : '');
+    setItemsStatus(notes.join('；'), failed.length ? 'error' : '');  // 分组标题已说明排序，正常时不再多一行
   }
 
   function failures(results) {

@@ -349,15 +349,24 @@
     return dialog;
   }
 
-  /** The record's toolbar: one button per spec, in the original order. */
-  function renderButtons(container, actions, { onDone } = {}) {
+  /** The record's toolbar: one button per spec, in the original order.
+   * 消息中心（用户 2026-11-28 要求有主次）：hideBlocked 时原页会拦下的按钮不显示（原页是点了才提示，结果相同）；
+   * primary 为 `kind:operation` 时该按钮为主按钮、其余为次要按钮；labelOf 可改按钮文字。返回显示的按钮数。 */
+  function renderButtons(container, actions, { onDone, hideBlocked = false, primary = '', labelOf = null } = {}) {
     container.replaceChildren();
-    if (!actions || !Array.isArray(actions.specs) || !actions.specs.length) return false;
+    if (!actions || !Array.isArray(actions.specs) || !actions.specs.length) return 0;
     const context = { platform: actions.platform, account_id: actions.account_id, item: actions.item };
     const bar = el('div', 'action-bar');
     const note = el('span', 'action-bar-note');
-    actions.specs.forEach((spec) => {
-      const button = el('button', 'action-button', spec.label);
+    const specs = actions.specs.filter((spec) => !(hideBlocked && spec.blocked));
+    // 主按钮排第一个，其余保持原页顺序。
+    const first = specs.findIndex((spec) => `${spec.kind}:${spec.operation}` === primary);
+    if (first > 0) specs.unshift(...specs.splice(first, 1));
+    if (!specs.length) return 0;
+    specs.forEach((spec) => {
+      const key = `${spec.kind}:${spec.operation}`;
+      const tone = !primary ? '' : key === primary ? ' is-primary' : ' is-quiet';
+      const button = el('button', `action-button${tone}`, labelOf ? labelOf(spec) : spec.label);
       button.type = 'button';
       button.dataset.operation = spec.operation;
       let requestId = uuid();
@@ -389,7 +398,7 @@
     });
     bar.append(note);
     container.append(bar);
-    return true;
+    return specs.length;
   }
 
   window.OriginalPageActions = { request, renderButtons, open, sitePicker };

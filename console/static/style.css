@@ -4001,8 +4001,10 @@ textarea.review-input { min-height: 72px; line-height: 1.6; }
   appearance: auto; -webkit-appearance: auto; width: auto; min-height: 0; margin: 0;
 }
 .action-row[hidden] { display: none; }
-.monitor-category-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: var(--fs-caption); color: var(--text-muted); }
-.monitor-category-actions .action-bar { margin-top: 0; }
+.action-button.is-primary { border-color: var(--brand-red); background: var(--brand-red); color: #fff; font-weight: 500; }
+.action-button.is-primary:hover { filter: brightness(0.94); }
+.action-button.is-quiet { border-color: transparent; background: transparent; color: var(--text-secondary); }
+.action-button.is-quiet:hover { background: var(--bg-subtle); color: var(--text-primary); }
 .complaint-dialog { width: min(820px, calc(100vw - 32px)); }
 .complaint-body .action-row { grid-template-columns: 128px 1fr; }
 .complaint-rebind { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-control); background: var(--bg-muted, #f6f7f9); font-size: var(--fs-body); }
