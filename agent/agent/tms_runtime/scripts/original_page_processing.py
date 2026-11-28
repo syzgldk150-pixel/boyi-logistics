@@ -829,11 +829,7 @@ def _transfer_abnormal(session: Any, item: dict[str, Any], payload: dict[str, An
         fields = validate_transfer_abnormal(row, payload)
     except ActionRuleError as exc:
         raise _rule(exc) from None
-    for sort, descriptor in fields["images"]:  # 原页每格图片选中即上传并挂到这条调拨件上
-        name, data = _staged(descriptor)
-        uploaded = _inms(session, f"{TRANSFER_ROOT}/uploadAbnormalImage.html", data={"Replace_Id": replace_id, "Image_Sort": sort},
-                         files={"file": (name, data)})
-        _transfer_ok(uploaded, f"异常图片{sort}上传")
+    _transfer_upload_images(session, replace_id, fields["images"], None)  # 异常登记图片不带 Image_Type
     result = _inms(session, f"{TRANSFER_ROOT}/save.html", data={"Replace_Id[]": [replace_id], "Abnormal_Type": fields["Abnormal_Type"],
                                                                "Abnormal_Remark": fields["Abnormal_Remark"]})
     _transfer_ok(result, "调拨件异常登记")
@@ -858,6 +854,99 @@ def _yunda_reply_often(session: Any, item: dict[str, Any], payload: dict[str, An
         raise ProcessingError("SOURCE_QUERY_FAILED", _text((result or {}).get("msg")) or "常用回复语读取失败。")
     replies = [_text(text) for text in (result.get("data") or []) if _text(text)]
     return {"ok": True, "replies": replies[:50]}
+
+
+def _transfer_any_row(session: Any, replace_id: str) -> dict[str, Any]:
+    row = _transfer_row(session, replace_id) or _transfer_row(session, replace_id, "1")
+    if row is None:
+        raise ProcessingError("PROBLEM_NOT_FOUND", "原系统找不到这条调拨件，请刷新后重试。")
+    return row
+
+
+def _transfer_upload_images(session: Any, replace_id: str, images: list[tuple[int, dict[str, Any]]], image_type: int | None) -> None:
+    for sort, descriptor in images:  # 原页每格图片选中即上传并挂到这条调拨件上
+        name, data = _staged(descriptor)
+        fields: dict[str, Any] = {"Replace_Id": replace_id, "Image_Sort": sort}
+        if image_type is not None:
+            fields["Image_Type"] = image_type
+        _transfer_ok(_inms(session, f"{TRANSFER_ROOT}/uploadAbnormalImage.html", data=fields, files={"file": (name, data)}), f"图片{sort}上传")
+
+
+def _transfer_delay(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, validate_transfer_delay
+
+    replace_id = _text(item.get("external_id"))
+    row = _transfer_any_row(session, replace_id)
+    try:
+        fields = validate_transfer_delay(row, payload)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    _transfer_upload_images(session, replace_id, fields["images"], 2)  # 延迟发货证明图 Image_Type=2
+    result = _inms(session, f"{TRANSFER_ROOT}/delay.html", data={"Replace_Id": replace_id, "Delay_Day": fields["Delay_Day"],
+                                                                "Delay_Reason": fields["Delay_Reason"]})
+    if not isinstance(result, dict) or _text(result.get("info")) != "1":
+        raise ProcessingError("SOURCE_WRITE_FAILED", f"延迟发货失败：{_text((result or {}).get('msg')) or '原系统拒绝'}")
+    _discard_staged([descriptor for _sort, descriptor in fields["images"]])
+    after = _transfer_any_row(session, replace_id)
+    if _text(after.get("Delay_Audit_Status")) == _text(row.get("Delay_Audit_Status")) and _text(after.get("Delay_Day")) == _text(row.get("Delay_Day")):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "延迟发货已提交，但读回的延迟发货状态没有变化，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": replace_id}
+
+
+def _yunda_salesmen(session: Any, keyword: str) -> list[dict[str, str]]:
+    payload = _inms(session, "https://kyinms.yunda56.com/ky_inms/public/index.php/like/getRy.html?type=2",
+                    data={"keyword": keyword, "page": 1, "rows": 20})
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    return [{"SITE_CODE": _text(row.get("org_id")), "SITE_NAME": _text(row.get("org_name"))}
+            for row in (rows or []) if isinstance(row, dict) and _text(row.get("org_id"))][:20]
+
+
+def _transfer_salesman_search(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    key = _text(payload.get("key"))
+    if not re.fullmatch(r"[\w\u4e00-\u9fa5]{1,20}", key):
+        raise ProcessingError("REPLY_RULE_REJECTED", "请输入业务员姓名或工号。")
+    return {"ok": True, "sites": _yunda_salesmen(session, key)}
+
+
+def _transfer_job(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    replace_id = _text(item.get("external_id"))
+    job_code = _text(payload.get("job_code"))
+    if not job_code:
+        raise ProcessingError("REPLY_RULE_REJECTED", "请先选择业务员")
+    row = _transfer_any_row(session, replace_id)
+    if not any(person["SITE_CODE"] == job_code for person in _yunda_salesmen(session, job_code)):
+        raise ProcessingError("REPLY_RULE_REJECTED", "本网点找不到这个业务员，请重新选择。")
+    result = _inms(session, f"{TRANSFER_ROOT}/updateJobCode.html", data={"Replace_Id[]": [replace_id], "Job_Code": job_code})
+    _transfer_ok(result, "转业务员")
+    after = _transfer_any_row(session, replace_id)
+    if job_code not in _text(after.get("Job_Code")) and _text(after.get("Job_Name")) == _text(row.get("Job_Name")):
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "转业务员已提交，但读回的业务员没有变化，请到原系统核对。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": replace_id}
+
+
+def _transfer_detail(session: Any, replace_id: str) -> dict[str, Any]:
+    result = _inms(session, f"{TRANSFER_ROOT}/detail.html", data={"Replace_Id": replace_id})
+    if not isinstance(result, dict) or _text(result.get("status")) != "1" or not isinstance(result.get("data"), dict):
+        raise ProcessingError("SOURCE_QUERY_FAILED", _text((result or {}).get("msg")) or "调拨件详情读取失败。")
+    return result["data"]
+
+
+def _transfer_reply(session: Any, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    from shared.original_page_actions import ActionRuleError, validate_transfer_reply
+
+    replace_id = _text(item.get("external_id"))
+    row = _transfer_any_row(session, replace_id)
+    detail = _transfer_detail(session, replace_id)
+    try:
+        fields = validate_transfer_reply(row, detail, payload)
+    except ActionRuleError as exc:
+        raise _rule(exc) from None
+    before = len(detail.get("ReplyInfo") or [])
+    result = _inms(session, f"{TRANSFER_ROOT}/reply.html", data={**fields, "Replace_Id": replace_id})
+    _transfer_ok(result, "调拨件回复")
+    if len(_transfer_detail(session, replace_id).get("ReplyInfo") or []) <= before:
+        raise ProcessingError("WRITE_OUTCOME_UNKNOWN", "回复已提交，但详情里的回复记录没有增加，请到原系统核对，不要重复回复。")
+    return {"ok": True, "verified": True, "result": base._safe_json(result), "external_id": replace_id}
 
 
 ARBITRATION_PAGE = "https://kyzc.yunda56.com:8090/kyzc/arbitrament/arbitramentSearch"
@@ -923,6 +1012,9 @@ PROCESS: dict[tuple[str, str, str], Handler] = {
     ("yunda", "transfer", "accept"): _transfer_accept,
     ("yunda", "transfer", "transfer"): _transfer_transfer,
     ("yunda", "transfer", "abnormal"): _transfer_abnormal,
+    ("yunda", "transfer", "delay"): _transfer_delay,
+    ("yunda", "transfer", "job"): _transfer_job,
+    ("yunda", "transfer", "reply"): _transfer_reply,
     ("yunda", "arbitration", "message"): _arbitration_message,
 }
 LOOKUP: dict[tuple[str, str, str], Handler] = {
@@ -933,6 +1025,7 @@ LOOKUP: dict[tuple[str, str, str], Handler] = {
     ("yunda", "site", "search"): _yunda_site_search,
     ("yunda", "problem", "reply_often"): _yunda_reply_often,
     ("yunda", "cssp", "people"): _cssp_people_search,
+    ("yunda", "transfer", "salesman"): _transfer_salesman_search,
     ("yunda", "cssp", "receive_count"): _cssp_waiting_lookup("receive"),
     ("yunda", "cssp", "urgent_receive_count"): _cssp_waiting_lookup("urgent_receive"),
 }

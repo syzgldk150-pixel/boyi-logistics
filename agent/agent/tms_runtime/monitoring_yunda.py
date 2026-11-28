@@ -402,7 +402,7 @@ def _transfer_item(row: dict) -> dict[str, Any]:
         "occurred_at": _text(row.get("Create_Time")), "status_label": _text(row.get("Replace_Status")) or "待接单",
         "waybill_no": _text(row.get("Logistics_Id")), "source_label": "韵达调拨件确认", "open_url": TRANSFER_PAGE,
         "actions": {"platform": "yunda", "account_id": YUNDA_ACCOUNT_ID,
-                    "item": {"external_id": _text(row["Replace_Id"])}, "specs": transfer_specs(row)},
+                    "item": {"external_id": _text(row["Replace_Id"])}, "specs": transfer_specs(row, monitoring_window.today())},
     }
 
 

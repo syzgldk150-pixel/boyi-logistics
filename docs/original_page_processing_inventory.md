@@ -112,7 +112,7 @@ updated: 2026-11-27
 | 罚款登记 | `fineRegistration.html` | `Penalty_Type`、`Remark`、`Penalty_Amount`、`Reward_Amount`、`Penalty_Site_Code`、`Reward_Site_Code` |
 | 异常图片 | `uploadAbnormalImage.html` / `deleteAbnormalImage.html` | |
 
-**已做（2026-11-27）**：接单（确认后提交 `Replace_Id[]`，读回不再是待接单）、转单（网点查 `like/getWebsite.html`，参数 `keyword`，取 `org_id/org_name`；读回不在本网点待接单）、异常登记（已做过异常登记或状态不是待接单/已接单时不可；三格图片每格一张 jpg/png/jpeg ≤2MB，原页是选中即带 `Replace_Id/Image_Sort` 上传挂到调拨件，博益在提交时先逐张上传再保存）。回复只对“异常回复”状态有用（消息中心只列待接单），延迟发货/转业务员/罚款登记未做。这两类随动作提交的图片先在 Agent 临时目录暂存（2 小时过期），处理后删除。
+**已做（2026-11-27）**：接单（确认后提交 `Replace_Id[]`，读回不再是待接单）、转单（网点查 `like/getWebsite.html`，参数 `keyword`，取 `org_id/org_name`；读回不在本网点待接单）、异常登记（已做过异常登记或状态不是待接单/已接单时不可；三格图片每格一张 jpg/png/jpeg ≤2MB，原页是选中即带 `Replace_Id/Image_Sort` 上传挂到调拨件，博益在提交时先逐张上传再保存）。2026-11-28 补做：延迟发货（揽发/开单超时、已撤销、已延迟过一次不可；延迟时间为今天起 1–29 天，显示“月-日”；延迟原因必填 ≤50 字；三格证明图每格一张，以 `Image_Type=2` 挂到调拨件；拼多多跨境订单先确认撤单提示；`delay.html` 返回 `info=1` 为成功，以延迟发货审核状态或延迟日期变化读回）、转业务员（原业务员只读；新业务员查 `like/getRy.html?type=2`，参数 `keyword`，取 `org_id/org_name`；提交 `updateJobCode.html` 的 `Replace_Id[]` 与 `Job_Code`，以业务员变化读回）、回复（详情页按钮，仅待接单/已接单可用；异常类型可改选，详细描述取详情原值，异常说明去首尾空白后最多 200 字、原页不要求必填；以详情 `ReplyInfo` 条数增加读回）。罚款登记按钮（`edit_cost_but`）在本账号的原页里不下发（按权限隐藏），博益不做。这两类随动作提交的图片先在 Agent 临时目录暂存（2 小时过期），处理后删除。
 
 ### 仲裁（仲裁系统“仲裁查询”）
 

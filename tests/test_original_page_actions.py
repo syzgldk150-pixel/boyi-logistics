@@ -177,7 +177,7 @@ def test_yunda_transfer_rules():
 
     row = {"Replace_Id": "R1", "Replace_Status_Code": "0", "Order_Source": "690", "Ext_Field4": "镇上自提", "Abnormal_Type": ""}
     assert "可能有加收" in transfer_accept_confirm(row) and transfer_accept_confirm({**row, "Order_Source": "1"}) == "是否确认接单？"
-    assert [spec["label"] for spec in transfer_specs(row)] == ["接单", "转单", "异常登记"]
+    assert [spec["label"] for spec in transfer_specs(row)] == ["接单", "转单", "异常登记", "延迟发货", "转业务员", "回复"]
     assert transfer_abnormal_block({**row, "Abnormal_Type": "超区"}) == "已做过异常登记无需再次登记"
     assert transfer_abnormal_block({**row, "Abnormal_Type": "客户货未备齐或无货", "Delay_Day": "2"}) == ""
     assert transfer_abnormal_block({**row, "Replace_Status_Code": "2"}) == "只有待接单、已接单支持异常登记"
@@ -257,3 +257,32 @@ def test_yunda_receive_and_appoint_rules():
     assert cssp_appoint_spec({"compStatus": 4})["blocked"] == "该工单当前状态不能转人员"
     person = cssp_appoint_spec({"compStatus": 1})["fields"][0]
     assert person["lookup_operation"] == "people" and person["payload_key"] == "user_code"
+
+
+def test_yunda_transfer_delay_job_reply_rules():
+    from shared.original_page_actions import (
+        transfer_delay_block, transfer_delay_days, transfer_specs, validate_transfer_delay, validate_transfer_reply,
+    )
+
+    days = transfer_delay_days(dt.date(2026, 11, 28))
+    assert days[0] == ["1", "11-29"] and days[3] == ["4", "12-2"] and len(days) == 29
+    row = {"Replace_Id": "R1", "Replace_Status_Code": "0", "Replace_Status": "待接单", "Order_Source": "676", "Delay_Audit_Status": "0",
+           "Abnormal_Type": "客户联系不上", "Abnormal_Remark": "电话不通", "Job_Name": ""}
+    specs = {spec["operation"]: spec for spec in transfer_specs(row, dt.date(2026, 11, 28))}
+    assert "撤销订单" in specs["delay"]["confirm"] and specs["delay"]["blocked"] == ""
+    assert specs["job"]["fields"][0]["value"] == "无" and specs["job"]["fields"][1]["lookup_operation"] == "salesman"
+    assert specs["reply"]["fields"][0]["value"] == "2" and specs["reply"]["fields"][1]["value"] == "电话不通"
+    assert transfer_delay_block({**row, "Is_Collect_Overtime": "是"}) == "揽发超时、开单超时的数据不支持延迟发货!"
+    assert transfer_delay_block({**row, "Delay_Audit_Status": "2"}) == "请注意每条调拨件只能延迟发货一次"
+    for payload, message in (({}, "请选延迟时间"), ({"Delay_Day": "3"}, "延迟原因不能为空"),
+                             ({"Delay_Day": "3", "Delay_Reason": "x" * 51}, "不能大于50个字符")):
+        with pytest.raises(ActionRuleError, match=message):
+            validate_transfer_delay(row, payload)
+    assert validate_transfer_delay(row, {"Delay_Day": "3", "Delay_Reason": "客户要求"})["Delay_Day"] == "3"
+    detail = {"Replace_Status": "1", "Abnormal_Remark": "电话不通"}
+    assert validate_transfer_reply(row, detail, {"Abnormal_Type": "2", "Reply_Content": " 已联系 "}) == {
+        "Abnormal_Type": "2", "Abnormal_Remark": "电话不通", "Reply_Content": "已联系"}
+    with pytest.raises(ActionRuleError, match="200字符"):
+        validate_transfer_reply(row, detail, {"Reply_Content": "x" * 201})
+    with pytest.raises(ActionRuleError, match="只有待接单、已接单"):
+        validate_transfer_reply(row, {"Replace_Status": "2"}, {})

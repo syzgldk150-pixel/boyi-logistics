@@ -756,7 +756,46 @@ def transfer_abnormal_block(row: Mapping[str, Any]) -> str:
     return ""
 
 
-def transfer_specs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+TRANSFER_DELAY_REASON_MAX = 50
+TRANSFER_REPLY_MAX = 200
+TRANSFER_DELAY_IMAGE_SLOTS = (("delay_image1", "图片1"), ("delay_image2", "图片2"), ("delay_image3", "图片3"))
+
+
+def transfer_delay_days(today: dt.date) -> list[list[str]]:
+    """``settimeselect``: 1–29 天，显示为“月-日”（月补零、日不补零）。"""
+    return [[str(days), f"{(today + dt.timedelta(days=days)).month:02d}-{(today + dt.timedelta(days=days)).day}"] for days in range(1, 30)]
+
+
+def transfer_delay_block(row: Mapping[str, Any]) -> str:
+    if _text(row.get("Is_Waybill_Overtime")) == "是" or _text(row.get("Is_Collect_Overtime")) == "是":
+        return "揽发超时、开单超时的数据不支持延迟发货!"
+    if _text(row.get("Replace_Status")) == "3":
+        return "该单已撤销,不允许延迟发货!"
+    try:
+        audited = float(_text(row.get("Delay_Audit_Status")) or 0)
+    except ValueError:
+        audited = 0
+    if audited > 1:
+        return "请注意每条调拨件只能延迟发货一次"
+    return ""
+
+
+def transfer_delay_confirm(row: Mapping[str, Any]) -> str:
+    if _text(row.get("Order_Source")) == "676":
+        return "拼多多跨境订单延迟发货审核后，将会\"撤销订单\"，请上传真实有效的证明图片，虚假图片一经核实，将处以200元/票的处罚，是否确定提交?"
+    return ""
+
+
+def transfer_reply_block(row: Mapping[str, Any]) -> str:
+    return "" if _text(row.get("Replace_Status_Code")) in ("0", "1") else "只有待接单、已接单的调拨件可以回复"
+
+
+def _abnormal_code(value: Any) -> str:
+    text = _text(value)
+    return next((code for code, label in TRANSFER_ABNORMAL_TYPES if text in (code, label)), "")
+
+
+def transfer_specs(row: Mapping[str, Any], today: dt.date | None = None) -> list[dict[str, Any]]:
     abnormal = _spec("transfer", "abnormal", "异常登记", "异常登记", [
         _field("Abnormal_Type", "异常类型", "select", required=True, options=[list(item) for item in TRANSFER_ABNORMAL_TYPES]),
         _field("Abnormal_Remark", "详细描述", "textarea", max_length=TRANSFER_REMARK_MAX),
@@ -765,7 +804,59 @@ def transfer_specs(row: Mapping[str, Any]) -> list[dict[str, Any]]:
     transfer = _spec("transfer", "transfer", "转单", "调拨件转单", [
         _field("Replace_Site", "转单网点", "site", required=True)])
     transfer["fields"][0]["lookup"] = "yunda_site"
-    return [_spec("transfer", "accept", "接单", "提示", [], confirm=transfer_accept_confirm(row)), transfer, abnormal]
+    delay = _spec("transfer", "delay", "延迟发货", "延迟发货", [
+        _field("notice", "提示", value="请注意 每条调拨件只能延迟发货一次。"),
+        _field("Delay_Day", "延迟时间", "select", required=True, options=transfer_delay_days(today or dt.date.today())),
+        _field("Delay_Reason", "延迟原因", "textarea", required=True, max_length=TRANSFER_DELAY_REASON_MAX),
+    ], blocked=transfer_delay_block(row), confirm=transfer_delay_confirm(row))
+    delay["attachment_slots"] = [{"key": key, "label": label, "purpose": "transfer"} for key, label in TRANSFER_DELAY_IMAGE_SLOTS]
+    salesman = _field("Job_Code", "新业务员", "site", required=True)
+    salesman.update({"lookup_kind": "transfer", "lookup_operation": "salesman", "payload_key": "job_code", "placeholder": "输入业务员姓名或工号"})
+    job = _spec("transfer", "job", "转业务员", "转业务员", [_field("Job_Name", "原业务员", value=_text(row.get("Job_Name")) or "无"), salesman])
+    reply = _spec("transfer", "reply", "回复", "回复", [
+        _field("Abnormal_Type", "异常类型", "select", value=_abnormal_code(row.get("Abnormal_Type")),
+               options=[list(item) for item in TRANSFER_ABNORMAL_TYPES]),
+        _field("Abnormal_Remark", "详细描述", "readonly_long", value=row.get("Abnormal_Remark")),
+        _field("Reply_Content", "异常说明", "textarea", max_length=TRANSFER_REPLY_MAX),
+    ], blocked=transfer_reply_block(row))
+    return [_spec("transfer", "accept", "接单", "提示", [], confirm=transfer_accept_confirm(row)), transfer, abnormal, delay, job, reply]
+
+
+def validate_transfer_delay(row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    blocked = transfer_delay_block(row)
+    if blocked:
+        raise ActionRuleError(blocked)
+    day = _text(payload.get("Delay_Day"))
+    if day not in {str(days) for days in range(1, 30)}:
+        raise ActionRuleError("请选延迟时间")
+    reason = _text(payload.get("Delay_Reason"))
+    if not reason:
+        raise ActionRuleError("延迟原因不能为空")
+    if len(reason) > TRANSFER_DELAY_REASON_MAX:
+        raise ActionRuleError("延迟原因不能大于50个字符")
+    images = []
+    for index, (key, label) in enumerate(TRANSFER_DELAY_IMAGE_SLOTS, start=1):
+        try:
+            files = attachments(payload.get(key), "yunda", "transfer")
+        except AttachmentError as exc:
+            raise ActionRuleError(f"{label}：{exc}") from None
+        if files:
+            images.append((index, files[0]))
+    return {"Delay_Day": day, "Delay_Reason": reason, "images": images}
+
+
+def validate_transfer_reply(row: Mapping[str, Any], detail: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, str]:
+    """详情页“回复”：异常类型可改选，详细描述取详情原值，异常说明去首尾空白后最多 200 字（原页不要求必填）。"""
+    blocked = transfer_reply_block({**row, "Replace_Status_Code": _text(detail.get("Replace_Status") or row.get("Replace_Status_Code"))})
+    if blocked:
+        raise ActionRuleError(blocked)
+    content = _text(payload.get("Reply_Content"))
+    if len(content) > TRANSFER_REPLY_MAX:
+        raise ActionRuleError("最多不可以超过200字符！")
+    kind = _text(payload.get("Abnormal_Type"))
+    if kind and kind not in dict(TRANSFER_ABNORMAL_TYPES):
+        raise ActionRuleError("请选择异常类型")
+    return {"Abnormal_Type": kind, "Abnormal_Remark": _text(detail.get("Abnormal_Remark")), "Reply_Content": content}
 
 
 def validate_transfer_abnormal(row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -922,6 +1013,7 @@ def site_search_key(value: Any) -> str:
 
 
 __all__ = [
+    "transfer_delay_block", "transfer_delay_days", "transfer_reply_block", "validate_transfer_delay", "validate_transfer_reply",
     "CSSP_PERMISSIONS", "CSSP_RECEIVE", "cssp_appoint_spec", "cssp_permissions", "cssp_receive_specs", "cui_reply_specs",
     "validate_receive_num",
     "APPEAL_FORM_SUBPAGE", "appeal_form_exception_id", "appeal_form_spec", "appeal_form_tables", "appeal_side", "validate_appeal_form",

@@ -289,3 +289,47 @@ class YundaReceiveTests(unittest.TestCase):
         post = [call for call in calls if call[0] == "post"][0]
         self.assertEqual({"userId": "1001", "complaintIds": "C1"}, post[2]["params"])
         self.assertEqual({"gs": "D1", "empid": "1001"}, [call for call in calls if call[1].endswith("getDeptEmp")][0][2]["params"])
+
+
+class YundaTransferMoreTests(unittest.TestCase):
+    def test_delay_uploads_proof_images_then_reads_status_back(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(processing, "STAGE_DIR", Path(folder) / "staged"):
+            source = Path(folder) / "a.jpg"
+            source.write_bytes(b"jpg")
+            staged = processing.stage_file(source, "证明.jpg")
+            rows = [{"Replace_Id": "R1", "Replace_Status_Code": "0", "Delay_Audit_Status": "0", "Delay_Day": "-"},
+                    {"Replace_Id": "R1", "Replace_Status_Code": "0", "Delay_Audit_Status": "1", "Delay_Day": "3"}]
+            posts = []
+
+            def inms(session, url, data=None, files=None):
+                posts.append((url.rsplit("/", 1)[-1], data))
+                return {"info": 1, "status": 1, "msg": "成功"}
+
+            with patch.object(processing, "_transfer_row", side_effect=lambda s, rid, status="0": rows.pop(0) if rows else None), \
+                    patch.object(processing, "_inms", side_effect=inms):
+                result = processing.run("yunda", "process", object(), {"kind": "transfer", "operation": "delay", "item": {"external_id": "R1"},
+                                                                        "payload": {"Delay_Day": "3", "Delay_Reason": "客户要求", "delay_image1": [staged]}})
+        self.assertTrue(result["verified"])
+        self.assertEqual(("uploadAbnormalImage.html", {"Replace_Id": "R1", "Image_Sort": 1, "Image_Type": 2}), posts[0])
+        self.assertEqual(("delay.html", {"Replace_Id": "R1", "Delay_Day": "3", "Delay_Reason": "客户要求"}), posts[1])
+
+    def test_reply_reads_reply_records_back(self):
+        details = [{"Replace_Status": "1", "Abnormal_Remark": "电话不通", "ReplyInfo": []},
+                   {"Replace_Status": "1", "ReplyInfo": [{"Create_Time": "t"}]}]
+        posts = []
+
+        def inms(session, url, data=None, files=None):
+            if url.endswith("detail.html"):
+                return {"status": 1, "data": details.pop(0)}
+            posts.append(data)
+            return {"status": 1}
+
+        with patch.object(processing, "_transfer_row", return_value={"Replace_Id": "R1", "Replace_Status_Code": "1"}), \
+                patch.object(processing, "_inms", side_effect=inms):
+            result = processing.run("yunda", "process", object(), {"kind": "transfer", "operation": "reply", "item": {"external_id": "R1"},
+                                                                    "payload": {"Abnormal_Type": "2", "Reply_Content": "已联系"}})
+        self.assertTrue(result["verified"])
+        self.assertEqual({"Abnormal_Type": "2", "Abnormal_Remark": "电话不通", "Reply_Content": "已联系", "Replace_Id": "R1"}, posts[0])
